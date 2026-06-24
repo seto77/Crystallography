@@ -6,7 +6,8 @@ namespace Crystallography;
 // 既存の FormBeamInteraction.cs の private Loc(en, ja) を 11 言語へ一般化したもの。
 // 用途・適用方針は .project-guidance/ReciPro_多言語化方針.md §3-B(方式②) を参照。
 /// <summary>コード側に直書きした UI 文字列を、現在の UI カルチャの訳へ解決する localization ヘルパー。</summary>
-public static class L10n
+// 260624Cl リネーム: L10n → Localization (周辺の綴り命名 CodeLocalizer / SupportedCultures に統一)
+public static class Localization
 {
     /// <summary>
     /// 現在の UI カルチャ (<see cref="SupportedCultures.Current"/>) に対応する訳を返す。
@@ -41,7 +42,7 @@ public static class L10n
     // 260621Cl 追加 (§2.5 横展開): Localizable=false のフォーム/UC が Designer.cs に英語直書きしている
     // 可視ラベル (.Text / DataGridView 列の .HeaderText / ToolStripItem の .Text) を、型名単位の中央テーブルで
     // 多言語化する。FormBase / UserControlBase の OnLoad から CodeLocalizer.Apply(this) が実行時に差し替える。
-    // データ本体は自動生成の L10nData.cs (tools/gen_l10n_data.py)。詳細は方針 §3-B/§12.7。
+    // データ本体は自動生成の LocalizationData.cs (tools/i18n_s25_gen_data.py)。詳細は方針 §3-B/§12.7。
     /// <summary>1 コントロール (またはメニュー項目・列) の 1 プロパティぶんの 11 言語訳。</summary>
     public sealed class Entry
     {
@@ -65,7 +66,7 @@ public static class L10n
     {
         if (_registry != null) return;
         var reg = new System.Collections.Generic.Dictionary<string, Entry[]>();
-        L10nData.Populate(reg); // 自動生成データ
+        LocalizationData.Populate(reg); // 自動生成データ
         _registry = reg;
     }
 

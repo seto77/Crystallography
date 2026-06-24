@@ -1,13 +1,13 @@
 ﻿namespace Crystallography;
 
-// 260621Cl 自動生成 (tools/gen_l10n_data.py 由来)。手で編集しない。
+// 260621Cl 自動生成 (tools/i18n_s25_gen_data.py 由来)。手で編集しない。
 // §2.5: Localizable=false フォーム/UC のハードコード可視ラベルの 11 言語訳テーブル。
 // 非翻訳 (全言語=英語) の項目と FormSymmetryInformation(個別実装)・GLControlAlpha(OpenGL 個別) は除外。
-internal static class L10nData
+internal static class LocalizationData
 {
-    public static void Populate(System.Collections.Generic.Dictionary<string, L10n.Entry[]> reg)
+    public static void Populate(System.Collections.Generic.Dictionary<string, Localization.Entry[]> reg)
     {
-        reg["AtomCoordinateTable"] = new L10n.Entry[]
+        reg["AtomCoordinateTable"] = new Localization.Entry[]
         {
             new("label1", "Text", "Target Atom", "対象原子", "Zielatom", "Atome cible", "Átomo objetivo", "Átomo-alvo", "Atomo bersaglio", "Целевой атом", "目标原子", "目標原子", "대상 원자"),
             new("atomLabelDataGridViewTextBoxColumn", "HeaderText", "Atom Label", "原子ラベル", "Atombezeichnung", "Étiquette de l'atome", "Etiqueta del átomo", "Rótulo do átomo", "Etichetta atomo", "Метка атома", "原子标签", "原子標籤", "원자 라벨"),
@@ -15,7 +15,7 @@ internal static class L10nData
             new("label2", "Text", "Bar Wdth", "バー幅", "Balkenbr.", "Largeur barre", "Anch. barra", "Larg. da barra", "Largh. barra", "Ширина штриха", "条宽", "長條寬度", "막대 폭"),
             new("label3", "Text", "Max. distance", "最大距離", "Max. Abstand", "Distance max.", "Distancia máx.", "Distância máx.", "Distanza max.", "Макс. расстояние", "最大距离", "最大距離", "최대 거리"),
         };
-        reg["ChemicalFormulaInputControl"] = new L10n.Entry[]
+        reg["ChemicalFormulaInputControl"] = new Localization.Entry[]
         {
             new("label4", "Text", "Element", "元素", "Element", "Élément", "Elemento", "Elemento", "Elemento", "Элемент", "元素", "元素", "원소"),
             new("label5", "Text", "Valence", "価数", "Valenz", "Valence", "Valencia", "Valência", "Valenza", "Валентность", "价态", "價數", "원자가"),
@@ -23,7 +23,7 @@ internal static class L10nData
             new("label6", "Text", "Weight", "重み", "Gewicht", "Poids", "Peso", "Peso", "Peso", "Вес", "权重", "權重", "가중치"),
             new("label7", "Text", "Molar ratio", "モル比", "Molverhältnis", "Rapport molaire", "Relación molar", "Razão molar", "Rapporto molare", "Мольное отношение", "摩尔比", "莫耳比", "몰 비율"),
         };
-        reg["CrystalDatabaseControl"] = new L10n.Entry[]
+        reg["CrystalDatabaseControl"] = new Localization.Entry[]
         {
             new("nameDataGridViewTextBoxColumn", "HeaderText", "Name", "結晶名", "Name", "Nom", "Nombre", "Nome", "Nome", "Имя", "名称", "名稱", "이름"),
             new("densityDataGridViewTextBoxColumn", "HeaderText", "Density", "密度", "Dichte", "Densité", "Densidad", "Densidade", "Densità", "Плотность", "密度", "密度", "밀도"),
@@ -34,7 +34,7 @@ internal static class L10nData
             new("titleDataGridViewTextBoxColumn", "HeaderText", "Title", "タイトル", "Titel", "Titre", "Título", "Título", "Titolo", "Заглавие", "标题", "標題", "제목"),
             new("journalDataGridViewTextBoxColumn", "HeaderText", "Journal", "雑誌名", "Zeitschrift", "Revue", "Revista", "Revista", "Rivista", "Журнал", "期刊", "期刊", "저널"),
         };
-        reg["DiffractionPatternControl"] = new L10n.Entry[]
+        reg["DiffractionPatternControl"] = new Localization.Entry[]
         {
             new("label36", "Text", "Min.", "最小", "Min.", "Min.", "Mín.", "Mín.", "Min.", "Мин.", "Min.", "最小值", "Min."),
             new("label25", "Text", "Max.", "最大", "Max.", "Max.", "Máx.", "Máx.", "Max.", "Макс.", "最大值", "最大值", "최대"),
@@ -84,12 +84,12 @@ internal static class L10nData
             new("checkBoxShowMaskedArea", "Text", "Show masked area", "マスク領域を表示", "Maskierten Bereich anzeigen", "Afficher la zone masquée", "Mostrar área enmascarada", "Mostrar área mascarada", "Mostra area mascherata", "Показать маскированную область", "显示掩模区域", "顯示遮罩區域", "마스크 영역 표시"),
             new("buttonSaveImage", "Text", "Save Image", "画像を保存", "Bild speichern", "Enregistrer l'image", "Guardar imagen", "Salvar imagem", "Salva immagine", "Сохранить изображение", "保存图像", "儲存影像", "이미지 저장"),
         };
-        reg["DistributionGraphControl"] = new L10n.Entry[]
+        reg["DistributionGraphControl"] = new Localization.Entry[]
         {
             new("labelY", "Text", "Y:", "Y:", "Y:", "Y :", "Y:", "Y:", "Y:", "Y:", "Y:", "Y：", "Y:"),
             new("labelX", "Text", "X:", "X:", "X:", "X :", "X:", "X:", "X:", "X:", "X:", "X：", "X:"),
         };
-        reg["EOSControl"] = new L10n.Entry[]
+        reg["EOSControl"] = new Localization.Entry[]
         {
             new("label83", "Text", "Note", "メモ", "Anmerkung", "Note", "Nota", "Nota", "Nota", "Примечание", "备注", "備註", "참고"),
             new("checkBoxUseEOS", "Text", "Use EOS", "EOS を使用", "EOS verwenden", "Utiliser l'EOS", "Usar EOS", "Usar EOS", "Usa EOS", "Использовать EOS", "使用 EOS", "使用 EOS", "EOS 사용"),
@@ -100,28 +100,28 @@ internal static class L10nData
             new("numericBoxEOS_Kpp0", "HeaderText", "K''₀", "K''₀", "K''₀", "K''₀", "K''₀", "K''₀", "K\\'\\'₀", "K''₀", "K''₀", "K''₀", "K''₀"),
             new("numericBoxEOS_KpInfinity", "HeaderText", "K'∞", "K'∞", "K'∞", "K'∞", "K'∞", "K'∞", "K\\'∞", "K'∞", "K'∞", "K'∞", "K'∞"),
         };
-        reg["ElasticityControl"] = new L10n.Entry[]
+        reg["ElasticityControl"] = new Localization.Entry[]
         {
             new("radioButtonCompliance", "Text", "Elastic compliance constant", "弾性コンプライアンス定数", "Elastische Nachgiebigkeitskonstante", "Constante de souplesse élastique", "Constante de elasticidad (compliancia)", "Constante de complacência elástica", "Costante di cedevolezza elastica", "Константа упругой податливости", "弹性柔顺常数", "彈性柔量常數", "탄성 컴플라이언스 상수"),
             new("radioButtonStiffness", "Text", "Elastic stiffness constant", "弾性スティフネス定数", "Elastische Steifigkeitskonstante", "Constante de rigidité élastique", "Constante de rigidez elástica", "Constante de rigidez elástica", "Costante di rigidezza elastica", "Константа упругой жёсткости", "弹性刚度常数", "彈性剛度常數", "탄성 강성 상수"),
         };
-        reg["FormAnotherSpaceGroup"] = new L10n.Entry[]
+        reg["FormAnotherSpaceGroup"] = new Localization.Entry[]
         {
             new("buttonCancel", "Text", "Cancel", "キャンセル", "Abbrechen", "Annuler", "Cancelar", "Cancelar", "Annulla", "Отмена", "取消", "取消", "취소"),
             new("this", "Text", "Convert to another spacegroup", "別の空間群へ変換", "In andere Raumgruppe umwandeln", "Convertir vers un autre groupe d'espace", "Convertir a otro grupo espacial", "Converter para outro grupo espacial", "Converti in un altro gruppo spaziale", "Преобразовать в другую пространственную группу", "转换到其他空间群", "轉換為其他空間群", "다른 공간군으로 변환"),
         };
-        reg["FormAtomDetailedInfo"] = new L10n.Entry[]
+        reg["FormAtomDetailedInfo"] = new Localization.Entry[]
         {
             new("this", "Text", "Atom Positions", "原子位置", "Atompositionen", "Positions atomiques", "Posiciones atómicas", "Posições atômicas", "Posizioni atomiche", "Позиции атомов", "原子位置", "原子位置", "원자 위치"),
         };
-        reg["FormCTF"] = new L10n.Entry[]
+        reg["FormCTF"] = new Localization.Entry[]
         {
             new("radioButtonCTF_coherent", "Text", "Coherent imaging", "コヒーレント結像", "Kohärente Abbildung", "Imagerie cohérente", "Imagen coherente", "Imagem coerente", "Imaging coerente", "Когерентное изображение", "相干成像", "同調成像", "결맞음 결상"),
             new("radioButtonCTF_Incoherent", "Text", "Incoherent imaging", "インコヒーレント結像", "Inkohärente Abbildung", "Imagerie incohérente", "Imagen incoherente", "Imagem incoerente", "Imaging incoerente", "Некогерентное изображение", "非相干成像", "非同調成像", "비결맞음 결상"),
             new("buttonCopyGraph", "Text", "Copy", "コピー", "Kopieren", "Copier", "Copiar", "Copiar", "Copia", "Копировать", "复制", "複製", "복사"),
             new("numericBoxMaxU1", "HeaderText", "Max u", "最大 u", "Max. u", "u max.", "u máx.", "u máx.", "u max", "Макс. u", "最大 u", "最大 u", "최대 u"),
         };
-        reg["FormCalculator"] = new L10n.Entry[]
+        reg["FormCalculator"] = new Localization.Entry[]
         {
             new("label1", "Text", "Calculate:", "計算:", "Berechnen:", "Calculer :", "Calcular:", "Calcular:", "Calcola:", "Вычислить:", "计算：", "計算:", "계산:"),
             new("label2", "Text", "Available functions: ", "使用可能な関数: ", "Verfügbare Funktionen: ", "Fonctions disponibles : ", "Funciones disponibles: ", "Funções disponíveis: ", "Funzioni disponibili: ", "Доступные функции: ", "可用函数： ", "可用函數: ", "사용 가능한 함수: "),
@@ -131,7 +131,7 @@ internal static class L10nData
             new("label9", "Text", " +, -, *, /,  ^ ,\r\nSin, Cos, Tan, \r\nAsin, Acos, Atan,\r\nSqrt, Ln, Log, Abs ", " +, -, *, /,  ^ ,\r\nSin, Cos, Tan, \r\nAsin, Acos, Atan,\r\nSqrt, Ln, Log, Abs ", " +, -, *, /,  ^ ,\r\nSin, Cos, Tan, \r\nAsin, Acos, Atan,\r\nSqrt, Ln, Log, Abs ", " +, -, *, /,  ^ ,\r\nSin, Cos, Tan, \r\nAsin, Acos, Atan,\r\nSqrt, Ln, Log, Abs ", " +, -, *, /,  ^ ,\r\nSin, Cos, Tan, \r\nAsin, Acos, Atan,\r\nSqrt, Ln, Log, Abs ", " +, -, *, /,  ^ ,\r\nSin, Cos, Tan, \r\nAsin, Acos, Atan,\r\nSqrt, Ln, Log, Abs ", " +, -, *, /,  ^ ,\r\nSin, Cos, Tan, \r\nAsin, Acos, Atan,\r\nSqrt, Ln, Log, Abs ", " +, -, *, /,  ^ ,\r\nSin, Cos, Tan, \r\nAsin, Acos, Atan,\r\nSqrt, Ln, Log, Abs ", " +, -, *, /,  ^ ,\r\nSin, Cos, Tan, \r\nAsin, Acos, Atan,\r\nSqrt, Ln, Log, Abs ", " +, -, *, /,  ^ ,\r\nSin, Cos, Tan, \r\nAsin, Acos, Atan,\r\nSqrt, Ln, Log, Abs ", " +, -, *, /,  ^ ,\r\nSin, Cos, Tan, \r\nAsin, Acos, Atan,\r\nSqrt, Ln, Log, Abs "),
             new("this", "Text", "Easy Calculator", "簡易計算機", "Einfacher Rechner", "Calculatrice simple", "Calculadora sencilla", "Calculadora simples", "Calcolatrice rapida", "Простой калькулятор", "简易计算器", "簡易計算機", "간편 계산기"),
         };
-        reg["FormCaptureGUI"] = new L10n.Entry[]
+        reg["FormCaptureGUI"] = new Localization.Entry[]
         {
             new("labelTargetForm", "Text", "Target form:", "対象フォーム:", "Zielformat:", "Format cible :", "Formato de destino:", "Formulário de destino:", "Formato di destinazione:", "Целевая форма:", "目标形式:", "目標格式：", "대상 형식:"),
             new("buttonSelectAll", "Text", "Select All", "すべて選択", "Alle auswählen", "Tout sélectionner", "Seleccionar todo", "Selecionar tudo", "Seleziona tutto", "Выбрать всё", "全选", "全選", "모두 선택"),
@@ -141,7 +141,7 @@ internal static class L10nData
             new("buttonCapture", "Text", "Capture", "キャプチャ", "Aufnehmen", "Capturer", "Capturar", "Capturar", "Cattura", "Захват", "捕获", "擷取", "캡처"),
             new("labelStatus", "Text", "Ready", "準備完了", "Bereit", "Prêt", "Listo", "Pronto", "Pronto", "Готово", "就绪", "就緒", "준비됨"),
         };
-        reg["FormCrystalSelection"] = new L10n.Entry[]
+        reg["FormCrystalSelection"] = new Localization.Entry[]
         {
             new("buttonCheckAll", "Text", "Check All Items", "すべての項目を選択", "Alle Einträge auswählen", "Cocher tous les éléments", "Marcar todos los elementos", "Marcar todos os itens", "Seleziona tutti gli elementi", "Отметить все элементы", "全选所有项", "勾選所有項目", "모든 항목 선택"),
             new("buttonUnchekAll", "Text", "Uncheck All Items", "すべての項目をチェック解除", "Auswahl aller Elemente aufheben", "Décocher tous les éléments", "Desmarcar todos los elementos", "Desmarcar todos os itens", "Deseleziona tutti gli elementi", "Снять отметки со всех элементов", "取消勾选所有项", "取消勾選所有項目", "모든 항목 선택 해제"),
@@ -150,7 +150,7 @@ internal static class L10nData
             new("button1", "Text", "Cancel", "キャンセル", "Abbrechen", "Annuler", "Cancelar", "Cancelar", "Annulla", "Отмена", "取消", "取消", "취소"),
             new("this", "Text", "Select load / save items", "読み込み / 保存項目を選択", "Lade-/Speicherelemente auswählen", "Sélectionner les éléments à charger / enregistrer", "Seleccionar elementos a cargar / guardar", "Selecionar itens de carregar / salvar", "Seleziona elementi da caricare / salvare", "Выбрать элементы загрузки / сохранения", "选择载入 / 保存项", "選取載入／儲存項目", "불러오기 / 저장 항목 선택"),
         };
-        reg["FormDiffractionSimulatorDynamicCompression"] = new L10n.Entry[]
+        reg["FormDiffractionSimulatorDynamicCompression"] = new Localization.Entry[]
         {
             new("label2", "Text", "Front", "前面", "Vorne", "Avant", "Frente", "Frente", "Fronte", "Спереди", "正面", "前面", "앞면"),
             new("label3", "Text", "Back", "戻る", "Zurück", "Arrière", "Atrás", "Voltar", "Indietro", "Назад", "返回", "返回", "뒤로"),
@@ -180,7 +180,7 @@ internal static class L10nData
             new("groupBoxCompressionModel", "Text", "Compression && rotation model", "圧縮・回転モデル", "Kompressions- && Rotationsmodell", "Modèle de compression && rotation", "Modelo de compresión y rotación", "Modelo de compressão && rotação", "Modello di compressione e rotazione", "Модель сжатия и поворота", "压缩与旋转模型", "壓縮與旋轉模型", "압축 && 회전 모델"),
             new("groupBoxSlipPlane", "Text", "Slip plane", "すべり面", "Gleitebene", "Plan de glissement", "Plano deslizam.", "Plano de deslizamento", "Piano di scorrimento", "Пл. скольжения", "滑移面", "滑移面", "슬립면"),
         };
-        reg["FormDiffractionSimulatorGeometry"] = new L10n.Entry[]
+        reg["FormDiffractionSimulatorGeometry"] = new Localization.Entry[]
         {
             new("buttonClearPicture", "Text", "Clear", "クリア", "Leeren", "Effacer", "Borrar", "Limpar", "Cancella", "Очистить", "清除", "清除", "지우기"),
             new("buttonRot90", "Text", "Rot 90°", "90°回転", "90° drehen", "Rot 90°", "Rot 90°", "Girar 90°", "Ruota 90°", "Поворот 90°", "旋转 90°", "旋轉 90°", "90° 회전"),
@@ -199,7 +199,7 @@ internal static class L10nData
             new("numericBoxCameraLength2", "HeaderText", "Camera length 2", "カメラ長 2", "Kameralänge 2", "Longueur de caméra 2", "Longitud de cámara 2", "Comprimento da câmera 2", "Lunghezza camera 2", "Длина камеры 2", "相机长度 2", "相機長度 2", "카메라 길이 2"),
             new("checkBoxSchematicDiagram", "Text", "Schematic diagram", "模式図", "Schemazeichnung", "Schéma de principe", "Diagrama esquemático", "Diagrama esquemático", "Schema", "Схем. диаграмма", "示意图", "示意圖", "개략도"),
         };
-        reg["FormDiffractionSpotInfo"] = new L10n.Entry[]
+        reg["FormDiffractionSpotInfo"] = new Localization.Entry[]
         {
             new("label1", "Text", "Wavelength (= 1/k_vac): ", "波長 (= 1/k_vac): ", "Wellenlänge (= 1/k_vac): ", "Longueur d'onde (= 1/k_vac) : ", "Longitud de onda (= 1/k_vac): ", "Comprimento de onda (= 1/k_vac): ", "Lunghezza d'onda (= 1/k_vac): ", "Длина волны (= 1/k_vac): ", "波长 (= 1/k_vac): ", "波長 (= 1/k_vac)： ", "파장 (= 1/k_vac): "),
             new("buttonCopyToClipboard", "Text", "Copy to clipboard", "クリップボードにコピー", "In Zwischenablage kopieren", "Copier dans le presse-papiers", "Copiar al portapapeles", "Copiar p/ área de transf.", "Copia negli appunti", "Копировать в буфер обмена", "复制到剪贴板", "複製到剪貼簿", "클립보드로 복사"),
@@ -214,14 +214,14 @@ internal static class L10nData
             new("checkBoxAutoRowSize", "Text", "Auto resize row width", "行の幅を自動調整", "Zeilenbreite automatisch anpassen", "Ajuster auto. la largeur des lignes", "Ajustar ancho de fila automáticamente", "Ajustar largura da linha automaticamente", "Adatta larghezza riga automaticamente", "Автоподбор ширины строки", "自动调整行宽", "自動調整列寬", "행 너비 자동 조정"),
             new("numericBoxEffectiveDigit", "HeaderText", "Effective digit", "有効桁数", "Effektive Stelle", "Chiffre significatif", "Dígito efectivo", "Dígito efetivo", "Cifra significativa", "Значащая цифра", "有效位数", "有效位數", "유효 자릿수"),
         };
-        reg["FormIsotopeComposition"] = new L10n.Entry[]
+        reg["FormIsotopeComposition"] = new Localization.Entry[]
         {
             new("ColumnAtomicWeight", "HeaderText", "Atomic Weight", "原子量", "Atomgewicht", "Masse atomique", "Peso atómico", "Peso atômico", "Peso atomico", "Атомный вес", "原子量", "原子量", "원자량"),
             new("ColumnNaturalAbundance", "HeaderText", "Natural Abundance (%)", "天然存在比 (%)", "Natürliche Häufigkeit (%)", "Abondance naturelle (%)", "Abundancia natural (%)", "Abundância natural (%)", "Abbondanza naturale (%)", "Природная распространённость (%)", "天然丰度 (%)", "天然豐度 (%)", "천연 존재비 (%)"),
             new("ColumnCustomAbundance", "HeaderText", "Custom Abundance (%)", "存在比を指定 (%)", "Benutzerdef. Häufigkeit (%)", "Abondance personnalisée (%)", "Abundancia personalizada (%)", "Abundância personalizada (%)", "Abbondanza personalizzata (%)", "Пользовательская распространённость (%)", "自定义丰度 (%)", "自訂豐度 (%)", "사용자 지정 존재비 (%)"),
             new("buttonCancel", "Text", "Cancel", "キャンセル", "Abbrechen", "Annuler", "Cancelar", "Cancelar", "Annulla", "Отмена", "取消", "取消", "취소"),
         };
-        reg["FormMovie"] = new L10n.Entry[]
+        reg["FormMovie"] = new Localization.Entry[]
         {
             new("buttonCancel", "Text", "Cancel", "キャンセル", "Abbrechen", "Annuler", "Cancelar", "Cancelar", "Annulla", "Отмена", "取消", "取消", "취소"),
             new("numericBoxSpeed", "HeaderText", "Speed", "速度", "Geschwindigkeit", "Vitesse", "Velocidad", "Velocidade", "Velocità", "Скорость", "速度", "速度", "속도"),
@@ -232,14 +232,14 @@ internal static class L10nData
             new("groupBoxDirection", "Text", "Direction", "方向", "Richtung", "Direction", "Dirección", "Direção", "Direzione", "Направление", "方向", "方向", "방향"),
             new("label1", "Text", "Encode speed", "エンコード速度", "Kodiergeschwindigkeit", "Vitesse d'encodage", "Velocidad de codificación", "Velocidade de codificação", "Velocità di codifica", "Скорость кодирования", "编码速度", "編碼速度", "인코딩 속도"),
         };
-        reg["FormNumericUpdownControl"] = new L10n.Entry[]
+        reg["FormNumericUpdownControl"] = new Localization.Entry[]
         {
             new("label1", "Text", "Increment", "増分", "Schrittweite", "Incrément", "Incremento", "Incremento", "Incremento", "Шаг", "增量", "增量", "증분"),
             new("label2", "Text", "Decimal Places", "小数点以下の桁数", "Dezimalstellen", "Décimales", "Decimales", "Casas decimais", "Cifre decimali", "Знаков после запятой", "小数位数", "小數位數", "소수 자릿수"),
             new("buttonCancel", "Text", "Cancel", "キャンセル", "Abbrechen", "Annuler", "Cancelar", "Cancelar", "Annulla", "Отмена", "取消", "取消", "취소"),
             new("this", "Text", "NumericUpdown Control", "NumericUpdown コントロール", "NumericUpdown-Steuerelement", "Contrôle NumericUpdown", "Control NumericUpdown", "Controle NumericUpdown", "Controllo NumericUpdown", "NumericUpdown Control", "NumericUpdown 控件", "NumericUpdown 控制項", "NumericUpdown 컨트롤"),
         };
-        reg["FormPeriodicTable"] = new L10n.Entry[]
+        reg["FormPeriodicTable"] = new Localization.Entry[]
         {
             new("labelLa", "Text", "La: lanthanide", "La: ランタノイド", "La: Lanthanoid", "La : lanthanide", "La: lantánido", "La: lantanídeo", "La: lantanide", "La: лантаноид", "La：镧系元素", "La: 鑭系元素", "La: 란타넘족"),
             new("labelAc", "Text", "Ac: actinide", "Ac: アクチノイド", "Ac: Actinoid", "Ac : actinide", "Ac: actínido", "Ac: actinídeo", "Ac: attinide", "Ac: актиноид", "Ac：锕系元素", "Ac: 錒系元素", "Ac: 악티늄족"),
@@ -247,7 +247,7 @@ internal static class L10nData
             new("label4", "Text", "must exclude", "除外する", "muss ausschließen", "doit exclure", "debe excluir", "deve excluir", "deve escludere", "должно исключать", "必须排除", "必須排除", "반드시 제외"),
             new("label5", "Text", "may or not include", "含んでも含まなくてもよい", "kann enthalten oder nicht", "peut inclure ou non", "puede incluir o no", "pode ou não incluir", "può includere o meno", "может включать или нет", "可包含可不包含", "可包含或不包含", "포함할 수도 있음"),
         };
-        reg["FormPolycrystallineDiffractionSimulator"] = new L10n.Entry[]
+        reg["FormPolycrystallineDiffractionSimulator"] = new Localization.Entry[]
         {
             new("groupBoxCrystalProperty", "Text", "Crystal property", "結晶の物性", "Kristalleigenschaft", "Propriété du cristal", "Propiedad del cristal", "Propriedade do cristal", "Proprietà del cristallo", "Свойства кристалла", "晶体属性", "晶體性質", "결정 물성"),
             new("buttonSimulateDebyeRing", "Text", "Simulate Debye ring pattern", "デバイリングパターンをシミュレート", "Debye-Ring-Muster simulieren", "Simuler le diagramme d'anneaux de Debye", "Simular patrón de anillos de Debye", "Simular padrão de anéis de Debye", "Simula pattern ad anelli di Debye", "Моделировать картину колец Дебая", "模拟德拜环图样", "模擬 Debye 環圖樣", "디바이 링 패턴 시뮬레이션"),
@@ -290,7 +290,7 @@ internal static class L10nData
             new("buttonRemoveReferrencePattern", "Text", "Remove", "削除", "Entfernen", "Supprimer", "Quitar", "Remover", "Rimuovi", "Удалить", "删除", "移除", "제거"),
             new("tabPage1", "Text", "Simulated Pattern", "シミュレーションパターン", "Simuliertes Muster", "Motif simulé", "Patrón simulado", "Padrão simulado", "Pattern simulato", "Смоделированная картина", "模拟图样", "模擬圖樣", "시뮬레이션 패턴"),
         };
-        reg["FormPresets"] = new L10n.Entry[]
+        reg["FormPresets"] = new Localization.Entry[]
         {
             new("label1", "Text", "Name", "結晶名", "Name", "Nom", "Nombre", "Nome", "Nome", "Имя", "名称", "名稱", "이름"),
             new("buttonDelete", "Text", "Delete", "削除", "Löschen", "Supprimer", "Eliminar", "Excluir", "Elimina", "Удалить", "删除", "刪除", "삭제"),
@@ -299,7 +299,7 @@ internal static class L10nData
             new("buttonCancel", "Text", "Cancel", "キャンセル", "Abbrechen", "Annuler", "Cancelar", "Cancelar", "Annulla", "Отмена", "取消", "取消", "취소"),
             new("checkBoxManageList", "Text", "Manage the preset list", "プリセット一覧を管理", "Voreinstellungsliste verwalten", "Gérer la liste des préréglages", "Gestionar la lista de preajustes", "Gerenciar a lista de predefinições", "Gestisci l'elenco dei preset", "Управление списком пресетов", "管理预设列表", "管理預設清單", "프리셋 목록 관리"),
         };
-        reg["FormSpotIDv1Results"] = new L10n.Entry[]
+        reg["FormSpotIDv1Results"] = new Localization.Entry[]
         {
             new("zoneAxisDataGridViewTextBoxColumn", "HeaderText", "Zone Axis", "晶帯軸", "Zonenachse", "Axe de zone", "Eje de zona", "Eixo de zona", "Asse di zona", "Ось зоны", "晶带轴", "晶帶軸", "정대축"),
             new("dataGridViewTextBoxColumn1", "HeaderText", "Phase", "相", "Phase", "Phase", "Fase", "Fase", "Fase", "Фаза", "相", "相", "상"),
@@ -310,14 +310,14 @@ internal static class L10nData
             new("angleBetweenPhoto23DataGridViewTextBoxColumn", "HeaderText", "Angle Between Photo 2 & 3", "写真2と3の間の角度", "Winkel zwischen Foto 2 & 3", "Angle entre photos 2 et 3", "Ángulo entre foto 2 y 3", "Ângulo entre fotos 2 e 3", "Angolo tra foto 2 e 3", "Угол между фото 2 и 3", "照片 2 与 3 间夹角", "相片 2 與 3 之間的夾角", "사진 2 & 3 사이 각도"),
             new("angleBetweenPhoto31DataGridViewTextBoxColumn", "HeaderText", "Angle Between Photo 3 & 1", "写真3と1の間の角度", "Winkel zwischen Foto 3 & 1", "Angle entre photos 3 et 1", "Ángulo entre foto 3 y 1", "Ângulo entre fotos 3 e 1", "Angolo tra foto 3 e 1", "Угол между фото 3 и 1", "照片 3 与 1 间夹角", "相片 3 與 1 之間的夾角", "사진 3 & 1 사이 각도"),
         };
-        reg["FormSpotIDv2Details"] = new L10n.Entry[]
+        reg["FormSpotIDv2Details"] = new Localization.Entry[]
         {
             new("label1", "Text", "N to S", "N → S", "N nach S", "N vers S", "N a S", "N para S", "N a S", "С на Ю", "N to S", "N 至 S", "N → S"),
             new("label2", "Text", "W to E", "W → E", "W nach O", "O vers E", "O a E", "W para E", "O a E", "З на В", "W to E", "W 至 E", "W → E"),
             new("label3", "Text", "SW to NE ", "SW → NE ", "SW nach NO ", "SO vers NE ", "SO a NE ", "SW para NE ", "SO a NE ", "ЮЗ на СВ ", "SW to NE ", "SW 至 NE ", "SW → NE "),
             new("label4", "Text", "NW to SE", "NW → SE", "NW nach SO", "NO vers SE", "NO a SE", "NW para SE", "NO a SE", "СЗ на ЮВ", "NW to SE", "NW 至 SE", "NW → SE"),
         };
-        reg["FormStrain"] = new L10n.Entry[]
+        reg["FormStrain"] = new Localization.Entry[]
         {
             new("groupBoxStrain", "Text", "Strain", "ひずみ", "Verzerrung", "Déformation", "Deformación", "Deformação", "Deformazione", "Деформация", "应变", "應變", "변형"),
             new("groupBoxStress", "Text", "Stress", "応力", "Spannung", "Contrainte", "Tensión", "Tensão", "Sforzo", "Напряжение", "应力", "應力", "응력"),
@@ -326,11 +326,11 @@ internal static class L10nData
             new("buttonApply", "Text", "Apply", "適用", "Anwenden", "Appliquer", "Aplicar", "Aplicar", "Applica", "Применить", "应用", "套用", "적용"),
             new("this", "Text", "Strain Control", "格子ひずみ (invisible)", "Verzerrungssteuerung", "Contrôle de la déformation", "Control de deformación", "Controle de deformação", "Controllo della deformazione", "Управление деформацией", "应变控制", "應變控制", "변형 제어"),
         };
-        reg["FormSuperStructure"] = new L10n.Entry[]
+        reg["FormSuperStructure"] = new Localization.Entry[]
         {
             new("buttonCancel", "Text", "Cancel", "キャンセル", "Abbrechen", "Annuler", "Cancelar", "Cancelar", "Annulla", "Отмена", "取消", "取消", "취소"),
         };
-        reg["GraphControl"] = new L10n.Entry[]
+        reg["GraphControl"] = new Localization.Entry[]
         {
             new("buttonCopy", "Text", "Copy", "コピー", "Kopieren", "Copier", "Copiar", "Copiar", "Copia", "Копировать", "复制", "複製", "복사"),
             new("labelY1", "Text", "Y:", "Y:", "Y:", "Y :", "Y:", "Y:", "Y:", "Y:", "Y:", "Y：", "Y:"),
@@ -343,7 +343,7 @@ internal static class L10nData
             new("labelX2", "Text", "X:", "X:", "X:", "X :", "X:", "X:", "X:", "X:", "X:", "X：", "X:"),
             new("labelY2", "Text", "Y:", "Y:", "Y:", "Y :", "Y:", "Y:", "Y:", "Y:", "Y:", "Y：", "Y:"),
         };
-        reg["NumericBoxWithMenu"] = new L10n.Entry[]
+        reg["NumericBoxWithMenu"] = new Localization.Entry[]
         {
             new("incrementToolStripMenuItem", "Text", "Increment", "増分", "Schrittweite", "Incrément", "Incremento", "Incremento", "Incremento", "Шаг", "增量", "增量", "증분"),
             new("smartIncrementToolStripMenuItem", "Text", "Smart increment", "スマートインクリメント", "Intelligentes Inkrement", "Incrément intelligent", "Incremento inteligente", "Incremento inteligente", "Incremento intelligente", "Умный инкремент", "智能增量", "智慧型遞增", "스마트 증분"),
@@ -356,7 +356,7 @@ internal static class L10nData
             new("toolStripMenuItem3", "Text", "      Mouse Speed", "      マウス速度", "      Mausgeschwindigkeit", "      Vitesse de la souris", "      Velocidad del ratón", "      Velocidade do mouse", "      Velocità del mouse", "      Скорость мыши", "      鼠标速度", "      滑鼠速度", "      마우스 속도"),
             new("toolStripMenuItem4", "Text", "      Direction", "      方向", "      Richtung", "      Direction", "      Dirección", "      Direção", "      Direzione", "      Направление", "      方向", "      方向", "      방향"),
         };
-        reg["SaclaControl"] = new L10n.Entry[]
+        reg["SaclaControl"] = new Localization.Entry[]
         {
             new("label3", "Text", "Foot", "裾", "Fuß", "Pied", "Pie", "Pé", "Coda", "Подножие", "底部", "基底", "푸트"),
             new("groupBoxDetectorProperty", "Text", "Detector property", "検出器の特性", "Detektoreigenschaft", "Propriété du détecteur", "Propiedad del detector", "Propriedade do detector", "Proprietà del rivelatore", "Свойства детектора", "探测器属性", "偵測器性質", "검출기 속성"),
