@@ -62,18 +62,44 @@ public static class Localization
     }
 
     private static System.Collections.Generic.Dictionary<string, Entry[]> _registry;
+
+    // 260625Cl 追加: アプリ固有の Localizable=false 訳テーブルを登録する拡張点 (multi-app 対応)。
+    //   共有 LocalizationData.Populate (ReciPro/共有UC・自動生成) の後に各アプリのプロバイダを merge する。
+    //   PDIndexer 等は起動時に AddProvider(PDIndexerLocalizationData.Populate) を呼び、自リポに app 固有
+    //   フォームの訳を持てる (共有 Crystallography repo に app 固有フォームを混ぜない)。
+    //   後方互換: プロバイダ未登録なら従来どおり LocalizationData だけ。キーは FullName 推奨 (同名衝突回避)。
+    private static readonly System.Collections.Generic.List<System.Action<System.Collections.Generic.Dictionary<string, Entry[]>>> _providers = new();
+    private static readonly object _sync = new();
+
+    /// <summary>アプリ固有のローカライズ訳テーブルを登録する。フォーム生成前に1回呼ぶこと。次回 Get で再構築される。</summary>
+    public static void AddProvider(System.Action<System.Collections.Generic.Dictionary<string, Entry[]>> provider)
+    {
+        if (provider == null) return;
+        lock (_sync)
+        {
+            _providers.Add(provider);
+            _registry = null; // 次回 Get で再構築
+        }
+    }
+
     private static void EnsureRegistry()
     {
         if (_registry != null) return;
-        var reg = new System.Collections.Generic.Dictionary<string, Entry[]>();
-        LocalizationData.Populate(reg); // 自動生成データ
-        _registry = reg;
+        lock (_sync)
+        {
+            if (_registry != null) return;
+            var reg = new System.Collections.Generic.Dictionary<string, Entry[]>(System.StringComparer.Ordinal);
+            LocalizationData.Populate(reg);     // 共有 (自動生成)
+            foreach (var p in _providers)
+                p(reg);                          // アプリ固有 (後勝ち)
+            _registry = reg;
+        }
     }
 
-    /// <summary>型名 (root.GetType().Name) に対応するローカライズ項目を返す。未登録なら null。</summary>
+    /// <summary>型名 (root.GetType().FullName または Name) に対応するローカライズ項目を返す。未登録なら null。</summary>
     public static Entry[] Get(string typeName)
     {
         EnsureRegistry();
-        return _registry.TryGetValue(typeName, out var e) ? e : null;
+        return typeName != null && _registry.TryGetValue(typeName, out var e) ? e : null;
     }
 }
