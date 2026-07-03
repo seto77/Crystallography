@@ -20,7 +20,7 @@ internal static class LocalizationData
             new("label4", "Text", "Element", "元素", "Element", "Élément", "Elemento", "Elemento", "Elemento", "Элемент", "元素", "元素", "원소"),
             new("label5", "Text", "Valence", "価数", "Valenz", "Valence", "Valencia", "Valência", "Valenza", "Валентность", "价态", "價數", "원자가"),
             new("checkBoxCompound", "Text", "Compound", "化合物", "Verbindung", "Composé", "Compuesto", "Composto", "Composto", "Соединение", "化合物", "化合物", "화합물"),
-            new("label6", "Text", "Weight", "重み", "Gewicht", "Poids", "Peso", "Peso", "Peso", "Вес", "权重", "權重", "가중치"),
+            new("label6", "Text", "Weight", "重み", "Gewicht", "Masse", "Peso", "Peso", "Peso", "Вес", "重量", "重量", "중량"),
             new("label7", "Text", "Molar ratio", "モル比", "Molverhältnis", "Rapport molaire", "Relación molar", "Razão molar", "Rapporto molare", "Мольное отношение", "摩尔比", "莫耳比", "몰 비율"),
         };
         reg["CrystalDatabaseControl"] = new Localization.Entry[]
@@ -36,21 +36,21 @@ internal static class LocalizationData
         };
         reg["DiffractionPatternControl"] = new Localization.Entry[]
         {
-            new("label36", "Text", "Min.", "最小", "Min.", "Min.", "Mín.", "Mín.", "Min.", "Мин.", "Min.", "最小值", "Min."),
+            new("label36", "Text", "Min.", "最小", "Min.", "Min.", "Mín.", "Mín.", "Min.", "Мин.", "Min.", "最小值", "최소"),
             new("label25", "Text", "Max.", "最大", "Max.", "Max.", "Máx.", "Máx.", "Max.", "Макс.", "最大值", "最大值", "최대"),
             new("checkBoxSimulation", "Text", "Simulation", "シミュレーション", "Simulation", "Simulation", "Simulación", "Simulação", "Simulazione", "Моделирование", "模拟", "模擬", "시뮬레이션"),
             new("checkBoxResidual", "Text", "Residual", "残差", "Restwert", "Résidu", "Residual", "Resíduo", "Residuo", "Невязка", "残差", "殘差", "잔차"),
             new("checkBoxMaskDonut", "Text", "Donut Mask", "ドーナツマスク", "Donut-Maske", "Masque annulaire", "Máscara anular", "Máscara anelar", "Maschera a ciambella", "Кольцевая маска", "圆环掩模", "環形遮罩", "도넛 마스크"),
             new("checkBoxMaskRectangle", "Text", "Rectangle Mask", "矩形マスク", "Rechteckmaske", "Masque rectangulaire", "Máscara rectangular", "Máscara retangular", "Maschera rettangolare", "Прямоугольная маска", "矩形掩模", "矩形遮罩", "직사각형 마스크"),
-            new("label9", "Text", "Start", "開始", "Start", "Démarrer", "Iniciar", "Iniciar", "Avvia", "Старт", "开始", "開始", "시작"),
+            new("label9", "Text", "Start", "開始", "Start", "Démarrer", "Inicio", "Início", "Inizio", "Старт", "开始", "開始", "시작"),
             new("label21", "Text", "Start", "開始", "Start", "Démarrer", "Iniciar", "Iniciar", "Avvia", "Старт", "开始", "開始", "시작"),
             new("buttonUnmaskAll", "Text", "Unmask All", "すべてマスク解除", "Alle Maskierungen aufheben", "Tout démasquer", "Desenmascarar todo", "Remover toda a máscara", "Rimuovi tutte le maschere", "Снять все маски", "取消所有掩模", "取消所有遮罩", "모두 마스크 해제"),
             new("label22", "Text", "Angle", "角度", "Winkel", "Angle", "Ángulo", "Ângulo", "Angolo", "Угол", "角度", "角度", "각도"),
             new("label23", "Text", "Band Width", "バンド幅", "Bandbreite", "Largeur de bande", "Ancho de banda", "Largura da banda", "Larghezza banda", "Ширина полосы", "带宽", "條帶寬度", "밴드 폭"),
             new("label24", "Text", "Direction", "方向", "Richtung", "Direction", "Dirección", "Direção", "Direzione", "Направление", "方向", "方向", "방향"),
-            new("checkBoxRectangleIsBothSide", "Text", "Both Side", "両側", "Beide Seiten", "Les deux côtés", "Ambos lados", "Ambos os lados", "Entrambi i lati", "Обе стороны", "双侧", "兩側", "양면"),
+            new("checkBoxRectangleIsBothSide", "Text", "Both Side", "両側", "Beide Seiten", "Les deux côtés", "Ambos lados", "Ambos os lados", "Entrambi i lati", "Обе стороны", "双侧", "兩側", "양쪽"),
             new("buttonSaveMask", "Text", "Save mask", "マスクを保存", "Maske speichern", "Enregistrer le masque", "Guardar máscara", "Salvar máscara", "Salva maschera", "Сохранить маску", "保存掩模", "儲存遮罩", "마스크 저장"),
-            new("buttonApplyMask", "Text", "Mask", "マスク", "Maske", "Masque", "Máscara", "Máscara", "Maschera", "Маска", "掩模", "遮罩", "마스크"),
+            new("buttonApplyMask", "Text", "Mask", "マスク", "Maske", "Masque", "Máscara", "Mascarar", "Maschera", "Маска", "掩模", "遮罩", "마스크"),
             new("groupBoxGeometry", "Text", "Geometry", "SEM-EBSD設定", "Geometrie", "Géométrie", "Geometría", "Geometria", "Geometria", "Геометрия", "几何", "幾何", "기하구조"),
             new("checkBoxInitialBackground", "Text", "Set initial background", "初期背景を設定", "Anfangshintergrund festlegen", "Définir le fond initial", "Definir fondo inicial", "Definir fundo inicial", "Imposta sfondo iniziale", "Задать начальный фон", "设置初始背景", "設定初始背景", "초기 배경 설정"),
             new("buttonSaveBackGround", "Text", "Save", "保存", "Speichern", "Enregistrer", "Guardar", "Salvar", "Salva", "Сохранить", "保存", "儲存", "저장"),
@@ -72,13 +72,13 @@ internal static class LocalizationData
             new("buttonCheckAllIndices", "Text", "Check All", "すべて選択", "Alle auswählen", "Tout cocher", "Marcar todo", "Marcar tudo", "Seleziona tutto", "Отметить все", "全选", "全選", "모두 선택"),
             new("buttonUnmaskSelectedPeaks", "Text", "Select area around the peaks", "ピーク周辺の領域を選択", "Bereich um die Peaks auswählen", "Sélectionner la zone autour des pics", "Seleccionar área alrededor de los picos", "Selecionar área ao redor dos picos", "Seleziona area intorno ai picchi", "Выбрать область вокруг пиков", "选择峰周围区域", "選取峰值周圍區域", "피크 주변 영역 선택"),
             new("buttonUncheckAllIndices", "Text", "Uncheck All", "すべてチェック解除", "Auswahl aufheben", "Tout décocher", "Desmarcar todo", "Desmarcar tudo", "Deseleziona tutto", "Снять все отметки", "取消全选", "取消全選", "모두 선택 해제"),
-            new("radioButtonManualDonut", "Text", "Donut", "ドーナツ", "Donut", "Anneau", "Anillo", "Anel", "Ciambella", "Кольцо", "圆环", "甜甜圈", "도넛"),
+            new("radioButtonManualDonut", "Text", "Donut", "ドーナツ", "Donut", "Anneau", "Anillo", "Anel", "Ciambella", "Кольцо", "圆环", "環形", "도넛"),
             new("radioButtonManualCircle", "Text", "Circle", "円", "Kreis", "Cercle", "Círculo", "Círculo", "Cerchio", "Окружность", "圆", "圓形", "원"),
             new("radioButtonManualRectangle", "Text", "Rectangle", "矩形", "Rechteck", "Rectangle", "Rectángulo", "Retângulo", "Rettangolo", "Прямоугольник", "矩形", "矩形", "직사각형"),
-            new("radioButtonManualSpot", "Text", "Spot", "スポット", "Spot", "Spot", "Punto", "Ponto", "Spot", "Рефлекс", "斑点", "斑點", "스폿"),
+            new("radioButtonManualSpot", "Text", "Spot", "スポット", "Spot", "Tache", "Punto", "Ponto", "Spot", "Точка", "斑点", "斑點", "스폿"),
             new("label17", "Text", "Size (radius)", "サイズ (半径)", "Größe (Radius)", "Taille (rayon)", "Tamaño (radio)", "Tamanho (raio)", "Dimensione (raggio)", "Размер (радиус)", "大小 (半径)", "大小（半徑）", "크기 (반지름)"),
             new("buttonUnmask", "Text", "Unmask", "マスク解除", "Maskierung aufheben", "Démasquer", "Desenmascarar", "Remover máscara", "Rimuovi maschera", "Снять маску", "取消掩模", "取消遮罩", "마스크 해제"),
-            new("buttonMaskAll", "Text", "Mask All", "すべてマスク", "Alles maskieren", "Tout masquer", "Enmascarar todo", "Mascarar tudo", "Maschera tutto", "Маскировать всё", "全部掩蔽", "全部遮罩", "전체 마스크"),
+            new("buttonMaskAll", "Text", "Mask All", "すべてマスク", "Alles maskieren", "Tout masquer", "Enmascarar todo", "Mascarar tudo", "Maschera tutto", "Маскировать всё", "全部掩蔽", "全部遮罩", "모두 마스크"),
             new("tabPage3", "Text", "Background", "背景", "Hintergrund", "Fond", "Fondo", "Fundo", "Sfondo", "Фон", "背景", "背景", "배경"),
             new("tabPage4", "Text", "Diffraction information", "回折情報", "Beugungsinformation", "Informations sur la diffraction", "Información de difracción", "Informação de difração", "Informazioni sulla diffrazione", "Информация о дифракции", "衍射信息", "繞射資訊", "회절 정보"),
             new("checkBoxShowMaskedArea", "Text", "Show masked area", "マスク領域を表示", "Maskierten Bereich anzeigen", "Afficher la zone masquée", "Mostrar área enmascarada", "Mostrar área mascarada", "Mostra area mascherata", "Показать маскированную область", "显示掩模区域", "顯示遮罩區域", "마스크 영역 표시"),
@@ -91,7 +91,7 @@ internal static class LocalizationData
         };
         reg["EOSControl"] = new Localization.Entry[]
         {
-            new("label83", "Text", "Note", "メモ", "Anmerkung", "Note", "Nota", "Nota", "Nota", "Примечание", "备注", "備註", "참고"),
+            new("label83", "Text", "Note", "メモ", "Anmerkung", "Note", "Nota", "Nota", "Nota", "Примечание", "备注", "備註", "메모"),
             new("checkBoxUseEOS", "Text", "Use EOS", "EOS を使用", "EOS verwenden", "Utiliser l'EOS", "Usar EOS", "Usar EOS", "Usa EOS", "Использовать EOS", "使用 EOS", "使用 EOS", "EOS 사용"),
             new("groupBoxThermalPressure", "Text", "Thermal pressure", "熱圧力", "Thermischer Druck", "Pression thermique", "Presión térmica", "Pressão térmica", "Pressione termica", "Термическое давление", "热压", "熱壓力", "열압력"),
             new("radioButtonTdependenceK0andV0", "Text", "T-dependence K₀ && V₀", "K₀ と V₀ の温度依存性", "T-Abhängigkeit K₀ && V₀", "Dépendance en T de K₀ && V₀", "Dependencia con T de K₀ && V₀", "Dependência de T de K₀ && V₀", "Dipendenza da T di K₀ && V₀", "T-зависимость K₀ && V₀", "K₀ && V₀ 的温度依赖性", "K₀ 與 V₀ 的溫度相依性", "K₀ && V₀의 T 의존성"),
@@ -102,7 +102,7 @@ internal static class LocalizationData
         };
         reg["ElasticityControl"] = new Localization.Entry[]
         {
-            new("radioButtonCompliance", "Text", "Elastic compliance constant", "弾性コンプライアンス定数", "Elastische Nachgiebigkeitskonstante", "Constante de souplesse élastique", "Constante de elasticidad (compliancia)", "Constante de complacência elástica", "Costante di cedevolezza elastica", "Константа упругой податливости", "弹性柔顺常数", "彈性柔量常數", "탄성 컴플라이언스 상수"),
+            new("radioButtonCompliance", "Text", "Elastic compliance constant", "弾性コンプライアンス定数", "Elastische Nachgiebigkeitskonstante", "Constante de souplesse élastique", "Constante de compliancia elástica", "Constante de complacência elástica", "Costante di cedevolezza elastica", "Константа упругой податливости", "弹性柔顺常数", "彈性柔量常數", "탄성 컴플라이언스 상수"),
             new("radioButtonStiffness", "Text", "Elastic stiffness constant", "弾性スティフネス定数", "Elastische Steifigkeitskonstante", "Constante de rigidité élastique", "Constante de rigidez elástica", "Constante de rigidez elástica", "Costante di rigidezza elastica", "Константа упругой жёсткости", "弹性刚度常数", "彈性剛度常數", "탄성 강성 상수"),
         };
         reg["FormAnotherSpaceGroup"] = new Localization.Entry[]
@@ -112,6 +112,7 @@ internal static class LocalizationData
         };
         reg["FormAtomDetailedInfo"] = new Localization.Entry[]
         {
+            new("buttonCopy", "Text", "Copy", "コピー", "Kopieren", "Copier", "Copiar", "Copiar", "Copia", "Копировать", "复制", "複製", "복사"), // 260628Ch
             new("this", "Text", "Atom Positions", "原子位置", "Atompositionen", "Positions atomiques", "Posiciones atómicas", "Posições atômicas", "Posizioni atomiche", "Позиции атомов", "原子位置", "原子位置", "원자 위치"),
         };
         reg["FormCTF"] = new Localization.Entry[]
@@ -133,7 +134,7 @@ internal static class LocalizationData
         };
         reg["FormCaptureGUI"] = new Localization.Entry[]
         {
-            new("labelTargetForm", "Text", "Target form:", "対象フォーム:", "Zielformat:", "Format cible :", "Formato de destino:", "Formulário de destino:", "Formato di destinazione:", "Целевая форма:", "目标形式:", "目標格式：", "대상 형식:"),
+            new("labelTargetForm", "Text", "Target form:", "対象フォーム:", "Zielformat:", "Format cible :", "Formato de destino:", "Formulário de destino:", "Finestra di destinazione:", "Целевая форма:", "目标窗体:", "目標視窗：", "대상 폼:"),
             new("buttonSelectAll", "Text", "Select All", "すべて選択", "Alle auswählen", "Tout sélectionner", "Seleccionar todo", "Selecionar tudo", "Seleziona tutto", "Выбрать всё", "全选", "全選", "모두 선택"),
             new("buttonDeselectAll", "Text", "Deselect All", "すべて解除", "Auswahl aufheben", "Tout désélectionner", "Deseleccionar todo", "Desmarcar tudo", "Deseleziona tutto", "Снять выделение со всех", "取消全选", "取消全選", "모두 선택 해제"),
             new("buttonRefresh", "Text", "Refresh", "更新", "Aktualisieren", "Actualiser", "Actualizar", "Atualizar", "Aggiorna", "Обновить", "刷新", "重新整理", "새로 고침"),
@@ -153,7 +154,7 @@ internal static class LocalizationData
         reg["FormDiffractionSimulatorDynamicCompression"] = new Localization.Entry[]
         {
             new("label2", "Text", "Front", "前面", "Vorne", "Avant", "Frente", "Frente", "Fronte", "Спереди", "正面", "前面", "앞면"),
-            new("label3", "Text", "Back", "戻る", "Zurück", "Arrière", "Atrás", "Voltar", "Indietro", "Назад", "返回", "返回", "뒤로"),
+            new("label3", "Text", "Back", "戻る", "Hinten", "Arrière", "Atrás", "Trás", "Retro", "Назад", "背面", "背面", "뒷면"),
             new("groupBoxCompressedRotation", "Text", "Rotation distribution", "回転分布", "Rotationsverteilung", "Distrib. de rotation", "Distrib. de rotación", "Distrib. de rotação", "Distrib. di rotazione", "Распред. поворотов", "旋转分布", "旋轉分布", "회전 분포"),
             new("groupBoxReleasedRotation", "Text", "Rotation distribution", "回転分布", "Rotationsverteilung", "Distrib. de rotation", "Distrib. de rotación", "Distrib. de rotação", "Distrib. di rotazione", "Распред. поворотов", "旋转分布", "旋轉分布", "회전 분포"),
             new("numericBoxEOS_Kprime", "HeaderText", "K'0", "K'0", "K'0", "K'0", "K'0", "K'0", "K\\'0", "K'0", "K'0", "K'0", "K'0"),
@@ -193,7 +194,7 @@ internal static class LocalizationData
             new("label23", "Text", "Scale 1", "スケール 1", "Maßstab 1", "Échelle 1", "Escala 1", "Escala 1", "Scala 1", "Масштаб 1", "比例 1", "比例尺 1", "배율 1"),
             new("label24", "Text", "Gradient", "スケール", "Gradient", "Dégradé", "Gradiente", "Gradiente", "Gradiente", "Градиент", "渐变", "漸層", "그라데이션"),
             new("sizeControl1", "HeaderText", "Detector", "検出器", "Detektor", "Détecteur", "Detector", "Detector", "Rivelatore", "Детектор", "探测器", "偵測器", "검출기"),
-            new("numericBoxFootX", "HeaderText", "Foot:  fx", "裾:  fx", "Fuß:  fx", "Pied :  fx", "Pie:  fx", "Pé:  fx", "Coda:  fx", "Подножие:  fx", "底部:  fx", "基底:  fx", "푸트:  fx"),
+            new("numericBoxFootX", "HeaderText", "Foot:  fx", "裾:  fx", "Fuß:  fx", "Pied :  fx", "Pie:  fx", "Pé:  fx", "Piede:  fx", "Подножие:  fx", "脚点:  fx", "落點:  fx", "푸트:  fx"),
             new("numericBoxPixelSize", "HeaderText", "pix. size", "画素サイズ", "Pix.-Größe", "taille pix.", "tam. píx.", "tam. pix.", "dim. pixel", "разм. пикс.", "像素大小", "像素大小", "픽셀 크기"),
             new("checkBoxDetectorSizePosition", "Text", "Set detector area && overlapped image.", "検出器領域と重畳画像を設定", "Detektorbereich && überlagertes Bild festlegen.", "Définir la zone du détecteur && l'image superposée.", "Definir área del detector && imagen superpuesta.", "Definir área do detector && imagem sobreposta.", "Imposta area del rivelatore && immagine sovrapposta.", "Задать область детектора && наложенное изображение.", "设置探测器区域 && 叠加图像。", "設定偵測器區域與重疊影像。", "검출기 영역 && 중첩 이미지 설정."),
             new("numericBoxCameraLength2", "HeaderText", "Camera length 2", "カメラ長 2", "Kameralänge 2", "Longueur de caméra 2", "Longitud de cámara 2", "Comprimento da câmera 2", "Lunghezza camera 2", "Длина камеры 2", "相机长度 2", "相機長度 2", "카메라 길이 2"),
@@ -204,13 +205,13 @@ internal static class LocalizationData
             new("label1", "Text", "Wavelength (= 1/k_vac): ", "波長 (= 1/k_vac): ", "Wellenlänge (= 1/k_vac): ", "Longueur d'onde (= 1/k_vac) : ", "Longitud de onda (= 1/k_vac): ", "Comprimento de onda (= 1/k_vac): ", "Lunghezza d'onda (= 1/k_vac): ", "Длина волны (= 1/k_vac): ", "波长 (= 1/k_vac): ", "波長 (= 1/k_vac)： ", "파장 (= 1/k_vac): "),
             new("buttonCopyToClipboard", "Text", "Copy to clipboard", "クリップボードにコピー", "In Zwischenablage kopieren", "Copier dans le presse-papiers", "Copiar al portapapeles", "Copiar p/ área de transf.", "Copia negli appunti", "Копировать в буфер обмена", "复制到剪贴板", "複製到剪貼簿", "클립보드로 복사"),
             new("label4", "Text", "v/c: ", "v/c: ", "v/c: ", "v/c : ", "v/c: ", "v/c: ", "v/c: ", "v/c: ", "v/c: ", "v/c： ", "v/c: "),
-            new("label5", "Text", "Acc. Voltage: ", "加速電圧: ", "Beschl.-Spannung: ", "Tension d'accél. : ", "Voltaje de acel.: ", "Tensão de aceleração: ", "Tensione acc.: ", "Уск. напряжение: ", "加速电压： ", "加速電壓: ", "가속 전압: "),
-            new("label7", "Text", "Lattice volume: ", "格子体積: ", "Gittervolumen: ", "Volume de la maille : ", "Volumen de la red: ", "Volume da rede: ", "Volume reticolare: ", "Объём решётки: ", "晶格体积： ", "晶格體積: ", "격자 부피: "),
+            new("label5", "Text", "Acc. Voltage: ", "加速電圧: ", "Beschl.-Spannung: ", "Tension d'accél. : ", "Voltaje de acel.: ", "Tensão de aceleração: ", "Tensione acc.: ", "Уск. напряжение: ", "加速电压： ", "加速電壓： ", "가속 전압: "),
+            new("label7", "Text", "Lattice volume: ", "格子体積: ", "Gittervolumen: ", "Volume de la maille : ", "Volumen de la red: ", "Volume da rede: ", "Volume reticolare: ", "Объём решётки: ", "晶胞体积： ", "晶格體積： ", "격자 부피: "),
             new("label9", "Text", "Vg or Ug : Crystal potential for elastic scattering.\r\nVg' or Ug': Imaginary  (absorption) potential for thermal diffuse scattering.\r\nΦ: Amplitude of the diffracted wave on the exit surface.", "Vg または Ug : 弾性散乱に対する結晶ポテンシャル。\r\nVg' または Ug': 熱散漫散乱に対する虚数 (吸収) ポテンシャル。\r\nΦ: 出射面における回折波の振幅。", "Vg oder Ug : Kristallpotential für elastische Streuung.\r\nVg' oder Ug': Imaginäres (Absorptions-)Potential für thermisch diffuse Streuung.\r\nΦ: Amplitude der gebeugten Welle an der Austrittsfläche.", "Vg ou Ug : potentiel cristallin pour la diffusion élastique.\r\nVg' ou Ug' : potentiel imaginaire (absorption) pour la diffusion thermique diffuse.\r\nΦ : amplitude de l'onde diffractée sur la surface de sortie.", "Vg o Ug : Potencial del cristal para dispersión elástica.\r\nVg' o Ug': Potencial imaginario (de absorción) para dispersión térmica difusa.\r\nΦ: Amplitud de la onda difractada en la superficie de salida.", "Vg ou Ug : Potencial cristalino para espalhamento elástico.\r\nVg' ou Ug': Potencial imaginário  (de absorção) para espalhamento térmico difuso.\r\nΦ: Amplitude da onda difratada na superfície de saída.", "Vg o Ug : Potenziale cristallino per la diffusione elastica.\r\nVg' o Ug': Potenziale immaginario (di assorbimento) per la diffusione termica diffusa.\r\nΦ: Ampiezza dell'onda diffratta sulla superficie di uscita.", "Vg или Ug : кристаллический потенциал для упругого рассеяния.\r\nVg' или Ug': мнимый  (поглощающий) потенциал для теплового диффузного рассеяния.\r\nΦ: амплитуда дифрагированной волны на выходной поверхности.", "Vg 或 Ug : 弹性散射的晶体势。\r\nVg' 或 Ug': 热漫散射的虚 (吸收) 势。\r\nΦ: 出射面上衍射波的振幅。", "Vg 或 Ug：彈性散射的晶體電位。\r\nVg' 或 Ug'：熱漫散射的虛部（吸收）電位。\r\nΦ：出射面上繞射波的振幅。", "Vg 또는 Ug : 탄성 산란에 대한 결정 전위.\r\nVg' 또는 Ug': 열확산 산란에 대한 허수 (흡수) 전위.\r\nΦ: 출사면에서의 회절파 진폭."),
             new("label12", "Text", "Thickness: ", "厚さ: ", "Dicke: ", "Épaisseur : ", "Espesor: ", "Espessura: ", "Spessore: ", "Толщина: ", "厚度: ", "厚度： ", "두께: "),
             new("label15", "Text", "Unit of potential:", "ポテンシャルの単位:", "Einheit des Potentials:", "Unité de potentiel :", "Unidad de potencial:", "Unidade de potencial:", "Unità di potenziale:", "Единица потенциала:", "势的单位:", "電位單位：", "전위 단위:"),
             new("label16", "Text", "Note 1: Unit of length is \"nm\", not \"Å\".   Note 2: Unit of wavenumber  is \"1/nm\", not \"2π/nm\".", "注1: 長さの単位は \"Å\" ではなく \"nm\" です。   注2: 波数の単位は \"2π/nm\" ではなく \"1/nm\" です。", "Anmerkung 1: Längeneinheit ist \"nm\", nicht \"Å\".   Anmerkung 2: Einheit der Wellenzahl ist \"1/nm\", nicht \"2π/nm\".", "Note 1 : l'unité de longueur est « nm », pas « Å ».   Note 2 : l'unité du nombre d'onde est « 1/nm », pas « 2π/nm ».", "Nota 1: La unidad de longitud es \"nm\", no \"Å\".   Nota 2: La unidad de número de onda es \"1/nm\", no \"2π/nm\".", "Nota 1: A unidade de comprimento é \"nm\", não \"Å\".   Nota 2: A unidade de número de onda é \"1/nm\", não \"2π/nm\".", "Nota 1: l'unità di lunghezza è \"nm\", non \"Å\".   Nota 2: l'unità del numero d'onda è \"1/nm\", non \"2π/nm\".", "Примечание 1: единица длины — \"nm\", а не \"Å\".   Примечание 2: единица волнового числа — \"1/nm\", а не \"2π/nm\".", "注 1: 长度单位为 \"nm\"，而非 \"Å\"。   注 2: 波数单位为 \"1/nm\"，而非 \"2π/nm\"。", "註 1：長度單位為「nm」，非「Å」。   註 2：波數單位為「1/nm」，非「2π/nm」。", "참고 1: 길이 단위는 \"Å\"가 아니라 \"nm\"입니다.   참고 2: 파수 단위는 \"2π/nm\"가 아니라 \"1/nm\"입니다."),
-            new("label10", "Text", "Max semiangle of electron beam (CBED mode): ", "電子ビームの最大半収束角 (CBEDモード): ", "Max. Halbwinkel des Elektronenstrahls (CBED-Modus): ", "Demi-angle max. du faisceau d'électrons (mode CBED) : ", "Semiángulo máx. del haz de electrones (modo CBED): ", "Semiângulo máx. do feixe de elétrons (modo CBED): ", "Semiangolo max del fascio elettronico (modalità CBED): ", "Макс. полуугол электронного пучка (режим CBED): ", "电子束最大半角 (CBED 模式)： ", "電子束最大半張角 (CBED 模式): ", "전자빔 최대 반각 (CBED 모드): "),
+            new("label10", "Text", "Max semiangle of electron beam (CBED mode): ", "電子ビームの最大半収束角 (CBEDモード): ", "Max. Halbwinkel des Elektronenstrahls (CBED-Modus): ", "Demi-angle max. du faisceau d'électrons (mode CBED) : ", "Semiángulo máx. del haz de electrones (modo CBED): ", "Semiângulo máx. do feixe de elétrons (modo CBED): ", "Semiangolo max del fascio elettronico (modalità CBED): ", "Макс. полуугол электронного пучка (режим CBED): ", "电子束最大半角 (CBED 模式)： ", "電子束最大半張角 (CBED 模式)： ", "전자빔 최대 반각 (CBED 모드): "),
             new("checkBoxAutoRowSize", "Text", "Auto resize row width", "行の幅を自動調整", "Zeilenbreite automatisch anpassen", "Ajuster auto. la largeur des lignes", "Ajustar ancho de fila automáticamente", "Ajustar largura da linha automaticamente", "Adatta larghezza riga automaticamente", "Автоподбор ширины строки", "自动调整行宽", "自動調整列寬", "행 너비 자동 조정"),
             new("numericBoxEffectiveDigit", "HeaderText", "Effective digit", "有効桁数", "Effektive Stelle", "Chiffre significatif", "Dígito efectivo", "Dígito efetivo", "Cifra significativa", "Значащая цифра", "有效位数", "有效位數", "유효 자릿수"),
         };
@@ -250,8 +251,8 @@ internal static class LocalizationData
         reg["FormPolycrystallineDiffractionSimulator"] = new Localization.Entry[]
         {
             new("groupBoxCrystalProperty", "Text", "Crystal property", "結晶の物性", "Kristalleigenschaft", "Propriété du cristal", "Propiedad del cristal", "Propriedade do cristal", "Proprietà del cristallo", "Свойства кристалла", "晶体属性", "晶體性質", "결정 물성"),
-            new("buttonSimulateDebyeRing", "Text", "Simulate Debye ring pattern", "デバイリングパターンをシミュレート", "Debye-Ring-Muster simulieren", "Simuler le diagramme d'anneaux de Debye", "Simular patrón de anillos de Debye", "Simular padrão de anéis de Debye", "Simula pattern ad anelli di Debye", "Моделировать картину колец Дебая", "模拟德拜环图样", "模擬 Debye 環圖樣", "디바이 링 패턴 시뮬레이션"),
-            new("groupBoxOrientationFitting", "Text", "Fitting orientations", "フィッティング方位", "Fit-Orientierungen", "Orientations d'ajustement", "Orientaciones de ajuste", "Orientações de ajuste", "Orientazioni di fitting", "Подгонка ориентаций", "拟合取向", "擬合取向", "피팅 방위"),
+            new("buttonSimulateDebyeRing", "Text", "Simulate Debye ring pattern", "デバイリングパターンをシミュレート", "Debye-Ring-Muster simulieren", "Simuler le diagramme d'anneaux de Debye", "Simular patrón de anillos de Debye", "Simular padrão de anéis de Debye", "Simula pattern ad anelli di Debye", "Моделировать картину колец Дебая", "模拟德拜环图样", "模擬德拜環圖樣", "디바이 링 패턴 시뮬레이션"),
+            new("groupBoxOrientationFitting", "Text", "Fitting orientations", "フィッティング方位", "Fit-Orientierungen", "Orientations d'ajustement", "Orientaciones de ajuste", "Orientações de ajuste", "Orientazioni di fitting", "Подгонка ориентаций", "拟合取向", "擬合取向", "방위 피팅"),
             new("buttonLoadSetting", "Text", "Load setting", "設定を開く", "Einstellung laden", "Charger les réglages", "Cargar configuración", "Carregar configuração", "Carica impostazioni", "Загрузить настройки", "载入设置", "載入設定", "설정 불러오기"),
             new("buttonSaveCurrentSetting", "Text", "Save current setting", "現在の設定を保存", "Einstellung speichern", "Enreg. réglage actuel", "Guardar config. actual", "Salvar config. atual", "Salva impost. corrente", "Сохр. настройку", "保存当前设置", "儲存目前設定", "현재 설정 저장"),
             new("buttonSearch", "Text", "Search Orientations", "方位を探索", "Orientierungen suchen", "Rechercher les orientations", "Buscar orientaciones", "Buscar orientações", "Cerca orientazioni", "Поиск ориентаций", "搜索取向", "搜尋取向", "방위 검색"),
@@ -259,7 +260,7 @@ internal static class LocalizationData
             new("groupBoxPreferredOrientation", "Text", "Fitting parameters for preferred orientation", "選択配向のフィッティングパラメータ", "Fit-Parameter für Vorzugsorientierung", "Ajustement orientation préférentielle", "Parámetros de ajuste para orientación preferente", "Parâmetros de ajuste para orientação preferencial", "Parametri di fitting per l'orientazione preferenziale", "Параметры подгонки преимущественной ориентации", "择优取向拟合参数", "擇優取向的擬合參數", "우선 배향 피팅 매개변수"),
             new("checkBoxCrystalNumPerStepThreshold", "Text", "Threshold", "閾値", "Schwellenwert", "Seuil", "Umbral", "Limiar", "Soglia", "Порог", "阈值", "閾值", "임계값"),
             new("numericBoxCrystalNumPerStep", "HeaderText", "Num per Step", "ステップあたりの数", "Anzahl pro Schritt", "Nbre par pas", "Núm. por paso", "Núm. por passo", "Num. per passo", "Число на шаг", "每步数量", "每步數目", "스텝당 개수"),
-            new("numericBoxInheritabiliry", "HeaderText", "Inheritability", "継承性", "Vererbbarkeit", "Transmissibilité", "Heredabilidad", "Herdabilidade", "Ereditabilità", "Наследуемость", "可继承性", "可繼承性", "상속성"),
+            new("numericBoxInheritabiliry", "HeaderText", "Inheritability", "継承性", "Vererbbarkeit", "Héritabilité", "Heredabilidad", "Herdabilidade", "Ereditabilità", "Наследуемость", "可继承性", "可繼承性", "상속성"),
             new("checkBoxInheritabiliryThreshold", "Text", "Threshold", "閾値", "Schwellenwert", "Seuil", "Umbral", "Limiar", "Soglia", "Порог", "阈值", "閾值", "임계값"),
             new("checkBoxDirectionalDensityThreshold", "Text", "Threshold", "閾値", "Schwellenwert", "Seuil", "Umbral", "Limiar", "Soglia", "Порог", "阈值", "閾值", "임계값"),
             new("numericBoxDirectionalDensity", "HeaderText", "Directional density", "方向密度", "Richtungsdichte", "Densité directionnelle", "Densidad direccional", "Densidade direcional", "Densità direzionale", "Плотность по направлениям", "方向密度", "方向密度", "방향 밀도"),
@@ -337,7 +338,7 @@ internal static class LocalizationData
             new("labelX1", "Text", "X:", "X:", "X:", "X :", "X:", "X:", "X:", "X:", "X:", "X：", "X:"),
             new("toolStripMenuItemLogScaleX", "Text", "Log Scale", "対数スケール", "Logarithmische Skala", "Échelle log.", "Escala logarítmica", "Escala logarítmica", "Scala logaritmica", "Лог. шкала", "对数刻度", "對數刻度", "로그 스케일"),
             new("toolStripMenuItemLogScaleY", "Text", "Log Scale", "対数スケール", "Logarithmische Skala", "Échelle log.", "Escala logarítmica", "Escala logarítmica", "Scala logaritmica", "Лог. шкала", "对数刻度", "對數刻度", "로그 스케일"),
-            new("toolStripMenuItemScaleLineX", "Text", "Scale Line", "スケールバー", "Maßstabslinie", "Ligne d'échelle", "Línea de escala", "Linha de escala", "Linea di scala", "Масштабная линия", "比例尺", "比例尺線", "눈금선"),
+            new("toolStripMenuItemScaleLineX", "Text", "Scale Line", "スケールバー", "Maßstabslinie", "Ligne d'échelle", "Línea de escala", "Linha de escala", "Linea di scala", "Масштабная линия", "网格线", "比例尺線", "눈금선"),
             new("toolStripMenuItemScaleLineY", "Text", "Scale Line", "スケールバー", "Maßstabslinie", "Ligne d'échelle", "Línea de escala", "Linha de escala", "Linea di scala", "Масштабная линия", "比例尺", "比例尺線", "눈금선"),
             new("label1", "Text", "Range  ", "範囲  ", "Bereich  ", "Plage  ", "Intervalo  ", "Intervalo  ", "Intervallo  ", "Диапазон  ", "范围  ", "範圍  ", "범위  "),
             new("labelX2", "Text", "X:", "X:", "X:", "X :", "X:", "X:", "X:", "X:", "X:", "X：", "X:"),
@@ -349,7 +350,7 @@ internal static class LocalizationData
             new("smartIncrementToolStripMenuItem", "Text", "Smart increment", "スマートインクリメント", "Intelligentes Inkrement", "Incrément intelligent", "Incremento inteligente", "Incremento inteligente", "Incremento intelligente", "Умный инкремент", "智能增量", "智慧型遞增", "스마트 증분"),
             new("decimalPlacesToolStripMenuItem", "Text", "DecimalPlaces", "小数点以下の桁数", "Dezimalstellen", "Décimales", "Decimales", "Casas decimais", "Cifre decimali", "Знаков после запятой", "小数位数", "小數位數", "소수 자릿수"),
             new("thousandsSeparatorToolStripMenuItem", "Text", "Thousands Separator", "桁区切り", "Tausendertrennzeichen", "Séparateur de milliers", "Separador de miles", "Separador de milhares", "Separatore delle migliaia", "Разделитель тысяч", "千位分隔符", "千位分隔符號", "천 단위 구분 기호"),
-            new("toolStripMenuItemRestrictLimit", "Text", "Restrict limit", "範囲を制限", "Grenze einschränken", "Restreindre la limite", "Restringir límite", "Restringir limite", "Limite di restrizione", "Ограничить предел", "限制范围", "限制範圍", "한계 제한"),
+            new("toolStripMenuItemRestrictLimit", "Text", "Restrict limit", "範囲を制限", "Grenze einschränken", "Restreindre la limite", "Restringir límite", "Restringir limite", "Restringi limite", "Ограничить предел", "限制范围", "限制範圍", "한계 제한"),
             new("toolStripMenuItem1", "Text", "      Maximum", "      最大", "      Maximum", "      Maximum", "      Máximo", "      Máximo", "      Massimo", "      Максимум", "      最大值", "      最大值", "      최대"),
             new("toolStripMenuItem2", "Text", "      Mimimum", "      最小", "      Minimum", "      Minimum", "      Mínimo", "      Mínimo", "      Minimo", "      Минимум", "      最小值", "      最小值", "      최소"),
             new("allowMouseContlolToolStripMenuItem", "Text", "Allow Mouse Contlol", "マウス操作を許可", "Maussteuerung erlauben", "Autoriser le contrôle par la souris", "Permitir control con el ratón", "Permitir controle pelo mouse", "Consenti controllo del mouse", "Разрешить управление мышью", "允许鼠标控制", "允許滑鼠控制", "마우스 제어 허용"),
@@ -358,7 +359,7 @@ internal static class LocalizationData
         };
         reg["SaclaControl"] = new Localization.Entry[]
         {
-            new("label3", "Text", "Foot", "裾", "Fuß", "Pied", "Pie", "Pé", "Coda", "Подножие", "底部", "基底", "푸트"),
+            new("label3", "Text", "Foot", "裾", "Fuß", "Pied", "Pie", "Pé", "Piede", "Подножие", "足点", "足點", "기저"),
             new("groupBoxDetectorProperty", "Text", "Detector property", "検出器の特性", "Detektoreigenschaft", "Propriété du détecteur", "Propiedad del detector", "Propriedade do detector", "Proprietà del rivelatore", "Свойства детектора", "探测器属性", "偵測器性質", "검출기 속성"),
             new("numericBoxPixelWidth", "HeaderText", "Width", "線幅", "Breite", "Largeur", "Anchura", "Largura", "Larghezza", "Ширина", "宽度", "寬度", "너비"),
             new("numericBoxPixelHeight", "HeaderText", "Height", "高さ", "Höhe", "Hauteur", "Altura", "Altura", "Altezza", "Высота", "高度", "高度", "높이"),
