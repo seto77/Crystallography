@@ -296,12 +296,20 @@ public readonly struct Symmetry
                     func.Add((h, k, l) => (h + k) % 2 != 0 && l == 0 ? "n⊥[001]" : null);
                 }
 
+                // 260704Cl 修正: 同一条件の else-if 連鎖は 2 分岐目以降が実行されないデッドコードだった
+                // (P4bm 系で 0kl: k=2n の判定が漏れ、禁制のはずの反射が許容扱いになる)。両方を 1 つの if に統合。
+                // 検証: tools/SymmetryPropsCheck の操作集合ベース判定 (h·R=h かつ h·t∉Z) との全 530 設定×|hkl|≤3 照合。
+                //if (sym.StrSE2v == "b")
+                //{
+                //    func.Add((h, k, l) => h % 2 != 0 && k == 0 ? "a⊥[010]" : null);
+                //}
+                //else if (sym.StrSE2v == "b")
+                //{
+                //    func.Add((h, k, l) => k % 2 != 0 && h == 0 ? "b⊥[100]" : null);
+                //}
                 if (sym.StrSE2v == "b")
                 {
                     func.Add((h, k, l) => h % 2 != 0 && k == 0 ? "a⊥[010]" : null);
-                }
-                else if (sym.StrSE2v == "b")
-                {
                     func.Add((h, k, l) => k % 2 != 0 && h == 0 ? "b⊥[100]" : null);
                 }
                 else if (sym.StrSE2v == "c")
@@ -351,10 +359,20 @@ public readonly struct Symmetry
                 }
                 else//Rhomboセルの場合
                 {
-                    if (sym.StrSE2v == "c")
+                    // 260704Cl 修正: 旧実装は hhl 1 面ぶんのみ + 意味不明な重複 (作者コメント「要チェック。なんか変だ。」) だった。
+                    // 菱面体軸の c 映進 (R3c/R-3c) は glide 並進 (1/2,1/2,1/2)、面は 3 回軸で結ばれた 3 枚:
+                    //   ⊥[1-10] は (h,h,l) を固定 → 位相 h+l/2 → l 奇で消滅 / ⊥[01-1] は (h,k,k) → h 奇 / ⊥[-101] は (h,k,h) → k 奇。
+                    // 検証: tools/SymmetryPropsCheck の操作集合ベース判定との全設定照合 (R3cRho/R-3cRho の不一致が解消)。
+                    //if (sym.StrSE2v == "c")
+                    //{
+                    //    func.Add((h, k, l) => l % 2 != 0 && h == k ? "c⊥[111]" : null);
+                    //    func.Add((h, k, l) => l % 2 != 0 && h == k && k == l ? "c⊥[111]" : null);//要チェック。なんか変だ。
+                    //}
+                    if (sym.StrSE2v == "c" || sym.StrSE3v == "c")
                     {
-                        func.Add((h, k, l) => l % 2 != 0 && h == k ? "c⊥[111]" : null);
-                        func.Add((h, k, l) => l % 2 != 0 && h == k && k == l ? "c⊥[111]" : null);//要チェック。なんか変だ。
+                        func.Add((h, k, l) => l % 2 != 0 && h == k ? "c⊥[1-10]" : null);
+                        func.Add((h, k, l) => h % 2 != 0 && k == l ? "c⊥[01-1]" : null);
+                        func.Add((h, k, l) => k % 2 != 0 && h == l ? "c⊥[-101]" : null);
                     }
                 }
                 break;
@@ -371,19 +389,34 @@ public readonly struct Symmetry
                 else if (sym.StrSE1p == "6s5")
                     func.Add((h, k, l) => h == 0 && k == 0 && l % 6 != 0 ? "6sub5//[001]" : null);
 
+                // 260704Cl 修正: 同一条件の else-if 連鎖 (デッドコード) で 2, 3 枚目の等価な映進面の判定が漏れ、
+                // P6cc/P6sub3cm/P6sub3mc/P-6c2/P-62c/P6/mcc/P6sub3/mcm/P6sub3/mmc 等で禁制反射が許容扱いになっていた。
+                // 三方晶系 (case 5) と同じく 3 枚を全て登録する。検証: tools/SymmetryPropsCheck (操作集合ベースとの全設定照合)。
+                //if (sym.StrSE2v == "c")
+                //    func.Add((h, k, l) => l % 2 != 0 && h == -k ? "c⊥[-1-10]" : null);
+                //else if (sym.StrSE2v == "c")
+                //    func.Add((h, k, l) => l % 2 != 0 && h == 0 ? "c⊥[100]" : null);
+                //else if (sym.StrSE2v == "c")
+                //    func.Add((h, k, l) => l % 2 != 0 && k == 0 ? "c⊥[010]" : null);
                 if (sym.StrSE2v == "c")
+                {
                     func.Add((h, k, l) => l % 2 != 0 && h == -k ? "c⊥[-1-10]" : null);
-                else if (sym.StrSE2v == "c")
                     func.Add((h, k, l) => l % 2 != 0 && h == 0 ? "c⊥[100]" : null);
-                else if (sym.StrSE2v == "c")
                     func.Add((h, k, l) => l % 2 != 0 && k == 0 ? "c⊥[010]" : null);
+                }
 
+                //if (sym.StrSE3v == "c")
+                //    func.Add((h, k, l) => l % 2 != 0 && h == k ? "c⊥[1-10]" : null);
+                //else if (sym.StrSE3v == "c")
+                //    func.Add((h, k, l) => l % 2 != 0 && h == -2 * k ? "c⊥[120]" : null);
+                //else if (sym.StrSE3v == "c")
+                //    func.Add((h, k, l) => l % 2 != 0 && -2 * h == k ? "c⊥[-2-10]" : null);
                 if (sym.StrSE3v == "c")
+                {
                     func.Add((h, k, l) => l % 2 != 0 && h == k ? "c⊥[1-10]" : null);
-                else if (sym.StrSE3v == "c")
                     func.Add((h, k, l) => l % 2 != 0 && h == -2 * k ? "c⊥[120]" : null);
-                else if (sym.StrSE3v == "c")
                     func.Add((h, k, l) => l % 2 != 0 && -2 * h == k ? "c⊥[-2-10]" : null);
+                }
 
                 break;
 
@@ -620,8 +653,11 @@ public readonly struct Symmetry
                 if (sym.StrSE2v == "c")
                     str.Add("h0l: l=2n: c⊥[010]");
 
+                // 260705Cl 修正: c⊥[100] の反射条件は 0kl (判定関数側 SetExtinctionFunc は h==0 で正しい)。表示文字列のタイポを修正。
+                //if (sym.StrSE2v == "c")
+                //    str.Add("h0l: l=2n: c⊥[100]");
                 if (sym.StrSE2v == "c")
-                    str.Add("h0l: l=2n: c⊥[100]");
+                    str.Add("0kl: l=2n: c⊥[100]");
 
                 if (sym.StrSE2v == "n")
                     str.Add("h0l: h+l=2n: n⊥[010]");
@@ -651,23 +687,37 @@ public readonly struct Symmetry
                 if (sym.StrSE1p == "3s2")
                     str.Add("00l: l=3n: 3sub2//[001]");
 
-                if (sym.StrSE2v == "c")
-                    str.Add("h-hl: l=2n: c⊥[-1-10]");
+                // 260704Cl 修正: 菱面体 (Rho) 設定にも六方軸用の文字列を表示していた。判定関数 (SetExtinctionFunc) と同じく
+                // Hex/Rho で分岐し、Rho 設定は菱面体指数での正しい条件 (hhl: l=2n 等の 3 面) を表示する。
+                if (sym.SpaceGroupHMsubStr != "R")//Hexセルの場合
+                {
+                    if (sym.StrSE2v == "c")
+                        str.Add("h-hl: l=2n: c⊥[-1-10]");
 
-                if (sym.StrSE2v == "c")
-                    str.Add("0kl: l=2n: c⊥[100]");
+                    if (sym.StrSE2v == "c")
+                        str.Add("0kl: l=2n: c⊥[100]");
 
-                if (sym.StrSE2v == "c")
-                    str.Add("h0l: l=2n: c⊥[010]");
+                    if (sym.StrSE2v == "c")
+                        str.Add("h0l: l=2n: c⊥[010]");
 
-                if (sym.StrSE3v == "c")
-                    str.Add("hhl: l=2n: c⊥[1-10]");
+                    if (sym.StrSE3v == "c")
+                        str.Add("hhl: l=2n: c⊥[1-10]");
 
-                if (sym.StrSE3v == "c")
-                    str.Add("-2hhl: l=2n: c⊥[120]");
+                    if (sym.StrSE3v == "c")
+                        str.Add("-2hhl: l=2n: c⊥[120]");
 
-                if (sym.StrSE3v == "c")
-                    str.Add("h-2hl: l=2n: c⊥[-2-10]");
+                    if (sym.StrSE3v == "c")
+                        str.Add("h-2hl: l=2n: c⊥[-2-10]");
+                }
+                else//Rhomboセルの場合
+                {
+                    if (sym.StrSE2v == "c" || sym.StrSE3v == "c")
+                    {
+                        str.Add("hhl: l=2n: c⊥[1-10]");
+                        str.Add("hkk: h=2n: c⊥[01-1]");
+                        str.Add("hkh: k=2n: c⊥[-101]");
+                    }
+                }
 
                 break;
 
