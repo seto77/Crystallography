@@ -168,4 +168,320 @@ public static class KSubgroupFinder
         return true;
     }
     #endregion
+
+    #region complement 列挙 (Step 2, Q=G/T′ 内の section)
+    // 260705Cl 追加 (Phase 2c Step2)。設計は codex との3回目の相談で確定
+    // (.project-guidance/ReciPro_FormGroupRelations改修計画.md §4.1 item2)。
+    //
+    // 数学的な骨格: T′ (index n) を法とした有限商 Q=G/T′ (|Q|=m·n、m=|P_G|) の中で、
+    // 並進部分群 T/T′ と交わらず点群へ全射する complement (H の実体、位数 m) を全数列挙する。
+    // 各線形部 R_i の実並進 t_i (親の実データ由来、primitive 座標) は mod T′ で n 通りの coset の
+    // どれかに属する。空間群の合成則 (R_i,t_i)(R_j,t_j)=(R_iR_j, t_i+R_i·t_j) から、
+    // cocycle f[i,j] = t_i^0 + A_i·t_j^0 − t_{mul[i,j]}^0 (実データの group law が保証するので
+    // 必ず整数、primitive 座標) が直接計算でき、これと coset オフセットの組合せで Q の乗積表が
+    // 具体的に (代表ベクトルの加算だけで) 書ける。
+    //
+    // 生成集合は点群の小さい生成元を1組だけ固定して構わない (codex 確認済み): 任意の complement C は
+    // 射影 C→P_G が全単射なので、生成元の像 (lift) で一意に決まる。したがって、固定した生成元への
+    // n^k 通りの coset 割当を全数試せば、必ずどの complement もそのうちの1通りと一致し、取り逃さない。
+    // 複数の生成集合を試す必要はない (dedupe の保険にしかならない)。
+    //
+    // 恒等線形部の基準並進 t_e^0 は必ず 0 に固定する。GetExpandedOps の並び順で中心化コピーが
+    // 最初に来ると Q の単位元が (E,0) にならず cocycle 計算全体が破綻するため。
+
+    /// <summary>点群 (線形部) の乗積表・逆元・primitive 座標での A_R=B⁻¹RB・基準並進 t_i^0 をまとめた
+    /// 内部データ (T′ に依存しない部分、Step2 で繰り返し使う)。260705Cl 追加。</summary>
+    private sealed class PointGroupData
+    {
+        public int[][] LinKeys { get; init; }
+        public int[,] Mul { get; init; }
+        public int[] Inv { get; init; }
+        public int E { get; init; }
+        public int[][] A { get; init; }
+        public Fraction[][] T0 { get; init; }
+    }
+
+    /// <summary>指定 T′ (HNF hnf) に対する有限商 Q=G/T′ の代数データ (coset 代表・正準ラベル・乗積表)。
+    /// 260705Cl 追加。</summary>
+    private sealed class QuotientData
+    {
+        public int N { get; init; }
+        public long[][] Reps { get; init; }
+        public Fraction[][] Labels { get; init; }
+        /// <summary>フラット化した乗積表 [qa*(m*N)+qb]。qa/qb = 線形部index*N + coset index。</summary>
+        public int[] MulQ { get; init; }
+    }
+
+    private static PointGroupData BuildPointGroupData(int sn)
+    {
+        var ops = TSubgroupFinder.GetExpandedOps(sn);
+        var basis = GetPrimitiveBasis(sn);
+        var basisInv = RationalMatrix.Invert3(basis) ?? throw new InvalidOperationException("primitive basis is singular");
+
+        var linKeys = new List<int[]>();
+        var t0List = new List<Fraction[]>();
+        foreach (var op in ops)
+        {
+            var key = LinKeyOf(op);
+            if (linKeys.Any(k => SameIntVec(k, key))) continue;
+            linKeys.Add(key);
+            var t = op.SeitzTranslation;
+            var tConv = new Fraction[] { Fraction.FromDouble(t.U), Fraction.FromDouble(t.V), Fraction.FromDouble(t.W) };
+            t0List.Add(RationalMatrix.MulVec(basisInv, tConv));
+        }
+        int m = linKeys.Count;
+        int e = Enumerable.Range(0, m).First(i => IsIdentityLin(linKeys[i]));
+        // 260705Cl: 恒等線形部の基準並進は必ず 0 に固定 (上記コメント参照)。
+        t0List[e] = [Fraction.Zero, Fraction.Zero, Fraction.Zero];
+
+        var mul = new int[m, m];
+        for (int i = 0; i < m; i++)
+            for (int j = 0; j < m; j++)
+                mul[i, j] = FindIntKey(linKeys, MatMulInt(linKeys[i], linKeys[j]));
+
+        var inv = new int[m];
+        for (int i = 0; i < m; i++)
+            for (int j = 0; j < m; j++)
+                if (mul[i, j] == e) { inv[i] = j; break; }
+
+        var A = new int[m][];
+        for (int i = 0; i < m; i++)
+        {
+            var af = RationalMatrix.Mul(RationalMatrix.Mul(basisInv, RationalMatrix.FromInt(linKeys[i])), basis);
+            A[i] = RationalMatrix.ToIntOrNull(af) ?? throw new InvalidOperationException($"B^-1 R B is not integral (sn={sn}, lin={i})");
+        }
+
+        return new PointGroupData { LinKeys = [.. linKeys], Mul = mul, Inv = inv, E = e, A = A, T0 = [.. t0List] };
+    }
+
+    private static QuotientData BuildQuotient(PointGroupData pg, int[] hnf)
+    {
+        int m = pg.LinKeys.Length;
+        var hInv = RationalMatrix.Invert3(RationalMatrix.FromInt(hnf)) ?? throw new InvalidOperationException("HNF is singular");
+        int a = hnf[0], b = hnf[4], c = hnf[8];
+        int n = a * b * c;
+
+        // T′ の T における coset 代表: 標準基底の (i,j,k), 0≤i<a,j<b,k<c がちょうど n 個の代表系になる
+        // (列 HNF が (a,x,y),(0,b,z),(0,0,c) の形であることに由来する代数的事実、codex 確認済み)。
+        var reps = new List<long[]>();
+        var labels = new List<Fraction[]>();
+        for (int i = 0; i < a; i++)
+            for (int j = 0; j < b; j++)
+                for (int k = 0; k < c; k++)
+                {
+                    reps.Add([i, j, k]);
+                    labels.Add(RationalMatrix.ModVec1(RationalMatrix.MulVec(hInv, [new Fraction(i), new Fraction(j), new Fraction(k)])));
+                }
+
+        int CosetIndexOf(long[] v)
+        {
+            var lab = RationalMatrix.ModVec1(RationalMatrix.MulVec(hInv, [new Fraction(v[0]), new Fraction(v[1]), new Fraction(v[2])]));
+            for (int t = 0; t < labels.Count; t++)
+                if (RationalMatrix.VecEquals(labels[t], lab)) return t;
+            throw new InvalidOperationException("coset representative not found (HNF label construction bug)");
+        }
+
+        // cocycle f[i,j] = t0[i] + A_i·t0[j] − t0[mul[i,j]] (primitive 座標)。
+        // 実データ (親空間群の実並進) の group law から必ず整数になる — 整数でなければ基準並進・A 行列の規約が壊れている。
+        var f = new int[m * m][];
+        for (int i = 0; i < m; i++)
+            for (int j = 0; j < m; j++)
+            {
+                var aiT0j = RationalMatrix.MulVec(RationalMatrix.FromInt(pg.A[i]), pg.T0[j]);
+                var sum = RationalMatrix.SubVec(RationalMatrix.AddVec(pg.T0[i], aiT0j), pg.T0[pg.Mul[i, j]]);
+                var fij = new int[3];
+                for (int c2 = 0; c2 < 3; c2++)
+                {
+                    if (!sum[c2].IsInteger)
+                        throw new InvalidOperationException($"cocycle f[{i},{j}] is not integer ({sum[c2]}) — base translation convention bug");
+                    fij[c2] = (int)sum[c2].Num;
+                }
+                f[i * m + j] = fij;
+            }
+
+        var mulQ = new int[m * n * m * n];
+        for (int i = 0; i < m; i++)
+            for (int aRep = 0; aRep < n; aRep++)
+                for (int j = 0; j < m; j++)
+                    for (int bRep = 0; bRep < n; bRep++)
+                    {
+                        var aj = MatMulIntVec(pg.A[i], reps[bRep]);
+                        var fij = f[i * m + j];
+                        var target = new long[] { fij[0] + reps[aRep][0] + aj[0], fij[1] + reps[aRep][1] + aj[1], fij[2] + reps[aRep][2] + aj[2] };
+                        int qa = i * n + aRep, qb = j * n + bRep;
+                        mulQ[qa * (m * n) + qb] = pg.Mul[i, j] * n + CosetIndexOf(target);
+                    }
+
+        return new QuotientData { N = n, Reps = [.. reps], Labels = [.. labels], MulQ = mulQ };
+    }
+
+    /// <summary>親空間群 sn の点群を保つ部分格子 T′ (HNF hnf) について、Q=G/T′ 内の complement を全数列挙する。
+    /// 返り値は各 complement を表す σ (m 個、線形部 index → T′ の coset index)。260705Cl 追加。</summary>
+    public static List<int[]> EnumerateComplements(int seriesNumber, int[] hnf)
+    {
+        var pg = BuildPointGroupData(seriesNumber);
+        var q = BuildQuotient(pg, hnf);
+        int m = pg.LinKeys.Length, n = q.N, size = m * n;
+
+        var gens = ChooseGenerators(pg);
+        int k = gens.Count;
+        long total = 1;
+        for (int t = 0; t < k; t++) total *= n;
+
+        var found = new List<int[]>();
+        var seen = new HashSet<string>();
+        var offsets = new int[k];
+        for (long combo = 0; combo < total; combo++)
+        {
+            long rem = combo;
+            for (int t = 0; t < k; t++) { offsets[t] = (int)(rem % n); rem /= n; }
+
+            var seed = new List<int> { pg.E * n };
+            for (int t = 0; t < k; t++) seed.Add(gens[t] * n + offsets[t]);
+
+            var closure = ClosureQ(seed, q.MulQ, size, m);
+            if (closure.Count != m) continue;
+
+            var sigma = new int[m];
+            var seenLin = new bool[m];
+            bool ok = true;
+            foreach (var elem in closure)
+            {
+                int lin = elem / n, c = elem % n;
+                if (seenLin[lin]) { ok = false; break; }
+                seenLin[lin] = true;
+                sigma[lin] = c;
+            }
+            if (!ok || seenLin.Any(x => !x)) continue; // 射影が全単射でない (理論上起きないはずの防御的チェック)
+
+            var key = string.Join(",", sigma);
+            if (seen.Add(key)) found.Add(sigma);
+        }
+        return found;
+    }
+
+    /// <summary>見つかった complement (σ 配列) を Q 内の共役 (q·H·q⁻¹, q は Q の全元) で類別する。
+    /// 計画書 §4.4「複数 complement の分類」対応。260705Cl 追加。</summary>
+    public static List<List<int[]>> GroupComplementsByConjugacy(int seriesNumber, int[] hnf, List<int[]> complements)
+    {
+        var pg = BuildPointGroupData(seriesNumber);
+        var q = BuildQuotient(pg, hnf);
+        int m = pg.LinKeys.Length, n = q.N, size = m * n;
+        int qIdentity = pg.E * n;
+
+        var invQ = new int[size];
+        for (int aElem = 0; aElem < size; aElem++)
+            for (int bElem = 0; bElem < size; bElem++)
+                if (q.MulQ[aElem * size + bElem] == qIdentity) { invQ[aElem] = bElem; break; }
+
+        int[] Conjugate(int[] sigma, int qElem)
+        {
+            int qInv = invQ[qElem];
+            var result = new int[m];
+            for (int i = 0; i < m; i++)
+            {
+                int h = i * n + sigma[i];
+                int step1 = q.MulQ[qElem * size + h];
+                int step2 = q.MulQ[step1 * size + qInv];
+                result[step2 / n] = step2 % n;
+            }
+            return result;
+        }
+
+        var keys = complements.Select(s => string.Join(",", s)).ToList();
+        var classes = new List<List<int[]>>();
+        var assigned = new bool[complements.Count];
+        for (int i = 0; i < complements.Count; i++)
+        {
+            if (assigned[i]) continue;
+            var cls = new List<int[]> { complements[i] };
+            assigned[i] = true;
+            for (int qElem = 0; qElem < size; qElem++)
+            {
+                var key = string.Join(",", Conjugate(complements[i], qElem));
+                for (int j = 0; j < complements.Count; j++)
+                    if (!assigned[j] && keys[j] == key) { cls.Add(complements[j]); assigned[j] = true; }
+            }
+            classes.Add(cls);
+        }
+        return classes;
+    }
+
+    private static List<int> ChooseGenerators(PointGroupData pg)
+    {
+        int m = pg.LinKeys.Length;
+        var spanned = ClosureLin([pg.E], pg.Mul);
+        var gens = new List<int>();
+        for (int i = 0; i < m && spanned.Count < m; i++)
+        {
+            if (spanned.Contains(i)) continue;
+            gens.Add(i);
+            spanned = ClosureLin([.. spanned, i], pg.Mul);
+        }
+        return gens;
+    }
+
+    private static HashSet<int> ClosureLin(IEnumerable<int> seed, int[,] mul)
+    {
+        var s = new HashSet<int>(seed);
+        var queue = new Queue<int>(s);
+        while (queue.Count > 0)
+        {
+            int a = queue.Dequeue();
+            foreach (var b in s.ToArray())
+            {
+                if (s.Add(mul[a, b])) queue.Enqueue(mul[a, b]);
+                if (s.Add(mul[b, a])) queue.Enqueue(mul[b, a]);
+            }
+        }
+        return s;
+    }
+
+    /// <summary>Q の乗積表 mulQ 上で closure を取る。要素数が maxSize を超えたら即座に打ち切る
+    /// (complement 候補は必ず位数 m なので、それを超えたら不採用確定。総当たりの高速化)。260705Cl 追加。</summary>
+    private static HashSet<int> ClosureQ(IEnumerable<int> seed, int[] mulQ, int size, int maxSize)
+    {
+        var s = new HashSet<int>(seed);
+        var queue = new Queue<int>(s);
+        while (queue.Count > 0)
+        {
+            int a = queue.Dequeue();
+            foreach (var b in s.ToArray())
+            {
+                int ab = mulQ[a * size + b];
+                if (s.Add(ab)) { if (s.Count > maxSize) return s; queue.Enqueue(ab); }
+                int ba = mulQ[b * size + a];
+                if (s.Add(ba)) { if (s.Count > maxSize) return s; queue.Enqueue(ba); }
+            }
+        }
+        return s;
+    }
+
+    private static long[] MatMulIntVec(int[] mat, long[] vec)
+    {
+        var r = new long[3];
+        for (int i = 0; i < 3; i++)
+            r[i] = mat[i * 3] * vec[0] + mat[i * 3 + 1] * vec[1] + mat[i * 3 + 2] * vec[2];
+        return r;
+    }
+
+    private static int[] MatMulInt(int[] a, int[] b)
+    {
+        var c = new int[9];
+        for (int i = 0; i < 3; i++)
+            for (int j = 0; j < 3; j++)
+                c[i * 3 + j] = a[i * 3] * b[j] + a[i * 3 + 1] * b[3 + j] + a[i * 3 + 2] * b[6 + j];
+        return c;
+    }
+
+    private static int FindIntKey(List<int[]> list, int[] key)
+    {
+        for (int i = 0; i < list.Count; i++)
+            if (SameIntVec(list[i], key)) return i;
+        throw new InvalidOperationException("linear part not found in point-group closure (multiplication table bug)");
+    }
+
+    private static bool IsIdentityLin(int[] m)
+        => m[0] == 1 && m[4] == 1 && m[8] == 1 && m[1] == 0 && m[2] == 0 && m[3] == 0 && m[5] == 0 && m[6] == 0 && m[7] == 0;
+    #endregion
 }
