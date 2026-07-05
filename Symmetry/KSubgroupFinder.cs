@@ -2,7 +2,10 @@
 // TSubgroupFinder (t-) とは別クラス (計画書 §4.2: 列挙対象が異なるため共有しない。
 // 型同定・操作集合完全一致検証・格子ユーティリティは今後の共通化候補)。
 //
-// 現時点では Step 1 (部分格子 T′ の列挙) のみ実装。complement 列挙 (Step 2) 以降は後続コミットで追加する。
+// Step 1 (部分格子 T′ の列挙) → Step 2 (complement 列挙・共役類分け) → Step 3 (型同定 IdentifyK) →
+// Step 4 (極大性判定 + GroupRelation(Kind=K) への配線、GetMaximalKSubgroups) まで実装済み。
+// 未対応: k- 専用の軌道分裂・New reflections (親胞 mod1 前提の t- 用ロジックは流用不可、
+// FormGroupRelations 側でガード済み)、isomorphic 系列の UI 分離表示 (Phase 2d)。
 // 詳細ロードマップ: .project-guidance/ReciPro_FormGroupRelations改修計画.md §4。
 using System;
 using System.Collections.Generic;
@@ -11,7 +14,7 @@ using System.Numerics;
 
 namespace Crystallography;
 
-/// <summary>k-最大部分群の列挙 (実装中、Phase 2c)。</summary>
+/// <summary>k-最大部分群の列挙・型同定 (Phase 2c)。公開エントリポイントは <see cref="GetMaximalKSubgroups"/>。</summary>
 public static class KSubgroupFinder
 {
     #region 実並進格子の primitive 基底
