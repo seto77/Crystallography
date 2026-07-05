@@ -19,13 +19,26 @@ using System.Linq;
 
 namespace Crystallography;
 
-/// <summary>t-最大部分群の 1 共役類。<see cref="TSubgroupFinder.GetMaximalTSubgroups"/> が返す (260704Cl 追加)。</summary>
-public sealed class TSubgroup
+/// <summary>群-部分群関係の種別。260705Cl 追加 (Phase 2e)。k/Isomorphic は将来の KSubgroupFinder 用の予約 (未使用)。</summary>
+public enum GroupRelationKind { T, K, Isomorphic }
+
+/// <summary>群-部分群関係の 1 共役類を表す共通 DTO (260705Cl 追加, Phase 2e。旧 TSubgroup/TSubgroupFinder.TSupergroup を統合)。
+/// <see cref="TSubgroupFinder.GetMaximalTSubgroups"/> / <see cref="TSubgroupFinder.GetMinimalTSupergroups"/> が返す。
+/// UI (FormGroupRelations) はこの DTO のみを読み、TSubgroupFinder / 将来の KSubgroupFinder を直接知らない。
+/// Parent は常に群として大きい側 (index の分母側)、Child は小さい側。P,p は常に「子基準系 → 親基準系」の向き
+/// (x_parent = P·x_child + p) で格納する。Minimal supergroups 一覧に載る関係は、逆引き元である Parent 自身の
+/// 部分群表から取った値をそのまま使う (Parent 側から見た Child への変換)。現在の閲覧対象が Parent でなく Child 側
+/// (supergroup を見ている) のときは <see cref="GetInverseTransform"/> で (P,p)⁻¹ を求めて表示する。</summary>
+public sealed class GroupRelation
 {
+    /// <summary>関係の種別 (現在は T のみ実データ)。</summary>
+    public GroupRelationKind Kind { get; init; } = GroupRelationKind.T;
     /// <summary>親空間群の通し番号。</summary>
     public int ParentSeriesNumber { get; init; }
     /// <summary>指数 [G:H] = |P_G| / |M|。t-部分群では並進指数 1 なので点群指数に等しい。</summary>
     public int Index { get; init; }
+    /// <summary>親の中での共役類 ID (0 始まり、Compute() 呼び出し内で安定)。260705Cl 追加 (Phase 2e、将来の k- 共役類区別に使う予約)。</summary>
+    public int ConjugacyClassId { get; init; }
     /// <summary>この共役類に属する部分群の個数 (方位バリアント数)。</summary>
     public int ConjugateCount { get; init; }
     /// <summary>H の点群の HM 記号 (正規化済み: 2mm/m2m→mm2 等)。</summary>
@@ -42,10 +55,27 @@ public sealed class TSubgroup
     public double[] TransformP { get; init; }
     /// <summary>原点シフト p (親座標系)。未同定なら null。</summary>
     public double[] TransformShift { get; init; }
+    /// <summary>部分格子基底 T′ (k- のみ、t- では null)。260705Cl 追加 (Phase 2c KSubgroupFinder 用の予約)。</summary>
+    public double[] SublatticeBasis { get; init; }
 
     /// <summary>同定済みなら子設定の HM 記号 (sub 表記含む生文字列)、未同定なら点群 HM。</summary>
-    //public string ChildLabel => ChildSeriesNumber >= 0 ? SymmetryStatic.StrArray[ChildSeriesNumber][3] : PointGroupHM;
-    public string ChildLabel => ChildSeriesNumber >= 0 ? SymmetryStatic.Symmetries[ChildSeriesNumber].SpaceGroupHMStr : PointGroupHM; // 260705Cl: 生配列添字→既存プロパティ
+    public string ChildLabel => ChildSeriesNumber >= 0 ? SymmetryStatic.Symmetries[ChildSeriesNumber].SpaceGroupHMStr : PointGroupHM;
+
+    /// <summary>(P,p) の逆変換 (P⁻¹, −P⁻¹·p) を返す。Minimal supergroups 側 (Child から Parent を見る向き) の
+    /// Matrix タブ表示用 (260705Cl 追加, Phase 2e)。未同定 (TransformP=null) なら (null, null)。</summary>
+    public (double[] P, double[] Shift) GetInverseTransform()
+    {
+        if (TransformP == null) return (null, null);
+        var pinv = TSubgroupFinder.Invert3(TransformP);
+        if (pinv == null) return (null, null); // 特異行列は理論上発生しない (P は基底変換で正則) が防御的に
+        var shift = new double[]
+        {
+            -(pinv[0] * TransformShift[0] + pinv[1] * TransformShift[1] + pinv[2] * TransformShift[2]),
+            -(pinv[3] * TransformShift[0] + pinv[4] * TransformShift[1] + pinv[5] * TransformShift[2]),
+            -(pinv[6] * TransformShift[0] + pinv[7] * TransformShift[1] + pinv[8] * TransformShift[2]),
+        };
+        return (pinv, shift);
+    }
 }
 
 /// <summary>親 Wyckoff 軌道が t-部分群でどう分裂するかの 1 成分 (260704Cl 追加)。</summary>
@@ -65,12 +95,12 @@ public readonly struct OrbitPart
 public static class TSubgroupFinder
 {
     private const double Tol = 1e-6;
-    private static readonly Dictionary<int, TSubgroup[]> _cache = [];
+    private static readonly Dictionary<int, GroupRelation[]> _cache = [];
     private static readonly object _lock = new();
 
     #region 公開 API
     /// <summary>親空間群 (通し番号) の maximal t-部分群を共役類単位で返す。計算は初回のみ (キャッシュ)。</summary>
-    public static TSubgroup[] GetMaximalTSubgroups(int seriesNumber)
+    public static GroupRelation[] GetMaximalTSubgroups(int seriesNumber)
     {
         lock (_lock)
         {
@@ -82,21 +112,12 @@ public static class TSubgroupFinder
         }
     }
 
-    /// <summary>1 つの minimal t-supergroup (逆引き結果)。親 = supergroup。260704Cl 追加。</summary>
-    public sealed class TSupergroup
-    {
-        /// <summary>supergroup の通し番号 (第 1 設定)。</summary>
-        public int SupergroupSeriesNumber { get; init; }
-        /// <summary>指数 [G:H]。</summary>
-        public int Index { get; init; }
-        /// <summary>この H を部分群に持つ関係の共役数 (H 側から見た方位バリアント)。</summary>
-        public int ConjugateCount { get; init; }
-        /// <summary>supergroup の HM 記号。</summary>
-        //public string Label => SymmetryStatic.StrArray[SupergroupSeriesNumber][3];
-        public string Label => SymmetryStatic.Symmetries[SupergroupSeriesNumber].SpaceGroupHMStr; // 260705Cl: 生配列添字→既存プロパティ
-    }
+    // 260705Cl: 専用の軽量 TSupergroup 型 (SupergroupSeriesNumber/Index/ConjugateCount のみ) を廃し、
+    // GroupRelation をそのまま逆引き索引に格納する (Phase 2e DTO 統合)。ParentSeriesNumber が supergroup の
+    // 通し番号、ChildSeriesNumber が引数 itNumber 側の設定。Operations/TransformP 等の全データが引き続き手に入るため、
+    // Minimal supergroups 側でも Matrix/Orbit/Reflections タブが (P,p)⁻¹ 経由で正しく表示できる。
 
-    private static Dictionary<int, List<TSupergroup>> _supergroupIndex;
+    private static Dictionary<int, List<GroupRelation>> _supergroupIndex;
 
     /// <summary>逆引き索引が構築済みか。260705Cl 追加: 初回構築は全 230 タイプの部分群計算 (数秒) を伴うため、
     /// GUI 側はこれを見て「未構築ならバックグラウンドで構築 → 完了時に表示を差し替える」を選べる。</summary>
@@ -104,7 +125,7 @@ public static class TSubgroupFinder
 
     /// <summary>指定空間群タイプ (IT 番号) を maximal t-部分群に持つ空間群 (= minimal t-supergroup) を返す。
     /// 全 230 タイプの第 1 設定を 1 度だけ走査して逆引き索引を構築する (translationengleiche のみ)。</summary>
-    public static IReadOnlyList<TSupergroup> GetMinimalTSupergroups(int itNumber)
+    public static IReadOnlyList<GroupRelation> GetMinimalTSupergroups(int itNumber)
     {
         lock (_lock)
         {
@@ -122,7 +143,7 @@ public static class TSubgroupFinder
                         int childIt = SymmetryStatic.Symmetries[sub.ChildSeriesNumber].SpaceGroupNumber;
                         if (!_supergroupIndex.TryGetValue(childIt, out var list))
                             _supergroupIndex[childIt] = list = [];
-                        list.Add(new TSupergroup { SupergroupSeriesNumber = sn, Index = sub.Index, ConjugateCount = sub.ConjugateCount });
+                        list.Add(sub); // 260705Cl: sub (GroupRelation) をそのまま格納 (旧: 3 フィールドだけの TSupergroup を新規生成)
                     }
                 }
             }
@@ -157,7 +178,7 @@ public static class TSubgroupFinder
     }
 
     /// <summary>親の各 Wyckoff 位置 (index 順) の H による軌道分裂を返す。generic 代表点によるサンプル計算。</summary>
-    public static OrbitPart[][] GetOrbitSplitting(int parentSeries, TSubgroup sub)
+    public static OrbitPart[][] GetOrbitSplitting(int parentSeries, GroupRelation sub)
     {
         // 特殊関係 (x=y, 2x=z 等) を偶然踏まない generic 値
         const double gx = 0.127743, gy = 0.291317, gz = 0.437129;
@@ -205,7 +226,7 @@ public static class TSubgroupFinder
 
     /// <summary>親で系統的消滅・部分群 H で許容になる反射 (超構造反射の t-版) を列挙する。
     /// 子の等価反射 (Friedel 込み) で代表 1 つに集約し、(代表 hkl, 等価数, 親の消滅則) を返す。</summary>
-    public static (int H, int K, int L, int EquivCount, string ParentRule)[] GetNewReflections(int parentSeries, TSubgroup sub, int maxIndex = 4)
+    public static (int H, int K, int L, int EquivCount, string ParentRule)[] GetNewReflections(int parentSeries, GroupRelation sub, int maxIndex = 4)
     {
         var parentOps = GetExpandedOps(parentSeries);
         var parentSym = SymmetryStatic.Symmetries[parentSeries];
@@ -247,7 +268,7 @@ public static class TSubgroupFinder
     #endregion
 
     #region 本体計算
-    private static TSubgroup[] Compute(int sn)
+    private static GroupRelation[] Compute(int sn)
     {
         var ops = GetExpandedOps(sn);
         if (ops.Length == 0)
@@ -277,9 +298,10 @@ public static class TSubgroupFinder
 
         // --- 3. 各共役類の代表について H を構成・型同定 ---
         var sigName = SignatureNameMap.Value;
-        var result = new List<TSubgroup>();
-        foreach (var cls in classes)
+        var result = new List<GroupRelation>();
+        for (int classIdx = 0; classIdx < classes.Count; classIdx++)
         {
+            var cls = classes[classIdx];
             // 同定は類内のどの共役でも等価 (型は共通)。カタログの向きに合う共役があれば拾えるよう全共役を試す。
             int child = -1;
             double[] bestP = null, bestShift = null;
@@ -306,10 +328,11 @@ public static class TSubgroupFinder
                 cosetReps.Add(opsByLin[g][0]);
             }
 
-            result.Add(new TSubgroup
+            result.Add(new GroupRelation
             {
                 ParentSeriesNumber = sn,
                 Index = n / mSet.Count,
+                ConjugacyClassId = classIdx,
                 ConjugateCount = cls.Count,
                 PointGroupHM = sigName.TryGetValue(Signature(mSet.Select(i => linKeys[i])), out var nm) ? nm : "?",
                 Operations = subOps,
@@ -806,8 +829,8 @@ public static class TSubgroupFinder
     private static double Det3(double[] m)
         => m[0] * (m[4] * m[8] - m[5] * m[7]) - m[1] * (m[3] * m[8] - m[5] * m[6]) + m[2] * (m[3] * m[7] - m[4] * m[6]);
 
-    /// <summary>3×3 (row-major) の逆行列。特異なら null。</summary>
-    private static double[] Invert3(double[] m)
+    /// <summary>3×3 (row-major) の逆行列。特異なら null。260705Cl: GroupRelation.GetInverseTransform から使うため internal 化。</summary>
+    internal static double[] Invert3(double[] m)
     {
         double det = Det3(m);
         if (Math.Abs(det) < 1e-12) return null;
