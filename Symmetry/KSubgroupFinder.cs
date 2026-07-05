@@ -484,4 +484,284 @@ public static class KSubgroupFinder
     private static bool IsIdentityLin(int[] m)
         => m[0] == 1 && m[4] == 1 && m[8] == 1 && m[1] == 0 && m[2] == 0 && m[3] == 0 && m[5] == 0 && m[6] == 0 && m[7] == 0;
     #endregion
+
+    #region 型同定 (Step 3, IdentifyK)
+    // 260705Cl 追加 (Phase 2c Step3)。設計は codex との4回目の相談で確定
+    // (.project-guidance/ReciPro_FormGroupRelations改修計画.md §4.1 item3)。
+    //
+    // P = S·U·C⁻¹ (x_parent = P·x_child + p の規約、既存 TSubgroupFinder と同じ)。
+    //   S = B·H   … T′ の primitive 基底 (親慣用胞座標)
+    //   C = GetPrimitiveBasis(candSn) … 候補設定の primitive 基底 (候補慣用胞座標)
+    //   U … T′ の primitive 基底の取り替えを表す unimodular 整数行列 (det=±1)
+    // U は「小さい成分の総当たり」で探す (K=1 で見つからなければ K=2 にフォールバック)。
+    // 誤同定は最終的な操作集合完全一致検証 (SolveOriginShiftK) で原理的に排除されるため、
+    // U の探索が理論上完全でなくても安全側 (見つからなければ「未同定」、t-エンジンと同じ正直な方針)。
+    // フィルタとして、A_H[i]=H⁻¹A[i]H (T′ 自身の座標系での親点群表現) を U で共役したものが、
+    // 候補の A_cand[i]=C⁻¹R_i C と整数行列の集合として一致するかを先に見る (安価、格子一致は構成上自動)。
+
+    private static readonly Dictionary<int, List<int[]>> _unimodularCache = [];
+
+    /// <summary>成分が [-k,k] の unimodular (det=±1) 整数 3×3 行列を総当たりで列挙する (キャッシュ済み)。260705Cl 追加。</summary>
+    private static List<int[]> SmallUnimodular(int k)
+    {
+        if (_unimodularCache.TryGetValue(k, out var cached)) return cached;
+        var result = new List<int[]>();
+        var m = new int[9];
+        void Rec(int idx)
+        {
+            if (idx == 9)
+            {
+                int det = m[0] * (m[4] * m[8] - m[5] * m[7]) - m[1] * (m[3] * m[8] - m[5] * m[6]) + m[2] * (m[3] * m[7] - m[4] * m[6]);
+                if (det == 1 || det == -1) result.Add((int[])m.Clone());
+                return;
+            }
+            for (int v = -k; v <= k; v++) { m[idx] = v; Rec(idx + 1); }
+        }
+        Rec(0);
+        _unimodularCache[k] = result;
+        return result;
+    }
+
+    /// <summary>候補設定 candSn の点群線形部・primitive 基底・その逆・primitive 座標での線形部・
+    /// 恒等線形部の中心化並進 (centering cosets) をまとめたキャッシュ。260705Cl 追加。</summary>
+    private sealed class CandidateData
+    {
+        public int[][] LinKeys { get; init; }
+        public Fraction[] CInv { get; init; }
+        public int[][] ACand { get; init; }         // C⁻¹ R C (整数、candidate primitive 座標)
+        public Fraction[][] Rt { get; init; }        // LinKeys[i] に対応する実際の並進 (candidate 慣用胞座標、代表1つ、無還元)
+        public Fraction[][] Centering { get; init; } // 恒等線形部の中心化並進 (candidate 慣用胞座標、mod1、重複無し)
+    }
+
+    private static readonly Dictionary<int, CandidateData> _candidateCache = [];
+    private static Dictionary<int, List<int>> _candidatesByOrder;
+
+    private static CandidateData BuildCandidateData(int sn)
+    {
+        if (_candidateCache.TryGetValue(sn, out var cached)) return cached;
+        var ops = TSubgroupFinder.GetExpandedOps(sn);
+        var c = GetPrimitiveBasis(sn);
+        var cInv = RationalMatrix.Invert3(c) ?? throw new InvalidOperationException("candidate primitive basis is singular");
+
+        var linKeys = new List<int[]>();
+        var rt = new List<Fraction[]>();
+        foreach (var op in ops)
+        {
+            var key = LinKeyOf(op);
+            if (linKeys.Any(k => SameIntVec(k, key))) continue;
+            linKeys.Add(key);
+            var t = op.SeitzTranslation;
+            rt.Add([Fraction.FromDouble(t.U), Fraction.FromDouble(t.V), Fraction.FromDouble(t.W)]);
+        }
+        int m = linKeys.Count;
+        var aCand = new int[m][];
+        for (int i = 0; i < m; i++)
+        {
+            var af = RationalMatrix.Mul(RationalMatrix.Mul(cInv, RationalMatrix.FromInt(linKeys[i])), c);
+            aCand[i] = RationalMatrix.ToIntOrNull(af) ?? throw new InvalidOperationException($"candidate C^-1 R C not integral (sn={sn})");
+        }
+
+        var centering = new List<Fraction[]>();
+        foreach (var op in ops)
+        {
+            if (!IsIdentityLin(LinKeyOf(op))) continue;
+            var t = op.SeitzTranslation;
+            var v = RationalMatrix.ModVec1([Fraction.FromDouble(t.U), Fraction.FromDouble(t.V), Fraction.FromDouble(t.W)]);
+            if (!centering.Any(x => RationalMatrix.VecEquals(x, v))) centering.Add(v);
+        }
+
+        var data = new CandidateData { LinKeys = [.. linKeys], CInv = cInv, ACand = aCand, Rt = [.. rt], Centering = [.. centering] };
+        _candidateCache[sn] = data;
+        return data;
+    }
+
+    /// <summary>点群位数 (相異なる線形部数) ごとに候補設定の通し番号をまとめた索引 (初回のみ全 530 設定を走査)。
+    /// U 探索のたびに全設定を試すコストを避けるための絞り込み。260705Cl 追加。</summary>
+    private static Dictionary<int, List<int>> CandidatesByOrder()
+    {
+        if (_candidatesByOrder != null) return _candidatesByOrder;
+        var map = new Dictionary<int, List<int>>();
+        for (int sn = 1; sn < SymmetryStatic.TotalSpaceGroupNumber; sn++)
+        {
+            if (SymmetryStatic.Symmetries[sn].SpaceGroupNumber == 0) continue;
+            int order = BuildCandidateData(sn).LinKeys.Length;
+            if (!map.TryGetValue(order, out var list)) map[order] = list = [];
+            list.Add(sn);
+        }
+        _candidatesByOrder = map;
+        return map;
+    }
+
+    /// <summary>親空間群 parentSn の complement (T′=hnf, σ=sigma) を型同定する。
+    /// 成功時 (childSn, P, p)（x_parent = P·x_child + p、親慣用胞座標、Fraction）、失敗時 (-1, null, null)。
+    /// 260705Cl 追加 (Phase 2c Step3)。</summary>
+    public static (int Child, Fraction[] P, Fraction[] Shift) IdentifyK(int parentSn, int[] hnf, int[] sigma)
+    {
+        var pg = BuildPointGroupData(parentSn);
+        var q = BuildQuotient(pg, hnf);
+        int m = pg.LinKeys.Length;
+
+        var basis = GetPrimitiveBasis(parentSn);
+        var hFrac = RationalMatrix.FromInt(hnf);
+        var hInv = RationalMatrix.Invert3(hFrac) ?? throw new InvalidOperationException("HNF is singular");
+        var s = RationalMatrix.Mul(basis, hFrac); // S = B·H (親慣用胞座標、T′ の primitive 基底)
+
+        // A_H[i] = H⁻¹·A[i]·H (T′ 自身の座標系での親点群の表現。Step1 の point-group-invariant 検証により必ず整数)
+        var aH = new int[m][];
+        for (int i = 0; i < m; i++)
+        {
+            var af = RationalMatrix.Mul(RationalMatrix.Mul(hInv, RationalMatrix.FromInt(pg.A[i])), hFrac);
+            aH[i] = RationalMatrix.ToIntOrNull(af) ?? throw new InvalidOperationException($"H^-1 A H not integral (sn={parentSn}) — sublattice is not point-group-invariant");
+        }
+
+        // H の実際の並進 (親慣用胞座標、無還元): t_parent[i] = B·(t0[i]+reps[σ(i)])
+        var tParent = new Fraction[m][];
+        for (int i = 0; i < m; i++)
+        {
+            var repI = q.Reps[sigma[i]];
+            var sum = RationalMatrix.AddVec(pg.T0[i], [new Fraction(repI[0]), new Fraction(repI[1]), new Fraction(repI[2])]);
+            tParent[i] = RationalMatrix.MulVec(basis, sum);
+        }
+
+        var byOrder = CandidatesByOrder();
+        if (!byOrder.TryGetValue(m, out var candList)) return (-1, null, null);
+
+        foreach (int k in new[] { 1, 2 })
+        {
+            foreach (var u in SmallUnimodular(k))
+            {
+                var uFrac = RationalMatrix.FromInt(u);
+                var uInv = RationalMatrix.Invert3(uFrac); // det=±1 なので必ず存在
+
+                var conjugated = new int[m][];
+                bool intAll = true;
+                for (int i = 0; i < m && intAll; i++)
+                {
+                    var cf = RationalMatrix.Mul(RationalMatrix.Mul(uInv, RationalMatrix.FromInt(aH[i])), uFrac);
+                    var ci = RationalMatrix.ToIntOrNull(cf);
+                    if (ci == null) { intAll = false; break; } // U が unimodular なら理論上必ず整数 (防御的チェック)
+                    conjugated[i] = ci;
+                }
+                if (!intAll) continue;
+
+                foreach (var candSn in candList)
+                {
+                    var cand = BuildCandidateData(candSn);
+                    if (!SetEqualsIntMats(conjugated, cand.ACand)) continue;
+
+                    var p = RationalMatrix.Mul(RationalMatrix.Mul(s, uFrac), cand.CInv);
+                    var pInv = RationalMatrix.Invert3(p);
+                    if (pInv == null) continue;
+
+                    var rChild = new int[m][];
+                    var tChild = new Fraction[m][];
+                    bool ok = true;
+                    for (int i = 0; i < m && ok; i++)
+                    {
+                        var rf = RationalMatrix.Mul(RationalMatrix.Mul(pInv, RationalMatrix.FromInt(pg.LinKeys[i])), p);
+                        var ri = RationalMatrix.ToIntOrNull(rf);
+                        if (ri == null) { ok = false; break; }
+                        rChild[i] = ri;
+                        tChild[i] = RationalMatrix.MulVec(pInv, tParent[i]);
+                    }
+                    if (!ok) continue;
+
+                    var origin = SolveOriginShiftK(rChild, tChild, cand);
+                    if (origin == null) continue;
+
+                    var pShift = RationalMatrix.MulVec(p, origin);
+                    return (candSn, p, pShift);
+                }
+            }
+        }
+        return (-1, null, null);
+    }
+
+    private static bool SetEqualsIntMats(int[][] a, int[][] b)
+    {
+        if (a.Length != b.Length) return false;
+        var used = new bool[b.Length];
+        foreach (var m in a)
+        {
+            int idx = -1;
+            for (int j = 0; j < b.Length; j++)
+                if (!used[j] && SameIntVec(m, b[j])) { idx = j; break; }
+            if (idx < 0) return false;
+            used[idx] = true;
+        }
+        return true;
+    }
+
+    /// <summary>子基準系の操作集合 (rChild,tChild、無還元) が候補設定と原点シフト q で一致するかを検証し、
+    /// 一致すれば q (candidate 座標系) を返す。既存 TSubgroupFinder.SolveOriginShift の Fraction 厳密版
+    /// (k- は index 2/3/4 由来の分数が 1/24 格子スナップに乗りにくいため厳密演算が必要)。260705Cl 追加。</summary>
+    private static Fraction[] SolveOriginShiftK(int[][] rChild, Fraction[][] tChild, CandidateData cand)
+    {
+        int m = rChild.Length;
+        var setB = new HashSet<string>();
+        for (int i = 0; i < cand.LinKeys.Length; i++)
+            foreach (var c in cand.Centering)
+                setB.Add(KeyOfK(cand.LinKeys[i], RationalMatrix.ModVec1(RationalMatrix.AddVec(cand.Rt[i], c))));
+
+        int pivot = -1;
+        Fraction[] rmiInv = null;
+        for (int i = 0; i < m; i++)
+        {
+            Fraction[] rmi = [rChild[i][0] - 1, rChild[i][1], rChild[i][2], rChild[i][3], rChild[i][4] - 1, rChild[i][5], rChild[i][6], rChild[i][7], rChild[i][8] - 1];
+            var invRmi = RationalMatrix.Invert3(rmi);
+            if (invRmi != null) { pivot = i; rmiInv = invRmi; break; }
+        }
+
+        var qCands = new List<Fraction[]>();
+        if (pivot >= 0)
+        {
+            int candIdx = -1;
+            for (int j = 0; j < cand.LinKeys.Length; j++)
+                if (SameIntVec(cand.LinKeys[j], rChild[pivot])) { candIdx = j; break; }
+            if (candIdx < 0) return null; // 呼び出し元で線形部集合の一致は確認済みのため理論上起きない
+
+            foreach (var cc in cand.Centering)
+            {
+                var ts = RationalMatrix.AddVec(cand.Rt[candIdx], cc);
+                for (int nx = -1; nx <= 1; nx++)
+                    for (int ny = -1; ny <= 1; ny++)
+                        for (int nz = -1; nz <= 1; nz++)
+                        {
+                            Fraction[] d = [ts[0] - tChild[pivot][0] + nx, ts[1] - tChild[pivot][1] + ny, ts[2] - tChild[pivot][2] + nz];
+                            var qc = RationalMatrix.ModVec1(RationalMatrix.MulVec(rmiInv, d));
+                            if (!qCands.Any(x => RationalMatrix.VecEquals(x, qc))) qCands.Add(qc);
+                        }
+            }
+        }
+        else
+        {
+            for (int i = 0; i < 24; i++)
+                for (int j = 0; j < 24; j++)
+                    for (int k2 = 0; k2 < 24; k2++)
+                        qCands.Add([new Fraction(i, 24), new Fraction(j, 24), new Fraction(k2, 24)]);
+        }
+
+        foreach (var qc in qCands)
+        {
+            var setA = new HashSet<string>();
+            bool ok = true;
+            for (int i = 0; i < m && ok; i++)
+            {
+                var rq = RationalMatrix.MulVec(RationalMatrix.FromInt(rChild[i]), qc);
+                var shift = RationalMatrix.SubVec(rq, qc); // (R-I)q
+                var t2 = RationalMatrix.AddVec(tChild[i], shift);
+                foreach (var cc in cand.Centering)
+                {
+                    var key = KeyOfK(rChild[i], RationalMatrix.ModVec1(RationalMatrix.AddVec(t2, cc)));
+                    if (!setB.Contains(key)) { ok = false; break; }
+                    setA.Add(key);
+                }
+            }
+            if (ok && setA.Count == setB.Count) return qc;
+        }
+        return null;
+    }
+
+    private static string KeyOfK(int[] r, Fraction[] t) => $"{string.Join(" ", r)}|{t[0]}/{t[1]}/{t[2]}";
+    #endregion
 }
