@@ -626,7 +626,7 @@ public static class KSubgroupFinder
         var byOrder = CandidatesByOrder();
         if (!byOrder.TryGetValue(m, out var candList)) return (-1, null, null);
 
-        foreach (int k in new[] { 1, 2 })
+        foreach (int k in new[] { 1, 2, 3 })
         {
             foreach (var u in SmallUnimodular(k))
             {
@@ -703,63 +703,109 @@ public static class KSubgroupFinder
             foreach (var c in cand.Centering)
                 setB.Add(KeyOfK(cand.LinKeys[i], RationalMatrix.ModVec1(RationalMatrix.AddVec(cand.Rt[i], c))));
 
-        int pivot = -1;
-        Fraction[] rmiInv = null;
-        for (int i = 0; i < m; i++)
+        // 260705Cl 修正 (codex R5 指摘): 旧実装は候補 q を nx,ny,nz∈{-1,0,1} の 27 通りに固定していたが、
+        // これは Z³/(R-I)Z³ の完全代表系である保証がない (例: det(R-I)=-4 の roto-inversion では
+        // mod4 の代表 {-1,0,1}≡{3,0,1} が剰余 "2" を取り逃がす)。Z³/(R-I)Z³ (位数|det(R-I)|) を
+        // Step2 の coset 代表構築と同じ手法 (0..|det|-1 の箱を総当たり→正準ラベルで重複除去) で
+        // 安全に列挙する。最初に見つかった pivot で q が見つからなければ、他の full-rank pivot も試す
+        // (実装途中の中心化展開・候補対応のズレを拾いやすくするための保険、codex 提案)。
+        for (int pivot = 0; pivot < m; pivot++)
         {
-            Fraction[] rmi = [rChild[i][0] - 1, rChild[i][1], rChild[i][2], rChild[i][3], rChild[i][4] - 1, rChild[i][5], rChild[i][6], rChild[i][7], rChild[i][8] - 1];
-            var invRmi = RationalMatrix.Invert3(rmi);
-            if (invRmi != null) { pivot = i; rmiInv = invRmi; break; }
-        }
+            var rmiInt = new[] { rChild[pivot][0] - 1, rChild[pivot][1], rChild[pivot][2], rChild[pivot][3], rChild[pivot][4] - 1, rChild[pivot][5], rChild[pivot][6], rChild[pivot][7], rChild[pivot][8] - 1 };
+            var rmi = RationalMatrix.FromInt(rmiInt);
+            var rmiInv = RationalMatrix.Invert3(rmi);
+            if (rmiInv == null) continue; // det(R-I)=0: この操作は origin shift を決められない (screw/glide 等)
 
-        var qCands = new List<Fraction[]>();
-        if (pivot >= 0)
-        {
             int candIdx = -1;
             for (int j = 0; j < cand.LinKeys.Length; j++)
                 if (SameIntVec(cand.LinKeys[j], rChild[pivot])) { candIdx = j; break; }
-            if (candIdx < 0) return null; // 呼び出し元で線形部集合の一致は確認済みのため理論上起きない
+            if (candIdx < 0) continue; // 呼び出し元で線形部集合の一致は確認済みのため理論上起きない
 
+            var zReps = QuotientRepsForFullRankM(rmiInt);
+            var qCands = new List<Fraction[]>();
             foreach (var cc in cand.Centering)
             {
-                var ts = RationalMatrix.AddVec(cand.Rt[candIdx], cc);
-                for (int nx = -1; nx <= 1; nx++)
-                    for (int ny = -1; ny <= 1; ny++)
-                        for (int nz = -1; nz <= 1; nz++)
-                        {
-                            Fraction[] d = [ts[0] - tChild[pivot][0] + nx, ts[1] - tChild[pivot][1] + ny, ts[2] - tChild[pivot][2] + nz];
-                            var qc = RationalMatrix.ModVec1(RationalMatrix.MulVec(rmiInv, d));
-                            if (!qCands.Any(x => RationalMatrix.VecEquals(x, qc))) qCands.Add(qc);
-                        }
-            }
-        }
-        else
-        {
-            for (int i = 0; i < 24; i++)
-                for (int j = 0; j < 24; j++)
-                    for (int k2 = 0; k2 < 24; k2++)
-                        qCands.Add([new Fraction(i, 24), new Fraction(j, 24), new Fraction(k2, 24)]);
-        }
-
-        foreach (var qc in qCands)
-        {
-            var setA = new HashSet<string>();
-            bool ok = true;
-            for (int i = 0; i < m && ok; i++)
-            {
-                var rq = RationalMatrix.MulVec(RationalMatrix.FromInt(rChild[i]), qc);
-                var shift = RationalMatrix.SubVec(rq, qc); // (R-I)q
-                var t2 = RationalMatrix.AddVec(tChild[i], shift);
-                foreach (var cc in cand.Centering)
+                var diff = RationalMatrix.SubVec(RationalMatrix.AddVec(cand.Rt[candIdx], cc), tChild[pivot]);
+                foreach (var z in zReps)
                 {
-                    var key = KeyOfK(rChild[i], RationalMatrix.ModVec1(RationalMatrix.AddVec(t2, cc)));
-                    if (!setB.Contains(key)) { ok = false; break; }
-                    setA.Add(key);
+                    var qc = RationalMatrix.ModVec1(RationalMatrix.MulVec(rmiInv, RationalMatrix.AddVec(diff, z)));
+                    if (!qCands.Any(x => RationalMatrix.VecEquals(x, qc))) qCands.Add(qc);
                 }
             }
-            if (ok && setA.Count == setB.Count) return qc;
+
+            foreach (var qc in qCands)
+            {
+                var setA = new HashSet<string>();
+                bool ok = true;
+                for (int i = 0; i < m && ok; i++)
+                {
+                    var rq = RationalMatrix.MulVec(RationalMatrix.FromInt(rChild[i]), qc);
+                    var shift = RationalMatrix.SubVec(rq, qc); // (R-I)q
+                    var t2 = RationalMatrix.AddVec(tChild[i], shift);
+                    foreach (var cc in cand.Centering)
+                    {
+                        var key = KeyOfK(rChild[i], RationalMatrix.ModVec1(RationalMatrix.AddVec(t2, cc)));
+                        if (!setB.Contains(key)) { ok = false; break; }
+                        setA.Add(key);
+                    }
+                }
+                if (ok && setA.Count == setB.Count) return qc;
+            }
         }
+
+        // 全操作が並進のみを固定する特殊ケース (全線形部で det(R-I)=0、通常起きない) — 1/24 格子総当たりへフォールバック
+        for (int i = 0; i < 24; i++)
+            for (int j = 0; j < 24; j++)
+                for (int k2 = 0; k2 < 24; k2++)
+                {
+                    var qc = new Fraction[] { new(i, 24), new(j, 24), new(k2, 24) };
+                    var setA = new HashSet<string>();
+                    bool ok = true;
+                    for (int ii = 0; ii < m && ok; ii++)
+                    {
+                        var rq = RationalMatrix.MulVec(RationalMatrix.FromInt(rChild[ii]), qc);
+                        var shift = RationalMatrix.SubVec(rq, qc);
+                        var t2 = RationalMatrix.AddVec(tChild[ii], shift);
+                        foreach (var cc in cand.Centering)
+                        {
+                            var key = KeyOfK(rChild[ii], RationalMatrix.ModVec1(RationalMatrix.AddVec(t2, cc)));
+                            if (!setB.Contains(key)) { ok = false; break; }
+                            setA.Add(key);
+                        }
+                    }
+                    if (ok && setA.Count == setB.Count) return qc;
+                }
         return null;
+    }
+
+    private static readonly Dictionary<string, List<Fraction[]>> _quotientRepsCache = [];
+
+    /// <summary>整数行列 M (det≠0) について Z³/MZ³ (位数|det(M)|) の完全代表系を安全に構築する
+    /// (0..|det|-1 の箱を総当たりし、M⁻¹v mod1 を正準ラベルとして重複除去、|det| 個集まったら確定)。
+    /// M·adj(M)=det(M)·I なので、この箱に完全代表系が含まれることは保証される。260705Cl 追加 (Phase 2c Step3)。</summary>
+    private static List<Fraction[]> QuotientRepsForFullRankM(int[] m)
+    {
+        var cacheKey = string.Join(",", m);
+        if (_quotientRepsCache.TryGetValue(cacheKey, out var cached)) return cached;
+
+        var mInv = RationalMatrix.Invert3(RationalMatrix.FromInt(m)) ?? throw new InvalidOperationException("M is singular");
+        int d = Math.Abs((int)RationalMatrix.Det3(RationalMatrix.FromInt(m)).Num);
+
+        var reps = new List<Fraction[]>();
+        var seen = new HashSet<string>();
+        for (int x = 0; x < d && reps.Count < d; x++)
+            for (int y = 0; y < d && reps.Count < d; y++)
+                for (int z = 0; z < d && reps.Count < d; z++)
+                {
+                    Fraction[] v = [x, y, z];
+                    var label = RationalMatrix.ModVec1(RationalMatrix.MulVec(mInv, v));
+                    if (seen.Add($"{label[0]}/{label[1]}/{label[2]}")) reps.Add(v);
+                }
+        if (reps.Count != d)
+            throw new InvalidOperationException($"failed to enumerate Z^3/MZ^3 (got {reps.Count}, expect {d})");
+
+        _quotientRepsCache[cacheKey] = reps;
+        return reps;
     }
 
     private static string KeyOfK(int[] r, Fraction[] t) => $"{string.Join(" ", r)}|{t[0]}/{t[1]}/{t[2]}";
