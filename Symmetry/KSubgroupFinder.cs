@@ -810,4 +810,177 @@ public static class KSubgroupFinder
 
     private static string KeyOfK(int[] r, Fraction[] t) => $"{string.Join(" ", r)}|{t[0]}/{t[1]}/{t[2]}";
     #endregion
+
+    #region 極大 k-部分群 (Step 4, GroupRelation(Kind=K) への配線)
+    // 260705Cl 追加 (Phase 2c Step4)。設計は codex との5回目の相談で確定
+    // (.project-guidance/ReciPro_FormGroupRelations改修計画.md §4.1 item5)。
+    //
+    // 極大性判定: index n の complement H (T′=hnf) が非極大なのは、T′⊊T″⊊T な point-group-invariant
+    // 中間格子 T″ (index n の真の約数、index2 のみ既存 index=2/3/4 列挙内で該当し得る) が存在し、
+    // かつその T″ 上の何らかの complement H″ が H を包含する (各線形部で H の並進が H″ の並進と
+    // T″ を法として一致する) ときに限る。index2/3 は中間指数が無いので自動的に極大。
+    private static readonly Dictionary<int, GroupRelation[]> _kCache = [];
+    private static readonly object _kLock = new();
+
+    /// <summary>親空間群 (通し番号) の maximal k-部分群を共役類単位で返す (index 2,3,4)。計算は初回のみ (キャッシュ)。
+    /// 260705Cl 追加 (Phase 2c Step4)。</summary>
+    public static GroupRelation[] GetMaximalKSubgroups(int seriesNumber)
+    {
+        lock (_kLock)
+        {
+            if (_kCache.TryGetValue(seriesNumber, out var cached)) return cached;
+            var result = ComputeMaximalK(seriesNumber);
+            _kCache[seriesNumber] = result;
+            return result;
+        }
+    }
+
+    private sealed class RawComplement
+    {
+        public int[] Hnf;
+        public int Index;
+        public int[] Sigma;
+        public bool IsMaximal = true;
+    }
+
+    private static GroupRelation[] ComputeMaximalK(int sn)
+    {
+        var pg = BuildPointGroupData(sn);
+        int m = pg.LinKeys.Length;
+
+        var byIndex = new Dictionary<int, List<int[]>>();
+        var raws = new List<RawComplement>();
+        foreach (int index in new[] { 2, 3, 4 })
+        {
+            var inv = FilterPointGroupInvariant(sn, EnumerateHnf(index));
+            byIndex[index] = inv;
+            foreach (var hnf in inv)
+                foreach (var sigma in EnumerateComplements(sn, hnf))
+                    raws.Add(new RawComplement { Hnf = hnf, Index = index, Sigma = sigma });
+        }
+
+        // index4 のみ、index2 の中間格子を経由できるか確認する。
+        foreach (var fine in raws)
+        {
+            if (fine.Index != 4) continue;
+            var fineQ = BuildQuotient(pg, fine.Hnf);
+            foreach (var coarseHnf in byIndex[2])
+            {
+                if (!IsLatticeSubset(coarseHnf, fine.Hnf)) continue; // T′(fine) ⊂ T″(coarse) か
+                var coarseQ = BuildQuotient(pg, coarseHnf);
+                foreach (var coarseSigma in EnumerateComplements(sn, coarseHnf))
+                {
+                    bool contained = true;
+                    for (int i = 0; i < m; i++)
+                    {
+                        int mapped = CosetIndexOf(coarseQ, coarseHnf, fineQ.Reps[fine.Sigma[i]]);
+                        if (mapped != coarseSigma[i]) { contained = false; break; }
+                    }
+                    if (contained) { fine.IsMaximal = false; break; }
+                }
+                if (!fine.IsMaximal) break;
+            }
+        }
+
+        var result = new List<GroupRelation>();
+        int classIdCounter = 0;
+        foreach (var grp in raws.Where(r => r.IsMaximal).GroupBy(r => string.Join(",", r.Hnf)))
+        {
+            var hnf = grp.First().Hnf;
+            var sigmas = grp.Select(r => r.Sigma).ToList();
+            foreach (var cls in GroupComplementsByConjugacy(sn, hnf, sigmas))
+            {
+                result.Add(BuildGroupRelation(sn, pg, hnf, cls[0], classIdCounter, cls.Count));
+                classIdCounter++;
+            }
+        }
+        return [.. result.OrderBy(r => r.Index).ThenBy(r => r.ChildSeriesNumber < 0 ? 1 : 0).ThenBy(r => r.ChildSeriesNumber)];
+    }
+
+    /// <summary>T′(fineHnf) ⊆ T″(coarseHnf) か (fineHnf の列が coarseHnf の列の整数combinationで表せるか)。260705Cl 追加。</summary>
+    private static bool IsLatticeSubset(int[] coarseHnf, int[] fineHnf)
+    {
+        var coarseInv = RationalMatrix.Invert3(RationalMatrix.FromInt(coarseHnf));
+        if (coarseInv == null) return false;
+        return RationalMatrix.ToIntOrNull(RationalMatrix.Mul(coarseInv, RationalMatrix.FromInt(fineHnf))) != null;
+    }
+
+    /// <summary>整数ベクトル v (primitive 座標) が Q=G/hnf のどの coset に属するかを返す。260705Cl 追加。</summary>
+    private static int CosetIndexOf(QuotientData q, int[] hnf, long[] v)
+    {
+        var hInv = RationalMatrix.Invert3(RationalMatrix.FromInt(hnf)) ?? throw new InvalidOperationException("HNF is singular");
+        var label = RationalMatrix.ModVec1(RationalMatrix.MulVec(hInv, [new Fraction(v[0]), new Fraction(v[1]), new Fraction(v[2])]));
+        for (int t = 0; t < q.Labels.Length; t++)
+            if (RationalMatrix.VecEquals(q.Labels[t], label)) return t;
+        throw new InvalidOperationException("coset representative not found");
+    }
+
+    /// <summary>1 つの complement (T′=hnf, σ=sigma) から GroupRelation (Kind=K) を構築する。260705Cl 追加。</summary>
+    private static GroupRelation BuildGroupRelation(int sn, PointGroupData pg, int[] hnf, int[] sigma, int classId, int conjugateCount)
+    {
+        var q = BuildQuotient(pg, hnf);
+        int m = pg.LinKeys.Length;
+        var basis = GetPrimitiveBasis(sn);
+        var (child, pFrac, shiftFrac) = IdentifyK(sn, hnf, sigma);
+
+        var baseOpByLin = new SymmetryOperation?[m];
+        foreach (var op in TSubgroupFinder.GetExpandedOps(sn))
+        {
+            var key = LinKeyOf(op);
+            int idx = -1;
+            for (int i = 0; i < m; i++) if (SameIntVec(pg.LinKeys[i], key)) { idx = i; break; }
+            if (idx >= 0 && baseOpByLin[idx] == null) baseOpByLin[idx] = op;
+        }
+
+        var reps = new SymmetryOperation[m];
+        for (int i = 0; i < m; i++)
+        {
+            var repI = q.Reps[sigma[i]];
+            var targetPrim = RationalMatrix.AddVec(pg.T0[i], [new Fraction(repI[0]), new Fraction(repI[1]), new Fraction(repI[2])]);
+            var targetConv = RationalMatrix.MulVec(basis, targetPrim);
+            var baseOp = baseOpByLin[i].Value;
+            var baseT = baseOp.SeitzTranslation;
+            reps[i] = new SymmetryOperation(baseOp, sn, ToDouble(targetConv[0]) - baseT.U, ToDouble(targetConv[1]) - baseT.V, ToDouble(targetConv[2]) - baseT.W);
+        }
+
+        // CosetRepresentatives: T/T′ の非自明な coset (恒等 coset=T′自身を除く) を代表する純並進操作。
+        var identityOp = baseOpByLin[pg.E].Value;
+        var identityT = identityOp.SeitzTranslation;
+        var cosetReps = new List<SymmetryOperation>();
+        for (int c = 1; c < q.N; c++)
+        {
+            var targetConv = RationalMatrix.MulVec(basis, [new Fraction(q.Reps[c][0]), new Fraction(q.Reps[c][1]), new Fraction(q.Reps[c][2])]);
+            cosetReps.Add(new SymmetryOperation(identityOp, sn, ToDouble(targetConv[0]) - identityT.U, ToDouble(targetConv[1]) - identityT.V, ToDouble(targetConv[2]) - identityT.W));
+        }
+
+        double[] pDouble = null, shiftDouble = null;
+        if (pFrac != null)
+        {
+            pDouble = [.. pFrac.Select(ToDouble)];
+            shiftDouble = [.. shiftFrac.Select(ToDouble)];
+        }
+        string pointGroupHM = SymmetryStatic.Symmetries[sn].PointGroupHMStr switch { "2mm" or "m2m" => "mm2", var t2 => t2 };
+
+        return new GroupRelation
+        {
+            Kind = GroupRelationKind.K,
+            ParentSeriesNumber = sn,
+            Index = q.N,
+            ConjugacyClassId = classId,
+            ConjugateCount = conjugateCount,
+            PointGroupHM = pointGroupHM,
+            // 260705Cl: Operations は Representatives と同一 (親胞 mod1 の軌道生成・消滅則判定には未対応。
+            // k- 専用の Orbit splitting / New reflections ロジックは Phase 2d 以降の課題、UI 側でガードする)。
+            Operations = reps,
+            Representatives = reps,
+            CosetRepresentatives = [.. cosetReps],
+            ChildSeriesNumber = child,
+            TransformP = pDouble,
+            TransformShift = shiftDouble,
+            SublatticeBasis = [.. RationalMatrix.Mul(basis, RationalMatrix.FromInt(hnf)).Select(ToDouble)],
+        };
+    }
+
+    private static double ToDouble(Fraction f) => (double)f.Num / (double)f.Den;
+    #endregion
 }
