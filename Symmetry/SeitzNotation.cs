@@ -117,13 +117,15 @@ public static class SeitzNotation
     public static string Seitz(in SymmetryOperation op)
     {
         int order = op.Order;
-        if (order == 1) return "1";
-        if (order == -1) return "-1";
+        var t = op.SeitzTranslation; // 260708Ch: 中心化並進を 1/-1 でも落とさない
+        string trans = HasTranslation(t) ? $" {FractionTriplet(t)}" : ""; // 260708Ch
+        //if (order == 1) return "1"; // 260708Ch: F/I/A/B/C/R 格子の中心化並進が消えていた
+        //if (order == -1) return "-1"; // 260708Ch
+        if (order == 1) return $"1{trans}"; // 260708Ch
+        if (order == -1) return $"-1{trans}"; // 260708Ch
 
         string rot = RotationSymbol(order, op.Sense); // 例 "3+", "m", "-4+"
         string dir = DirectionStr(op.Direction);
-        var t = op.SeitzTranslation;
-        string trans = HasTranslation(t) ? $" {FractionTriplet(t)}" : "";
         return $"{rot} {dir}{trans}".TrimEnd();
     }
 
@@ -136,6 +138,40 @@ public static class SeitzNotation
         string s = n >= 3 ? (sense ? "+" : "-") : ""; // 2 回は向きの区別なし
         return $"{sign}{n}{s}";
     }
+
+    /// <summary>ITA 流の Seitz 記号を LaTeX の {R|t} 記法へ整形する (FormSymmetryInformation の Operations タブ用)。
+    /// 260708Ch 追加: 旧実装 (FormSymmetryInformation.SeitzToLatex) は Seitz() が返す文字列を正規表現で再パースして
+    /// LaTeX へ組み直していたが、Seitz() と同じ構造データ (Order/Sense/Direction/SeitzTranslation) から直接組み立てる形に刷新。</summary>
+    public static string SeitzLatex(in SymmetryOperation op)
+    {
+        int order = op.Order;
+        var t = op.SeitzTranslation;
+        string trans = (HasTranslation(t) ? FractionTriplet(t) : "0,0,0").Replace(",", @",\,");
+
+        if (order == 1) return $@"\{{\,1\mid {trans}\,\}}";
+        if (order == -1) return $@"\{{\,\bar{{1}}\mid {trans}\,\}}";
+
+        string rot = RotationSymbolLatex(order, op.Sense);
+        string dir = $"_{{{DirectionLatex(op.Direction)}}}";
+        return $@"\{{\,{rot}{dir}\mid {trans}\,\}}";
+    }
+
+    /// <summary>RotationSymbol の LaTeX 版。回反 (負の order) は \bar{n}、n≧3 の向き (+/-) は上付きにする。260708Ch 追加。</summary>
+    private static string RotationSymbolLatex(int order, bool sense)
+    {
+        if (order == -2) return "m";
+        int n = Math.Abs(order);
+        string body = order < 0 ? $@"\bar{{{n}}}" : I(n);
+        string s = n >= 3 ? (sense ? "^{+}" : "^{-}") : "";
+        return $"{body}{s}";
+    }
+
+    /// <summary>DirectionStr の LaTeX 版。負の成分を \bar{} で包む。文字列を正規表現で再分割せず (int U,V,W)
+    /// から直接組み立てるため、DirectionStr の桁連結表記 (例 "[1-10]") が抱える複数桁成分の曖昧さを引きずらない。260708Ch 追加。</summary>
+    private static string DirectionLatex((int U, int V, int W) d)
+        => $"{Bar(d.U)}{Bar(d.V)}{Bar(d.W)}";
+
+    private static string Bar(int v) => v < 0 ? $@"\bar{{{I(-v)}}}" : I(v);
     #endregion
 
     #region 幾何的解釈 (例 "3-fold rotation [111]", "c-glide ⊥[001]")
@@ -144,8 +180,17 @@ public static class SeitzNotation
     public static string GeometricType(in SymmetryOperation op)
     {
         int order = op.Order;
-        if (order == 1) return "Identity";
-        if (order == -1) return $"Inversion centre at {PointStr(op.Position)}";
+        if (order == 1) // 260708Ch: 中心化並進つき {1|t} は Identity ではなく純並進として表示
+        {
+            var t = op.SeitzTranslation; // 260708Ch
+            return HasTranslation(t) ? $"Translation {FractionTriplet(t)}" : "Identity"; // 260708Ch
+        }
+        //if (order == -1) return $"Inversion centre at {PointStr(op.Position)}"; // 260708Ch: {-1|t} の中心は t/2
+        if (order == -1) // 260708Ch
+        {
+            var t = op.SeitzTranslation; // 260708Ch
+            return $"Inversion centre at {PointStr((t.U / 2, t.V / 2, t.W / 2))}"; // 260708Ch
+        }
 
         var dir = op.Direction;
         int n = Math.Abs(order);
