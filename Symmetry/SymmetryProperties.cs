@@ -105,7 +105,8 @@ public sealed class SymmetryProperties
         // --- 小テーブル / 合成 ---
         int itno = sym.SpaceGroupNumber;
         IsSymmorphic = SymmorphicNumbers.Contains(itno);
-        EnantiomorphPartnerNumber = EnantiomorphPairs.TryGetValue(itno, out var partner) ? partner : 0;
+        //EnantiomorphPartnerNumber = EnantiomorphPairs.TryGetValue(itno, out var partner) ? partner : 0; // 260708Cl: 静的入口へ一本化
+        EnantiomorphPartnerNumber = GetEnantiomorphPartnerNumber(itno);
         HasEnantiomorph = EnantiomorphPartnerNumber != 0;
 
         string lat = sym.LatticeTypeStr;
@@ -310,5 +311,9 @@ public sealed class SymmetryProperties
         [180] = 181, [181] = 180, // P6₂22 / P6₄22
         [212] = 213, [213] = 212, // P4₃32 / P4₁32
     };
+
+    /// <summary>掌性対の相手の IT 番号を返す (無ければ 0)。260708Cl 追加: KSubgroupFinder の同型 (IIc) 判定と
+    /// テーブルを共有するための静的入口 (二重保守防止)。</summary>
+    public static int GetEnantiomorphPartnerNumber(int itNumber) => EnantiomorphPairs.GetValueOrDefault(itNumber);
     #endregion
 }

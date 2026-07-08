@@ -12,8 +12,8 @@ using System.Collections.Concurrent; // 260708Cl 追加: 並列化に伴うキ�
 using System.Collections.Generic;
 using System.Linq;
 using System.Numerics;
-using System.Threading;
-using System.Threading.Tasks;
+using System.Threading; // 260708Cl 追加: 並列化 (LazyThreadSafetyMode)
+using System.Threading.Tasks; // 260708Cl 追加: 並列化 (Parallel/Task)
 
 namespace Crystallography;
 
@@ -674,7 +674,12 @@ public static class KSubgroupFinder
         // det(U) の符号は (S, 候補 C) から事前に決まる。これで 2 パス化しても U ごとの共役フィルタは
         // どちらか一方のパスでしか走らず、総探索量は 1 パス時と同じに保たれる。
         int sSign = RationalMatrix.Det3(s).Sign;
-        var candDetSigns = candList.Select(c => BuildCandidateData(c).CDetSign).Distinct().ToArray();
+        // 260708Cl (/simplify): 候補データを事前に配列へホイスト。旧実装は最内ループ (u × 候補) で毎回
+        // BuildCandidateData (ConcurrentDictionary.GetOrAdd) を引いていたが、candList は呼び出し中不変。
+        var cands = new CandidateData[candList.Count];
+        for (int ci = 0; ci < candList.Count; ci++) cands[ci] = BuildCandidateData(candList[ci]);
+        //var candDetSigns = candList.Select(c => BuildCandidateData(c).CDetSign).Distinct().ToArray();
+        var candDetSigns = cands.Select(c => c.CDetSign).Distinct().ToArray();
         foreach (var (pass, k) in new[] { (0, 1), (0, 2), (0, 3), (1, 1), (1, 2), (1, 3) })
         {
             int wanted = pass == 0 ? 1 : -1; // sign(det P) の目標
@@ -704,9 +709,12 @@ public static class KSubgroupFinder
                 for (int i = 0; i < m; i++)
                     conjugated[i] = MatMulInt(MatMulInt(uInvInt, aH[i]), u);
 
-                foreach (var candSn in candList)
+                //foreach (var candSn in candList) // 260708Cl (/simplify): ホイスト済み cands を index で走査 (辞書引き排除)
+                //{
+                //    var cand = BuildCandidateData(candSn);
+                for (int ci = 0; ci < cands.Length; ci++)
                 {
-                    var cand = BuildCandidateData(candSn);
+                    var cand = cands[ci];
                     if (sSign * uDet * cand.CDetSign != wanted) continue; // 260708Cl: このパスの det(P) 符号と不一致
                     if (!SetEqualsIntMats(conjugated, cand.ACand)) continue;
 
@@ -732,7 +740,8 @@ public static class KSubgroupFinder
                     if (origin == null) continue;
 
                     var pShift = RationalMatrix.MulVec(p, origin);
-                    return (candSn, p, pShift);
+                    //return (candSn, p, pShift);
+                    return (candList[ci], p, pShift); // 260708Cl (/simplify): candSn → candList[ci]
                 }
             }
         }
@@ -1026,13 +1035,15 @@ public static class KSubgroupFinder
         throw new InvalidOperationException("coset representative not found");
     }
 
-    /// <summary>ITA の enantiomorphic 対 (11 対、双方向)。同型 (IIc) 判定は「同一タイプまたは enantiomorphic 対」。260708Cl 追加。</summary>
-    private static readonly Dictionary<int, int> _enantiomorphicPair = new()
-    {
-        { 76, 78 }, { 78, 76 }, { 91, 95 }, { 95, 91 }, { 92, 96 }, { 96, 92 }, { 144, 145 }, { 145, 144 },
-        { 151, 153 }, { 153, 151 }, { 152, 154 }, { 154, 152 }, { 169, 170 }, { 170, 169 }, { 171, 172 }, { 172, 171 },
-        { 178, 179 }, { 179, 178 }, { 180, 181 }, { 181, 180 }, { 212, 213 }, { 213, 212 },
-    };
+    // 260708Cl: enantiomorphic 対テーブルの複製を廃止し、SymmetryProperties.GetEnantiomorphPartnerNumber
+    // (既存の掌性対 11 組テーブル) へ一本化 (二重保守防止、/simplify レビュー指摘)。
+    ///// <summary>ITA の enantiomorphic 対 (11 対、双方向)。同型 (IIc) 判定は「同一タイプまたは enantiomorphic 対」。260708Cl 追加。</summary>
+    //private static readonly Dictionary<int, int> _enantiomorphicPair = new()
+    //{
+    //    { 76, 78 }, { 78, 76 }, { 91, 95 }, { 95, 91 }, { 92, 96 }, { 96, 92 }, { 144, 145 }, { 145, 144 },
+    //    { 151, 153 }, { 153, 151 }, { 152, 154 }, { 154, 152 }, { 169, 170 }, { 170, 169 }, { 171, 172 }, { 172, 171 },
+    //    { 178, 179 }, { 179, 178 }, { 180, 181 }, { 181, 180 }, { 212, 213 }, { 213, 212 },
+    //};
 
     /// <summary>1 つの complement (T′=hnf, σ=sigma) から GroupRelation (Kind=K または Isomorphic) を構築する。260705Cl 追加。
     /// 260708Cl: 呼び出し元 (ComputeMaximalK) が memo 化した QuotientData を q で渡せる (null なら構築)。</summary>
@@ -1085,7 +1096,8 @@ public static class KSubgroupFinder
         // 同型は klassengleiche の特殊例なので、データ構造とタブ表示ロジックは K と共通 (codex R7 合意)。
         int parentNo = SymmetryStatic.Symmetries[sn].SpaceGroupNumber;
         int childNo = child >= 0 ? SymmetryStatic.Symmetries[child].SpaceGroupNumber : -1;
-        bool isIso = childNo == parentNo || (_enantiomorphicPair.TryGetValue(parentNo, out int enPair) && enPair == childNo);
+        //bool isIso = childNo == parentNo || (_enantiomorphicPair.TryGetValue(parentNo, out int enPair) && enPair == childNo); // 260708Cl: テーブル一本化
+        bool isIso = childNo == parentNo || (childNo > 0 && SymmetryProperties.GetEnantiomorphPartnerNumber(parentNo) == childNo);
 
         return new GroupRelation
         {

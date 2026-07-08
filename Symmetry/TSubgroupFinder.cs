@@ -17,8 +17,8 @@ using System;
 using System.Collections.Concurrent; // 260708Cl 追加: 並列化に伴うキャッシュのスレッド安全化
 using System.Collections.Generic;
 using System.Linq;
-using System.Threading;
-using System.Threading.Tasks;
+using System.Threading; // 260708Cl 追加: 並列化 (LazyThreadSafetyMode)
+using System.Threading.Tasks; // 260708Cl 追加: 並列化 (Parallel/Task)
 
 namespace Crystallography;
 
@@ -100,6 +100,8 @@ public readonly struct OrbitPart
 public static class TSubgroupFinder
 {
     private const double Tol = 1e-6;
+    /// <summary>特殊関係 (x=y, 2x=z 等) を偶然踏まない generic サンプル点 (軌道分裂の t-/k- 共通)。260708Cl (/simplify): 2 箇所のローカル const を共有化。</summary>
+    private const double GenericX = 0.127743, GenericY = 0.291317, GenericZ = 0.437129;
     //private static readonly Dictionary<int, GroupRelation[]> _cache = []; // 260708Cl: 並列化に伴い per-type Lazy へ
     //private static readonly object _lock = new();
     private static readonly ConcurrentDictionary<int, Lazy<GroupRelation[]>> _cache = new();
@@ -183,8 +185,7 @@ public static class TSubgroupFinder
     {
         //if (sub.Kind == GroupRelationKind.K) return GetOrbitSplittingK(parentSeries, sub); // 260708Cl (Phase 2d)
         if (sub.Kind != GroupRelationKind.T) return GetOrbitSplittingK(parentSeries, sub); // 260708Cl: Isomorphic も k ロジック (同型は klassengleiche の特殊例)
-        // 特殊関係 (x=y, 2x=z 等) を偶然踏まない generic 値
-        const double gx = 0.127743, gy = 0.291317, gz = 0.437129;
+        //const double gx = 0.127743, gy = 0.291317, gz = 0.437129; // 260708Cl (/simplify): クラス定数 GenericX/Y/Z へ共有化
         var wycks = SymmetryStatic.WyckoffPositions[parentSeries];
         var parentOps = GetExpandedOps(parentSeries);
         var result = new OrbitPart[wycks.Length][];
@@ -192,7 +193,7 @@ public static class TSubgroupFinder
 
         for (int w = 0; w < wycks.Length; w++)
         {
-            var (rx, ry, rz) = wycks[w].PositionGenerator[0].Apply(gx, gy, gz);
+            var (rx, ry, rz) = wycks[w].PositionGenerator[0].Apply(GenericX, GenericY, GenericZ); // 260708Cl (/simplify)
             var orbit = GenerateOrbit(parentOps, rx, ry, rz);
             var parts = new List<OrbitPart>();
             var used = new bool[orbit.Count];
@@ -248,19 +249,20 @@ public static class TSubgroupFinder
                         continue;
 
                     // 子の等価反射 + Friedel 対で軌道を張り、代表 (辞書順最大) のみ採用
-                    var orbit = new HashSet<(int, int, int)> { (h, k, l), (-h, -k, -l) };
-                    bool grown = true;
-                    while (grown)
-                    {
-                        grown = false;
-                        foreach (var q in orbit.ToArray())
-                            foreach (var rep in sub.Representatives)
-                            {
-                                var r = rep.ConvertPlaneIndex(q.Item1, q.Item2, q.Item3);
-                                if (orbit.Add(r) | orbit.Add((-r.H, -r.K, -r.L)))
-                                    grown = true;
-                            }
-                    }
+                    //var orbit = new HashSet<(int, int, int)> { (h, k, l), (-h, -k, -l) }; // 260708Cl (/simplify): GrowReflectionOrbit へ共通化 (k-版と同一ロジック)
+                    //bool grown = true;
+                    //while (grown)
+                    //{
+                    //    grown = false;
+                    //    foreach (var q in orbit.ToArray())
+                    //        foreach (var rep in sub.Representatives)
+                    //        {
+                    //            var r = rep.ConvertPlaneIndex(q.Item1, q.Item2, q.Item3);
+                    //            if (orbit.Add(r) | orbit.Add((-r.H, -r.K, -r.L)))
+                    //                grown = true;
+                    //        }
+                    //}
+                    var orbit = GrowReflectionOrbit(sub.Representatives, h, k, l);
                     foreach (var q in orbit)
                         seen.Add(q);
                     var canon = orbit.OrderByDescending(q => q).First();
@@ -277,7 +279,7 @@ public static class TSubgroupFinder
     /// 子が未同定 (k ではほぼ発生しない) の場合は各 Wyckoff を空成分で返す。</summary>
     private static OrbitPart[][] GetOrbitSplittingK(int parentSeries, GroupRelation sub)
     {
-        const double gx = 0.127743, gy = 0.291317, gz = 0.437129; // 特殊関係を偶然踏まない generic 値
+        //const double gx = 0.127743, gy = 0.291317, gz = 0.437129; // 260708Cl (/simplify): クラス定数 GenericX/Y/Z へ共有化
         var wycks = SymmetryStatic.WyckoffPositions[parentSeries];
         var result = new OrbitPart[wycks.Length][];
         if (sub.ChildSeriesNumber < 0 || sub.TransformP == null)
@@ -308,7 +310,7 @@ public static class TSubgroupFinder
 
         for (int w = 0; w < wycks.Length; w++)
         {
-            var (rx, ry, rz) = wycks[w].PositionGenerator[0].Apply(gx, gy, gz);
+            var (rx, ry, rz) = wycks[w].PositionGenerator[0].Apply(GenericX, GenericY, GenericZ); // 260708Cl (/simplify)
             // 親 G-軌道を子座標系へ写し、格子並進コピーで子胞を満たして mod1 集約 (子胞内の全 G-軌道点)。
             // dedup は許容誤差ベースの Near で行う (座標が 1e-4 グリッド境界にちょうど乗ると整数キー方式は
             // 同一点でも演算経路差で丸めが割れて別点扱いになり、分割が過剰計上する不具合があったため)。
@@ -379,20 +381,8 @@ public static class TSubgroupFinder
                     if (IsInt(ph) && IsInt(pk) && IsInt(pl) && !IsExtinct(parentOps, (int)Math.Round(ph), (int)Math.Round(pk), (int)Math.Round(pl)))
                         continue; // 親でも許容 = 基本反射 (新規でない)
 
-                    // 子の対称等価 + Friedel 対で軌道を張り、代表 (辞書順最大) のみ採用。
-                    var orbit = new HashSet<(int, int, int)> { (h, k, l), (-h, -k, -l) };
-                    bool grown = true;
-                    while (grown)
-                    {
-                        grown = false;
-                        foreach (var q in orbit.ToArray())
-                            foreach (var op in childOps)
-                            {
-                                var r = op.ConvertPlaneIndex(q.Item1, q.Item2, q.Item3);
-                                if (orbit.Add(r) | orbit.Add((-r.H, -r.K, -r.L)))
-                                    grown = true;
-                            }
-                    }
+                    // 子の対称等価 + Friedel 対で軌道を張り、代表 (辞書順最大) のみ採用。260708Cl (/simplify): t-版と共通ヘルパー化
+                    var orbit = GrowReflectionOrbit(childOps, h, k, l);
                     foreach (var q in orbit)
                         seen.Add(q);
                     var canon = orbit.OrderByDescending(q => q).First();
@@ -408,6 +398,26 @@ public static class TSubgroupFinder
 
         list.Sort((a, b) => (a.Item1 * a.Item1 + a.Item2 * a.Item2 + a.Item3 * a.Item3).CompareTo(b.Item1 * b.Item1 + b.Item2 * b.Item2 + b.Item3 * b.Item3));
         return [.. list];
+    }
+
+    /// <summary>260708Cl 追加 (/simplify): 反射 (h,k,l) を ops の対称等価 + Friedel 対で閉じるまで成長させた軌道を返す
+    /// (GetNewReflections は sub.Representatives、GetNewReflectionsK は子の展開操作を渡す)。</summary>
+    private static HashSet<(int, int, int)> GrowReflectionOrbit(SymmetryOperation[] ops, int h, int k, int l)
+    {
+        var orbit = new HashSet<(int, int, int)> { (h, k, l), (-h, -k, -l) };
+        bool grown = true;
+        while (grown)
+        {
+            grown = false;
+            foreach (var q in orbit.ToArray())
+                foreach (var op in ops)
+                {
+                    var r = op.ConvertPlaneIndex(q.Item1, q.Item2, q.Item3);
+                    if (orbit.Add(r) | orbit.Add((-r.H, -r.K, -r.L)))
+                        grown = true;
+                }
+        }
+        return orbit;
     }
 
     private static bool IsInt(double d) => Math.Abs(d - Math.Round(d)) < 1e-4; // 260708Cl 追加
