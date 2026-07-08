@@ -19,7 +19,9 @@ using System.Linq;
 
 namespace Crystallography;
 
-/// <summary>群-部分群関係の種別。260705Cl 追加 (Phase 2e)。k/Isomorphic は将来の KSubgroupFinder 用の予約 (未使用)。</summary>
+/// <summary>群-部分群関係の種別。260705Cl 追加 (Phase 2e)。
+/// 260708Cl: K は KSubgroupFinder (Phase 2c) が使用。Isomorphic は k のうち子タイプが親と同一
+/// (または enantiomorphic 対) のもの (ITA IIc)。データ構造・タブ表示は K と共通で、ツリーの分類のみ異なる。</summary>
 public enum GroupRelationKind { T, K, Isomorphic }
 
 /// <summary>群-部分群関係の 1 共役類を表す共通 DTO (260705Cl 追加, Phase 2e。旧 TSubgroup/TSubgroupFinder.TSupergroup を統合)。
@@ -31,7 +33,7 @@ public enum GroupRelationKind { T, K, Isomorphic }
 /// (supergroup を見ている) のときは <see cref="GetInverseTransform"/> で (P,p)⁻¹ を求めて表示する。</summary>
 public sealed class GroupRelation
 {
-    /// <summary>関係の種別 (現在は T のみ実データ)。</summary>
+    /// <summary>関係の種別 (T=TSubgroupFinder / K・Isomorphic=KSubgroupFinder)。</summary>
     public GroupRelationKind Kind { get; init; } = GroupRelationKind.T;
     /// <summary>親空間群の通し番号。</summary>
     public int ParentSeriesNumber { get; init; }
@@ -180,7 +182,8 @@ public static class TSubgroupFinder
     /// <summary>親の各 Wyckoff 位置 (index 順) の H による軌道分裂を返す。generic 代表点によるサンプル計算。</summary>
     public static OrbitPart[][] GetOrbitSplitting(int parentSeries, GroupRelation sub)
     {
-        if (sub.Kind == GroupRelationKind.K) return GetOrbitSplittingK(parentSeries, sub); // 260708Cl (Phase 2d)
+        //if (sub.Kind == GroupRelationKind.K) return GetOrbitSplittingK(parentSeries, sub); // 260708Cl (Phase 2d)
+        if (sub.Kind != GroupRelationKind.T) return GetOrbitSplittingK(parentSeries, sub); // 260708Cl: Isomorphic も k ロジック (同型は klassengleiche の特殊例)
         // 特殊関係 (x=y, 2x=z 等) を偶然踏まない generic 値
         const double gx = 0.127743, gy = 0.291317, gz = 0.437129;
         var wycks = SymmetryStatic.WyckoffPositions[parentSeries];
@@ -229,7 +232,8 @@ public static class TSubgroupFinder
     /// 子の等価反射 (Friedel 込み) で代表 1 つに集約し、(代表 hkl, 等価数, 親の消滅則) を返す。</summary>
     public static (int H, int K, int L, int EquivCount, string ParentRule)[] GetNewReflections(int parentSeries, GroupRelation sub, int maxIndex = 4)
     {
-        if (sub.Kind == GroupRelationKind.K) return GetNewReflectionsK(parentSeries, sub, maxIndex); // 260708Cl (Phase 2d)
+        //if (sub.Kind == GroupRelationKind.K) return GetNewReflectionsK(parentSeries, sub, maxIndex); // 260708Cl (Phase 2d)
+        if (sub.Kind != GroupRelationKind.T) return GetNewReflectionsK(parentSeries, sub, maxIndex); // 260708Cl: Isomorphic も k ロジック (同型は klassengleiche の特殊例)
         var parentOps = GetExpandedOps(parentSeries);
         var parentSym = SymmetryStatic.Symmetries[parentSeries];
         var seen = new HashSet<(int, int, int)>();

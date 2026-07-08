@@ -534,6 +534,7 @@ public static class KSubgroupFinder
         public int[][] ACand { get; init; }         // C⁻¹ R C (整数、candidate primitive 座標)
         public Fraction[][] Rt { get; init; }        // LinKeys[i] に対応する実際の並進 (candidate 慣用胞座標、代表1つ、無還元)
         public Fraction[][] Centering { get; init; } // 恒等線形部の中心化並進 (candidate 慣用胞座標、mod1、重複無し)
+        public int CDetSign { get; init; }           // 260708Cl 追加: sign(det C)。det(P)=det(S)·det(U)·det(C⁻¹) の符号事前判定用
     }
 
     private static readonly Dictionary<int, CandidateData> _candidateCache = [];
@@ -573,7 +574,7 @@ public static class KSubgroupFinder
             if (!centering.Any(x => RationalMatrix.VecEquals(x, v))) centering.Add(v);
         }
 
-        var data = new CandidateData { LinKeys = [.. linKeys], CInv = cInv, ACand = aCand, Rt = [.. rt], Centering = [.. centering] };
+        var data = new CandidateData { LinKeys = [.. linKeys], CInv = cInv, ACand = aCand, Rt = [.. rt], Centering = [.. centering], CDetSign = RationalMatrix.Det3(c).Sign }; // 260708Cl: CDetSign 追加
         _candidateCache[sn] = data;
         return data;
     }
@@ -629,10 +630,23 @@ public static class KSubgroupFinder
         var byOrder = CandidatesByOrder();
         if (!byOrder.TryGetValue(m, out var candList)) return (-1, null, null);
 
-        foreach (int k in new[] { 1, 2, 3 })
+        // 260708Cl: ITA 慣行 (右手系を保つ det(P)>0 の胞変換) を優先する 2 パス探索 (pass=0 は det(P)>0 のみ)。
+        // 実 GUI 目視で Pm-3m→Fm-3m が P=[[0,-2,0],[-2,0,0],[0,0,2]] (det=-8、左手系) と同定され、変換行列と
+        // 親分数指数の表示が非慣行になっていた。任意の有効同定には det>0 の変換が必ず存在する
+        // (右手系どうしの基底取り替え) ため、パス 1 (det<0 のみ) は防御的フォールバック。
+        // sign(det P) = sign(det S)·sign(det U)·sign(det C⁻¹) (行列式の乗法性) なので、各パスで試すべき
+        // det(U) の符号は (S, 候補 C) から事前に決まる。これで 2 パス化しても U ごとの共役フィルタは
+        // どちらか一方のパスでしか走らず、総探索量は 1 パス時と同じに保たれる。
+        int sSign = RationalMatrix.Det3(s).Sign;
+        var candDetSigns = candList.Select(c => BuildCandidateData(c).CDetSign).Distinct().ToArray();
+        foreach (var (pass, k) in new[] { (0, 1), (0, 2), (0, 3), (1, 1), (1, 2), (1, 3) })
         {
+            int wanted = pass == 0 ? 1 : -1; // sign(det P) の目標
             foreach (var u in SmallUnimodular(k))
             {
+                int uDet = u[0] * (u[4] * u[8] - u[5] * u[7]) - u[1] * (u[3] * u[8] - u[5] * u[6]) + u[2] * (u[3] * u[7] - u[4] * u[6]);
+                // 全候補の det(C) 符号が同一 (通常ケース) なら、共役フィルタの前に u ごと枝刈りできる。
+                if (candDetSigns.Length == 1 && sSign * uDet * candDetSigns[0] != wanted) continue;
                 var uFrac = RationalMatrix.FromInt(u);
                 var uInv = RationalMatrix.Invert3(uFrac); // det=±1 なので必ず存在
 
@@ -650,9 +664,11 @@ public static class KSubgroupFinder
                 foreach (var candSn in candList)
                 {
                     var cand = BuildCandidateData(candSn);
+                    if (sSign * uDet * cand.CDetSign != wanted) continue; // 260708Cl: このパスの det(P) 符号と不一致
                     if (!SetEqualsIntMats(conjugated, cand.ACand)) continue;
 
                     var p = RationalMatrix.Mul(RationalMatrix.Mul(s, uFrac), cand.CInv);
+                    //if (pass == 0 && RationalMatrix.Det3(p).Sign < 0) continue; // 260708Cl: 上の符号事前判定に置換 (乗法性より等価)
                     var pInv = RationalMatrix.Invert3(p);
                     if (pInv == null) continue;
 
@@ -838,6 +854,43 @@ public static class KSubgroupFinder
         }
     }
 
+    // 260708Cl 追加 (Phase 2d 後段): k-超群 (minimal k-supergroup) の逆引き。klassengleiche は幾何結晶類
+    // (Schoenflies 点群) を変えないため、候補親は同じ PointGroupSFStr のタイプに限られる
+    // (t-超群索引のような全 230 型走査は不要。この不変量は tools/SymmetryPropsCheck の広域 sweep で検証)。
+    // 候補親の GetMaximalKSubgroups (キャッシュ共有) から子タイプ == itNumber の関係を拾う。
+    // 同型 (Kind=Isomorphic) も klassengleiche なので含まれる (自分自身が超群になる場合を含む)。
+    private static readonly Dictionary<int, GroupRelation[]> _kSupergroupCache = [];
+
+    /// <summary>itNumber (IT 番号) の k-超群逆引きが計算済みか。初回計算は同じ結晶類の全タイプの k-部分群計算を
+    /// 伴い重い場合があるため、GUI はこれを見てバックグラウンド構築 + 「計算中…」表示を選べる。260708Cl 追加。</summary>
+    public static bool KSupergroupsReady(int itNumber) { lock (_kLock) return _kSupergroupCache.ContainsKey(itNumber); }
+
+    /// <summary>指定タイプ (IT 番号) を maximal k-部分群 (同型含む) に持つ関係 (= minimal k-supergroup) を返す。
+    /// ParentSeriesNumber = 超群 (第 1 設定)、ChildSeriesNumber = itNumber 側の設定。260708Cl 追加 (Phase 2d 後段)。
+    /// ⚠ ロックは type 単位: クラス全体の走査 (重い結晶類で分オーダー) 中に _kLock を保持し続けると、
+    /// バックグラウンド構築中に UI スレッドの GetMaximalKSubgroups (NavigateTo の同期呼び出し) が
+    /// 長時間ブロックされフォームがフリーズする。同一 itNumber の並行計算は二重実行になり得るが、
+    /// type 単位の結果はキャッシュ済みで 2 回目は安価、格納結果も同一なので無害。</summary>
+    public static GroupRelation[] GetMinimalKSupergroups(int itNumber)
+    {
+        lock (_kLock)
+            if (_kSupergroupCache.TryGetValue(itNumber, out var cached)) return cached;
+        string sfTarget = SymmetryStatic.Symmetries[SymmetryStatic.GetSeriesNumber(itNumber, 1)].PointGroupSFStr;
+        var list = new List<GroupRelation>();
+        for (int it = 1; it <= 230; it++)
+        {
+            int sn = SymmetryStatic.GetSeriesNumber(it, 1);
+            if (sn < 0 || SymmetryStatic.Symmetries[sn].PointGroupSFStr != sfTarget) continue;
+            foreach (var sub in GetMaximalKSubgroups(sn)) // type 単位で _kLock を取得・解放
+                if (sub.ChildSeriesNumber >= 0 && SymmetryStatic.Symmetries[sub.ChildSeriesNumber].SpaceGroupNumber == itNumber)
+                    list.Add(sub);
+        }
+        var result = list.ToArray();
+        lock (_kLock)
+            _kSupergroupCache[itNumber] = result;
+        return result;
+    }
+
     private sealed class RawComplement
     {
         public int[] Hnf;
@@ -918,7 +971,15 @@ public static class KSubgroupFinder
         throw new InvalidOperationException("coset representative not found");
     }
 
-    /// <summary>1 つの complement (T′=hnf, σ=sigma) から GroupRelation (Kind=K) を構築する。260705Cl 追加。</summary>
+    /// <summary>ITA の enantiomorphic 対 (11 対、双方向)。同型 (IIc) 判定は「同一タイプまたは enantiomorphic 対」。260708Cl 追加。</summary>
+    private static readonly Dictionary<int, int> _enantiomorphicPair = new()
+    {
+        { 76, 78 }, { 78, 76 }, { 91, 95 }, { 95, 91 }, { 92, 96 }, { 96, 92 }, { 144, 145 }, { 145, 144 },
+        { 151, 153 }, { 153, 151 }, { 152, 154 }, { 154, 152 }, { 169, 170 }, { 170, 169 }, { 171, 172 }, { 172, 171 },
+        { 178, 179 }, { 179, 178 }, { 180, 181 }, { 181, 180 }, { 212, 213 }, { 213, 212 },
+    };
+
+    /// <summary>1 つの complement (T′=hnf, σ=sigma) から GroupRelation (Kind=K または Isomorphic) を構築する。260705Cl 追加。</summary>
     private static GroupRelation BuildGroupRelation(int sn, PointGroupData pg, int[] hnf, int[] sigma, int classId, int conjugateCount)
     {
         var q = BuildQuotient(pg, hnf);
@@ -964,9 +1025,15 @@ public static class KSubgroupFinder
         }
         string pointGroupHM = SymmetryStatic.Symmetries[sn].PointGroupHMStr switch { "2mm" or "m2m" => "mm2", var t2 => t2 };
 
+        // 260708Cl: 同型 (ITA IIc) 判定 — 子タイプが親と同一または enantiomorphic 対なら Kind=Isomorphic。
+        // 同型は klassengleiche の特殊例なので、データ構造とタブ表示ロジックは K と共通 (codex R7 合意)。
+        int parentNo = SymmetryStatic.Symmetries[sn].SpaceGroupNumber;
+        int childNo = child >= 0 ? SymmetryStatic.Symmetries[child].SpaceGroupNumber : -1;
+        bool isIso = childNo == parentNo || (_enantiomorphicPair.TryGetValue(parentNo, out int enPair) && enPair == childNo);
+
         return new GroupRelation
         {
-            Kind = GroupRelationKind.K,
+            Kind = isIso ? GroupRelationKind.Isomorphic : GroupRelationKind.K, // 260708Cl (旧: 常に K)
             ParentSeriesNumber = sn,
             Index = q.N,
             ConjugacyClassId = classId,
