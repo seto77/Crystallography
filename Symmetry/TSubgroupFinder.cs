@@ -180,6 +180,7 @@ public static class TSubgroupFinder
     /// <summary>親の各 Wyckoff 位置 (index 順) の H による軌道分裂を返す。generic 代表点によるサンプル計算。</summary>
     public static OrbitPart[][] GetOrbitSplitting(int parentSeries, GroupRelation sub)
     {
+        if (sub.Kind == GroupRelationKind.K) return GetOrbitSplittingK(parentSeries, sub); // 260708Cl (Phase 2d)
         // 特殊関係 (x=y, 2x=z 等) を偶然踏まない generic 値
         const double gx = 0.127743, gy = 0.291317, gz = 0.437129;
         var wycks = SymmetryStatic.WyckoffPositions[parentSeries];
@@ -228,6 +229,7 @@ public static class TSubgroupFinder
     /// 子の等価反射 (Friedel 込み) で代表 1 つに集約し、(代表 hkl, 等価数, 親の消滅則) を返す。</summary>
     public static (int H, int K, int L, int EquivCount, string ParentRule)[] GetNewReflections(int parentSeries, GroupRelation sub, int maxIndex = 4)
     {
+        if (sub.Kind == GroupRelationKind.K) return GetNewReflectionsK(parentSeries, sub, maxIndex); // 260708Cl (Phase 2d)
         var parentOps = GetExpandedOps(parentSeries);
         var parentSym = SymmetryStatic.Symmetries[parentSeries];
         var seen = new HashSet<(int, int, int)>();
@@ -264,6 +266,160 @@ public static class TSubgroupFinder
 
         list.Sort((a, b) => (a.Item1 * a.Item1 + a.Item2 * a.Item2 + a.Item3 * a.Item3).CompareTo(b.Item1 * b.Item1 + b.Item2 * b.Item2 + b.Item3 * b.Item3));
         return [.. list];
+    }
+
+    /// <summary>260708Cl 追加 (Phase 2d): k-部分群 (klassengleiche) の軌道分裂。t- と異なり並進格子が粗くなる
+    /// (子胞が大きくなる) ため、親の G-軌道を子座標系へ写して子慣用胞で mod1 集約し、子の全操作 (中心化込み) で
+    /// H-軌道へ分割する。これにより中心化変化 (IIa/IIb) を含め子の慣用胞多重度が正しく数えられる。
+    /// 子が未同定 (k ではほぼ発生しない) の場合は各 Wyckoff を空成分で返す。</summary>
+    private static OrbitPart[][] GetOrbitSplittingK(int parentSeries, GroupRelation sub)
+    {
+        const double gx = 0.127743, gy = 0.291317, gz = 0.437129; // 特殊関係を偶然踏まない generic 値
+        var wycks = SymmetryStatic.WyckoffPositions[parentSeries];
+        var result = new OrbitPart[wycks.Length][];
+        if (sub.ChildSeriesNumber < 0 || sub.TransformP == null)
+        {
+            for (int w = 0; w < wycks.Length; w++) result[w] = [];
+            return result;
+        }
+        var parentOps = GetExpandedOps(parentSeries);
+        var childOps = GetExpandedOps(sub.ChildSeriesNumber);
+        var P = sub.TransformP;
+        var inv = Invert3(P); // x_child = P⁻¹(x_parent − p)
+        var p = sub.TransformShift;
+
+        // 子胞は親胞の |det P| 倍の体積なので、親操作を generic 点へ作用させただけでは 1 親胞分しか埋まらない。
+        // 子胞を満たすには親格子並進 n のコピーが要る。子座標での並進コセット Frac(P⁻¹·n) を列挙する
+        // (親格子/子格子の剰余類群、位数 |det P|)。子胞が親より小さい (中心化喪失で det P<1) 場合は親格子点が
+        // 子格子に含まれるため Frac(P⁻¹·n) が全て 0 となり自動的に {0} に縮退する。
+        double detP = P[0] * (P[4] * P[8] - P[5] * P[7]) - P[1] * (P[3] * P[8] - P[5] * P[6]) + P[2] * (P[3] * P[7] - P[4] * P[6]);
+        int C = Math.Max(2, (int)Math.Ceiling(Math.Abs(detP)) + 1); // コセット群を確実に列挙する n の範囲 [0,C)
+        var fills = new List<(double X, double Y, double Z)>();
+        for (int a = 0; a < C; a++)
+            for (int b = 0; b < C; b++)
+                for (int c = 0; c < C; c++)
+                {
+                    var f = (X: Frac(inv[0] * a + inv[1] * b + inv[2] * c), Y: Frac(inv[3] * a + inv[4] * b + inv[5] * c), Z: Frac(inv[6] * a + inv[7] * b + inv[8] * c));
+                    if (!fills.Any(u => Near(u, f))) fills.Add(f);
+                }
+
+        for (int w = 0; w < wycks.Length; w++)
+        {
+            var (rx, ry, rz) = wycks[w].PositionGenerator[0].Apply(gx, gy, gz);
+            // 親 G-軌道を子座標系へ写し、格子並進コピーで子胞を満たして mod1 集約 (子胞内の全 G-軌道点)。
+            // dedup は許容誤差ベースの Near で行う (座標が 1e-4 グリッド境界にちょうど乗ると整数キー方式は
+            // 同一点でも演算経路差で丸めが割れて別点扱いになり、分割が過剰計上する不具合があったため)。
+            var big = new List<(double X, double Y, double Z)>();
+            foreach (var op in parentOps)
+            {
+                var (mx, my, mz) = op.ApplyMatrix(rx, ry, rz);
+                var t = op.SeitzTranslation;
+                double qx = mx + t.U - p[0], qy = my + t.V - p[1], qz = mz + t.W - p[2];
+                double bx = inv[0] * qx + inv[1] * qy + inv[2] * qz;
+                double by = inv[3] * qx + inv[4] * qy + inv[5] * qz;
+                double bz = inv[6] * qx + inv[7] * qy + inv[8] * qz;
+                foreach (var f in fills)
+                {
+                    var v = (X: Frac(bx + f.X), Y: Frac(by + f.Y), Z: Frac(bz + f.Z));
+                    if (!big.Any(u => Near(u, v))) big.Add(v);
+                }
+            }
+            // 子の全操作で H-軌道へ分割 (mod1 子胞)。子軌道は G-軌道の部分集合なので必ず big に含まれる。
+            var parts = new List<OrbitPart>();
+            var used = new bool[big.Count];
+            for (int i = 0; i < big.Count; i++)
+            {
+                if (used[i]) continue;
+                var subOrbit = GenerateOrbit(childOps, big[i].X, big[i].Y, big[i].Z);
+                foreach (var q in subOrbit)
+                    for (int j = 0; j < big.Count; j++)
+                        if (!used[j] && Near(big[j], q))
+                            used[j] = true;
+                var atoms = WyckoffPosition.GetEquivalentAtomsPosition((big[i].X, big[i].Y, big[i].Z), sub.ChildSeriesNumber);
+                parts.Add(new OrbitPart { CountInParentCell = subOrbit.Count, ChildWyckoffLetter = atoms.WyckoffLeter, ChildMultiplicity = atoms.Multiplicity, ChildSiteSymmetry = atoms.SiteSymmetry });
+            }
+            result[w] = [.. parts];
+        }
+        return result;
+    }
+
+    /// <summary>260708Cl 追加 (Phase 2d): k-部分群で新たに現れる反射 (超格子反射) を子の指数で列挙する。
+    /// 子指数 (h',k',l') を親指数 (h,k,l)=(h',k',l')·P⁻¹ に写して 2 分類する:
+    /// ① fractional-index (超格子): 親で非整数指数 → 胞拡大で新規出現。ParentRule に親分数指数を "(…)" で格納。
+    /// ② released: 親で整数だが系統消滅・子で許容 → 消滅則解除。ParentRule に親の消滅則を格納。
+    /// いずれも子で許容 (子の消滅則で消えない) 反射のみ。子の対称等価 + Friedel 対で代表 1 つに集約する。
+    /// 子が未同定なら空 (子の消滅則が判定できないため)。</summary>
+    private static (int H, int K, int L, int EquivCount, string ParentRule)[] GetNewReflectionsK(int parentSeries, GroupRelation sub, int maxIndex)
+    {
+        if (sub.ChildSeriesNumber < 0 || sub.TransformP == null)
+            return [];
+        var parentOps = GetExpandedOps(parentSeries);
+        var parentSym = SymmetryStatic.Symmetries[parentSeries];
+        var childOps = GetExpandedOps(sub.ChildSeriesNumber);
+        var inv = Invert3(sub.TransformP); // (h,k,l) = (h',k',l')·P⁻¹
+        var seen = new HashSet<(int, int, int)>();
+        var list = new List<(int, int, int, int, string)>();
+
+        for (int h = maxIndex; h >= -maxIndex; h--)
+            for (int k = maxIndex; k >= -maxIndex; k--)
+                for (int l = maxIndex; l >= -maxIndex; l--)
+                {
+                    if ((h == 0 && k == 0 && l == 0) || seen.Contains((h, k, l)))
+                        continue;
+                    if (IsExtinct(childOps, h, k, l)) // 子で消える反射は観測されない
+                        continue;
+                    // 子指数 → 親指数 (行ベクトル×P⁻¹)。分類 (整数=消滅則解除 / 非整数=超格子) は子の対称軌道
+                    // (= 親点群軌道、k- では点群不変) で不変なので、まず (h,k,l) で基本反射 (retained) を除外する。
+                    double ph = h * inv[0] + k * inv[3] + l * inv[6];
+                    double pk = h * inv[1] + k * inv[4] + l * inv[7];
+                    double pl = h * inv[2] + k * inv[5] + l * inv[8];
+                    if (IsInt(ph) && IsInt(pk) && IsInt(pl) && !IsExtinct(parentOps, (int)Math.Round(ph), (int)Math.Round(pk), (int)Math.Round(pl)))
+                        continue; // 親でも許容 = 基本反射 (新規でない)
+
+                    // 子の対称等価 + Friedel 対で軌道を張り、代表 (辞書順最大) のみ採用。
+                    var orbit = new HashSet<(int, int, int)> { (h, k, l), (-h, -k, -l) };
+                    bool grown = true;
+                    while (grown)
+                    {
+                        grown = false;
+                        foreach (var q in orbit.ToArray())
+                            foreach (var op in childOps)
+                            {
+                                var r = op.ConvertPlaneIndex(q.Item1, q.Item2, q.Item3);
+                                if (orbit.Add(r) | orbit.Add((-r.H, -r.K, -r.L)))
+                                    grown = true;
+                            }
+                    }
+                    foreach (var q in orbit)
+                        seen.Add(q);
+                    var canon = orbit.OrderByDescending(q => q).First();
+                    // 表示する代表 canon の親指数で分類ラベルを作る (表示子指数と親指数の対応を整合させる)。
+                    double ch = canon.Item1 * inv[0] + canon.Item2 * inv[3] + canon.Item3 * inv[6];
+                    double ck = canon.Item1 * inv[1] + canon.Item2 * inv[4] + canon.Item3 * inv[7];
+                    double cl = canon.Item1 * inv[2] + canon.Item2 * inv[5] + canon.Item3 * inv[8];
+                    string rule = IsInt(ch) && IsInt(ck) && IsInt(cl)
+                        ? parentSym.GetFirstExtinctionRule((int)Math.Round(ch), (int)Math.Round(ck), (int)Math.Round(cl)) ?? "" // 消滅則解除
+                        : $"({FracStr(ch)} {FracStr(ck)} {FracStr(cl)})"; // 親分数指数 = 超格子反射
+                    list.Add((canon.Item1, canon.Item2, canon.Item3, orbit.Count, rule));
+                }
+
+        list.Sort((a, b) => (a.Item1 * a.Item1 + a.Item2 * a.Item2 + a.Item3 * a.Item3).CompareTo(b.Item1 * b.Item1 + b.Item2 * b.Item2 + b.Item3 * b.Item3));
+        return [.. list];
+    }
+
+    private static bool IsInt(double d) => Math.Abs(d - Math.Round(d)) < 1e-4; // 260708Cl 追加
+    /// <summary>260708Cl 追加: 親分数指数の 1 成分を短い分数/整数文字列へ (超格子反射の親指数表示用)。</summary>
+    private static string FracStr(double d)
+    {
+        d = Math.Round(d, 6);
+        if (Math.Abs(d - Math.Round(d)) < 1e-4) return ((int)Math.Round(d)).ToString(System.Globalization.CultureInfo.InvariantCulture);
+        foreach (int den in new[] { 2, 3, 4, 6 })
+        {
+            double x = d * den;
+            if (Math.Abs(x - Math.Round(x)) < 1e-4)
+                return $"{(int)Math.Round(x)}/{den}";
+        }
+        return d.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture);
     }
     #endregion
 
