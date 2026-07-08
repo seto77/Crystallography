@@ -8,9 +8,12 @@
 // FormGroupRelations 側でガード済み)、isomorphic 系列の UI 分離表示 (Phase 2d)。
 // 詳細ロードマップ: .project-guidance/ReciPro_FormGroupRelations改修計画.md §4。
 using System;
+using System.Collections.Concurrent; // 260708Cl 追加: 並列化に伴うキャッシュのスレッド安全化
 using System.Collections.Generic;
 using System.Linq;
 using System.Numerics;
+using System.Threading;
+using System.Threading.Tasks;
 
 namespace Crystallography;
 
@@ -215,7 +218,13 @@ public static class KSubgroupFinder
         public int[] MulQ { get; init; }
     }
 
-    private static PointGroupData BuildPointGroupData(int sn)
+    // 260708Cl 追加: PointGroupData は純関数の結果で不変。IdentifyK がクラスごとに呼ぶため
+    // (立方晶で 1 タイプに複数クラス)、キャッシュ化して再構築を排除する (並列呼び出しにも安全)。
+    private static readonly ConcurrentDictionary<int, PointGroupData> _pgCache = new();
+
+    private static PointGroupData BuildPointGroupData(int sn) => _pgCache.GetOrAdd(sn, BuildPointGroupDataCore);
+
+    private static PointGroupData BuildPointGroupDataCore(int sn)
     {
         var ops = TSubgroupFinder.GetExpandedOps(sn);
         var basis = GetPrimitiveBasis(sn);
@@ -323,7 +332,12 @@ public static class KSubgroupFinder
     public static List<int[]> EnumerateComplements(int seriesNumber, int[] hnf)
     {
         var pg = BuildPointGroupData(seriesNumber);
-        var q = BuildQuotient(pg, hnf);
+        return EnumerateComplementsCore(pg, BuildQuotient(pg, hnf)); // 260708Cl: core 分離 (ComputeMaximalK が memo 化した q を再利用するため)
+    }
+
+    /// <summary>260708Cl 追加: 構築済みの (pg, q) を受け取る本体 (旧 EnumerateComplements の中身)。</summary>
+    private static List<int[]> EnumerateComplementsCore(PointGroupData pg, QuotientData q)
+    {
         int m = pg.LinKeys.Length, n = q.N, size = m * n;
 
         var gens = ChooseGenerators(pg);
@@ -502,28 +516,37 @@ public static class KSubgroupFinder
     // フィルタとして、A_H[i]=H⁻¹A[i]H (T′ 自身の座標系での親点群表現) を U で共役したものが、
     // 候補の A_cand[i]=C⁻¹R_i C と整数行列の集合として一致するかを先に見る (安価、格子一致は構成上自動)。
 
-    private static readonly Dictionary<int, List<int[]>> _unimodularCache = [];
+    //private static readonly Dictionary<int, List<int[]>> _unimodularCache = []; // 260708Cl: 並列化に伴い ConcurrentDictionary+Lazy へ
+    private static readonly ConcurrentDictionary<int, Lazy<List<int[]>>> _unimodularCache = new();
 
-    /// <summary>成分が [-k,k] の unimodular (det=±1) 整数 3×3 行列を総当たりで列挙する (キャッシュ済み)。260705Cl 追加。</summary>
+    /// <summary>成分が [-k,k] の unimodular (det=±1) 整数 3×3 行列を総当たりで列挙する (キャッシュ済み)。260705Cl 追加。
+    /// 260708Cl: 複数スレッドから呼ばれるため Lazy (ExecutionAndPublication) で二重構築を防ぐ (k=3 は 7^9 ≈ 4千万の再帰列挙で高価)。</summary>
     private static List<int[]> SmallUnimodular(int k)
-    {
-        if (_unimodularCache.TryGetValue(k, out var cached)) return cached;
-        var result = new List<int[]>();
-        var m = new int[9];
-        void Rec(int idx)
+        => _unimodularCache.GetOrAdd(k, kk => new Lazy<List<int[]>>(() =>
         {
-            if (idx == 9)
+            var result = new List<int[]>();
+            var m = new int[9];
+            void Rec(int idx)
             {
-                int det = m[0] * (m[4] * m[8] - m[5] * m[7]) - m[1] * (m[3] * m[8] - m[5] * m[6]) + m[2] * (m[3] * m[7] - m[4] * m[6]);
-                if (det == 1 || det == -1) result.Add((int[])m.Clone());
-                return;
+                if (idx == 9)
+                {
+                    int det = m[0] * (m[4] * m[8] - m[5] * m[7]) - m[1] * (m[3] * m[8] - m[5] * m[6]) + m[2] * (m[3] * m[7] - m[4] * m[6]);
+                    if (det == 1 || det == -1) result.Add((int[])m.Clone());
+                    return;
+                }
+                for (int v = -kk; v <= kk; v++) { m[idx] = v; Rec(idx + 1); }
             }
-            for (int v = -k; v <= k; v++) { m[idx] = v; Rec(idx + 1); }
-        }
-        Rec(0);
-        _unimodularCache[k] = result;
-        return result;
-    }
+            Rec(0);
+            return result;
+        }, LazyThreadSafetyMode.ExecutionAndPublication)).Value;
+
+    /// <summary>unimodular 整数行列 (row-major 9 要素) の逆行列 U⁻¹ = det(U)·adj(U) を整数で返す (det=±1 前提)。260708Cl 追加。</summary>
+    private static int[] AdjTimesDet(int[] m, int det) =>
+    [
+        det * (m[4] * m[8] - m[5] * m[7]), det * (m[2] * m[7] - m[1] * m[8]), det * (m[1] * m[5] - m[2] * m[4]),
+        det * (m[5] * m[6] - m[3] * m[8]), det * (m[0] * m[8] - m[2] * m[6]), det * (m[2] * m[3] - m[0] * m[5]),
+        det * (m[3] * m[7] - m[4] * m[6]), det * (m[1] * m[6] - m[0] * m[7]), det * (m[0] * m[4] - m[1] * m[3]),
+    ];
 
     /// <summary>候補設定 candSn の点群線形部・primitive 基底・その逆・primitive 座標での線形部・
     /// 恒等線形部の中心化並進 (centering cosets) をまとめたキャッシュ。260705Cl 追加。</summary>
@@ -537,12 +560,16 @@ public static class KSubgroupFinder
         public int CDetSign { get; init; }           // 260708Cl 追加: sign(det C)。det(P)=det(S)·det(U)·det(C⁻¹) の符号事前判定用
     }
 
-    private static readonly Dictionary<int, CandidateData> _candidateCache = [];
-    private static Dictionary<int, List<int>> _candidatesByOrder;
+    //private static readonly Dictionary<int, CandidateData> _candidateCache = []; // 260708Cl: 並列化に伴い ConcurrentDictionary へ
+    //private static Dictionary<int, List<int>> _candidatesByOrder;
+    private static readonly ConcurrentDictionary<int, CandidateData> _candidateCache = new();
+    private static readonly Lazy<Dictionary<int, List<int>>> _candidatesByOrder = new(BuildCandidatesByOrder, LazyThreadSafetyMode.ExecutionAndPublication); // 260708Cl
 
-    private static CandidateData BuildCandidateData(int sn)
+    // 260708Cl: 並列呼び出しで同じ sn を同時構築しても純関数なので無害 (最初の格納が勝つ)。
+    private static CandidateData BuildCandidateData(int sn) => _candidateCache.GetOrAdd(sn, BuildCandidateDataCore);
+
+    private static CandidateData BuildCandidateDataCore(int sn)
     {
-        if (_candidateCache.TryGetValue(sn, out var cached)) return cached;
         var ops = TSubgroupFinder.GetExpandedOps(sn);
         var c = GetPrimitiveBasis(sn);
         var cInv = RationalMatrix.Invert3(c) ?? throw new InvalidOperationException("candidate primitive basis is singular");
@@ -574,16 +601,21 @@ public static class KSubgroupFinder
             if (!centering.Any(x => RationalMatrix.VecEquals(x, v))) centering.Add(v);
         }
 
-        var data = new CandidateData { LinKeys = [.. linKeys], CInv = cInv, ACand = aCand, Rt = [.. rt], Centering = [.. centering], CDetSign = RationalMatrix.Det3(c).Sign }; // 260708Cl: CDetSign 追加
-        _candidateCache[sn] = data;
-        return data;
+        return new CandidateData { LinKeys = [.. linKeys], CInv = cInv, ACand = aCand, Rt = [.. rt], Centering = [.. centering], CDetSign = RationalMatrix.Det3(c).Sign }; // 260708Cl: CDetSign 追加。格納は GetOrAdd 側
+        //_candidateCache[sn] = data;
+        //return data;
     }
 
     /// <summary>点群位数 (相異なる線形部数) ごとに候補設定の通し番号をまとめた索引 (初回のみ全 530 設定を走査)。
-    /// U 探索のたびに全設定を試すコストを避けるための絞り込み。260705Cl 追加。</summary>
-    private static Dictionary<int, List<int>> CandidatesByOrder()
+    /// U 探索のたびに全設定を試すコストを避けるための絞り込み。260705Cl 追加。
+    /// 260708Cl: Lazy 化 (_candidatesByOrder) + 全 530 設定の候補データ前計算を並列化。</summary>
+    private static Dictionary<int, List<int>> BuildCandidatesByOrder()
     {
-        if (_candidatesByOrder != null) return _candidatesByOrder;
+        Parallel.For(1, SymmetryStatic.TotalSpaceGroupNumber, sn =>
+        {
+            if (SymmetryStatic.Symmetries[sn].SpaceGroupNumber != 0)
+                BuildCandidateData(sn); // キャッシュ warm (純関数、順序不問)
+        });
         var map = new Dictionary<int, List<int>>();
         for (int sn = 1; sn < SymmetryStatic.TotalSpaceGroupNumber; sn++)
         {
@@ -592,7 +624,6 @@ public static class KSubgroupFinder
             if (!map.TryGetValue(order, out var list)) map[order] = list = [];
             list.Add(sn);
         }
-        _candidatesByOrder = map;
         return map;
     }
 
@@ -600,9 +631,14 @@ public static class KSubgroupFinder
     /// 成功時 (childSn, P, p)（x_parent = P·x_child + p、親慣用胞座標、Fraction）、失敗時 (-1, null, null)。
     /// 260705Cl 追加 (Phase 2c Step3)。</summary>
     public static (int Child, Fraction[] P, Fraction[] Shift) IdentifyK(int parentSn, int[] hnf, int[] sigma)
+        => IdentifyK(parentSn, hnf, sigma, null);
+
+    /// <summary>260708Cl: 呼び出し元 (ComputeMaximalK) が memo 化した QuotientData を渡せる内部版。
+    /// QuotientData が private 型のため public 側にデフォルト引数では追加できず、オーバーロードに分離。</summary>
+    private static (int Child, Fraction[] P, Fraction[] Shift) IdentifyK(int parentSn, int[] hnf, int[] sigma, QuotientData q)
     {
         var pg = BuildPointGroupData(parentSn);
-        var q = BuildQuotient(pg, hnf);
+        q ??= BuildQuotient(pg, hnf); // 260708Cl (旧: var q = BuildQuotient(pg, hnf);)
         int m = pg.LinKeys.Length;
 
         var basis = GetPrimitiveBasis(parentSn);
@@ -627,7 +663,7 @@ public static class KSubgroupFinder
             tParent[i] = RationalMatrix.MulVec(basis, sum);
         }
 
-        var byOrder = CandidatesByOrder();
+        var byOrder = _candidatesByOrder.Value; // 260708Cl (旧: CandidatesByOrder())
         if (!byOrder.TryGetValue(m, out var candList)) return (-1, null, null);
 
         // 260708Cl: ITA 慣行 (右手系を保つ det(P)>0 の胞変換) を優先する 2 パス探索 (pass=0 は det(P)>0 のみ)。
@@ -647,19 +683,26 @@ public static class KSubgroupFinder
                 int uDet = u[0] * (u[4] * u[8] - u[5] * u[7]) - u[1] * (u[3] * u[8] - u[5] * u[6]) + u[2] * (u[3] * u[7] - u[4] * u[6]);
                 // 全候補の det(C) 符号が同一 (通常ケース) なら、共役フィルタの前に u ごと枝刈りできる。
                 if (candDetSigns.Length == 1 && sSign * uDet * candDetSigns[0] != wanted) continue;
-                var uFrac = RationalMatrix.FromInt(u);
-                var uInv = RationalMatrix.Invert3(uFrac); // det=±1 なので必ず存在
-
+                //var uFrac = RationalMatrix.FromInt(u);
+                //var uInv = RationalMatrix.Invert3(uFrac); // det=±1 なので必ず存在
+                //
+                //var conjugated = new int[m][];
+                //bool intAll = true;
+                //for (int i = 0; i < m && intAll; i++)
+                //{
+                //    var cf = RationalMatrix.Mul(RationalMatrix.Mul(uInv, RationalMatrix.FromInt(aH[i])), uFrac);
+                //    var ci = RationalMatrix.ToIntOrNull(cf);
+                //    if (ci == null) { intAll = false; break; } // U が unimodular なら理論上必ず整数 (防御的チェック)
+                //    conjugated[i] = ci;
+                //}
+                //if (!intAll) continue;
+                // 260708Cl: U は unimodular 整数行列なので U⁻¹ = det(U)·adj(U) も厳密に整数。最内ループの共役
+                // U⁻¹·A_H·U を Fraction (BigInteger) から純整数演算へ置換 (数学的に同値のまま桁違いに速い。
+                // この共役フィルタが k-エンジン全体の支配的ホットループだった。整数なので ToIntOrNull 検査も不要)。
+                var uInvInt = AdjTimesDet(u, uDet);
                 var conjugated = new int[m][];
-                bool intAll = true;
-                for (int i = 0; i < m && intAll; i++)
-                {
-                    var cf = RationalMatrix.Mul(RationalMatrix.Mul(uInv, RationalMatrix.FromInt(aH[i])), uFrac);
-                    var ci = RationalMatrix.ToIntOrNull(cf);
-                    if (ci == null) { intAll = false; break; } // U が unimodular なら理論上必ず整数 (防御的チェック)
-                    conjugated[i] = ci;
-                }
-                if (!intAll) continue;
+                for (int i = 0; i < m; i++)
+                    conjugated[i] = MatMulInt(MatMulInt(uInvInt, aH[i]), u);
 
                 foreach (var candSn in candList)
                 {
@@ -667,7 +710,7 @@ public static class KSubgroupFinder
                     if (sSign * uDet * cand.CDetSign != wanted) continue; // 260708Cl: このパスの det(P) 符号と不一致
                     if (!SetEqualsIntMats(conjugated, cand.ACand)) continue;
 
-                    var p = RationalMatrix.Mul(RationalMatrix.Mul(s, uFrac), cand.CInv);
+                    var p = RationalMatrix.Mul(RationalMatrix.Mul(s, RationalMatrix.FromInt(u)), cand.CInv); // 260708Cl: uFrac は共役フィルタ整数化で不要になったためここで直接変換
                     //if (pass == 0 && RationalMatrix.Det3(p).Sign < 0) continue; // 260708Cl: 上の符号事前判定に置換 (乗法性より等価)
                     var pInv = RationalMatrix.Invert3(p);
                     if (pInv == null) continue;
@@ -797,35 +840,33 @@ public static class KSubgroupFinder
         return null;
     }
 
-    private static readonly Dictionary<string, List<Fraction[]>> _quotientRepsCache = [];
+    //private static readonly Dictionary<string, List<Fraction[]>> _quotientRepsCache = []; // 260708Cl: 並列化に伴い ConcurrentDictionary へ
+    private static readonly ConcurrentDictionary<string, List<Fraction[]>> _quotientRepsCache = new();
 
     /// <summary>整数行列 M (det≠0) について Z³/MZ³ (位数|det(M)|) の完全代表系を安全に構築する
     /// (0..|det|-1 の箱を総当たりし、M⁻¹v mod1 を正準ラベルとして重複除去、|det| 個集まったら確定)。
-    /// M·adj(M)=det(M)·I なので、この箱に完全代表系が含まれることは保証される。260705Cl 追加 (Phase 2c Step3)。</summary>
+    /// M·adj(M)=det(M)·I なので、この箱に完全代表系が含まれることは保証される。260705Cl 追加 (Phase 2c Step3)。
+    /// 260708Cl: 並列呼び出しで同じ M を同時構築しても純関数なので無害 (最初の格納が勝つ)。</summary>
     private static List<Fraction[]> QuotientRepsForFullRankM(int[] m)
-    {
-        var cacheKey = string.Join(",", m);
-        if (_quotientRepsCache.TryGetValue(cacheKey, out var cached)) return cached;
+        => _quotientRepsCache.GetOrAdd(string.Join(",", m), _ =>
+        {
+            var mInv = RationalMatrix.Invert3(RationalMatrix.FromInt(m)) ?? throw new InvalidOperationException("M is singular");
+            int d = Math.Abs((int)RationalMatrix.Det3(RationalMatrix.FromInt(m)).Num);
 
-        var mInv = RationalMatrix.Invert3(RationalMatrix.FromInt(m)) ?? throw new InvalidOperationException("M is singular");
-        int d = Math.Abs((int)RationalMatrix.Det3(RationalMatrix.FromInt(m)).Num);
-
-        var reps = new List<Fraction[]>();
-        var seen = new HashSet<string>();
-        for (int x = 0; x < d && reps.Count < d; x++)
-            for (int y = 0; y < d && reps.Count < d; y++)
-                for (int z = 0; z < d && reps.Count < d; z++)
-                {
-                    Fraction[] v = [x, y, z];
-                    var label = RationalMatrix.ModVec1(RationalMatrix.MulVec(mInv, v));
-                    if (seen.Add($"{label[0]}/{label[1]}/{label[2]}")) reps.Add(v);
-                }
-        if (reps.Count != d)
-            throw new InvalidOperationException($"failed to enumerate Z^3/MZ^3 (got {reps.Count}, expect {d})");
-
-        _quotientRepsCache[cacheKey] = reps;
-        return reps;
-    }
+            var reps = new List<Fraction[]>();
+            var seen = new HashSet<string>();
+            for (int x = 0; x < d && reps.Count < d; x++)
+                for (int y = 0; y < d && reps.Count < d; y++)
+                    for (int z = 0; z < d && reps.Count < d; z++)
+                    {
+                        Fraction[] v = [x, y, z];
+                        var label = RationalMatrix.ModVec1(RationalMatrix.MulVec(mInv, v));
+                        if (seen.Add($"{label[0]}/{label[1]}/{label[2]}")) reps.Add(v);
+                    }
+            if (reps.Count != d)
+                throw new InvalidOperationException($"failed to enumerate Z^3/MZ^3 (got {reps.Count}, expect {d})");
+            return reps;
+        });
 
     private static string KeyOfK(int[] r, Fraction[] t) => $"{string.Join(" ", r)}|{t[0]}/{t[1]}/{t[2]}";
     #endregion
@@ -838,57 +879,53 @@ public static class KSubgroupFinder
     // 中間格子 T″ (index n の真の約数、index2 のみ既存 index=2/3/4 列挙内で該当し得る) が存在し、
     // かつその T″ 上の何らかの complement H″ が H を包含する (各線形部で H の並進が H″ の並進と
     // T″ を法として一致する) ときに限る。index2/3 は中間指数が無いので自動的に極大。
-    private static readonly Dictionary<int, GroupRelation[]> _kCache = [];
-    private static readonly object _kLock = new();
+    //private static readonly Dictionary<int, GroupRelation[]> _kCache = []; // 260708Cl: 並列化に伴い per-type Lazy へ
+    //private static readonly object _kLock = new();
+    private static readonly ConcurrentDictionary<int, Lazy<GroupRelation[]>> _kCache = new();
 
     /// <summary>親空間群 (通し番号) の maximal k-部分群を共役類単位で返す (index 2,3,4)。計算は初回のみ (キャッシュ)。
-    /// 260705Cl 追加 (Phase 2c Step4)。</summary>
+    /// 260705Cl 追加 (Phase 2c Step4)。260708Cl: グローバルロックを per-type Lazy に置換 — 異なるタイプは
+    /// 並列に計算でき、同一タイプは ExecutionAndPublication で一度だけ計算される (二重計算・ブロッキング最小)。</summary>
     public static GroupRelation[] GetMaximalKSubgroups(int seriesNumber)
-    {
-        lock (_kLock)
-        {
-            if (_kCache.TryGetValue(seriesNumber, out var cached)) return cached;
-            var result = ComputeMaximalK(seriesNumber);
-            _kCache[seriesNumber] = result;
-            return result;
-        }
-    }
+        => _kCache.GetOrAdd(seriesNumber, sn => new Lazy<GroupRelation[]>(() => ComputeMaximalK(sn), LazyThreadSafetyMode.ExecutionAndPublication)).Value;
 
     // 260708Cl 追加 (Phase 2d 後段): k-超群 (minimal k-supergroup) の逆引き。klassengleiche は幾何結晶類
     // (Schoenflies 点群) を変えないため、候補親は同じ PointGroupSFStr のタイプに限られる
     // (t-超群索引のような全 230 型走査は不要。この不変量は tools/SymmetryPropsCheck の広域 sweep で検証)。
     // 候補親の GetMaximalKSubgroups (キャッシュ共有) から子タイプ == itNumber の関係を拾う。
     // 同型 (Kind=Isomorphic) も klassengleiche なので含まれる (自分自身が超群になる場合を含む)。
-    private static readonly Dictionary<int, GroupRelation[]> _kSupergroupCache = [];
+    //private static readonly Dictionary<int, GroupRelation[]> _kSupergroupCache = []; // 260708Cl: ConcurrentDictionary へ
+    private static readonly ConcurrentDictionary<int, GroupRelation[]> _kSupergroupCache = new();
 
     /// <summary>itNumber (IT 番号) の k-超群逆引きが計算済みか。初回計算は同じ結晶類の全タイプの k-部分群計算を
     /// 伴い重い場合があるため、GUI はこれを見てバックグラウンド構築 + 「計算中…」表示を選べる。260708Cl 追加。</summary>
-    public static bool KSupergroupsReady(int itNumber) { lock (_kLock) return _kSupergroupCache.ContainsKey(itNumber); }
+    public static bool KSupergroupsReady(int itNumber) => _kSupergroupCache.ContainsKey(itNumber);
 
     /// <summary>指定タイプ (IT 番号) を maximal k-部分群 (同型含む) に持つ関係 (= minimal k-supergroup) を返す。
     /// ParentSeriesNumber = 超群 (第 1 設定)、ChildSeriesNumber = itNumber 側の設定。260708Cl 追加 (Phase 2d 後段)。
-    /// ⚠ ロックは type 単位: クラス全体の走査 (重い結晶類で分オーダー) 中に _kLock を保持し続けると、
-    /// バックグラウンド構築中に UI スレッドの GetMaximalKSubgroups (NavigateTo の同期呼び出し) が
-    /// 長時間ブロックされフォームがフリーズする。同一 itNumber の並行計算は二重実行になり得るが、
-    /// type 単位の結果はキャッシュ済みで 2 回目は安価、格納結果も同一なので無害。</summary>
+    /// 260708Cl 並列化: 候補タイプ (同一結晶類) ごとの k-部分群計算は独立なので Parallel 実行する
+    /// (per-type Lazy キャッシュにより同一タイプは一度だけ計算・他呼び出しと共有)。結果の組み立ては
+    /// IT 番号昇順で逐次行い、表示順の決定性を保つ。同一 itNumber の並行呼び出しは二重集計になり得るが、
+    /// type 結果はキャッシュ済みで 2 回目は安価、格納結果も同一なので無害。</summary>
     public static GroupRelation[] GetMinimalKSupergroups(int itNumber)
     {
-        lock (_kLock)
-            if (_kSupergroupCache.TryGetValue(itNumber, out var cached)) return cached;
+        if (_kSupergroupCache.TryGetValue(itNumber, out var cached)) return cached;
         string sfTarget = SymmetryStatic.Symmetries[SymmetryStatic.GetSeriesNumber(itNumber, 1)].PointGroupSFStr;
-        var list = new List<GroupRelation>();
+        var candSns = new List<int>();
         for (int it = 1; it <= 230; it++)
         {
             int sn = SymmetryStatic.GetSeriesNumber(it, 1);
-            if (sn < 0 || SymmetryStatic.Symmetries[sn].PointGroupSFStr != sfTarget) continue;
-            foreach (var sub in GetMaximalKSubgroups(sn)) // type 単位で _kLock を取得・解放
+            if (sn >= 0 && SymmetryStatic.Symmetries[sn].PointGroupSFStr == sfTarget)
+                candSns.Add(sn);
+        }
+        var perType = new GroupRelation[candSns.Count][];
+        Parallel.For(0, candSns.Count, i => perType[i] = GetMaximalKSubgroups(candSns[i]));
+        var list = new List<GroupRelation>();
+        foreach (var subs in perType)
+            foreach (var sub in subs)
                 if (sub.ChildSeriesNumber >= 0 && SymmetryStatic.Symmetries[sub.ChildSeriesNumber].SpaceGroupNumber == itNumber)
                     list.Add(sub);
-        }
-        var result = list.ToArray();
-        lock (_kLock)
-            _kSupergroupCache[itNumber] = result;
-        return result;
+        return _kSupergroupCache.GetOrAdd(itNumber, [.. list]);
     }
 
     private sealed class RawComplement
@@ -904,27 +941,44 @@ public static class KSubgroupFinder
         var pg = BuildPointGroupData(sn);
         int m = pg.LinKeys.Length;
 
+        // 260708Cl 並列化: (index, hnf) ごとの Quotient 構築 + complement 列挙は独立なので並列実行し、
+        // 結果は元の列挙順で組み立てる (classId・表示順の決定性維持)。あわせて hnf ごとの
+        // BuildQuotient / complement 列挙を memo 化 (旧実装は極大性判定の (fine×coarse) 二重ループ内で
+        // 毎回再構築・再列挙していた)。
         var byIndex = new Dictionary<int, List<int[]>>();
-        var raws = new List<RawComplement>();
+        var hnfItems = new List<(int Index, int[] Hnf)>();
         foreach (int index in new[] { 2, 3, 4 })
         {
             var inv = FilterPointGroupInvariant(sn, EnumerateHnf(index));
             byIndex[index] = inv;
             foreach (var hnf in inv)
-                foreach (var sigma in EnumerateComplements(sn, hnf))
-                    raws.Add(new RawComplement { Hnf = hnf, Index = index, Sigma = sigma });
+                hnfItems.Add((index, hnf));
+        }
+        var quotients = new QuotientData[hnfItems.Count];
+        var sigmasPerHnf = new List<int[]>[hnfItems.Count];
+        Parallel.For(0, hnfItems.Count, i =>
+        {
+            quotients[i] = BuildQuotient(pg, hnfItems[i].Hnf);
+            sigmasPerHnf[i] = EnumerateComplementsCore(pg, quotients[i]);
+        });
+        var qByHnf = new Dictionary<string, (QuotientData Q, List<int[]> Sigmas)>();
+        var raws = new List<RawComplement>();
+        for (int i = 0; i < hnfItems.Count; i++)
+        {
+            qByHnf[string.Join(",", hnfItems[i].Hnf)] = (quotients[i], sigmasPerHnf[i]);
+            foreach (var sigma in sigmasPerHnf[i])
+                raws.Add(new RawComplement { Hnf = hnfItems[i].Hnf, Index = hnfItems[i].Index, Sigma = sigma });
         }
 
-        // index4 のみ、index2 の中間格子を経由できるか確認する。
-        foreach (var fine in raws)
+        // index4 のみ、index2 の中間格子を経由できるか確認する。260708Cl: fine ごとに独立 (自身の IsMaximal のみ書く) → 並列。
+        Parallel.ForEach(raws.Where(r => r.Index == 4), fine =>
         {
-            if (fine.Index != 4) continue;
-            var fineQ = BuildQuotient(pg, fine.Hnf);
+            var fineQ = qByHnf[string.Join(",", fine.Hnf)].Q;
             foreach (var coarseHnf in byIndex[2])
             {
                 if (!IsLatticeSubset(coarseHnf, fine.Hnf)) continue; // T′(fine) ⊂ T″(coarse) か
-                var coarseQ = BuildQuotient(pg, coarseHnf);
-                foreach (var coarseSigma in EnumerateComplements(sn, coarseHnf))
+                var (coarseQ, coarseSigmas) = qByHnf[string.Join(",", coarseHnf)];
+                foreach (var coarseSigma in coarseSigmas)
                 {
                     bool contained = true;
                     for (int i = 0; i < m; i++)
@@ -936,21 +990,22 @@ public static class KSubgroupFinder
                 }
                 if (!fine.IsMaximal) break;
             }
-        }
+        });
 
-        var result = new List<GroupRelation>();
-        int classIdCounter = 0;
+        // 共役類分け (hnf ごと、順序決定的に逐次)。型同定 (BuildGroupRelation 内の IdentifyK が支配的コスト) は
+        // クラスごとに独立なので並列。classId = 収集順 index で旧逐次カウンタと同一。260708Cl。
+        var items = new List<(int[] Hnf, QuotientData Q, List<int[]> Cls)>();
         foreach (var grp in raws.Where(r => r.IsMaximal).GroupBy(r => string.Join(",", r.Hnf)))
         {
             var hnf = grp.First().Hnf;
             var sigmas = grp.Select(r => r.Sigma).ToList();
             foreach (var cls in GroupComplementsByConjugacy(sn, hnf, sigmas))
-            {
-                result.Add(BuildGroupRelation(sn, pg, hnf, cls[0], classIdCounter, cls.Count));
-                classIdCounter++;
-            }
+                items.Add((hnf, qByHnf[string.Join(",", hnf)].Q, cls));
         }
-        return [.. result.OrderBy(r => r.Index).ThenBy(r => r.ChildSeriesNumber < 0 ? 1 : 0).ThenBy(r => r.ChildSeriesNumber)];
+        var rels = new GroupRelation[items.Count];
+        Parallel.For(0, items.Count, i =>
+            rels[i] = BuildGroupRelation(sn, pg, items[i].Hnf, items[i].Cls[0], i, items[i].Cls.Count, items[i].Q));
+        return [.. rels.OrderBy(r => r.Index).ThenBy(r => r.ChildSeriesNumber < 0 ? 1 : 0).ThenBy(r => r.ChildSeriesNumber)];
     }
 
     /// <summary>T′(fineHnf) ⊆ T″(coarseHnf) か (fineHnf の列が coarseHnf の列の整数combinationで表せるか)。260705Cl 追加。</summary>
@@ -979,13 +1034,14 @@ public static class KSubgroupFinder
         { 178, 179 }, { 179, 178 }, { 180, 181 }, { 181, 180 }, { 212, 213 }, { 213, 212 },
     };
 
-    /// <summary>1 つの complement (T′=hnf, σ=sigma) から GroupRelation (Kind=K または Isomorphic) を構築する。260705Cl 追加。</summary>
-    private static GroupRelation BuildGroupRelation(int sn, PointGroupData pg, int[] hnf, int[] sigma, int classId, int conjugateCount)
+    /// <summary>1 つの complement (T′=hnf, σ=sigma) から GroupRelation (Kind=K または Isomorphic) を構築する。260705Cl 追加。
+    /// 260708Cl: 呼び出し元 (ComputeMaximalK) が memo 化した QuotientData を q で渡せる (null なら構築)。</summary>
+    private static GroupRelation BuildGroupRelation(int sn, PointGroupData pg, int[] hnf, int[] sigma, int classId, int conjugateCount, QuotientData q = null)
     {
-        var q = BuildQuotient(pg, hnf);
+        q ??= BuildQuotient(pg, hnf); // 260708Cl (旧: var q = BuildQuotient(pg, hnf);)
         int m = pg.LinKeys.Length;
         var basis = GetPrimitiveBasis(sn);
-        var (child, pFrac, shiftFrac) = IdentifyK(sn, hnf, sigma);
+        var (child, pFrac, shiftFrac) = IdentifyK(sn, hnf, sigma, q);
 
         var baseOpByLin = new SymmetryOperation?[m];
         foreach (var op in TSubgroupFinder.GetExpandedOps(sn))

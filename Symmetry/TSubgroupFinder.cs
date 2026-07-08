@@ -14,8 +14,11 @@
 // 規約: 基底 (a′,b′,c′) = (a,b,c)·P、座標 x_parent = P·x_child + p、演算子は x′ = R·x + t (列ベクトル左作用)。
 // 子基準系での操作は R_c = P⁻¹RP、t_c = P⁻¹((R−I)p + t)。det(P) > 0 に限定 (エナンチオモルフ対の混同防止)。
 using System;
+using System.Collections.Concurrent; // 260708Cl 追加: 並列化に伴うキャッシュのスレッド安全化
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
 
 namespace Crystallography;
 
@@ -97,60 +100,56 @@ public readonly struct OrbitPart
 public static class TSubgroupFinder
 {
     private const double Tol = 1e-6;
-    private static readonly Dictionary<int, GroupRelation[]> _cache = [];
-    private static readonly object _lock = new();
+    //private static readonly Dictionary<int, GroupRelation[]> _cache = []; // 260708Cl: 並列化に伴い per-type Lazy へ
+    //private static readonly object _lock = new();
+    private static readonly ConcurrentDictionary<int, Lazy<GroupRelation[]>> _cache = new();
 
     #region 公開 API
-    /// <summary>親空間群 (通し番号) の maximal t-部分群を共役類単位で返す。計算は初回のみ (キャッシュ)。</summary>
+    /// <summary>親空間群 (通し番号) の maximal t-部分群を共役類単位で返す。計算は初回のみ (キャッシュ)。
+    /// 260708Cl: グローバルロックを per-type Lazy に置換 (異なるタイプは並列計算可、同一タイプは一度だけ計算)。</summary>
     public static GroupRelation[] GetMaximalTSubgroups(int seriesNumber)
-    {
-        lock (_lock)
-        {
-            if (_cache.TryGetValue(seriesNumber, out var cached))
-                return cached;
-            var result = Compute(seriesNumber);
-            _cache[seriesNumber] = result;
-            return result;
-        }
-    }
+        => _cache.GetOrAdd(seriesNumber, sn => new Lazy<GroupRelation[]>(() => Compute(sn), LazyThreadSafetyMode.ExecutionAndPublication)).Value;
 
     // 260705Cl: 専用の軽量 TSupergroup 型 (SupergroupSeriesNumber/Index/ConjugateCount のみ) を廃し、
     // GroupRelation をそのまま逆引き索引に格納する (Phase 2e DTO 統合)。ParentSeriesNumber が supergroup の
     // 通し番号、ChildSeriesNumber が引数 itNumber 側の設定。Operations/TransformP 等の全データが引き続き手に入るため、
     // Minimal supergroups 側でも Matrix/Orbit/Reflections タブが (P,p)⁻¹ 経由で正しく表示できる。
 
-    private static Dictionary<int, List<GroupRelation>> _supergroupIndex;
+    //private static Dictionary<int, List<GroupRelation>> _supergroupIndex; // 260708Cl: Lazy + 並列 warm へ
+    private static readonly Lazy<Dictionary<int, List<GroupRelation>>> _supergroupIndex = new(BuildSupergroupIndex, LazyThreadSafetyMode.ExecutionAndPublication);
 
     /// <summary>逆引き索引が構築済みか。260705Cl 追加: 初回構築は全 230 タイプの部分群計算 (数秒) を伴うため、
     /// GUI 側はこれを見て「未構築ならバックグラウンドで構築 → 完了時に表示を差し替える」を選べる。</summary>
-    public static bool SupergroupIndexReady { get { lock (_lock) return _supergroupIndex != null; } }
+    public static bool SupergroupIndexReady => _supergroupIndex.IsValueCreated; // 260708Cl (旧: lock + null 判定)
 
     /// <summary>指定空間群タイプ (IT 番号) を maximal t-部分群に持つ空間群 (= minimal t-supergroup) を返す。
     /// 全 230 タイプの第 1 設定を 1 度だけ走査して逆引き索引を構築する (translationengleiche のみ)。</summary>
     public static IReadOnlyList<GroupRelation> GetMinimalTSupergroups(int itNumber)
+        => _supergroupIndex.Value.TryGetValue(itNumber, out var result) ? result : [];
+
+    /// <summary>260708Cl 追加: 逆引き索引の構築本体。全 230 タイプの t-部分群計算 (支配的コスト) を並列で
+    /// warm し (per-type Lazy キャッシュにより結果は共有)、索引自体は IT 番号昇順で逐次組み立てて決定性を保つ。</summary>
+    private static Dictionary<int, List<GroupRelation>> BuildSupergroupIndex()
     {
-        lock (_lock)
+        var sns = new List<int>();
+        for (int it = 1; it <= 230; it++)
         {
-            if (_supergroupIndex == null)
-            {
-                _supergroupIndex = [];
-                for (int it = 1; it <= 230; it++)
-                {
-                    //int sn = FirstSeriesOf(it);
-                    int sn = SymmetryStatic.GetSeriesNumber(it, 1); // 260705Cl: 既存 API を再利用 (全 IT 番号で第 1 設定は sub=1)
-                    if (sn < 0) continue;
-                    foreach (var sub in GetMaximalTSubgroups(sn))
-                    {
-                        if (sub.ChildSeriesNumber < 0) continue;
-                        int childIt = SymmetryStatic.Symmetries[sub.ChildSeriesNumber].SpaceGroupNumber;
-                        if (!_supergroupIndex.TryGetValue(childIt, out var list))
-                            _supergroupIndex[childIt] = list = [];
-                        list.Add(sub); // 260705Cl: sub (GroupRelation) をそのまま格納 (旧: 3 フィールドだけの TSupergroup を新規生成)
-                    }
-                }
-            }
-            return _supergroupIndex.TryGetValue(itNumber, out var result) ? result : [];
+            //int sn = FirstSeriesOf(it);
+            int sn = SymmetryStatic.GetSeriesNumber(it, 1); // 260705Cl: 既存 API を再利用 (全 IT 番号で第 1 設定は sub=1)
+            if (sn >= 0) sns.Add(sn);
         }
+        Parallel.ForEach(sns, sn => GetMaximalTSubgroups(sn)); // キャッシュ warm (順序不問)
+        var index = new Dictionary<int, List<GroupRelation>>();
+        foreach (int sn in sns)
+            foreach (var sub in GetMaximalTSubgroups(sn))
+            {
+                if (sub.ChildSeriesNumber < 0) continue;
+                int childIt = SymmetryStatic.Symmetries[sub.ChildSeriesNumber].SpaceGroupNumber;
+                if (!index.TryGetValue(childIt, out var list))
+                    index[childIt] = list = [];
+                list.Add(sub); // 260705Cl: sub (GroupRelation) をそのまま格納 (旧: 3 フィールドだけの TSupergroup を新規生成)
+            }
+        return index;
     }
 
     // 260705Cl: 既存 SymmetryStatic.GetSeriesNumber(number, sub:1) の近似重複だったため削除。
@@ -779,20 +778,19 @@ public static class TSubgroupFinder
         return (-1, null, null);
     }
 
-    private static readonly Dictionary<int, string> _settingSig = [];
+    //private static readonly Dictionary<int, string> _settingSig = []; // 260708Cl: 並列化に伴い ConcurrentDictionary へ
+    private static readonly ConcurrentDictionary<int, string> _settingSig = new();
     private static string SettingSignature(int s)
-    {
-        if (_settingSig.TryGetValue(s, out var sig)) return sig;
-        var lin = new List<int[]>();
-        foreach (var op in GetExpandedOps(s))
+        => _settingSig.GetOrAdd(s, key =>
         {
-            var key = LinKey(op);
-            if (FindKey(lin, key) < 0) lin.Add(key);
-        }
-        sig = lin.Count == 0 ? "" : Signature(lin);
-        _settingSig[s] = sig;
-        return sig;
-    }
+            var lin = new List<int[]>();
+            foreach (var op in GetExpandedOps(key))
+            {
+                var lk = LinKey(op);
+                if (FindKey(lin, lk) < 0) lin.Add(lk);
+            }
+            return lin.Count == 0 ? "" : Signature(lin);
+        });
 
     /// <summary>親格子 (整数基底+中心化) を P⁻¹ で子基準系へ写し、[0,1)³ の剰余類集合 (加法閉) を返す。桁が合わないときは null。</summary>
     private static List<double[]> LatticeCosets(double[] Pinv, List<double[]> parentCentering)
