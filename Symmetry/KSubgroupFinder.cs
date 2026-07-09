@@ -683,6 +683,14 @@ public static class KSubgroupFinder
         foreach (var (pass, k) in new[] { (0, 1), (0, 2), (0, 3), (1, 1), (1, 2), (1, 3) })
         {
             int wanted = pass == 0 ? 1 : -1; // sign(det P) の目標
+            // 260709Cl 追加: 同じ (pass, k) バケット内では最初のヒットで確定せず全候補を評価し、最も簡明な P
+            // (①非対角の非ゼロ成分数 ②負成分数 ③成分絶対値和 の辞書式最小、同点は列挙順の先勝ちで決定的) を返す。
+            // 旧実装は SmallUnimodular の列挙順 (成分 -k..k の辞書順) で最初に通った U を採用したため、
+            // 対角 P=2I で書ける Pm-3m→Fm-3m が [[0,2,0],[2,0,0],[0,0,2]] のような置換込みの P で表示され得た
+            // (det>0 は 260708Cl の 2 パス化で保証済みだが最簡形は未保証だった)。バケット単位なので
+            // det(P)>0 優先・k 小優先のフォールバック構造は変わらない。
+            (int Child, Fraction[] P, Fraction[] Shift) best = (-1, null, null);
+            var bestScore = (int.MaxValue, int.MaxValue, double.MaxValue);
             foreach (var u in SmallUnimodular(k))
             {
                 int uDet = u[0] * (u[4] * u[8] - u[5] * u[7]) - u[1] * (u[3] * u[8] - u[5] * u[6]) + u[2] * (u[3] * u[7] - u[4] * u[6]);
@@ -720,6 +728,16 @@ public static class KSubgroupFinder
 
                     var p = RationalMatrix.Mul(RationalMatrix.Mul(s, RationalMatrix.FromInt(u)), cand.CInv); // 260708Cl: uFrac は共役フィルタ整数化で不要になったためここで直接変換
                     //if (pass == 0 && RationalMatrix.Det3(p).Sign < 0) continue; // 260708Cl: 上の符号事前判定に置換 (乗法性より等価)
+                    // 260709Cl: 即 return せずバケット内の最簡 P を選ぶ (①非対角の非ゼロ ②負成分 ③絶対値和の
+                    // 辞書式最小、同点は先勝ち = 決定的)。スコア判定は重い検証 (rChild 構築 + SolveOriginShiftK、
+                    // Fraction/BigInteger 演算) の前に行い、既知 best を改善しない候補はここで棄却する
+                    // (同一操作集合には対称性の分だけ多数の U が通るため、全候補で origin 解決すると
+                    // 2/m 逆引きが 1.4 s → 416 s になった)。ただし最初の成功 (best 未確定) までは棄却しない。
+                    // フォールバックバケット (k ≥ 2、希少経路) は従来どおり首ヒット確定で、最簡化は k=1 のみ。
+                    var score = ScoreP(p);
+                    bool perfect = score.OffDiagNonZero == 0 && score.Negatives == 0; // 対角・全非負 = それ以上本質的に改善しない
+                    if (k == 1 && best.Child >= 0 && !perfect && score.CompareTo(bestScore) >= 0)
+                        continue;
                     var pInv = RationalMatrix.Invert3(p);
                     if (pInv == null) continue;
 
@@ -741,11 +759,37 @@ public static class KSubgroupFinder
 
                     var pShift = RationalMatrix.MulVec(p, origin);
                     //return (candSn, p, pShift);
-                    return (candList[ci], p, pShift); // 260708Cl (/simplify): candSn → candList[ci]
+                    //return (candList[ci], p, pShift); // 260708Cl (/simplify): candSn → candList[ci]
+                    if (k > 1 || perfect)
+                        return (candList[ci], p, pShift);
+                    if (best.Child < 0 || score.CompareTo(bestScore) < 0)
+                    {
+                        best = (candList[ci], p, pShift);
+                        bestScore = score;
+                    }
                 }
             }
+            if (best.Child >= 0) // 260709Cl: バケット内で見つかったらフォールバック (次の k / det<0 パス) へは進まない
+                return best;
         }
         return (-1, null, null);
+    }
+
+    /// <summary>260709Cl 追加: 同定候補の基底変換 P の「簡明さ」スコア (小さいほど良い)。
+    /// ITA の表記慣行に合わせ、①非対角の非ゼロ成分が少ない (対角形優先) ②負成分が少ない
+    /// ③成分絶対値和が小さい、の辞書式で比較する。</summary>
+    private static (int OffDiagNonZero, int Negatives, double AbsSum) ScoreP(Fraction[] p)
+    {
+        int offDiag = 0, negatives = 0;
+        double absSum = 0;
+        for (int i = 0; i < 9; i++)
+        {
+            int sign = p[i].Sign;
+            if (sign != 0 && i % 4 != 0) offDiag++; // i=0,4,8 が対角
+            if (sign < 0) negatives++;
+            absSum += Math.Abs((double)p[i].Num / (double)p[i].Den);
+        }
+        return (offDiag, negatives, absSum);
     }
 
     private static bool SetEqualsIntMats(int[][] a, int[][] b)

@@ -364,8 +364,9 @@ public sealed class SymmetryElementsTable
 
     /// <summary>(260503Cl) 軸方向 d に沿った最小の格子並進ベクトル (purely-along-d) を d-units で返す。
     /// 中心化を含む格子の整数結合から「d と平行な最小ベクトル」を探索する。
-    /// P-cubic [111] では 1、I-cubic 体対角では 1/2、F-cubic 体対角では 1。</summary>
-    private static double PrimitiveAlongDirectionInDUnits((int U, int V, int W) direction,
+    /// P-cubic [111] では 1、I-cubic 体対角では 1/2、F-cubic 体対角では 1。
+    /// 260709Cl: SeitzNotation.ScrewPitch の中心化補正でも使うため private → internal。</summary>
+    internal static double PrimitiveAlongDirectionInDUnits((int U, int V, int W) direction,
         IReadOnlyList<(double U, double V, double W)> centerings)
     {
         if (centerings.Count == 0) return 1.0; // P-lattice: 最小並進は d 自身。

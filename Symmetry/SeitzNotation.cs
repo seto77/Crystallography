@@ -3,7 +3,10 @@
 // 全て操作の線形部 (Order/Sense/Direction) と SeitzTranslation から算出し、Cartesian 変換に依存しない。
 // 参照: ReciPro_SymmetryInformation拡張計画.md §4.1。
 using System;
+using System.Collections.Concurrent; // 260709Cl 追加: series ごとの中心化並進キャッシュ
+using System.Collections.Generic; // 260709Cl 追加
 using System.Globalization;
+using System.Linq; // 260709Cl 追加
 using System.Text;
 
 namespace Crystallography;
@@ -208,21 +211,57 @@ public static class SeitzNotation
             return $"{n}-fold rotoinversion (-{n}{(op.Sense ? "+" : "-")}) {DirectionStr(dir)}";
 
         // 正の回転 or 螺旋
-        int pitch = ScrewPitch(op.IntrinsicTranslation, dir, n);
+        //int pitch = ScrewPitch(op.IntrinsicTranslation, dir, n);
+        int pitch = ScrewPitch(op.IntrinsicTranslation, dir, n, op.SeriesNumber); // 260709Cl: 中心化補正 (下記)
         if (pitch > 0)
             return $"{ScrewLabel(n, pitch)} screw axis {DirectionStr(dir)}";
         return $"{n}-fold rotation ({n}{(op.Sense ? "+" : "-")}) {DirectionStr(dir)}";
     }
 
-    /// <summary>螺旋のピッチ p (n_p の p)。intrinsic 並進のうち軸方向成分 ≈ p/n。無ければ 0。</summary>
-    private static int ScrewPitch((double U, double V, double W) it, (int U, int V, int W) dir, int n)
+    /// <summary>螺旋のピッチ p (n_p の p)。intrinsic 並進のうち軸方向成分 ≈ p/n。無ければ 0。
+    /// 260709Cl シグネチャ変更 (旧: ScrewPitch(it, dir, n)): 中心化格子 (I/F/R) の対角軸では軸方向の最小
+    /// 格子並進 primitive_along_d が方向ベクトル d より短い (I-立方の体対角 = d/2 等) ため、ITA 規約
+    /// (axial = (p/n)·primitive_along_d) に合わせ seriesNumber の中心化並進で補正する。全 530 設定の検証
+    /// (SymmetryPropsCheck PART 9) で I 格子立方晶の [111] 3 回軸 200 操作が誤添字だった実バグの修正
+    /// (例: I23 の {3⁺|½½½} を 3₂ 螺旋と表示 — ½½½ は I 中心化並進そのもので、実際は純回転)。
+    /// seriesNumber が無効 (0) のときは中心化なし (P 格子) として従来と同じ値を返す。</summary>
+    private static int ScrewPitch((double U, double V, double W) it, (int U, int V, int W) dir, int n, int seriesNumber)
     {
         double len2 = (double)dir.U * dir.U + (double)dir.V * dir.V + (double)dir.W * dir.W;
         if (len2 < Tol) return 0;
         double proj = (it.U * dir.U + it.V * dir.V + it.W * dir.W) / len2; // 軸方向の並進 (格子単位)
-        int p = (int)Math.Round(proj * n);
-        p = ((p % n) + n) % n;
-        return p;
+        //int p = (int)Math.Round(proj * n);
+        //p = ((p % n) + n) % n;
+        //return p;
+        double primitive = SymmetryElementsTable.PrimitiveAlongDirectionInDUnits(dir, CenteringsOf(seriesNumber)); // 260709Cl
+        double alongPrim = proj / primitive; // 260709Cl: d 単位 → primitive_along_d 単位
+        alongPrim -= Math.Floor(alongPrim);
+        if (alongPrim < 1e-3 || alongPrim > 1 - 1e-3) return 0; // 格子並進と同値 = 純回転
+        int p = ((int)Math.Round(alongPrim * n)) % n;
+        return p < 0 ? p + n : p;
+    }
+
+    /// <summary>260709Cl 追加: series の中心化並進 (恒等線形部の非ゼロ mod1 並進)。ScrewPitch の
+    /// primitive_along_d 補正用 (series ごとにキャッシュ、複数スレッド安全)。無効 series は空 (P 格子扱い)。</summary>
+    private static readonly ConcurrentDictionary<int, (double U, double V, double W)[]> _centeringCache = new();
+    private static (double U, double V, double W)[] CenteringsOf(int seriesNumber)
+    {
+        if (seriesNumber <= 0 || seriesNumber >= SymmetryStatic.TotalSpaceGroupNumber)
+            return [];
+        return _centeringCache.GetOrAdd(seriesNumber, sn =>
+        {
+            var list = new List<(double U, double V, double W)>();
+            foreach (var op in TSubgroupFinder.GetExpandedOps(sn))
+            {
+                if (op.Order != 1) continue;
+                var t = op.SeitzTranslation;
+                double cu = Frac(t.U), cv = Frac(t.V), cw = Frac(t.W);
+                if (cu + cv + cw < Tol) continue;
+                if (!list.Any(c => Math.Abs(c.U - cu) + Math.Abs(c.V - cv) + Math.Abs(c.W - cw) < 1e-6))
+                    list.Add((cu, cv, cw));
+            }
+            return [.. list];
+        });
     }
 
     private static string ScrewLabel(int n, int p) => $"{n}{Subscript(p)}";
