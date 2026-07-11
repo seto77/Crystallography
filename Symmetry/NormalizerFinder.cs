@@ -95,28 +95,51 @@ public static class NormalizerFinder
             ContinuousBasis = kernelSol.ContinuousKernelBasis,
         };
 
-        // ---- 非自明線形部の有界探索: SmallUnimodular(1) ∩ {U | U·{A}·U⁻¹ = {A}} → shift 解決 ----
+        // ---- 非自明線形部の有界探索: SmallUnimodular(k) ∩ {U | U·{A}·U⁻¹ = {A}} → shift 解決 ----
         var gens = new List<NormalizerGenerator>();
         var cosetSeen = new List<int[]>(); // P_G 左剰余 (A_j·U) の正準代表で重複除去
-        foreach (var u in KSubgroupFinder.SmallUnimodular(1))
+
+        // 探索 1 バウンド分。戻り値 = 「点群は正規化するが lift 不能 (extension class を保存する shift 無し)」だった剰余の数。
+        int ScanBound(int k)
         {
-            // U が P_G の元そのもの (⇒ G·T を法として自明) はスキップ
-            if (pg.A.Any(a => KSubgroupFinder.SameIntVec(a, u)))
-                continue;
-            var perm = FindConjugationPermutation(pg, u);
-            if (perm == null)
-                continue; // U は点群を正規化しない
-            // P_G 左剰余の重複除去: {A_j·U} の中の辞書順最小を代表に
-            var rep = CosetCanonical(pg, u);
-            if (cosetSeen.Any(r => KSubgroupFinder.SameIntVec(r, rep)))
-                continue;
-            var (rows2, rhs) = BuildCongruenceRows(pg, u, perm);
-            var sol = SolveCongruence(rows2, rhs);
-            if (sol == null)
-                continue; // 点群は正規化するが空間群 (extension class) を保存する shift が無い
-            cosetSeen.Add(rep);
-            int det = u[0] * (u[4] * u[8] - u[5] * u[7]) - u[1] * (u[3] * u[8] - u[5] * u[6]) + u[2] * (u[3] * u[7] - u[4] * u[6]);
-            gens.Add(new NormalizerGenerator { LinearPrimitive = u, ShiftPrimitive = sol.Particular, DetSign = Math.Sign(det) });
+            int liftRejected = 0;
+            foreach (var u in KSubgroupFinder.SmallUnimodular(k))
+            {
+                // U が P_G の元そのもの (⇒ G·T を法として自明) はスキップ
+                if (pg.A.Any(a => KSubgroupFinder.SameIntVec(a, u)))
+                    continue;
+                var perm = FindConjugationPermutation(pg, u);
+                if (perm == null)
+                    continue; // U は点群を正規化しない
+                // P_G 左剰余の重複除去: {A_j·U} の中の辞書順最小を代表に
+                var rep = CosetCanonical(pg, u);
+                if (cosetSeen.Any(r => KSubgroupFinder.SameIntVec(r, rep)))
+                    continue;
+                var (rows2, rhs) = BuildCongruenceRows(pg, u, perm);
+                var sol = SolveCongruence(rows2, rhs);
+                if (sol == null)
+                {
+                    liftRejected++; // nonsymmorphic の lift 制約が生成集合を痩せさせるシグナル (下記 k=2 拡張の判定に使う)
+                    continue;
+                }
+                cosetSeen.Add(rep);
+                int det = u[0] * (u[4] * u[8] - u[5] * u[7]) - u[1] * (u[3] * u[8] - u[5] * u[6]) + u[2] * (u[3] * u[7] - u[4] * u[6]);
+                gens.Add(new NormalizerGenerator { LinearPrimitive = u, ShiftPrimitive = sol.Particular, DetSign = Math.Sign(det) });
+            }
+            return liftRejected;
+        }
+
+        // 260709Cl (codex R10): k=1 で「正規化するが lift 不能」な U が 1 つでもあった群は k=2 へ拡張する。
+        // 実証された失敗モード — P2₁/c では lift 条件が q ≡ 0 (mod 2) を課すため、成分 [-1,1] の lift 可能元
+        // (q=0) の積からは q=2 の shear U₀=[[1,0,2],[0,1,0],[0,0,1]] (shift 0 で lift 可能、ITA A1 の
+        // IIc 2 軌道化に必須) が生成できず、index3 が 3 軌道 (正 2)・index2 が 2 軌道 (正 1) に割れた。
+        // symmorphic 群 (lift 拒否 0) は拡張不要。nonsymmorphic 群は点群正規化フィルタが効いて
+        // SmallUnimodular(2) (~10⁵ 元) でも候補が激減するため、コストは許容範囲。
+        var completeness = NormalizerCompleteness.BoundedVerified1;
+        if (ScanBound(1) > 0)
+        {
+            ScanBound(2); // k=1 の元は cosetSeen 済みで自然にスキップされる
+            completeness = NormalizerCompleteness.BoundedVerified2;
         }
 
         return new AffineNormalizerData
@@ -125,7 +148,7 @@ public static class NormalizerFinder
             PrimitiveBasis = KSubgroupFinder.GetPrimitiveBasis(sn),
             Generators = [.. gens],
             TranslationKernel = kernel,
-            Completeness = NormalizerCompleteness.BoundedVerified1,
+            Completeness = completeness,
         };
     }
 
@@ -137,8 +160,9 @@ public static class NormalizerFinder
         return p;
     }
 
-    /// <summary>U·A_i·U⁻¹ = A_{π(i)} となる置換 π を求める (無ければ null = U は P_G を正規化しない)。</summary>
-    private static int[] FindConjugationPermutation(KSubgroupFinder.PointGroupData pg, int[] u)
+    /// <summary>U·A_i·U⁻¹ = A_{π(i)} となる置換 π を求める (無ければ null = U は P_G を正規化しない)。
+    /// 260709Cl: Phase 2 (KSubgroupFinder.GetNormalizerOrbits の軌道作用) からも使うため private → internal。</summary>
+    internal static int[] FindConjugationPermutation(KSubgroupFinder.PointGroupData pg, int[] u)
     {
         int det = u[0] * (u[4] * u[8] - u[5] * u[7]) - u[1] * (u[3] * u[8] - u[5] * u[6]) + u[2] * (u[3] * u[7] - u[4] * u[6]);
         var uInv = KSubgroupFinder.AdjTimesDet(u, det);

@@ -981,6 +981,157 @@ public static class KSubgroupFinder
         return _kSupergroupCache.GetOrAdd(itNumber, [.. list]);
     }
 
+    #region normalizer 軌道 (Phase 2, 260709Cl)
+    // G-共役類 (GetMaximalKSubgroups の ConjugacyClassId) を affine normalizer N_Aff(G) の軌道に束ねる。
+    // 「固定 index ごとの normalizer 軌道」が ITA A1 の同型 (IIc) 系列表示の分類粒度に対応する (codex R9。
+    // 異なる素数 index を 1 本の系列式にまとめる記号処理は Phase 3 の後段)。
+    // 作用: n=(U,a) は点群不変な部分格子 T′ を U·T′ へ、complement の操作 g_i=(A_i, t_i) を
+    // (A_{π(i)}, U·t_i+(I−A_{π(i)})·a) へ写す。N は G を正規化し「index n の極大部分群」の集合を保つため、
+    // 作用先は必ず列挙済みの極大クラスのどれかに一致する (見つからなければ hard fail)。
+    // union-find で辺を張るだけで連結成分 = 生成群の軌道になる (作用は全単射、無向成分に逆元も含まれる)。
+    // ⚠ 生成集合は NormalizerFinder の BoundedVerified(k=1) — 軌道が「粗すぎる」ことは原理的に無いが
+    // 「細かすぎる」(本来 1 軌道が複数に見える) 可能性は残る。既知ケース照合 (PART 11) で監視する。
+
+    /// <summary>ComputeMaximalK が保存する classId 順の生データ (HNF と共役類の全メンバー σ)。260709Cl 追加。</summary>
+    private static readonly ConcurrentDictionary<int, (int[] Hnf, List<int[]> Members)[]> _rawClassesCache = new();
+
+    private static readonly ConcurrentDictionary<int, Lazy<int[]>> _orbitCache = new();
+
+    /// <summary>GetMaximalKSubgroups(seriesNumber) の各共役類を N_Aff(G) の軌道へ束ねた軌道 ID
+    /// (0 始まり、最小 classId 順の連番) を返す。orbits[rel.ConjugacyClassId] が rel の軌道 ID。
+    /// K と Isomorphic の両方の類を含む (軌道は Kind・index・子タイプを保つ)。260709Cl 追加 (Phase 2)。</summary>
+    public static int[] GetNormalizerOrbits(int seriesNumber)
+        => _orbitCache.GetOrAdd(seriesNumber, snn => new Lazy<int[]>(() => ComputeNormalizerOrbits(snn), LazyThreadSafetyMode.ExecutionAndPublication)).Value;
+
+    private static int[] ComputeNormalizerOrbits(int sn)
+    {
+        _ = GetMaximalKSubgroups(sn); // per-series Lazy: _rawClassesCache を確実に埋める
+        var rawClasses = _rawClassesCache[sn];
+        var pg = BuildPointGroupData(sn);
+        int m = pg.LinKeys.Length;
+        var nd = NormalizerFinder.Get(sn);
+
+        // hnf ごとの Quotient / その hnf 上の classId 一覧
+        var hnfKeys = new string[rawClasses.Length];
+        var qByKey = new Dictionary<string, QuotientData>();
+        var classesByKey = new Dictionary<string, List<int>>();
+        var hnfByKey = new Dictionary<string, int[]>();
+        for (int c = 0; c < rawClasses.Length; c++)
+        {
+            var key = string.Join(",", rawClasses[c].Hnf);
+            hnfKeys[c] = key;
+            if (!classesByKey.TryGetValue(key, out var list))
+            {
+                classesByKey[key] = list = [];
+                hnfByKey[key] = rawClasses[c].Hnf;
+                qByKey[key] = BuildQuotient(pg, rawClasses[c].Hnf);
+            }
+            list.Add(c);
+        }
+
+        // 生成元 = 非自明線形部 + 純並進核の離散生成元。連続方向 (polar) は G を点ごとに centralize する
+        // ため部分群への作用が恒等であり、含めない (codex R9)。
+        int[] idU = [1, 0, 0, 0, 1, 0, 0, 0, 1];
+        var gens = new List<(int[] U, Fraction[] Shift)>();
+        foreach (var g in nd.Generators)
+            gens.Add((g.LinearPrimitive, g.ShiftPrimitive));
+        foreach (var d in nd.TranslationKernel.DiscreteGenerators)
+            gens.Add((idU, d));
+
+        // union-find
+        var parent = new int[rawClasses.Length];
+        for (int i = 0; i < parent.Length; i++) parent[i] = i;
+        int Find(int x) { while (parent[x] != x) { parent[x] = parent[parent[x]]; x = parent[x]; } return x; }
+        void Union(int x, int y) { x = Find(x); y = Find(y); if (x != y) parent[Math.Max(x, y)] = Math.Min(x, y); }
+
+        foreach (var (u, shift) in gens)
+        {
+            var perm = NormalizerFinder.FindConjugationPermutation(pg, u)
+                ?? throw new InvalidOperationException($"normalizer generator does not normalize the point group (sn={sn})");
+            for (int c = 0; c < rawClasses.Length; c++)
+            {
+                var (hnf, members) = rawClasses[c];
+                var q = qByKey[hnfKeys[c]];
+                // T″ = U·T′。同 index の点群不変 HNF (クラスを持つもの) の中に必ずある。
+                var uh = MatMulInt(u, hnf);
+                string key2 = null;
+                foreach (var kv in hnfByKey)
+                    if (Det3Int(kv.Value) == Det3Int(hnf) && IsSameLattice(kv.Value, uh)) { key2 = kv.Key; break; }
+                var hnf2 = key2 != null ? hnfByKey[key2]
+                    : throw new InvalidOperationException($"image sublattice not found among enumerated HNFs (sn={sn})");
+                var q2 = qByKey[key2];
+
+                // σ″: 代表 complement の各操作を共役して T″ 上の coset index として読み取る
+                var sigma = members[0];
+                var sigma2 = new int[m];
+                for (int i = 0; i < m; i++)
+                {
+                    var rep = q.Reps[sigma[i]];
+                    Fraction[] t = [pg.T0[i][0] + new Fraction(rep[0]), pg.T0[i][1] + new Fraction(rep[1]), pg.T0[i][2] + new Fraction(rep[2])];
+                    var ut = MulIntMatVec(u, t);
+                    var ra = MulIntMatVec(pg.A[perm[i]], shift);
+                    // δ = U·t + (I−A_π)·a − T0[π(i)]。n が normalizer なら g′∈G ゆえ必ず整数ベクトル。
+                    Fraction[] delta =
+                    [
+                        ut[0] + shift[0] - ra[0] - pg.T0[perm[i]][0],
+                        ut[1] + shift[1] - ra[1] - pg.T0[perm[i]][1],
+                        ut[2] + shift[2] - ra[2] - pg.T0[perm[i]][2],
+                    ];
+                    if (!delta[0].IsInteger || !delta[1].IsInteger || !delta[2].IsInteger)
+                        throw new InvalidOperationException($"conjugated translation is not integral (sn={sn}) — generator is not in the normalizer");
+                    sigma2[perm[i]] = CosetIndexOf(q2, hnf2, [(long)delta[0].Num, (long)delta[1].Num, (long)delta[2].Num]);
+                }
+
+                // 作用先の共役類を同定 (共役類メンバーは完全列挙済みなので int[] 一致照合で必ず見つかる)
+                int target = -1;
+                foreach (var c2 in classesByKey[key2])
+                    if (rawClasses[c2].Members.Any(s => SameSigma(s, sigma2))) { target = c2; break; }
+                if (target < 0)
+                    throw new InvalidOperationException($"image complement not found among maximal classes (sn={sn})");
+                Union(c, target);
+            }
+        }
+
+        // 軌道 ID を最小 classId 順の連番へ正規化 (決定的)
+        var orbitId = new Dictionary<int, int>();
+        var result = new int[rawClasses.Length];
+        for (int c = 0; c < rawClasses.Length; c++)
+        {
+            int root = Find(c);
+            if (!orbitId.TryGetValue(root, out var id))
+                orbitId[root] = id = orbitId.Count;
+            result[c] = id;
+        }
+        return result;
+    }
+
+    private static bool SameSigma(int[] a, int[] b)
+    {
+        for (int i = 0; i < a.Length; i++)
+            if (a[i] != b[i]) return false;
+        return true;
+    }
+
+    private static long Det3Int(int[] h)
+        => (long)h[0] * (h[4] * h[8] - h[5] * h[7]) - (long)h[1] * (h[3] * h[8] - h[5] * h[6]) + (long)h[2] * (h[3] * h[7] - h[4] * h[6]);
+
+    /// <summary>2 つの部分格子基底 (整数、同 det) が同一格子か: H1⁻¹·H2 が整数 (det 同一なので unimodular)。260709Cl 追加。</summary>
+    private static bool IsSameLattice(int[] h1, int[] h2)
+    {
+        var inv = RationalMatrix.Invert3(RationalMatrix.FromInt(h1));
+        if (inv == null) return false;
+        return RationalMatrix.ToIntOrNull(RationalMatrix.Mul(inv, RationalMatrix.FromInt(h2))) != null;
+    }
+
+    private static Fraction[] MulIntMatVec(int[] mm, Fraction[] v)
+        =>
+        [
+            new Fraction(mm[0]) * v[0] + new Fraction(mm[1]) * v[1] + new Fraction(mm[2]) * v[2],
+            new Fraction(mm[3]) * v[0] + new Fraction(mm[4]) * v[1] + new Fraction(mm[5]) * v[2],
+            new Fraction(mm[6]) * v[0] + new Fraction(mm[7]) * v[1] + new Fraction(mm[8]) * v[2],
+        ];
+    #endregion
+
     private sealed class RawComplement
     {
         public int[] Hnf;
@@ -1058,6 +1209,9 @@ public static class KSubgroupFinder
         var rels = new GroupRelation[items.Count];
         Parallel.For(0, items.Count, i =>
             rels[i] = BuildGroupRelation(sn, pg, items[i].Hnf, items[i].Cls[0], i, items[i].Cls.Count, items[i].Q));
+        // 260709Cl 追加 (Phase 2): normalizer 軌道計算 (GetNormalizerOrbits) 用に、classId 順の生データ
+        // (HNF と共役類の全メンバー σ) を保存する。classId = items の収集順 = GroupRelation.ConjugacyClassId。
+        _rawClassesCache[sn] = [.. items.Select(it => (it.Hnf, it.Cls))];
         return [.. rels.OrderBy(r => r.Index).ThenBy(r => r.ChildSeriesNumber < 0 ? 1 : 0).ThenBy(r => r.ChildSeriesNumber)];
     }
 
