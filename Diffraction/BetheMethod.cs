@@ -2501,9 +2501,49 @@ public class BetheMethod
         var reportString = $"{SolverLabel(solver)}{thread}"; //260611Cl 旧: $"{solver}{thread}" (MKL 不在時の managed 実行を可視化)
         #endregion
 
-        #region 固有値固有ベクトルの計算
+        #region 260711Cl 追加 (全-slice tc 物化): slice 分割の前倒しと経路選択
+
+        //厚みを sliceThickness 程度で切り分ける (旧: 非弾性フェーズ冒頭で構築していたものを EVD 前へ移動。全-slice 物化経路では EVD 直後に使うため)
+        var _thick = new double[Thicknesses.Length][];
+        var tStep = new double[Thicknesses.Length];
+        for (int t = 0; t < Thicknesses.Length; t++)
+        {
+            var start = t == 0 ? 0 : Thicknesses[t - 1];
+            var slices = Math.Max(1, (int)((Thicknesses[t] - start) / sliceThickness));
+            tStep[t] = (Thicknesses[t] - start) / slices;
+            _thick[t] = [.. ValueEnumerable.Range(1, slices).Select(e => start + tStep[t] * e)];
+        }
+        var sliceTotal = 0;
+        var sliceOffset = new int[Thicknesses.Length];
+        for (int t = 0; t < Thicknesses.Length; t++) { sliceOffset[t] = sliceTotal; sliceTotal += _thick[t].Length; }
 
         var useNativeSolver = solver == Solver.Eigen_Eigen && EigenEnabled;//260711Cl 追加: eigenMatrix の確保方法判定 (native 経路のみ pool 化。managed 経路は DMat が長さ一致を要求)
+
+        //260711Cl 追加 (全-slice tc 物化, codex 協議の本命提案): EVD 直後に全 slice の透過係数を native GEMM 1回 (_CBEDSolver_Eigen) で
+        //生成し、eVec/eVal/α を managed に保持しない。保持量は K_inside×N² (eVec) → S×K_all×N (tcSlice) となり、
+        //S×K_all ≤ K_inside×N なら削減。非弾性フェーズの GenerateTC1B (slice×方向ごとの GEMV 再生成) も丸ごと不要になる。
+        //環境変数 RECIPRO_STEM_ALLSLICE=0/1 で強制切替 (BetheBench A/B 検証用)。既定はメモリ見積で自動選択
+        var insideCount = 0;
+        for (int i = 0; i < BeamDirections.Length; i++) if (inside(i)) insideCount++;
+        var allSliceEnv = Environment.GetEnvironmentVariable("RECIPRO_STEM_ALLSLICE");
+        var useAllSliceTc = useNativeSolver && allSliceEnv != "0" &&
+            (allSliceEnv == "1" || (long)sliceTotal * BeamDirections.Length <= (long)insideCount * bLen);
+        double[] allThick = null;   //ユーザー厚み (先頭 tLen 列, 弾性用) + 全 slice 厚み (非弾性用)
+        Complex[][] tcSlice = null; //tcSlice[s][kIndex*bLen+g]: slice s における全方向の透過係数 (column-major N×K_all, 有効列のみ書き込み)
+        if (useAllSliceTc)
+        {
+            allThick = new double[tLen + sliceTotal];
+            thicknesses.CopyTo(allThick, 0);
+            for (int t = 0; t < Thicknesses.Length; t++)
+                _thick[t].CopyTo(allThick, tLen + sliceOffset[t]);
+            tcSlice = new Complex[sliceTotal][];
+            for (int s = 0; s < sliceTotal; s++)
+                tcSlice[s] = GC.AllocateUninitializedArray<Complex>(BeamDirections.Length * bLen);//無効列 (円外方向) は書き込まれないが読まれもしない (list 構築時に flag で除外済み)
+        }
+        #endregion
+
+        #region 固有値固有ベクトルの計算
+
         Complex[][] eVec = new Complex[BeamDirections.Length][], eVal = new Complex[BeamDirections.Length][], α = new Complex[BeamDirections.Length][];
         var k_vec = GC.AllocateUninitializedArray<Vector3DBase>(BeamDirections.Length);
         var kg_z = new double[BeamDirections.Length][];
@@ -2530,6 +2570,28 @@ public class BetheMethod
                 //ポテンシャル行列の固有値、固有ベクトルを取得し、resultに格納
                 Complex[] result;
                 #region 各ソルバーによる計算
+                //260711Cl 追加 (全-slice 物化): _CBEDSolver_Eigen は EVD → V·diag(α) → 全厚み列を GEMM 1回で返し、
+                //V/λ/α を managed へ出さない (EigenFuncs.cpp:347)。eVec の全方向保持と後段の GenerateTC1B 再生成が消滅する
+                if (useAllSliceTc)
+                {
+                    var tgAll = NativeWrapper.CBEDSolver_Eigen(eigenMatrix, psi0, allThick);//[bLen × (tLen+sliceTotal)] column-major
+                    var _kgzA = new double[bLen];
+                    for (int g = 0; g < bLen; g++)
+                        _kgzA[g] = beams[g].P / 2;
+                    kg_z[i] = _kgzA;
+                    //位相補正 exp(2πi·kg_z·t)。旧経路では弾性 tc はラムダ末尾、slice 分は GenerateTC1B 内で適用していたのと同じ式
+                    for (int c = 0; c < allThick.Length; c++)
+                    {
+                        var th = allThick[c];
+                        for (int g = 0; g < bLen; g++)
+                            tgAll[c * bLen + g] *= Exp(TwoPiI * _kgzA[g] * th);
+                    }
+                    //slice 列を共有バッファへ scatter (方向 i が自分の列を専有するため lock 不要)
+                    for (int s = 0; s < sliceTotal; s++)
+                        Array.Copy(tgAll, (tLen + s) * bLen, tcSlice[s], i * bLen, bLen);
+                    //先頭 tLen 列 (ユーザー厚み) は弾性散乱用の tc として返す。eVal/eVec/α[i] は null のまま
+                    return tgAll[..(tLen * bLen)];
+                }
                 //Eigen＿Eigenの場合
                 //if (solver == Solver.Eigen_Eigen && EigenEnabled) //260711Cl 変更前: mutable static の EigenEnabled を再読していた (実行中に変化すると pool 余長配列が managed DMat に渡り得る。codex レビュー指摘)
                 if (useNativeSolver)
@@ -2819,16 +2881,16 @@ public class BetheMethod
         {
             bwSTEM.ReportProgress(0, "Calculating I_inelastic(Q)");
 
-            #region 各厚みを、指定された厚み程度で切り分ける
-            var _thick = new double[Thicknesses.Length][];
-            var tStep = new double[Thicknesses.Length];
-            for (int t = 0; t < Thicknesses.Length; t++)
-            {
-                var start = t == 0 ? 0 : Thicknesses[t - 1];
-                var slices = Math.Max(1, (int)((Thicknesses[t] - start) / sliceThickness));
-                tStep[t] = (Thicknesses[t] - start) / slices;
-                _thick[t] = [.. ValueEnumerable.Range(1, slices).Select(e => start + tStep[t] * e)];
-            }
+            #region 各厚みを、指定された厚み程度で切り分ける 260711Cl: EVD 前へ移動 (_thick/tStep/sliceOffset/sliceTotal は上で構築済み)
+            //var _thick = new double[Thicknesses.Length][];
+            //var tStep = new double[Thicknesses.Length];
+            //for (int t = 0; t < Thicknesses.Length; t++)
+            //{
+            //    var start = t == 0 ? 0 : Thicknesses[t - 1];
+            //    var slices = Math.Max(1, (int)((Thicknesses[t] - start) / sliceThickness));
+            //    tStep[t] = (Thicknesses[t] - start) / slices;
+            //    _thick[t] = [.. ValueEnumerable.Range(1, slices).Select(e => start + tStep[t] * e)];
+            //}
             #endregion
 
             #region あらかじめeVecにαを掛けておく。260711Cl: EVD ラムダ内 (計算直後) へ移動したため不要 (全 eVec の cold sweep を除去)
@@ -2842,7 +2904,8 @@ public class BetheMethod
             #endregion
 
             #region 各種変数の設定
-            var tc_k = GC.AllocateUninitializedArray<Complex>(tc.Length * bLen);
+            //var tc_k = GC.AllocateUninitializedArray<Complex>(tc.Length * bLen);//260711Cl 変更前
+            var tc_k = useAllSliceTc ? null : GC.AllocateUninitializedArray<Complex>(tc.Length * bLen);//260711Cl 変更: 全-slice 物化時は EVD 時に tcSlice へ生成済みのため不要
             var validTc = list.Where(e1 => e1 is not null).SelectMany(e2 => e2.SelectMany(e3 => e3.N)).Distinct().ToList().AsParallel();
             // var total = _thick.Sum(e => e.Length) * tcPArray.Length; // 260610Cl 変更前: k 単位の進捗だった
             #endregion
@@ -2903,12 +2966,16 @@ public class BetheMethod
                     Array.Clear(sum, 0, sumLen); // ゼロ初期化が必要 (+=で累積)
                     try
                     {
-                        foreach (var thickness in _thick[t])
+                        //foreach (var thickness in _thick[t]) //260711Cl 変更前: 全-slice 物化で global slice index が要るため索引ループ化
+                        for (int si = 0; si < _thick[t].Length; si++)
                         {
+                            var thickness = _thick[t][si];
+                            var sliceTc = useAllSliceTc ? tcSlice[sliceOffset[t] + si] : tc_k;//260711Cl この slice の透過係数バッファ (物化済み / 旧経路は下の ForAll で再生成)
                             if (bwSTEM.CancellationPending) return;
 
-                            #region まず厚み_thick[t][_t]における透過係数_tc_kを計算
+                            #region まず厚み_thick[t][_t]における透過係数_tc_kを計算 (260711Cl: 全-slice 物化時は EVD 時に生成済みのため skip)
                             //validTc = validTc.WithDegreeOfParallelism(1);
+                            if (!useAllSliceTc)
                             validTc.ForAll(kIndex =>
                             {
                                 if (EigenEnabled)
@@ -2949,7 +3016,8 @@ public class BetheMethod
                                 {
                                     var entryCount = qEntryK[qIndex]?.Length ?? 0;
                                     if (entryCount == 0 || bwSTEM.CancellationPending) return;
-                                    fixed (Complex* _tc_k = tc_k, _U = U, _sum = sum, _lenz = qEntryLenz[qIndex])
+                                    //fixed (Complex* _tc_k = tc_k, _U = U, _sum = sum, _lenz = qEntryLenz[qIndex]) //260711Cl 変更前
+                                    fixed (Complex* _tc_k = sliceTc, _U = U, _sum = sum, _lenz = qEntryLenz[qIndex])//260711Cl 変更: 全-slice 物化時は物化済みバッファ、旧経路では tc_k (sliceTc==tc_k)
                                     fixed (int* _k = qEntryK[qIndex], _n4 = qEntryN4[qIndex])
                                     fixed (double* _r4 = qEntryR4[qIndex])
                                         NativeWrapper.STEM_InelasticQ(bLen, dLen, entryCount, _U + qIndex * bLen2, _tc_k, _k, _n4, _r4, _lenz, _sum + qIndex * dLen);
