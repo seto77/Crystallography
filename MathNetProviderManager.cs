@@ -23,6 +23,11 @@ public static class MathNetProviderManager
     /// <summary>現在の LinearAlgebra provider が MKL native かどうか (Initialize 後に確定)</summary>
     public static bool MklActive { get; private set; } = false;
 
+    /// <summary>260712Cl 追加: 環境変数 RECIPRO_DISABLE_MKL=1 による強制無効化が指定されているか (GUI のメニュー可視性判定用)</summary>
+    public static bool MklDisabledByEnvironment => Environment.GetEnvironmentVariable("RECIPRO_DISABLE_MKL") == "1";
+
+    private static readonly object initLock = new();//260712Cl 追加 (codex 指摘: 多重初期化の競合防止)
+
     /// <summary>MKL native DLL が実行フォルダに配置済みかどうか</summary>
     public static bool MklNativeFilesExist()
     {
@@ -36,16 +41,22 @@ public static class MathNetProviderManager
     /// <summary>
     /// プロセス起動時 (MathNet を使う計算の前) に呼ぶ。useMkl=true なら MKL native provider を内側スレッド数
     /// mklInnerThreads でロードし、失敗時および useMkl=false は managed provider を明示する。
-    /// MKL は x64 専用 (ARM64 では ロードせず managed へ)。既に MKL ロード済みの場合は何もしない
-    /// (ロード後のスレッド数変更は MKL に反映されないため)。
+    /// MKL は x64 専用 (ARM64 では ロードせず managed へ)。
     /// 環境変数 RECIPRO_DISABLE_MKL=1 で強制無効化 (DL 済みでも使いたくない場合の非常口)。
-    /// ダウンロード直後の有効化のため再呼び出し可 (managed→MKL の遷移のみ許可)。
+    ///
+    /// 260712Cl 状態遷移の規約 (codex レビュー反映): **Managed→MKL の一方向のみ**。
+    /// - 既に MklActive の場合は何もしない。MKL はロード後のスレッド数変更を受け付けないため、
+    ///   異なる mklInnerThreads での再呼び出しも無視される (内側スレッド数は初回ロード時のみ有効)
+    /// - MKL→Managed へ戻す手段は提供しない (provider は process-global で、計算中の切替は危険)
     /// </summary>
     public static void Initialize(bool useMkl, int mklInnerThreads = 1)
     {
+      lock (initLock)//260712Cl 追加 (codex 指摘: 多重初期化の競合防止)
+      {
         if (MklActive) return;
 
-        if (Environment.GetEnvironmentVariable("RECIPRO_DISABLE_MKL") == "1")
+        if (mklInnerThreads < 1) mklInnerThreads = 1;//260712Cl 追加 (codex 指摘: 0/負数の防御)
+        if (MklDisabledByEnvironment)
             useMkl = false;
         if (System.Runtime.InteropServices.RuntimeInformation.ProcessArchitecture != System.Runtime.InteropServices.Architecture.X64)
             useMkl = false;
@@ -70,5 +81,6 @@ public static class MathNetProviderManager
 
         if (!MklActive)
             MathNet.Numerics.Control.UseManaged();
+      }
     }
 }

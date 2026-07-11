@@ -351,7 +351,7 @@ public class BetheMethod
             if (EigenEnabled)
                 (solver, thread) = (Solver.MtxExp_Eigen, ProcessorCount);
             else
-                (solver, thread) = (Solver.Eigen_MKL, MklEnabled ? Math.Max(1, ProcessorCount / 4) : ProcessorCount);
+                (solver, thread) = (Solver.Eigen_MKL, MklEnabled ? Math.Max(1, ProcessorCount / 4) : ProcessorCount);//260712Cl 注: PC/4 は MKL 内側無制限時代の名残だが、CBED は大 N があり得るため EVD scratch のメモリ増を考慮し、代表的な大 N でのベンチ後に PC 化を判断 (codex 助言)。EBSD/STEM fallback は PC 化済み
         }
         //260711Cl 追加: MtxExp 経路は等間隔厚み前提 (native は tStart+tStep しか受けず、ゼロ間隔は第1列以降が書かれない)。
         //不等間隔・ゼロ間隔の厚み列は厳密な EVD 系 solver へ振り替える (NativeWrapper.CBEDSolver 側にも防御ガードあり)。
@@ -1358,7 +1358,8 @@ public class BetheMethod
             if (EigenEnabled)
                 (solver, thread) = (Solver.Eigen_Eigen, ProcessorCount);
             else
-                (solver, thread) = (Solver.Eigen_MKL, MklEnabled ? Math.Max(1, ProcessorCount / 4) : ProcessorCount);
+                //(solver, thread) = (Solver.Eigen_MKL, MklEnabled ? Math.Max(1, ProcessorCount / 4) : ProcessorCount);//260712Cl 変更前: PC/4 は MKL 内側スレッド無制限時代のオーバーサブスクリプション対策の名残
+                (solver, thread) = (Solver.Eigen_MKL, ProcessorCount);//260712Cl 変更 (codex 助言): 内側=1 保証後は外側=PC が正。EBSD は N が小さく EVD scratch のメモリ増も軽微
         }
         var reportString = $"{SolverLabel(solver)}{thread}"; //260611Cl 旧: $"{solver}{thread}" (MKL 不在時の managed 実行を可視化)
         // var beamDirectionsP = BeamDirections.AsParallel().WithDegreeOfParallelism(thread); // (260321Ch) 旧実装: PLINQ の Select(...).ToArray() を使っていた
@@ -2506,7 +2507,8 @@ public class BetheMethod
                 //MKL 内側=1 は MathNetProviderManager がロード時に保証。MKL 経路は eVec 保持の旧構造で走る (メモリ増) 点は作者了承済
                 (solver, thread) = MklEnabled && bLen >= MklStemBlenThreshold ? (Solver.Eigen_MKL, ProcessorCount) : (Solver.Eigen_Eigen, ProcessorCount);
             else
-                (solver, thread) = (Solver.Eigen_MKL, MklEnabled ? Math.Max(1, ProcessorCount / 4) : ProcessorCount);
+                //(solver, thread) = (Solver.Eigen_MKL, MklEnabled ? Math.Max(1, ProcessorCount / 4) : ProcessorCount);//260712Cl 変更前: PC/4 は MKL 内側スレッド無制限時代の名残
+                (solver, thread) = (Solver.Eigen_MKL, ProcessorCount);//260712Cl 変更 (codex 助言): 内側=1 保証後は外側=PC が正 (native 無し環境限定の fallback)
         }
 
         //(solver, thread) = EigenEnabled && bLen < 512 ? (Solver.Eigen_Eigen, ProcessorCount) : (Solver.Eigen_MKL, Math.Max(1, ProcessorCount / 4));//260711Cl 実験時の消し忘れ (solver/thread を無条件上書きし、上の Auto 解決とユーザー指定を無効化していた)。瀬戸さん確認のうえコメントアウト
@@ -2996,34 +2998,34 @@ public class BetheMethod
                 //active q (qEntryK 非 null) のみ処理するため、旧経路で発生していた inactive q の U 生成も消える
                 if (useUStream)
                 {
+                    //260712Cl 変更 (codex 指摘): ArrayPool.Rent は 2 の冪 bucket へ切り上げる (N=553 なら 306k→524k 要素 = worker あたり +3.5MB)
+                    //ため、worker ごとの正確長バッファへ変更。fillUq は全 bLen² 要素を上書きするので q 間の再利用は初期化不要で安全
+                    using var threadLocalUq = new ThreadLocal<Complex[]>(() => GC.AllocateUninitializedArray<Complex>(bLen2), false);
                     Parallel.For(0, qList.Count, qIndex =>
                     {
                         var entryCount = qEntryK[qIndex]?.Length ?? 0;
                         if (entryCount == 0 || bwSTEM.CancellationPending) return;
-                        var Uq = Shared.Rent(bLen2);
+                        //var Uq = Shared.Rent(bLen2);//260712Cl 変更前 (finally での Shared.Return と対)
+                        var Uq = threadLocalUq.Value;
                         var sumD = new Complex[dLen];
-                        try
+                        fillUq(qIndex, Uq, 0);
+                        if (bwSTEM.CancellationPending) return;
+                        for (int t = 0; t < Thicknesses.Length; t++)
                         {
-                            fillUq(qIndex, Uq, 0);
-                            if (bwSTEM.CancellationPending) return;
-                            for (int t = 0; t < Thicknesses.Length; t++)
+                            Array.Clear(sumD, 0, dLen);
+                            for (int si = 0; si < _thick[t].Length; si++)
+                                fixed (Complex* _tc = tcSlice[sliceOffset[t] + si], _Uq = Uq, _sumD = sumD, _lenz = qEntryLenz[qIndex])
+                                fixed (int* _k = qEntryK[qIndex], _n4 = qEntryN4[qIndex])
+                                fixed (double* _r4 = qEntryR4[qIndex])
+                                    NativeWrapper.STEM_InelasticQ(bLen, dLen, entryCount, _Uq, _tc, _k, _n4, _r4, _lenz, _sumD);
+                            var coeff = 2 * Math.PI / kvac * tStep[t];
+                            for (int dIndex = 0; dIndex < dLen; dIndex++)
                             {
-                                Array.Clear(sumD, 0, dLen);
-                                for (int si = 0; si < _thick[t].Length; si++)
-                                    fixed (Complex* _tc = tcSlice[sliceOffset[t] + si], _Uq = Uq, _sumD = sumD, _lenz = qEntryLenz[qIndex])
-                                    fixed (int* _k = qEntryK[qIndex], _n4 = qEntryN4[qIndex])
-                                    fixed (double* _r4 = qEntryR4[qIndex])
-                                        NativeWrapper.STEM_InelasticQ(bLen, dLen, entryCount, _Uq, _tc, _k, _n4, _r4, _lenz, _sumD);
-                                var coeff = 2 * Math.PI / kvac * tStep[t];
-                                for (int dIndex = 0; dIndex < dLen; dIndex++)
-                                {
-                                    I_Inel[qIndex, t, dIndex] = sumD[dIndex] * coeff;
-                                    if (t > 0)
-                                        I_Inel[qIndex, t, dIndex] += I_Inel[qIndex, t - 1, dIndex];
-                                }
+                                I_Inel[qIndex, t, dIndex] = sumD[dIndex] * coeff;
+                                if (t > 0)
+                                    I_Inel[qIndex, t, dIndex] += I_Inel[qIndex, t - 1, dIndex];
                             }
                         }
-                        finally { Shared.Return(Uq); }
                         if (Interlocked.Increment(ref count) % 4 == 0) bwSTEM.ReportProgress((int)(1E6 * count / activeQCount), "Calculating I_inelastic(Q)");//状況を報告
                     });
                 }
