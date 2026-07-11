@@ -1006,19 +1006,27 @@ public static class KSubgroupFinder
     private static int[] ComputeNormalizerOrbits(int sn)
     {
         _ = GetMaximalKSubgroups(sn); // per-series Lazy: _rawClassesCache を確実に埋める
-        var rawClasses = _rawClassesCache[sn];
+        return ComputeNormalizerOrbitsCore(sn, _rawClassesCache[sn]);
+    }
+
+    /// <summary>260709Cl (Phase 3): 軌道計算の本体 (rawClasses をパラメータ化し、index≤4 の既定リストと
+    /// 拡張列挙 (GetNormalizerOrbitsAt) で共有)。</summary>
+    private static int[] ComputeNormalizerOrbitsCore(int sn, (int[] Hnf, List<int[]> Members)[] rawClasses)
+    {
         var pg = BuildPointGroupData(sn);
         int m = pg.LinKeys.Length;
         var nd = NormalizerFinder.Get(sn);
 
-        // hnf ごとの Quotient / その hnf 上の classId 一覧
+        // hnf ごとの Quotient / その hnf 上の classId 一覧。260709Cl (codex R11): キーは格子の一意な
+        // canonical HNF 文字列 — 像格子 U·T′ の照合を線形探索 (IsSameLattice 全走査) から辞書 O(1) へ
+        // (P1 の高指数では 類数 × 生成元数 × HNF 数 の積が爆発していた)。
         var hnfKeys = new string[rawClasses.Length];
         var qByKey = new Dictionary<string, QuotientData>();
         var classesByKey = new Dictionary<string, List<int>>();
         var hnfByKey = new Dictionary<string, int[]>();
         for (int c = 0; c < rawClasses.Length; c++)
         {
-            var key = string.Join(",", rawClasses[c].Hnf);
+            var key = string.Join(",", CanonicalHnf(rawClasses[c].Hnf));
             hnfKeys[c] = key;
             if (!classesByKey.TryGetValue(key, out var list))
             {
@@ -1038,14 +1046,17 @@ public static class KSubgroupFinder
         foreach (var d in nd.TranslationKernel.DiscreteGenerators)
             gens.Add((idU, d));
 
-        // union-find
+        // union-find (260709Cl codex R11: 連結成分数を追跡し、1 まで潰れたら残りの生成元をスキップ —
+        // P1 のように生成元が数千あっても最初の数個で 1 軌道に潰れるケースの実効コストを抑える)
         var parent = new int[rawClasses.Length];
         for (int i = 0; i < parent.Length; i++) parent[i] = i;
+        int components = rawClasses.Length;
         int Find(int x) { while (parent[x] != x) { parent[x] = parent[parent[x]]; x = parent[x]; } return x; }
-        void Union(int x, int y) { x = Find(x); y = Find(y); if (x != y) parent[Math.Max(x, y)] = Math.Min(x, y); }
+        void Union(int x, int y) { x = Find(x); y = Find(y); if (x != y) { parent[Math.Max(x, y)] = Math.Min(x, y); components--; } }
 
         foreach (var (u, shift) in gens)
         {
+            if (components <= 1) break; // 260709Cl: これ以上束ねようがない
             var perm = NormalizerFinder.FindConjugationPermutation(pg, u)
                 ?? throw new InvalidOperationException($"normalizer generator does not normalize the point group (sn={sn})");
             for (int c = 0; c < rawClasses.Length; c++)
@@ -1053,11 +1064,10 @@ public static class KSubgroupFinder
                 var (hnf, members) = rawClasses[c];
                 var q = qByKey[hnfKeys[c]];
                 // T″ = U·T′。同 index の点群不変 HNF (クラスを持つもの) の中に必ずある。
+                // 260709Cl (codex R11): canonical HNF 化して辞書 O(1) 照合 (旧: IsSameLattice の線形探索)。
                 var uh = MatMulInt(u, hnf);
-                string key2 = null;
-                foreach (var kv in hnfByKey)
-                    if (Det3Int(kv.Value) == Det3Int(hnf) && IsSameLattice(kv.Value, uh)) { key2 = kv.Key; break; }
-                var hnf2 = key2 != null ? hnfByKey[key2]
+                string key2 = string.Join(",", CanonicalHnf(uh));
+                var hnf2 = classesByKey.ContainsKey(key2) ? hnfByKey[key2]
                     : throw new InvalidOperationException($"image sublattice not found among enumerated HNFs (sn={sn})");
                 var q2 = qByKey[key2];
 
@@ -1112,15 +1122,56 @@ public static class KSubgroupFinder
         return true;
     }
 
-    private static long Det3Int(int[] h)
-        => (long)h[0] * (h[4] * h[8] - h[5] * h[7]) - (long)h[1] * (h[3] * h[8] - h[5] * h[6]) + (long)h[2] * (h[3] * h[7] - h[4] * h[6]);
+    // 260709Cl (codex R11): 像格子の照合を CanonicalHnf 辞書キーへ置換したため Det3Int/IsSameLattice は不要に。
+    //private static long Det3Int(int[] h)
+    //    => (long)h[0] * (h[4] * h[8] - h[5] * h[7]) - (long)h[1] * (h[3] * h[8] - h[5] * h[6]) + (long)h[2] * (h[3] * h[7] - h[4] * h[6]);
+    ///// <summary>2 つの部分格子基底 (整数、同 det) が同一格子か: H1⁻¹·H2 が整数 (det 同一なので unimodular)。260709Cl 追加。</summary>
+    //private static bool IsSameLattice(int[] h1, int[] h2)
+    //{
+    //    var inv = RationalMatrix.Invert3(RationalMatrix.FromInt(h1));
+    //    if (inv == null) return false;
+    //    return RationalMatrix.ToIntOrNull(RationalMatrix.Mul(inv, RationalMatrix.FromInt(h2))) != null;
+    //}
 
-    /// <summary>2 つの部分格子基底 (整数、同 det) が同一格子か: H1⁻¹·H2 が整数 (det 同一なので unimodular)。260709Cl 追加。</summary>
-    private static bool IsSameLattice(int[] h1, int[] h2)
+    /// <summary>整数 3×3 基底 (列ベクトルが格子基底) の張る格子の一意な HNF 正規形を列演算で求める
+    /// (EnumerateHnf と同じ規約: 下三角 [a,0,0, x,b,0, y,z,c]、対角正、0 ≤ x &lt; b・0 ≤ y,z &lt; c)。
+    /// 格子が同一 ⟺ 正規形が一致するため、辞書キーに使える。260709Cl 追加 (codex R11)。</summary>
+    private static int[] CanonicalHnf(int[] mIn)
     {
-        var inv = RationalMatrix.Invert3(RationalMatrix.FromInt(h1));
-        if (inv == null) return false;
-        return RationalMatrix.ToIntOrNull(RationalMatrix.Mul(inv, RationalMatrix.FromInt(h2))) != null;
+        var h = (int[])mIn.Clone();
+        void SwapCol(int i, int j) { for (int r = 0; r < 3; r++) (h[r * 3 + i], h[r * 3 + j]) = (h[r * 3 + j], h[r * 3 + i]); }
+        void AddCol(int dst, int src, int f) { for (int r = 0; r < 3; r++) h[r * 3 + dst] += f * h[r * 3 + src]; }
+        void NegCol(int j) { for (int r = 0; r < 3; r++) h[r * 3 + j] = -h[r * 3 + j]; }
+        static int FloorDiv(int a, int b) => (int)Math.Floor((double)a / b);
+
+        for (int row = 0; row < 3; row++) // 行 row の右側列 (row+1..2) をユークリッドで 0 化し、対角を正へ
+        {
+            while (true)
+            {
+                int best = 0, bc = -1;
+                for (int j = row; j < 3; j++)
+                    if (h[row * 3 + j] != 0 && (best == 0 || Math.Abs(h[row * 3 + j]) < Math.Abs(best))) { best = h[row * 3 + j]; bc = j; }
+                if (bc < 0) throw new InvalidOperationException("singular lattice basis in CanonicalHnf");
+                if (bc != row) SwapCol(row, bc);
+                if (h[row * 3 + row] < 0) NegCol(row);
+                bool done = true;
+                for (int j = row + 1; j < 3; j++)
+                {
+                    int f = FloorDiv(h[row * 3 + j], h[row * 3 + row]);
+                    if (f != 0) AddCol(j, row, -f);
+                    if (h[row * 3 + j] != 0) done = false;
+                }
+                if (done) break;
+            }
+        }
+        // reduce: 対角の左側成分を [0, 対角) へ
+        if (h[4] > 0) { int f = FloorDiv(h[3], h[4]); if (f != 0) AddCol(0, 1, -f); }
+        if (h[8] > 0)
+        {
+            int f = FloorDiv(h[6], h[8]); if (f != 0) AddCol(0, 2, -f);
+            f = FloorDiv(h[7], h[8]); if (f != 0) AddCol(1, 2, -f);
+        }
+        return h;
     }
 
     private static Fraction[] MulIntMatVec(int[] mm, Fraction[] v)
@@ -1142,6 +1193,62 @@ public static class KSubgroupFinder
 
     private static GroupRelation[] ComputeMaximalK(int sn)
     {
+        // 260709Cl (Phase 3): 本体を ComputeMaximalKCore へ一般化 (index リスト指定)。既存挙動は不変。
+        var (rels, rawClasses) = ComputeMaximalKCore(sn, [2, 3, 4], targetIndices: null);
+        _rawClassesCache[sn] = rawClasses;
+        return rels;
+    }
+
+    /// <summary>260709Cl 追加 (Phase 3): 指定 index の極大 k-部分群を列挙する (index ≥ 5 で極大に残るのは
+    /// 理論上 isomorphic のみ — 非同型 klassengleiche 極大の index は 2,3,4 [ITA A1]。スピナーによる
+    /// 同型系列の拡張列挙に使う)。極大性判定のため index の真の約数の格子・complement も内部で列挙する。
+    /// (sn, index) 単位でキャッシュ。</summary>
+    public static GroupRelation[] GetMaximalKSubgroupsAt(int seriesNumber, int index)
+    {
+        // 260709Cl (codex R11): 極大 k-部分群の index は p^r (r ≤ 3) に限る — T/T′ が単純有限 Z[P]-加群
+        // ⟺ 極大、単純加群の加法群は (F_p)^r、T の階数 3 より r ≤ 3。非素数冪は Sylow 分解の
+        // characteristic な中間格子で必ず落ちるため、列挙せずに即時空を返す。
+        if (!IsPrimePowerAtMostCube(index))
+            return [];
+        return _isoAtCache.GetOrAdd((seriesNumber, index), key => new Lazy<(GroupRelation[] Rels, (int[] Hnf, List<int[]> Members)[] Raw)>(() =>
+        {
+            var divisors = new List<int>();
+            for (int d = 2; d <= key.Item2; d++)
+                if (key.Item2 % d == 0) divisors.Add(d); // 1 < d ≤ index (自身含む、真の約数は極大性判定の coarse)
+            return ComputeMaximalKCore(key.Item1, [.. divisors], targetIndices: [key.Item2]);
+        }, LazyThreadSafetyMode.ExecutionAndPublication)).Value.Rels;
+    }
+
+    /// <summary>index が p^r (p 素数、1 ≤ r ≤ 3) か。260709Cl 追加 (codex R11)。</summary>
+    private static bool IsPrimePowerAtMostCube(int n)
+    {
+        if (n < 2) return false;
+        int p = 2;
+        while (p * p <= n && n % p != 0) p++;
+        if (n % p != 0) p = n; // n 自身が素数
+        int r = 0;
+        while (n > 1) { if (n % p != 0) return false; n /= p; r++; }
+        return r <= 3;
+    }
+
+    private static readonly ConcurrentDictionary<(int Sn, int Index), Lazy<(GroupRelation[] Rels, (int[] Hnf, List<int[]> Members)[] Raw)>> _isoAtCache = new();
+    private static readonly ConcurrentDictionary<(int Sn, int Index), Lazy<int[]>> _orbitAtCache = new(); // 260709Cl (codex R11): 毎回再計算を排除
+
+    /// <summary>GetMaximalKSubgroupsAt(sn, index) の各共役類に対する normalizer 軌道 ID。260709Cl 追加 (Phase 3)。</summary>
+    public static int[] GetNormalizerOrbitsAt(int seriesNumber, int index)
+        => !IsPrimePowerAtMostCube(index)
+            ? []
+            : _orbitAtCache.GetOrAdd((seriesNumber, index), key => new Lazy<int[]>(() =>
+            {
+                _ = GetMaximalKSubgroupsAt(key.Sn, key.Index); // Lazy を確実に評価
+                return ComputeNormalizerOrbitsCore(key.Sn, _isoAtCache[key].Value.Raw);
+            }, LazyThreadSafetyMode.ExecutionAndPublication)).Value;
+
+    /// <summary>k-部分群列挙の本体 (260709Cl: ComputeMaximalK から一般化)。
+    /// enumIndices = HNF/complement を列挙する index の集合 (極大性判定の coarse も含めること)。
+    /// targetIndices = GroupRelation を構築する index (null = enumIndices 全部)。</summary>
+    private static (GroupRelation[] Rels, (int[] Hnf, List<int[]> Members)[] RawClasses) ComputeMaximalKCore(int sn, int[] enumIndices, int[] targetIndices)
+    {
         var pg = BuildPointGroupData(sn);
         int m = pg.LinKeys.Length;
 
@@ -1151,7 +1258,7 @@ public static class KSubgroupFinder
         // 毎回再構築・再列挙していた)。
         var byIndex = new Dictionary<int, List<int[]>>();
         var hnfItems = new List<(int Index, int[] Hnf)>();
-        foreach (int index in new[] { 2, 3, 4 })
+        foreach (int index in enumIndices) // 260709Cl (旧: new[] { 2, 3, 4 })
         {
             var inv = FilterPointGroupInvariant(sn, EnumerateHnf(index));
             byIndex[index] = inv;
@@ -1174,23 +1281,29 @@ public static class KSubgroupFinder
                 raws.Add(new RawComplement { Hnf = hnfItems[i].Hnf, Index = hnfItems[i].Index, Sigma = sigma });
         }
 
-        // index4 のみ、index2 の中間格子を経由できるか確認する。260708Cl: fine ごとに独立 (自身の IsMaximal のみ書く) → 並列。
-        Parallel.ForEach(raws.Where(r => r.Index == 4), fine =>
+        // 中間格子を経由できる complement は非極大。260708Cl: fine ごとに独立 (自身の IsMaximal のみ書く) → 並列。
+        // 260709Cl (Phase 3): 「index4 → coarse=index2」固定から「fine.Index の真の約数 d (1<d<Index) の
+        // 全 coarse」へ一般化 (index 8/9/25/27 等の素数冪で必要。素数 index は約数が無く自動極大)。
+        Parallel.ForEach(raws.Where(r => byIndex.Keys.Any(d => d > 1 && d < r.Index && r.Index % d == 0)), fine =>
         {
             var fineQ = qByHnf[string.Join(",", fine.Hnf)].Q;
-            foreach (var coarseHnf in byIndex[2])
+            foreach (int d in byIndex.Keys.Where(d => d > 1 && d < fine.Index && fine.Index % d == 0))
             {
-                if (!IsLatticeSubset(coarseHnf, fine.Hnf)) continue; // T′(fine) ⊂ T″(coarse) か
-                var (coarseQ, coarseSigmas) = qByHnf[string.Join(",", coarseHnf)];
-                foreach (var coarseSigma in coarseSigmas)
+                foreach (var coarseHnf in byIndex[d])
                 {
-                    bool contained = true;
-                    for (int i = 0; i < m; i++)
+                    if (!IsLatticeSubset(coarseHnf, fine.Hnf)) continue; // T′(fine) ⊂ T″(coarse) か
+                    var (coarseQ, coarseSigmas) = qByHnf[string.Join(",", coarseHnf)];
+                    foreach (var coarseSigma in coarseSigmas)
                     {
-                        int mapped = CosetIndexOf(coarseQ, coarseHnf, fineQ.Reps[fine.Sigma[i]]);
-                        if (mapped != coarseSigma[i]) { contained = false; break; }
+                        bool contained = true;
+                        for (int i = 0; i < m; i++)
+                        {
+                            int mapped = CosetIndexOf(coarseQ, coarseHnf, fineQ.Reps[fine.Sigma[i]]);
+                            if (mapped != coarseSigma[i]) { contained = false; break; }
+                        }
+                        if (contained) { fine.IsMaximal = false; break; }
                     }
-                    if (contained) { fine.IsMaximal = false; break; }
+                    if (!fine.IsMaximal) break;
                 }
                 if (!fine.IsMaximal) break;
             }
@@ -1199,7 +1312,9 @@ public static class KSubgroupFinder
         // 共役類分け (hnf ごと、順序決定的に逐次)。型同定 (BuildGroupRelation 内の IdentifyK が支配的コスト) は
         // クラスごとに独立なので並列。classId = 収集順 index で旧逐次カウンタと同一。260708Cl。
         var items = new List<(int[] Hnf, QuotientData Q, List<int[]> Cls)>();
-        foreach (var grp in raws.Where(r => r.IsMaximal).GroupBy(r => string.Join(",", r.Hnf)))
+        // 260709Cl (Phase 3): targetIndices 指定時は対象 index の complement だけを類分け・構築する
+        // (真の約数の complement は極大性判定にのみ使う)。
+        foreach (var grp in raws.Where(r => r.IsMaximal && (targetIndices == null || targetIndices.Contains(r.Index))).GroupBy(r => string.Join(",", r.Hnf)))
         {
             var hnf = grp.First().Hnf;
             var sigmas = grp.Select(r => r.Sigma).ToList();
@@ -1209,10 +1324,10 @@ public static class KSubgroupFinder
         var rels = new GroupRelation[items.Count];
         Parallel.For(0, items.Count, i =>
             rels[i] = BuildGroupRelation(sn, pg, items[i].Hnf, items[i].Cls[0], i, items[i].Cls.Count, items[i].Q));
-        // 260709Cl 追加 (Phase 2): normalizer 軌道計算 (GetNormalizerOrbits) 用に、classId 順の生データ
-        // (HNF と共役類の全メンバー σ) を保存する。classId = items の収集順 = GroupRelation.ConjugacyClassId。
-        _rawClassesCache[sn] = [.. items.Select(it => (it.Hnf, it.Cls))];
-        return [.. rels.OrderBy(r => r.Index).ThenBy(r => r.ChildSeriesNumber < 0 ? 1 : 0).ThenBy(r => r.ChildSeriesNumber)];
+        // 260709Cl (Phase 2/3): normalizer 軌道計算用の classId 順生データ (HNF と共役類の全メンバー σ) を
+        // 戻り値で返す (classId = items の収集順 = GroupRelation.ConjugacyClassId。保存は呼び出し元)。
+        return ([.. rels.OrderBy(r => r.Index).ThenBy(r => r.ChildSeriesNumber < 0 ? 1 : 0).ThenBy(r => r.ChildSeriesNumber)],
+                [.. items.Select(it => (it.Hnf, it.Cls))]);
     }
 
     /// <summary>T′(fineHnf) ⊆ T″(coarseHnf) か (fineHnf の列が coarseHnf の列の整数combinationで表せるか)。260705Cl 追加。</summary>
