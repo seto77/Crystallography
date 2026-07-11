@@ -55,7 +55,18 @@ public class BetheMethod
         => Math.FusedMultiplyAdd(a1, b1, Math.FusedMultiplyAdd(a2, b2, a3 * b3));
     /// <summary>(001)ベクトル</summary>
     private static readonly Vector3DBase zNorm = new(0, 0, 1);
-    public static bool EigenEnabled, MklEnabled, BlasEnabled, CudaEnabled;
+    //public static bool EigenEnabled, MklEnabled, BlasEnabled, CudaEnabled;//260711Cl 変更前
+    public static bool EigenEnabled, BlasEnabled, CudaEnabled;//260711Cl 変更: Blas/Cuda は probe 廃止に伴い常に false (BetheBench header 互換のため残置)
+    /// <summary>260711Cl 変更: 現在の MathNet LinearAlgebra provider が MKL native かどうか (MathNetProviderManager が一元管理)。
+    /// 旧 field は static ctor の無条件 probe で設定され、GUI のメニュー状態と食い違い得た</summary>
+    public static bool MklEnabled => MathNetProviderManager.MklActive;
+
+    /// <summary>260711Cl 追加: STEM の Auto solver が MKL EVD へ切り替わる bLen 閾値。環境変数 RECIPRO_STEM_MKL_BLEN で上書き可。
+    /// 較正ベンチ (9950X/32T アイドル時, Si×3回+Au×2回, full STEM wall, native+全slice物化 vs MKL(外32×内1)+旧経路):
+    /// bLen 377=0.88x / 441-445=1.28-1.33x / 509=1.78x / 553=2.07-2.14x (MKL 側 peakWS は約3倍 = 作者了承済)。
+    /// 境界帯 (441-445, ~1.3x) は低メモリの native に残し、決定的に勝つ 509 以上を確実に拾う 500 を既定とする</summary>
+    public static readonly int MklStemBlenThreshold =
+        int.TryParse(Environment.GetEnvironmentVariable("RECIPRO_STEM_MKL_BLEN"), out var mklTh) ? mklTh : 500;
 
     public static readonly int ProcessorCount = Environment.ProcessorCount;
 
@@ -215,9 +226,12 @@ public class BetheMethod
     static BetheMethod()
     {
         EigenEnabled = NativeWrapper.Enabled;
-        BlasEnabled = MathNet.Numerics.Control.TryUseNativeOpenBLAS();
-        MklEnabled = MathNet.Numerics.Control.TryUseNativeMKL();
-        CudaEnabled = MathNet.Numerics.Control.TryUseNativeCUDA();
+        //260711Cl 廃止: provider 初期化は MathNetProviderManager.Initialize へ一元化 (エントリポイントから明示呼び出し)。
+        //無条件 probe は (1) GUI のメニュー状態と実 provider の食い違い、(2) MKL が既定 MaxDoP (=論理コア数) を
+        //内部スレッド数として固定しロードされるオーバーサブスクリプション、の2つの問題があった (codex 調査)
+        //BlasEnabled = MathNet.Numerics.Control.TryUseNativeOpenBLAS();
+        //MklEnabled = MathNet.Numerics.Control.TryUseNativeMKL();
+        //CudaEnabled = MathNet.Numerics.Control.TryUseNativeCUDA();
     }
     public BetheMethod(Crystal crystal)
     {
@@ -2487,7 +2501,10 @@ public class BetheMethod
         if (solver == Solver.Auto || (!EigenEnabled && (solver == Solver.Eigen_Eigen || solver == Solver.MtxExp_Eigen)))
         {
             if (EigenEnabled)
-                (solver, thread) = (Solver.Eigen_Eigen, ProcessorCount);//260711Cl 旧: (Solver.MtxExp_Eigen, ProcessorCount) — CBED 由来のコピペ。STEM は下流で eVal/eVec/α を用いるため MtxExp 経路が存在せず、Auto は EVD (Eigen_Eigen) へ解決するのが正
+                //(solver, thread) = (Solver.Eigen_Eigen, ProcessorCount);//260711Cl 旧: (Solver.MtxExp_Eigen, ProcessorCount) — CBED 由来のコピペ。STEM は下流で eVal/eVec/α を用いるため MtxExp 経路が存在せず、Auto は EVD (Eigen_Eigen) へ解決するのが正
+                //260711Cl 変更 (作者仕様): 大 bLen & MKL ダウンロード済み環境では MKL EVD へ自動切替 (実測でクロスオーバー以遠 ~2-3x)。
+                //MKL 内側=1 は MathNetProviderManager がロード時に保証。MKL 経路は eVec 保持の旧構造で走る (メモリ増) 点は作者了承済
+                (solver, thread) = MklEnabled && bLen >= MklStemBlenThreshold ? (Solver.Eigen_MKL, ProcessorCount) : (Solver.Eigen_Eigen, ProcessorCount);
             else
                 (solver, thread) = (Solver.Eigen_MKL, MklEnabled ? Math.Max(1, ProcessorCount / 4) : ProcessorCount);
         }

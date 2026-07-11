@@ -10,10 +10,12 @@ namespace Crystallography;
 
 public static class Geometry
 {
-    static Geometry()
-    {
-        MathNet.Numerics.Control.TryUseNativeMKL();
-    }
+    //260711Cl 廃止: provider 初期化は MathNetProviderManager.Initialize へ一元化 (散在 probe が GUI のメニュー状態や
+    //MKL 内部スレッド数制御と食い違う問題。codex 調査)。エントリポイント (ReciPro Program.cs / BetheBench) が明示的に呼ぶ
+    //static Geometry()
+    //{
+    //    MathNet.Numerics.Control.TryUseNativeMKL();
+    //}
 
     /// <summary>楕円をとおる5点以上の点pt[]が与えられたとき最小2乗法から中心位置を返す関数</summary>
     /// <param name="pt"></param>

@@ -408,7 +408,7 @@ public class FittingPeak
     {
         //マルカールの方法でPseudoVoigtをとく。高速になるはず
 
-        MathNet.Numerics.Control.TryUseNativeMKL();
+        //MathNet.Numerics.Control.TryUseNativeMKL();//260711Cl 廃止: provider 初期化は MathNetProviderManager.Initialize へ一元化 (呼び出しごとの probe は不要かつ有害)
 
         var _prms = prms;
         double Failed()//失敗した時に呼び出すローカル関数. パラメータにNaNを代入してから無限大を返す。　
