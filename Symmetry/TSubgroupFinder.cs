@@ -532,7 +532,7 @@ public static class TSubgroupFinder
 
     #region 部分群列挙・共役類
     /// <summary>乗積表 mul 上で全部分群 (要素 index の集合) を閉包列挙する。</summary>
-    private static List<SortedSet<int>> EnumerateSubgroups(int n, int[,] mul, int e)
+    internal static List<SortedSet<int>> EnumerateSubgroups(int n, int[,] mul, int e) // 260712Cl: PointGroupCatalog と共有のため internal 化
     {
         var found = new List<SortedSet<int>>();
         var keys = new HashSet<string>();
@@ -577,7 +577,7 @@ public static class TSubgroupFinder
     }
 
     /// <summary>部分群集合を P_G 共役 (gMg⁻¹) で類別する。</summary>
-    private static List<List<SortedSet<int>>> GroupByConjugacy(List<SortedSet<int>> subs, int n, int[,] mul, List<int[]> linKeys)
+    internal static List<List<SortedSet<int>>> GroupByConjugacy(List<SortedSet<int>> subs, int n, int[,] mul, List<int[]> linKeys) // 260712Cl: internal 化
     {
         // 逆元表
         int e = Enumerable.Range(0, n).First(i => IsIdentity(linKeys[i]));
@@ -611,7 +611,7 @@ public static class TSubgroupFinder
 
     #region 点群の命名 (回転型シグネチャ)
     /// <summary>回転型 (±1,±2,±3,±4,±6) の多重集合 → 点群 HM 名。全 530 設定から自己構築 (手書きテーブル不使用)。</summary>
-    private static readonly Lazy<Dictionary<string, string>> SignatureNameMap = new(() =>
+    internal static readonly Lazy<Dictionary<string, string>> SignatureNameMap = new(() => // 260712Cl: internal 化
     {
         var map = new Dictionary<string, string>();
         for (int s = 1; s < SymmetryStatic.TotalSpaceGroupNumber; s++)
@@ -642,7 +642,7 @@ public static class TSubgroupFinder
         return map;
     });
 
-    private static string Signature(IEnumerable<int[]> lins)
+    internal static string Signature(IEnumerable<int[]> lins) // 260712Cl: internal 化
         => string.Join(",", lins.Select(RotationType).OrderBy(v => v));
 
     /// <summary>整数行列の回転型: det=+1 → trace 3,-1,0,1,2 = 1,2,3,4,6 / det=−1 → -1,-2(m),-3,-4,-6。trace は基底不変。</summary>
@@ -944,7 +944,7 @@ public static class TSubgroupFinder
     #endregion
 
     #region 行列・ベクトル小物 (整数 3×3 は row-major int[9])
-    private static int[] LinKey(in SymmetryOperation op)
+    internal static int[] LinKey(in SymmetryOperation op) // 260712Cl: internal 化
     {
         var m = SeitzNotation.LinearMatrix(op);
         return [m[0, 0], m[0, 1], m[0, 2], m[1, 0], m[1, 1], m[1, 2], m[2, 0], m[2, 1], m[2, 2]];
@@ -956,7 +956,7 @@ public static class TSubgroupFinder
         return [t.U, t.V, t.W];
     }
 
-    private static int FindKey(List<int[]> list, int[] key)
+    internal static int FindKey(List<int[]> list, int[] key) // 260712Cl: internal 化
     {
         for (int i = 0; i < list.Count; i++)
             if (SameKey(list[i], key)) return i;
