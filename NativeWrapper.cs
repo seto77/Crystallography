@@ -989,7 +989,10 @@ public static partial class NativeWrapper
         //呼び出し側 (cbed_DoWork) でも事前に振り替えるが、他の呼び出し元のためここでも防御する。
         var useEigen = eigen || !IsUniformThickness(thickness);
 
-        var result = new Complex[dim * thickness.Length];//GC.AllocateUninitializedArray<Complex>(dim * thickness.Length);
+        //var result = new Complex[dim * thickness.Length];//GC.AllocateUninitializedArray<Complex>(dim * thickness.Length); //260711Cl 変更前
+        //260711Cl 変更: Eigen 経路は native が全列を書き込むためゼロ初期化不要 (STEM 全-slice 物化で方向ごとに大配列を確保するため LOH churn を軽減。codex 指摘)。
+        //MtxExp 経路は従来通りゼロ初期化 (防御)
+        var result = useEigen ? GC.AllocateUninitializedArray<Complex>(dim * thickness.Length) : new Complex[dim * thickness.Length];
         fixed (Complex* _potential = potential, _psi0 = psi0, _result = result)
         {
             //if (eigen) //260711Cl 変更前

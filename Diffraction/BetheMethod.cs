@@ -2410,6 +2410,7 @@ public class BetheMethod
         Vector3DBase[] beamDirections, double convergenceAngle, double detAngleInner, double detAngleOuter,
         Solver solver = Solver.Auto, int thread = 1)
     {
+        if (bwSTEM.IsBusy) return;//260711Cl 追加: busy 時は instance state を変更せず抜ける (旧: 判定前に Thicknesses 等を代入しており、実行中 worker が参照する state を二重呼び出しが書き換え得た。codex 指摘)
         MaxNumOfBloch = maxNumOfBloch;
 
         AccVoltage = voltage;
@@ -2417,8 +2418,8 @@ public class BetheMethod
         BaseRotation = new Matrix3D(baseRotation);
         BeamDirections = beamDirections;
         Thicknesses = thicknesses;
-        if (!bwSTEM.IsBusy)
-            bwSTEM.RunWorkerAsync((solver, thread, cs, delta, sliceThickness, convergenceAngle, detAngleInner, detAngleOuter, thicknesses, defocusses, imageSize, resolution, sourceSize));
+        //if (!bwSTEM.IsBusy) //260711Cl 変更前
+        bwSTEM.RunWorkerAsync((solver, thread, cs, delta, sliceThickness, convergenceAngle, detAngleInner, detAngleOuter, thicknesses, defocusses, imageSize, resolution, sourceSize));
     }
     public unsafe void StemDoWork(object sender, DoWorkEventArgs e)
     {
@@ -2523,11 +2524,16 @@ public class BetheMethod
         //生成し、eVec/eVal/α を managed に保持しない。保持量は K_inside×N² (eVec) → S×K_all×N (tcSlice) となり、
         //S×K_all ≤ K_inside×N なら削減。非弾性フェーズの GenerateTC1B (slice×方向ごとの GEMV 再生成) も丸ごと不要になる。
         //環境変数 RECIPRO_STEM_ALLSLICE=0/1 で強制切替 (BetheBench A/B 検証用)。既定はメモリ見積で自動選択
+        var nativeHelpersEnabled = EigenEnabled;//260711Cl 追加: 下流の native helper (GenerateTC1B/_STEM_InelasticQ/qEntry構築) 分岐も snapshot で統一 (mutable static の実行中変化対策。codex 指摘)
         var insideCount = 0;
         for (int i = 0; i < BeamDirections.Length; i++) if (inside(i)) insideCount++;
         var allSliceEnv = Environment.GetEnvironmentVariable("RECIPRO_STEM_ALLSLICE");
         var useAllSliceTc = useNativeSolver && allSliceEnv != "0" &&
             (allSliceEnv == "1" || (long)sliceTotal * BeamDirections.Length <= (long)insideCount * bLen);
+        //260711Cl 追加 (Phase4 q-major U streaming, codex 設計): U[Q×N²] を全 q 分保持せず、q ごとに Uq[N²] を rent して
+        //全 segment×slice を処理してから返す (保持量 Q×N² → 同時 worker 数×N²)。全-slice 物化 (tcSlice) が前提。
+        //slice の加算順・segment 累積順は旧経路と同一なので q ごとに数値等価。RECIPRO_STEM_USTREAM=0 で旧経路 (一括 U 構築) へ強制
+        var useUStream = useAllSliceTc && Environment.GetEnvironmentVariable("RECIPRO_STEM_USTREAM") != "0";
         double[] allThick = null;   //ユーザー厚み (先頭 tLen 列, 弾性用) + 全 slice 厚み (非弾性用)
         Complex[][] tcSlice = null; //tcSlice[s][kIndex*bLen+g]: slice s における全方向の透過係数 (column-major N×K_all, 有効列のみ書き込み)
         if (useAllSliceTc)
@@ -2575,10 +2581,11 @@ public class BetheMethod
                 if (useAllSliceTc)
                 {
                     var tgAll = NativeWrapper.CBEDSolver_Eigen(eigenMatrix, psi0, allThick);//[bLen × (tLen+sliceTotal)] column-major
+                    if (bwSTEM.CancellationPending) { e.Cancel = true; return null; }//260711Cl 追加: EVD 直後にも確認 (キャンセル後の位相補正+scatter を省く。codex 指摘)
                     var _kgzA = new double[bLen];
                     for (int g = 0; g < bLen; g++)
                         _kgzA[g] = beams[g].P / 2;
-                    kg_z[i] = _kgzA;
+                    //kg_z[i] = _kgzA;//260711Cl 全-slice 経路では下流 (GenerateTC1B/非Eigen再生成) が走らないため保持不要 (codex 指摘)
                     //位相補正 exp(2πi·kg_z·t)。旧経路では弾性 tc はラムダ末尾、slice 分は GenerateTC1B 内で適用していたのと同じ式
                     for (int c = 0; c < allThick.Length; c++)
                     {
@@ -2824,11 +2831,12 @@ public class BetheMethod
         #region 非弾性散乱を計算する場合
         var I_Inel = new Complex[qList.Count, tLen, dLen];
 
-        bwSTEM.ReportProgress(0, "Calculating U matrix");//状況を報告
+        if (!useUStream) bwSTEM.ReportProgress(0, "Calculating U matrix");//状況を報告 //260711Cl 変更: q-major streaming 時は一括構築フェーズが無い (Uq は非弾性フェーズ内で生成)
         var bLen2 = bLen * bLen;
-        #region U行列の計算 
+        #region U行列の計算
         count = 0;
-        var U = new Complex[qList.Count * bLen2];
+        //var U = new Complex[qList.Count * bLen2];//260711Cl 変更前
+        var U = useUStream ? null : new Complex[qList.Count * bLen2];//260711Cl 変更 (Phase4 q-major streaming): 全 q 分の U (Q×N²×16B) を保持しない
         uDictionary.Clear();
 
         //マルチスレッドの効率を上げるため、まずqList[qIndex] + Beams[i] - Beams[j]の重複を除く
@@ -2847,11 +2855,11 @@ public class BetheMethod
         //    if (bwSTEM.CancellationPending) { e.Cancel = true; return; }
         //});
 
-        Parallel.For(0, qList.Count, qIndex =>
+        //260711Cl 追加 (Phase4): U の 1 q 分 (bLen×bLen) を dest[destOffset..] へ生成するローカル関数 (一括構築と q-major streaming で共用)。
+        // 260602Cl 変更を継承: qList[qIndex] + Beams[i] - Beams[j] の Beam 一時生成 (要素ごと2個) を除去し、
+        //   combined index と元の3ベクトルを渡す getU overload で cache hit 時は割り当てゼロにする。
+        void fillUq(int qIndex, Complex[] dest, int destOffset)
         {
-            //U[qIndex] = GC.AllocateUninitializedArray<Complex>(bLen * bLen);
-            // 260602Cl 変更: qList[qIndex] + Beams[i] - Beams[j] の Beam 一時生成 (要素ごと2個) を除去。
-            //   combined index と元の3ベクトルを渡す getU overload で cache hit 時は割り当てゼロにする。
             var (qh, qk, ql) = qList[qIndex].Index;
             var vq = qList[qIndex].Vec;
             for (int j = 0; j < bLen; j++)
@@ -2863,14 +2871,18 @@ public class BetheMethod
                     var (ih, ik, il) = Beams[i].Index;
                     //局所形式
                     // U[qIndex * bLen2 + j * bLen + i] = getU(AccVoltage, qList[qIndex] + Beams[i] - Beams[j], null, detAngleInner, detAngleOuter).Imag.Conjugate(); // 260602Cl 変更前
-                    U[qIndex * bLen2 + j * bLen + i] = getU(AccVoltage, (qh + ih - jh, qk + ik - jk, ql + il - jl), vq, Beams[i].Vec, vj, detAngleInner, detAngleOuter).Imag.Conjugate();//共役とると、なぜかいい感じ。
+                    dest[destOffset + j * bLen + i] = getU(AccVoltage, (qh + ih - jh, qk + ik - jk, ql + il - jl), vq, Beams[i].Vec, vj, detAngleInner, detAngleOuter).Imag.Conjugate();//共役とると、なぜかいい感じ。
                     //非局所形式
                     //U[qIndex * bLen2 + j * bLen + i] = getU(AccVoltage, qList[qIndex], -Beams[i] + Beams[j], detAngleInner, detAngleOuter).Imag.Conjugate();
                     //U[m][k++] = getU(AccVoltage, qList[m], -Beams[i] + Beams[j], detAngleInner, detAngleOuter).Imag;//非局所形式の場合
                 }
-                //if (Interlocked.Increment(ref count) % 10 == 0) bwSTEM.ReportProgress((int)(1E6 * count / qList.Count / bLen), "Calculating U matrix");//状況を報告 //260711Cl 変更前: j 行ごとに count++ し 10 回に 1 回通知 (総通知数 ~Q×N/10 でイベント post が無視できない)
                 if (bwSTEM.CancellationPending) { e.Cancel = true; return; }
             }
+        }
+        if (!useUStream)//260711Cl 追加: q-major streaming 時は一括構築しない
+        Parallel.For(0, qList.Count, qIndex =>
+        {
+            fillUq(qIndex, U, qIndex * bLen2);//260711Cl 変更: ループ本体を fillUq へ抽出 (処理は同一)
             if (Interlocked.Increment(ref count) % 10 == 0) bwSTEM.ReportProgress((int)(1E6 * count / qList.Count), "Calculating U matrix");//260711Cl 変更: 通知を q 単位へ集約 (数値影響なし)
         });
         #endregion
@@ -2906,7 +2918,8 @@ public class BetheMethod
             #region 各種変数の設定
             //var tc_k = GC.AllocateUninitializedArray<Complex>(tc.Length * bLen);//260711Cl 変更前
             var tc_k = useAllSliceTc ? null : GC.AllocateUninitializedArray<Complex>(tc.Length * bLen);//260711Cl 変更: 全-slice 物化時は EVD 時に tcSlice へ生成済みのため不要
-            var validTc = list.Where(e1 => e1 is not null).SelectMany(e2 => e2.SelectMany(e3 => e3.N)).Distinct().ToList().AsParallel();
+            //var validTc = list.Where(e1 => e1 is not null).SelectMany(e2 => e2.SelectMany(e3 => e3.N)).Distinct().ToList().AsParallel();//260711Cl 変更前
+            var validTc = useAllSliceTc ? null : list.Where(e1 => e1 is not null).SelectMany(e2 => e2.SelectMany(e3 => e3.N)).Distinct().ToList().AsParallel();//260711Cl 変更: 旧経路 (GenerateTC 再生成) 専用のため全-slice 物化時は構築しない (codex 指摘)
             // var total = _thick.Sum(e => e.Length) * tcPArray.Length; // 260610Cl 変更前: k 単位の進捗だった
             #endregion
 
@@ -2918,7 +2931,8 @@ public class BetheMethod
             var qEntryN4 = new int[qList.Count][];
             var qEntryR4 = new double[qList.Count][];
             var qEntryLenz = new Complex[qList.Count][];
-            if (EigenEnabled)
+            //if (EigenEnabled) //260711Cl 変更前: mutable static の再読 (codex 指摘)
+            if (nativeHelpersEnabled)
             {
                 var qCounts = new int[qList.Count];
                 foreach (var kIndex in tcPArray)
@@ -2947,7 +2961,7 @@ public class BetheMethod
                     }
             }
             var activeQCount = qEntryK.Count(e => e is not null);
-            var total = _thick.Sum(e => e.Length) * (EigenEnabled ? activeQCount : tcPArray.Length); // 260610Cl: 新経路は q 単位の進捗
+            var total = _thick.Sum(e => e.Length) * (nativeHelpersEnabled ? activeQCount : tcPArray.Length); // 260610Cl: 新経路は q 単位の進捗 //260711Cl EigenEnabled→snapshot
             count = 0;
             #endregion
 
@@ -2959,6 +2973,44 @@ public class BetheMethod
             var threadLocalTcKq = new ThreadLocal<Complex[]>(() => null, true); // (260403Ch)
             try
             {
+                //260711Cl 追加 (Phase4 q-major U streaming, codex 設計): q 外側並列 × segment/slice 内側順次。
+                //Uq[N²] を rent → 全 segment×slice を消費 → 返却、で U の全 q 保持 (Q×N²) が同時 worker 数×N² に減る。
+                //sumD の slice 加算順・segment 累積順 (I_Inel[t] = sumD*coeff + I_Inel[t-1]) は旧経路と同一なので q ごとに数値等価。
+                //active q (qEntryK 非 null) のみ処理するため、旧経路で発生していた inactive q の U 生成も消える
+                if (useUStream)
+                {
+                    Parallel.For(0, qList.Count, qIndex =>
+                    {
+                        var entryCount = qEntryK[qIndex]?.Length ?? 0;
+                        if (entryCount == 0 || bwSTEM.CancellationPending) return;
+                        var Uq = Shared.Rent(bLen2);
+                        var sumD = new Complex[dLen];
+                        try
+                        {
+                            fillUq(qIndex, Uq, 0);
+                            if (bwSTEM.CancellationPending) return;
+                            for (int t = 0; t < Thicknesses.Length; t++)
+                            {
+                                Array.Clear(sumD, 0, dLen);
+                                for (int si = 0; si < _thick[t].Length; si++)
+                                    fixed (Complex* _tc = tcSlice[sliceOffset[t] + si], _Uq = Uq, _sumD = sumD, _lenz = qEntryLenz[qIndex])
+                                    fixed (int* _k = qEntryK[qIndex], _n4 = qEntryN4[qIndex])
+                                    fixed (double* _r4 = qEntryR4[qIndex])
+                                        NativeWrapper.STEM_InelasticQ(bLen, dLen, entryCount, _Uq, _tc, _k, _n4, _r4, _lenz, _sumD);
+                                var coeff = 2 * Math.PI / kvac * tStep[t];
+                                for (int dIndex = 0; dIndex < dLen; dIndex++)
+                                {
+                                    I_Inel[qIndex, t, dIndex] = sumD[dIndex] * coeff;
+                                    if (t > 0)
+                                        I_Inel[qIndex, t, dIndex] += I_Inel[qIndex, t - 1, dIndex];
+                                }
+                            }
+                        }
+                        finally { Shared.Return(Uq); }
+                        if (Interlocked.Increment(ref count) % 4 == 0) bwSTEM.ReportProgress((int)(1E6 * count / activeQCount), "Calculating I_inelastic(Q)");//状況を報告
+                    });
+                }
+                else
                 for (int t = 0; t < Thicknesses.Length; t++)
                 {
                     //var sum = new Complex[qList.Count * dLen];//ゼロ初期化が必要 // 260402Cl 変更前
@@ -2978,7 +3030,8 @@ public class BetheMethod
                             if (!useAllSliceTc)
                             validTc.ForAll(kIndex =>
                             {
-                                if (EigenEnabled)
+                                //if (EigenEnabled) //260711Cl 変更前: mutable static の再読 (codex 指摘)
+                                if (nativeHelpersEnabled)
                                 {
                                     fixed (Complex* _tc_k = tc_k, _eVal = eVal[kIndex], _eVec = eVec[kIndex])
                                     fixed (double* _kg_z = kg_z[kIndex])
@@ -3005,7 +3058,8 @@ public class BetheMethod
                             });
                             #endregion
 
-                            if (EigenEnabled)
+                            //if (EigenEnabled) //260711Cl 変更前: mutable static の再読 (codex 指摘)
+                            if (nativeHelpersEnabled)
                             {
                                 // 260610Cl 変更 (Phase2 候補A): 旧実装はエントリ (k,q) ごとに BlendAndConjugate + RowVec_SqMat_ColVec の
                                 //   P/Invoke 2回 (メモリバウンド GEMV ×数百万回) + per-qIndex lock で sum へ累積していた。
@@ -3046,7 +3100,8 @@ public class BetheMethod
                                         Complex tmp;
                                         var (qIndex, n, r, lenz) = list[kIndex][i];
                                         //厚み_thick[t][_t]における透過係数_tc_kqを計算
-                                        if (EigenEnabled)
+                                        //if (EigenEnabled) //260711Cl 変更前: mutable static の再読 (codex 指摘)
+                                        if (nativeHelpersEnabled)
                                         {
                                             NativeWrapper.BlendAndConjugate(bLen, _tc_k + n[0] * bLen, _tc_k + n[1] * bLen, _tc_k + n[2] * bLen, _tc_k + n[3] * bLen, r[0], r[1], r[2], r[3], _tc_kq);
                                             tmp = NativeWrapper.RowVec_SqMat_ColVec(bLen, _tc_kq, _U + qIndex * bLen2, _tc_k + kIndex * bLen);
