@@ -168,7 +168,7 @@ public static class KSubgroupFinder
         return [m[0, 0], m[0, 1], m[0, 2], m[1, 0], m[1, 1], m[1, 2], m[2, 0], m[2, 1], m[2, 2]];
     }
 
-    private static bool SameIntVec(int[] a, int[] b)
+    internal static bool SameIntVec(int[] a, int[] b)
     {
         for (int i = 0; i < a.Length; i++) if (a[i] != b[i]) return false;
         return true;
@@ -197,7 +197,7 @@ public static class KSubgroupFinder
 
     /// <summary>点群 (線形部) の乗積表・逆元・primitive 座標での A_R=B⁻¹RB・基準並進 t_i^0 をまとめた
     /// 内部データ (T′ に依存しない部分、Step2 で繰り返し使う)。260705Cl 追加。</summary>
-    private sealed class PointGroupData
+    internal sealed class PointGroupData // 260709Cl: NormalizerFinder と共有するため private → internal
     {
         public int[][] LinKeys { get; init; }
         public int[,] Mul { get; init; }
@@ -222,7 +222,7 @@ public static class KSubgroupFinder
     // (立方晶で 1 タイプに複数クラス)、キャッシュ化して再構築を排除する (並列呼び出しにも安全)。
     private static readonly ConcurrentDictionary<int, PointGroupData> _pgCache = new();
 
-    private static PointGroupData BuildPointGroupData(int sn) => _pgCache.GetOrAdd(sn, BuildPointGroupDataCore);
+    internal static PointGroupData BuildPointGroupData(int sn) => _pgCache.GetOrAdd(sn, BuildPointGroupDataCore); // 260709Cl: private → internal
 
     private static PointGroupData BuildPointGroupDataCore(int sn)
     {
@@ -482,7 +482,7 @@ public static class KSubgroupFinder
         return r;
     }
 
-    private static int[] MatMulInt(int[] a, int[] b)
+    internal static int[] MatMulInt(int[] a, int[] b) // 260709Cl: private → internal
     {
         var c = new int[9];
         for (int i = 0; i < 3; i++)
@@ -521,7 +521,7 @@ public static class KSubgroupFinder
 
     /// <summary>成分が [-k,k] の unimodular (det=±1) 整数 3×3 行列を総当たりで列挙する (キャッシュ済み)。260705Cl 追加。
     /// 260708Cl: 複数スレッドから呼ばれるため Lazy (ExecutionAndPublication) で二重構築を防ぐ (k=3 は 7^9 ≈ 4千万の再帰列挙で高価)。</summary>
-    private static List<int[]> SmallUnimodular(int k)
+    internal static List<int[]> SmallUnimodular(int k) // 260709Cl: private → internal
         => _unimodularCache.GetOrAdd(k, kk => new Lazy<List<int[]>>(() =>
         {
             var result = new List<int[]>();
@@ -541,7 +541,7 @@ public static class KSubgroupFinder
         }, LazyThreadSafetyMode.ExecutionAndPublication)).Value;
 
     /// <summary>unimodular 整数行列 (row-major 9 要素) の逆行列 U⁻¹ = det(U)·adj(U) を整数で返す (det=±1 前提)。260708Cl 追加。</summary>
-    private static int[] AdjTimesDet(int[] m, int det) =>
+    internal static int[] AdjTimesDet(int[] m, int det) => // 260709Cl: private → internal
     [
         det * (m[4] * m[8] - m[5] * m[7]), det * (m[2] * m[7] - m[1] * m[8]), det * (m[1] * m[5] - m[2] * m[4]),
         det * (m[5] * m[6] - m[3] * m[8]), det * (m[0] * m[8] - m[2] * m[6]), det * (m[2] * m[3] - m[0] * m[5]),
