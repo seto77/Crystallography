@@ -339,6 +339,11 @@ public class BetheMethod
             else
                 (solver, thread) = (Solver.Eigen_MKL, MklEnabled ? Math.Max(1, ProcessorCount / 4) : ProcessorCount);
         }
+        //260711Cl 追加: MtxExp 経路は等間隔厚み前提 (native は tStart+tStep しか受けず、ゼロ間隔は第1列以降が書かれない)。
+        //不等間隔・ゼロ間隔の厚み列は厳密な EVD 系 solver へ振り替える (NativeWrapper.CBEDSolver 側にも防御ガードあり)。
+        //ここで振り替えることで reportString (進捗表示) も実際に使う solver と一致する
+        if ((solver == Solver.MtxExp_Eigen || solver == Solver.MtxExp_MKL) && !NativeWrapper.IsUniformThickness(Thicknesses))
+            solver = EigenEnabled ? Solver.Eigen_Eigen : Solver.Eigen_MKL;
         var reportString = $"{SolverLabel(solver)}{thread}"; //260611Cl 旧: $"{solver}{thread}" (MKL 不在時の managed 実行を可視化)
         #endregion
 
@@ -398,20 +403,31 @@ public class BetheMethod
                 //MtxExp_Eigenの場合
                 else if (solver == Solver.MtxExp_Eigen && EigenEnabled)
                     result = NativeWrapper.CBEDSolver_MatExp(eigenMatrix, psi0.Values, Thicknesses);
-                //MtxExp_MKLの場合 
+                //MtxExp_MKLの場合
                 else
                 {
                     var resultMat = new DMat(bLen, tLen);
-                    var matExp = (DMat)(TwoPiI * Thicknesses[0] * new DMat(bLen, bLen, eigenMatrix.AsSpan()[..(bLen * bLen)].ToArray())).Exponential();
+                    var matA = new DMat(bLen, bLen, eigenMatrix.AsSpan()[..(bLen * bLen)].ToArray());//260711Cl 追加: A の具体化を1回に集約
+                    var matExp = (DMat)(TwoPiI * Thicknesses[0] * matA).Exponential();
                     var vec = matExp.Multiply(psi0);
                     resultMat.SetColumn(0, vec);
 
                     if (tLen > 1)
                     {
-                        if (Thicknesses[1] - Thicknesses[0] == Thicknesses[0])
-                            matExp = (DMat)(TwoPiI * (Thicknesses[1] - Thicknesses[0]) * new DMat(bLen, bLen, eigenMatrix.AsSpan()[..(bLen * bLen)].ToArray())).Exponential();
+                        //260711Cl 変更前 (下記2行): 「間隔 == 先頭厚み」のときだけ exp を作り直す条件になっており (このとき再構築は同じ行列を作るだけで無意味)、
+                        //開始値≠間隔の等間隔列や不等間隔列では exp(2πi·T[0]·A) のまま進めて誤った厚みを計算していた (codex レビューで確認)
+                        //if (Thicknesses[1] - Thicknesses[0] == Thicknesses[0])
+                        //    matExp = (DMat)(TwoPiI * (Thicknesses[1] - Thicknesses[0]) * new DMat(bLen, bLen, eigenMatrix.AsSpan()[..(bLen * bLen)].ToArray())).Exponential();
+                        //260711Cl 変更: 区間幅が直前と変わったときに exp(2πi·Δt·A) を作り直す (等間隔列なら高々1回、不等間隔列でも厳密)
+                        var cachedDt = Thicknesses[0];
                         for (int t = 1; t < tLen; t++)
                         {
+                            var dt = Thicknesses[t] - Thicknesses[t - 1];
+                            if (dt != cachedDt)
+                            {
+                                matExp = (DMat)(TwoPiI * dt * matA).Exponential();
+                                cachedDt = dt;
+                            }
                             vec = (DVec)matExp.Multiply(vec);
                             resultMat.SetColumn(t, vec);
                         }
@@ -2470,18 +2486,24 @@ public class BetheMethod
         if (solver == Solver.Auto || (!EigenEnabled && (solver == Solver.Eigen_Eigen || solver == Solver.MtxExp_Eigen)))
         {
             if (EigenEnabled)
-                (solver, thread) = (Solver.MtxExp_Eigen, ProcessorCount);
+                (solver, thread) = (Solver.Eigen_Eigen, ProcessorCount);//260711Cl 旧: (Solver.MtxExp_Eigen, ProcessorCount) — CBED 由来のコピペ。STEM は下流で eVal/eVec/α を用いるため MtxExp 経路が存在せず、Auto は EVD (Eigen_Eigen) へ解決するのが正
             else
                 (solver, thread) = (Solver.Eigen_MKL, MklEnabled ? Math.Max(1, ProcessorCount / 4) : ProcessorCount);
         }
 
-        (solver, thread) = EigenEnabled && bLen < 512 ? (Solver.Eigen_Eigen, ProcessorCount) : (Solver.Eigen_MKL, Math.Max(1, ProcessorCount / 4));
+        //(solver, thread) = EigenEnabled && bLen < 512 ? (Solver.Eigen_Eigen, ProcessorCount) : (Solver.Eigen_MKL, Math.Max(1, ProcessorCount / 4));//260711Cl 実験時の消し忘れ (solver/thread を無条件上書きし、上の Auto 解決とユーザー指定を無効化していた)。瀬戸さん確認のうえコメントアウト
+
+        //260711Cl 追加: STEM は下流で eVal/eVec/α を用いるため MtxExp 経路が存在しない。明示指定された場合も EVD 系へ正規化する
+        //(旧: MtxExp 指定は managed EVD 分岐に落ちる一方、進捗表示だけ MtxExp になっていた。codex レビュー指摘)
+        if (solver == Solver.MtxExp_Eigen) solver = EigenEnabled ? Solver.Eigen_Eigen : Solver.Eigen_MKL;
+        else if (solver == Solver.MtxExp_MKL) solver = Solver.Eigen_MKL;
 
         var reportString = $"{SolverLabel(solver)}{thread}"; //260611Cl 旧: $"{solver}{thread}" (MKL 不在時の managed 実行を可視化)
         #endregion
 
         #region 固有値固有ベクトルの計算
 
+        var useNativeSolver = solver == Solver.Eigen_Eigen && EigenEnabled;//260711Cl 追加: eigenMatrix の確保方法判定 (native 経路のみ pool 化。managed 経路は DMat が長さ一致を要求)
         Complex[][] eVec = new Complex[BeamDirections.Length][], eVal = new Complex[BeamDirections.Length][], α = new Complex[BeamDirections.Length][];
         var k_vec = GC.AllocateUninitializedArray<Vector3DBase>(BeamDirections.Length);
         var kg_z = new double[BeamDirections.Length][];
@@ -2497,7 +2519,8 @@ public class BetheMethod
 
             if (!inside(i)) return null;
 
-            var eigenMatrix = GC.AllocateUninitializedArray<Complex>(bLen * bLen);// Shared.Rent(bLen * bLen);
+            //var eigenMatrix = GC.AllocateUninitializedArray<Complex>(bLen * bLen);// Shared.Rent(bLen * bLen); //260711Cl 変更前: 方向ごとに新規確保 (累積 K×N²×16B の GC 圧。CBED は Pool、EBSD は ThreadLocal なのに STEM だけ野放しだった)
+            var eigenMatrix = useNativeSolver ? Shared.Rent(bLen * bLen) : GC.AllocateUninitializedArray<Complex>(bLen * bLen);//260711Cl 変更: native 経路は ArrayPool 化 (getEigenMatrix は全要素書き込み・CBEDSolver2 は dim=psi0.Length 参照なので余長 rent 配列でも安全)
             var beams = ArrayPool<Beam>.Shared.Rent(bLen);
             try
             {
@@ -2508,7 +2531,8 @@ public class BetheMethod
                 Complex[] result;
                 #region 各ソルバーによる計算
                 //Eigen＿Eigenの場合
-                if (solver == Solver.Eigen_Eigen && EigenEnabled)
+                //if (solver == Solver.Eigen_Eigen && EigenEnabled) //260711Cl 変更前: mutable static の EigenEnabled を再読していた (実行中に変化すると pool 余長配列が managed DMat に渡り得る。codex レビュー指摘)
+                if (useNativeSolver)
                     (eVal[i], eVec[i], α[i], result) = NativeWrapper.CBEDSolver2(eigenMatrix, psi0, thicknesses);
                 //Eigen_MKL あるいは Eigen_Managedの場合    
                 else
@@ -2526,16 +2550,35 @@ public class BetheMethod
                 }
                 #endregion
 
-                kg_z[i] = [.. beams.Where(e => e is not null).Select(e => e.P / 2)];
+                //kg_z[i] = [.. beams.Where(e => e is not null).Select(e => e.P / 2)];//260711Cl 変更前: pool 配列の全長を走査するため、余長部分に stale な Beam が残ると余分な要素を拾っていた (後段は先頭 bLen しか使わないため数値影響はないが脆い。codex レビュー指摘)
+                var _kgz = new double[bLen];//260711Cl 変更: 先頭 bLen だけを直接埋める
+                for (int g = 0; g < bLen; g++)
+                    _kgz[g] = beams[g].P / 2;
+                kg_z[i] = _kgz;
+
+                //260711Cl 追加: EVD 直後 (eVec がキャッシュに温存されているうち) に α を畳み込む。
+                //旧: 非弾性フェーズ冒頭の Parallel.For で全方向の eVec (大 N では GB 級) を cold sweep していた (該当箇所は 260711Cl でコメントアウト)
+                for (int col = 0; col < bLen; col++)
+                {
+                    var _a = α[i][col];
+                    for (int row = 0; row < bLen; row++)
+                        eVec[i][col * bLen + row] *= _a;
+                }
 
                 //位相を考慮して、return
-                var _tc = thicknesses.Select((thickness, t) => new Complex[bLen]).ToArray();
+                //260711Cl 変更前: Tg (flat) を厚みごとの jagged 配列へコピーしていた (方向×厚み 個の配列確保 + 全要素コピー)
+                //var _tc = thicknesses.Select((thickness, t) => new Complex[bLen]).ToArray();
+                //for (int t = 0; t < tLen; t++)
+                //    for (int g = 0; g < bLen; g++)
+                //        _tc[t][g] = result[t * bLen + g] * Exp(TwoPiI * kg_z[i][g] * thicknesses[t]);
+                //return _tc;
+                //260711Cl 変更: flat のまま in-place で位相補正して返す (値・丸めは同一。以降 tc[k] は [t*bLen+g] で添字アクセス)
                 for (int t = 0; t < tLen; t++)
                     for (int g = 0; g < bLen; g++)
-                        _tc[t][g] = result[t * bLen + g] * Exp(TwoPiI * kg_z[i][g] * thicknesses[t]);
-                return _tc;
+                        result[t * bLen + g] *= Exp(TwoPiI * kg_z[i][g] * thicknesses[t]);
+                return result;
             }
-            finally { ArrayPool<Beam>.Shared.Return(beams); }
+            finally { ArrayPool<Beam>.Shared.Return(beams); if (useNativeSolver) Shared.Return(eigenMatrix); }//260711Cl eigenMatrix の Pool 返却を追加
 
         }).ToArray();
         #endregion
@@ -2693,7 +2736,9 @@ public class BetheMethod
                         for (int t = 0; t < tLen; t++)
                         {
                             //i_Elas[t] += 1;
-                            iElas[t] += tc[kIndex][t][g] * (r[0] * tc[n[0]][t][g_q] + r[1] * tc[n[1]][t][g_q] + r[2] * tc[n[2]][t][g_q] + r[3] * tc[n[3]][t][g_q]).Conjugate();
+                            //iElas[t] += tc[kIndex][t][g] * (r[0] * tc[n[0]][t][g_q] + r[1] * tc[n[1]][t][g_q] + r[2] * tc[n[2]][t][g_q] + r[3] * tc[n[3]][t][g_q]).Conjugate();//260711Cl 変更前 (tc は jagged [t][g] だった)
+                            int tb = t * bLen + g, tbq = t * bLen + g_q;//260711Cl tc の flat 化 ([t*bLen+g]) に伴う添字変換 (値は同一)
+                            iElas[t] += tc[kIndex][tb] * (r[0] * tc[n[0]][tbq] + r[1] * tc[n[1]][tbq] + r[2] * tc[n[2]][tbq] + r[3] * tc[n[3]][tbq]).Conjugate();
                         }
                     }
                     // lock (lockObj1) // 260420Cl 旧実装: 単一ロックで全 qIndex を直列化していた
@@ -2761,9 +2806,10 @@ public class BetheMethod
                     //U[qIndex * bLen2 + j * bLen + i] = getU(AccVoltage, qList[qIndex], -Beams[i] + Beams[j], detAngleInner, detAngleOuter).Imag.Conjugate();
                     //U[m][k++] = getU(AccVoltage, qList[m], -Beams[i] + Beams[j], detAngleInner, detAngleOuter).Imag;//非局所形式の場合
                 }
-                if (Interlocked.Increment(ref count) % 10 == 0) bwSTEM.ReportProgress((int)(1E6 * count / qList.Count / bLen), "Calculating U matrix");//状況を報告
+                //if (Interlocked.Increment(ref count) % 10 == 0) bwSTEM.ReportProgress((int)(1E6 * count / qList.Count / bLen), "Calculating U matrix");//状況を報告 //260711Cl 変更前: j 行ごとに count++ し 10 回に 1 回通知 (総通知数 ~Q×N/10 でイベント post が無視できない)
                 if (bwSTEM.CancellationPending) { e.Cancel = true; return; }
             }
+            if (Interlocked.Increment(ref count) % 10 == 0) bwSTEM.ReportProgress((int)(1E6 * count / qList.Count), "Calculating U matrix");//260711Cl 変更: 通知を q 単位へ集約 (数値影響なし)
         });
         #endregion
 
@@ -2785,14 +2831,14 @@ public class BetheMethod
             }
             #endregion
 
-            #region あらかじめeVecにαを掛けておく。
-            Parallel.For(0, tc.Length, kIndex =>
-            {
-                if (eVal[kIndex] is not null)
-                    for (int col = 0; col < bLen; col++)
-                        for (int row = 0; row < bLen; row++)
-                            eVec[kIndex][col * bLen + row] *= α[kIndex][col];
-            });
+            #region あらかじめeVecにαを掛けておく。260711Cl: EVD ラムダ内 (計算直後) へ移動したため不要 (全 eVec の cold sweep を除去)
+            //Parallel.For(0, tc.Length, kIndex =>
+            //{
+            //    if (eVal[kIndex] is not null)
+            //        for (int col = 0; col < bLen; col++)
+            //            for (int row = 0; row < bLen; row++)
+            //                eVec[kIndex][col * bLen + row] *= α[kIndex][col];
+            //});
             #endregion
 
             #region 各種変数の設定

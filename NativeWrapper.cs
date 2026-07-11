@@ -958,13 +958,42 @@ public static partial class NativeWrapper
     unsafe static public Complex[] CBEDSolver_MatExp(Complex[] potential, Complex[] psi0, double[] thickness)
         => CBEDSolver(potential, psi0, thickness, false);
 
+    /// <summary>
+    /// 260711Cl 追加: 厚み配列が MtxExp 経路 (tStart=thickness[0] + 等間隔 tStep) で正しく表現できるかを判定する。
+    /// 不等間隔・ゼロ間隔 (native _CBEDSolver_MtxExp は tStep==0 のとき第1列しか書かない)・非有限値は false。
+    /// 許容誤差は T[0]+i·step との比較で相対 1e-12 (GUI 生成の等間隔列の丸め揺らぎは吸収し、実際の不等間隔入力は検出する)。
+    /// </summary>
+    public static bool IsUniformThickness(double[] thickness)
+    {
+        if (thickness == null || thickness.Length == 0 || !double.IsFinite(thickness[0])) return false;
+        if (thickness.Length == 1) return true;
+        var step = thickness[1] - thickness[0];
+        if (step == 0 || !double.IsFinite(step)) return false;
+        for (int i = 2; i < thickness.Length; i++)
+        {
+            var expected = thickness[0] + step * i;
+            var tol = 1E-12 * Math.Max(1, Math.Max(Math.Abs(expected), Math.Abs(thickness[i])));
+            if (!double.IsFinite(thickness[i]) || Math.Abs(thickness[i] - expected) > tol)
+                return false;
+        }
+        return true;
+    }
+
     unsafe static private Complex[] CBEDSolver(Complex[] potential, Complex[] psi0, double[] thickness, in bool eigen)
     {
         var dim = psi0.Length;
+
+        //260711Cl 追加 (防御ガード): MtxExp 経路は native に tStart と等間隔 tStep しか渡せないため、
+        //不等間隔配列は従来 guard なしで誤った厚みのまま静かに計算されていた (ゼロ間隔は第1列以降が未書き込みのゼロになる)。
+        //等間隔で表現できない場合は、任意の厚み配列を受ける厳密な Eigen 経路へフォールバックする。
+        //呼び出し側 (cbed_DoWork) でも事前に振り替えるが、他の呼び出し元のためここでも防御する。
+        var useEigen = eigen || !IsUniformThickness(thickness);
+
         var result = new Complex[dim * thickness.Length];//GC.AllocateUninitializedArray<Complex>(dim * thickness.Length);
         fixed (Complex* _potential = potential, _psi0 = psi0, _result = result)
         {
-            if (eigen)
+            //if (eigen) //260711Cl 変更前
+            if (useEigen)
                 _CBEDSolver_Eigen(dim, (double*)_potential, (double*)_psi0, thickness.Length, thickness, (double*)_result);
             else
             {
