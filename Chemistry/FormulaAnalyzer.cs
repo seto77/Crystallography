@@ -365,6 +365,11 @@ public sealed class SiteBasedParameterization
 
 public static class FormulaParser
 {
+    // 260712Cl 追加: ParseToElementCounts 内で呼び出し毎に new Regex(Compiled) して IL コンパイルが走っていたため、static キャッシュへ昇格 (Regex はスレッド安全)。
+    private static readonly Regex elementCoeffRegex = new(
+        @"(?<el>[A-Z][a-z]*)(?:(?<coef>\d+(?:\.\d+)?)|_\{(?<coef2>\d+(?:\.\d+)?)\})?",
+        RegexOptions.Compiled);
+
     // 例:
     // "A5X2" -> {A:5, X:2}
     // "A_{5}X_{2}" -> {A:5, X:2}
@@ -385,14 +390,13 @@ public static class FormulaParser
 
         // トークン: Element + optional coeff (digits or _{digits})
         // 例: A5, X2, Fe2, O3, A_{5}, X_{2}
-        var pattern = new Regex(
-            @"(?<el>[A-Z][a-z]*)(?:(?<coef>\d+(?:\.\d+)?)|_\{(?<coef2>\d+(?:\.\d+)?)\})?",
-            RegexOptions.Compiled);
+        // 260712Cl 変更: 呼び出し毎の new Regex(Compiled) を static キャッシュ elementCoeffRegex に置換
+        // var pattern = new Regex(@"(?<el>[A-Z][a-z]*)(?:(?<coef>\d+(?:\.\d+)?)|_\{(?<coef2>\d+(?:\.\d+)?)\})?", RegexOptions.Compiled); // 260712Cl 変更前
 
         var dict = new Dictionary<string, double>();
         int pos = 0;
 
-        var matches = pattern.Matches(formula);
+        var matches = elementCoeffRegex.Matches(formula);
         if (matches.Count == 0)
             throw new FormatException($"Cannot parse formula: {formula}");
 

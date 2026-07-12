@@ -1744,12 +1744,16 @@ public static class Ring
         //各スレッドの上限と下限を決める
         int[] yThreadMin = new int[thread];
         int[] yThreadMax = new int[thread];
-        int yStep = (yMax - yMin) / thread;
+        // 260712Cl 修正: 旧実装は (1) 最終スレッドを全域に拡張しないため剰余行が脱落し、(2) 包含的な yMax を排他的上限に使うため最終行も脱落していた。
+        // 姉妹メソッド FindSpots(L356-359) と同じく、区間を [yMin, yMax] 包含として端数分だけ広げ、最終スレッドを yMax+1(排他) まで拡張する。
+        // int yStep = (yMax - yMin) / thread; ... yThreadMax[i] = Math.Min(yMin + (i + 1) * yStep, yMax); // 260712Cl 変更前
+        int yStep = (yMax - yMin + 1) / thread;
         for (int i = 0; i < thread; i++)
         {
             yThreadMin[i] = yMin + i * yStep;
-            yThreadMax[i] = Math.Min(yMin + (i + 1) * yStep, yMax);
+            yThreadMax[i] = yMin + (i + 1) * yStep;
         }
+        yThreadMax[thread - 1] = yMax + 1;// 最終行 yMax まで含める排他的上限 (下流ループは j < yThreadMax)
 
         //フラットパネルモードの時
         if (IP.Camera == IntegralProperty.CameraEnum.FlatPanel)
@@ -1812,12 +1816,13 @@ public static class Ring
             int w = IP.SrcWidth;
             int jw, jw1, j1w1;
 
-            for (int j = yMin; j < yMax; j++)
+            // 260712Cl 修正: 排他的上限のままだと有効領域の最終行 yMax・最終列 xMax の交点が未計算になり積分から漏れる。包含的上限 (<=) に統一。
+            for (int j = yMin; j <= yMax; j++)
             {
                 jw = j * w;
                 jw1 = j * (w + 1);
                 j1w1 = (j + 1) * (w + 1);
-                for (int i = xMin; i < xMax; i++)
+                for (int i = xMin; i <= xMax; i++)
                     if (IsValid[jw + i])
                         IsCalcPosition[jw1 + i] = IsCalcPosition[jw1 + i + 1] = IsCalcPosition[j1w1 + i] = IsCalcPosition[j1w1 + i + 1] = true;
             }
@@ -1856,13 +1861,15 @@ public static class Ring
                 //else
                 #endregion
 
+                // 260712Cl 修正: xMax は有効領域の最大列(包含的)。下流は i < xMax の排他ループなので最終列が漏れる。xMax+1 を渡して最終列も積分する。
                 Parallel.For(0, thread, i =>
-                        (tempProfileIntensity[i], tempContibutedPixels[i]) = GetProfileThreadWithTiltCorrectionNew(xMin, xMax, yThreadMin[i], yThreadMax[i]));
+                        (tempProfileIntensity[i], tempContibutedPixels[i]) = GetProfileThreadWithTiltCorrectionNew(xMin, xMax + 1, yThreadMin[i], yThreadMax[i]));
             }
 
             else if (IP.Mode == HorizontalAxis.Length)
-                Parallel.For(0, thread, i 
-                    =>  GetProfileThreadWithTiltCorrection(xMin, xMax, yThreadMin[i], yThreadMax[i], ref tempProfileIntensity[i][0], ref tempContibutedPixels[i][0]));
+                // 260712Cl 修正: 同上 (最終列 xMax を含めるため xMax+1)
+                Parallel.For(0, thread, i
+                    =>  GetProfileThreadWithTiltCorrection(xMin, xMax + 1, yThreadMin[i], yThreadMax[i], ref tempProfileIntensity[i][0], ref tempContibutedPixels[i][0]));
 
 
             for (int i = 0; i < thread; i++)
@@ -1948,7 +1955,9 @@ public static class Ring
                     if (double.IsNaN(temp) || double.IsInfinity(temp))
                         temp = 0;
                     profile.Pt.Add(new PointD(tempD * 10, temp));
-                    profile.Err.Add(new PointD(tempD * 10, temp / Math.Sqrt(ProfileIntensity[i])));
+                    // 260712Cl 修正: d値モードは強度を反転(length-1-i)して出力するのに、誤差だけ鏡像位置 ProfileIntensity[i] の統計で割っていた。Pt と同じビンを参照させる。
+                    // profile.Err.Add(new PointD(tempD * 10, temp / Math.Sqrt(ProfileIntensity[i]))); // 260712Cl 変更前
+                    profile.Err.Add(new PointD(tempD * 10, temp / Math.Sqrt(ProfileIntensity[length - 1 - i])));
                 }
             else if (IP.Mode == HorizontalAxis.Length)//Lengthモードのとき
                 for (int i = 0; i < length; i++)
