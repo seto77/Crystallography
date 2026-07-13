@@ -282,7 +282,10 @@ public class Crystallite
                         double temp3 = z - v.Z;
                         double dev2 = temp1 * temp1 / xyLength2 / G[gNum].Hk1 + temp2 * temp2 / xyLength2 / G[gNum].Hk2 + temp3 * temp3 / G[gNum].Hk3;
                         if (dev2 < DeviationThreshold[gNum] * 1.5)
-                            pixels.Add(devY * detector.ImageHeight + devX, -dev2);
+                            // 260712Cl 修正: 行ストライドに ImageHeight を使っていたが、加算先 startPosition(L754) は imageWidth ストライド。
+                            // 非正方検出器(ImageWidth≠ImageHeight)でスポット形状が誤位置に散乱する。ストライドを ImageWidth に統一。
+                            // pixels.Add(devY * detector.ImageHeight + devX, -dev2); // 260712Cl 変更前
+                            pixels.Add(devY * detector.ImageWidth + devX, -dev2);
                     }
                 var vs2 = pixels.OrderByDescending(e => e.Value);
                 List<int> index = new List<int>();
@@ -786,7 +789,9 @@ public class Crystallite
         for (int i = 0; i < div; i++)
         {
             double ratio = (double)i / div, sec = stopwatch.ElapsedMilliseconds / 1000.0;
-            ProgressChanged?.Invoke(this, new ProgressChangedEventArgs((int)(100.0 * ratio), new object[] { ratio, $"Elapsed: {sec:f2}sec.  Remaining: {sec * (1 - ratio) / ratio:f2}sec." }));
+            // 260712Cl 修正: 初回 i=0 (ratio=0) で残り時間が 0除算になり ∞/NaN 表示になっていた。ratio>0 の時のみ推定する。
+            double remain = ratio > 0 ? sec * (1 - ratio) / ratio : 0;
+            ProgressChanged?.Invoke(this, new ProgressChangedEventArgs((int)(100.0 * ratio), new object[] { ratio, $"Elapsed: {sec:f2}sec.  Remaining: {remain:f2}sec." }));
 
             Parallel.For(TotalCrystalline / div * i, Math.Min(TotalCrystalline, TotalCrystalline / div * (i + 1)), num =>
             //for(int num= TotalCrystalline / div * i; num< Math.Min(TotalCrystalline, TotalCrystalline / div * (i + 1)); i++)

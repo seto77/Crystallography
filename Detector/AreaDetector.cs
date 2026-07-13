@@ -110,8 +110,12 @@ namespace Crystallography
                 for (int h = 0; h < ImageHeight; h++)
                     for (int w = 0; w < ImageWidth; w++)
                         if (!MaskedArea[h * ImageWidth + w])
-                            max = Math.Max(((h - Center.Y) * (h - Center.Y) + (w - Center.X) * (w - Center.X)) * Resolution, max);
-                MaxReciproZ = (1 - Math.Cos(Math.Atan(Math.Sqrt(max) / CameraLength))) / WaveLength;
+                            // 260712Cl 修正: Resolution(mm/pixel)は線形量。旧 sqrt(dist²*Resolution)=dist*√Resolution は単位破綻していた。
+                            // max にはピクセル距離²のみを蓄積し、下で sqrt(max)*Resolution により線形距離へ変換する (正準変換 convertClientToReciprocalSpace L72 と整合)。
+                            // max = Math.Max(((...)+(...)) * Resolution, max); // 260712Cl 変更前
+                            max = Math.Max((h - Center.Y) * (h - Center.Y) + (w - Center.X) * (w - Center.X), max);
+                // MaxReciproZ = (1 - Math.Cos(Math.Atan(Math.Sqrt(max) / CameraLength))) / WaveLength; // 260712Cl 変更前
+                MaxReciproZ = (1 - Math.Cos(Math.Atan(Math.Sqrt(max) * Resolution / CameraLength))) / WaveLength;
             }
         }
 

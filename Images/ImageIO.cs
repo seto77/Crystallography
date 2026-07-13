@@ -69,19 +69,12 @@ public static partial class ImageIO
     }
 
     #region BinaryReaderから読み込んで整数や実数に変換
+    //260712Cl ビッグエンディアン読み取りを BinaryPrimitives.ReverseEndianness で定石化 (byte[4] 割り当てと4回の ReadByte を除去。結果はビット一致)
     public static int convertToInt(BinaryReader br)
-    {
-        var b = new byte[4];
-        b[3] = br.ReadByte(); b[2] = br.ReadByte(); b[1] = br.ReadByte(); b[0] = br.ReadByte();
-        return BitConverter.ToInt32(b, 0);
-    }
+        => System.Buffers.Binary.BinaryPrimitives.ReverseEndianness(br.ReadInt32());
 
     public static float convertToSingle(BinaryReader br)
-    {
-        var b = new byte[4];
-        b[3] = br.ReadByte(); b[2] = br.ReadByte(); b[1] = br.ReadByte(); b[0] = br.ReadByte();
-        return BitConverter.ToSingle(b, 0);
-    }
+        => BitConverter.Int32BitsToSingle(System.Buffers.Binary.BinaryPrimitives.ReverseEndianness(br.ReadInt32()));
 
     public static void SetBytePosition(string str, ref BinaryReader br, int count)
     {
@@ -589,7 +582,9 @@ public static partial class ImageIO
     #region DigitalMicrograph
     private static bool DM(string str)
     {
-       // try
+        //260712Cl try/catch がコメントアウトされたままで、破損 dm3/dm4 の例外が呼び出し元 ReadImage を突き抜けて未処理クラッシュになっていた。
+        //         他のリーダーと同様に catch して false を返すよう有効化。
+        try
         {
             Ring.Comments = "";
             var t = new DigitalMicrograph.Loader(str);
@@ -687,11 +682,11 @@ public static partial class ImageIO
             //Ring.BitsPerPixels = t.BitsPerSampleGray;
             Ring.ImageType = Ring.ImageTypeEnum.DM;
         }
-        //catch (Exception e)
-        //{
-        //    MessageBox.Show(e.Message);
-        //    return false;
-        //}
+        catch (Exception e) //260712Cl 破損 DM ファイルの例外を捕捉し false を返す (旧: コメントアウトされ未処理クラッシュだった)
+        {
+            MessageBox.Show(e.Message);
+            return false;
+        }
         return true;
     }
     #endregion
@@ -911,7 +906,8 @@ public static partial class ImageIO
                 Ring.SequentialImageIntensities.Add(data.ReadAsDoubleArray([i, 0, 0], blocks));
 
             //260317Cl 変更: Enumerable.Range → ValueEnumerable.Range
-            Ring.SequentialImageNames = [.. ValueEnumerable.Range(1, num + 1).Select(e => e.ToString("000"))];
+            //260712Cl off-by-one 修正: Range 第2引数は要素数なので num+1 だとフレーム数 num より1個多い名前が生成されていた
+            Ring.SequentialImageNames = [.. ValueEnumerable.Range(1, num).Select(e => e.ToString("000"))];
             Ring.Intensity = Ring.SequentialImageIntensities[0];
         }
 
@@ -1305,18 +1301,20 @@ public static partial class ImageIO
             //ヘッダ部分読み込み { から }までを読み込む
             br.BaseStream.Position = 2;
 
+            //260712Cl 末尾判定を毎回 sb.ToString().EndsWith (O(N²) 割り当て) から直近文字の比較に (意味は同一)
+            char c;
             do
             {
-                var c = br.ReadChar();
+                c = br.ReadChar();
                 sb.Append(c);
-            } while (!sb.ToString().EndsWith('}'));
+            } while (c != '}');
 
             var tags = new Dictionary<string, string>();
             foreach (var tag in sb.ToString().Split([';', '\n'], StringSplitOptions.RemoveEmptyEntries))
             {
-                var temp = tag.Split(['=']);
+                var temp = tag.Split('='); //260712Cl 分割済みの temp を再利用 (Split を3回→1回、char オーバーロードで区切り配列も不要)
                 if (temp.Length == 2)
-                    tags.Add(tag.Split(['='])[0], tag.Split(['='])[1]);
+                    tags.Add(temp[0], temp[1]);
             }
 
             int imageWidth = Convert.ToInt32(tags["SIZE1"]);
@@ -1452,7 +1450,7 @@ public static partial class ImageIO
     {
         try
         {
-            var br = new BinaryReader(new FileStream(str, FileMode.Open, FileAccess.Read));
+            using var br = new BinaryReader(new FileStream(str, FileMode.Open, FileAccess.Read)); //260712Cl using化 (旧: Close が無く読込のたびにハンドルリーク)
 
             //ヘッダ部分読み込み
             Ring.Comments = "";
@@ -1479,18 +1477,20 @@ public static partial class ImageIO
             int num_x_pixs = int.Parse(matchSize1.Groups[1].Value); // Number of pixel X
             int num_y_pixs = int.Parse(matchSize2.Groups[1].Value); // Number of pixel Y
             Ring.SrcImgSize = new Size(num_x_pixs, num_y_pixs);
-            
-            convertTable = new uint[65536];
-            for (uint i = 0; i < 65536; i++)
-                convertTable[i] = i;
 
             //イメージデータ読みこみ
             br.BaseStream.Position = 17408; // HEADER_BYTES 分読み取った後の位置にセット
             int length = num_x_pixs * num_y_pixs;
 
+            //260712Cl バグ修正: Ring.Intensity のサイズ確認・再確保が無く、起動後初回や前回より大きい画像で IndexOutOfRange→読込失敗していた。
+            //         他の全リーダーと同様にサイズガードを追加。あわせて恒等 convertTable (256KB, i→i) を廃止し直接代入。
+            //旧: convertTable = new uint[65536]; for (uint i = 0; i < 65536; i++) convertTable[i] = i;
+            if (Ring.Intensity.Length != length)//前回と同じサイズではないとき
+                Ring.Intensity = new double[length];
+
             // ヘッダ部分にData_type = unsigned short int;と書かれていた。
             for (int i = 0; i < length; i++)
-                Ring.Intensity[i] = convertTable[br.ReadUInt16()]; 
+                Ring.Intensity[i] = br.ReadUInt16();
 
         }
         catch (Exception e)
@@ -1631,39 +1631,50 @@ public static partial class ImageIO
     #region General Image
     public static bool GeneralImage(string str)
     {
+        //260712Cl Image.FromFile は Dispose まで元ファイルをロックし続ける GDI+ の既知挙動。読込後にファイルを削除/上書きできない実害があったため、
+        //         loaded を using で確実に解放し、Clone/new Bitmap の中間 Bitmap もリークしないよう try/finally で破棄する。
+        Bitmap loaded = null;
         try
         {
-            var bitmap = (Bitmap)Image.FromFile(str);
-            if (bitmap.PixelFormat != PixelFormat.Format24bppRgb)
+            loaded = (Bitmap)Image.FromFile(str);
+            var bitmap = loaded;
+            try
             {
-                if (bitmap.PixelFormat == PixelFormat.Format32bppArgb)
-                    bitmap = bitmap.Clone(new Rectangle(0, 0, bitmap.Width, bitmap.Height), PixelFormat.Format24bppRgb);
-
                 if (bitmap.PixelFormat != PixelFormat.Format24bppRgb)
-                    bitmap = new Bitmap(bitmap).Clone(new Rectangle(0, 0, bitmap.Width, bitmap.Height), PixelFormat.Format24bppRgb);
+                {
+                    if (bitmap.PixelFormat == PixelFormat.Format32bppArgb)
+                        bitmap = bitmap.Clone(new Rectangle(0, 0, bitmap.Width, bitmap.Height), PixelFormat.Format24bppRgb);
+                    else
+                    {
+                        using var tmp = new Bitmap(bitmap);
+                        bitmap = tmp.Clone(new Rectangle(0, 0, tmp.Width, tmp.Height), PixelFormat.Format24bppRgb);
+                    }
+                }
+
+                Ring.SrcImgSize = new Size(bitmap.Width, bitmap.Height);
+
+                //Ring.Intensity = new uint[bitmap.Width * bitmap.Height];
+                Ring.BitsPerPixels = 8;
+
+                //イメージデータ読みこみ
+                Byte[] src = BitmapConverter.ToByteGray(bitmap); //260712Cl 冗長な (Bitmap) キャスト除去
+                Ring.Intensity = new double[bitmap.Width * bitmap.Height];
+                int n = 0;
+                //for (int h = bitmap.Height - 1; h >= 0; h--)
+                for (int h = 0; h < bitmap.Height; h++)
+                    for (int w = 0; w < bitmap.Width; w++)
+                        Ring.Intensity[n++] = src[bitmap.Width * h + w];
+
+                Ring.ImageType = Ring.ImageTypeEnum.Unknown;
             }
-
-            Ring.SrcImgSize = new Size(bitmap.Width, bitmap.Height);
-
-            //Ring.Intensity = new uint[bitmap.Width * bitmap.Height];
-            Ring.BitsPerPixels = 8;
-
-            //イメージデータ読みこみ
-            Byte[] src = BitmapConverter.ToByteGray((Bitmap)bitmap);
-            Ring.Intensity = new double[bitmap.Width * bitmap.Height];
-            int n = 0;
-            //for (int h = bitmap.Height - 1; h >= 0; h--)
-            for (int h = 0; h <bitmap.Height; h++)
-            for (int w = 0; w < bitmap.Width; w++)
-                    Ring.Intensity[n++] = src[bitmap.Width * h + w];
-
-            Ring.ImageType = Ring.ImageTypeEnum.Unknown;
+            finally { if (!ReferenceEquals(bitmap, loaded)) bitmap.Dispose(); } //変換で新規生成した中間 Bitmap を破棄
         }
         catch (Exception e)
         {
             MessageBox.Show(e.Message);
             return false;
         }
+        finally { loaded?.Dispose(); } //元ファイルのロックを解放
         return true;
     }
     #endregion
@@ -1927,15 +1938,12 @@ public static partial class ImageIO
             if (Ring.Intensity.Length != length)//前回と同じサイズではないとき
                 Ring.Intensity = new double[length];
 
-            int i = 0;
-            for (int y = 0; y < ipa.Height; y++)
-                for (int x = 0; x < ipa.Width; x++)
-                {
-                    if (ipa.Version == 0.0)
-                        Ring.Intensity[i] = ipa.Intensity[i++] * ipa.Scale;
-                    else
-                        Ring.Intensity[i] = ipa.IntensityDouble[i++];
-                }
+            //260712Cl 評価順依存の難読コード (Ring.Intensity[i] = ipa.Intensity[i++]) を解消。Version はループ不変なので分岐をループ外へ、else は Array.Copy に
+            if (ipa.Version == 0.0)
+                for (int i = 0; i < length; i++)
+                    Ring.Intensity[i] = ipa.Intensity[i] * ipa.Scale;
+            else
+                Array.Copy(ipa.IntensityDouble, Ring.Intensity, length);
 
             Ring.ImageType = Ring.ImageTypeEnum.IPAImage;
             Ring.BitsPerPixels = 16;
@@ -1957,10 +1965,9 @@ public static partial class ImageIO
     public static IPAImage GetIPA_Object(string fileName)
     {
         var serializer = new XmlSerializer(typeof(IPAImage));
-        var fs = new FileStream(fileName, FileMode.Open);//ファイルを開く
-        var ipa = (IPAImage)serializer.Deserialize(fs);
-        fs.Close();//閉じる
-        return ipa;
+        //260712Cl using化 + FileAccess.Read (旧: Deserialize が例外時に fs が閉じられずファイルロック残留、書込権限も不要)
+        using var fs = new FileStream(fileName, FileMode.Open, FileAccess.Read);
+        return (IPAImage)serializer.Deserialize(fs);
     }
 
     [Serializable()]

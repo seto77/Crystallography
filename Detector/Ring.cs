@@ -282,7 +282,8 @@ public static class Ring
         Parallel.For(0, thread, i =>
         {
             int start = Intensity.Length / thread * i;
-            int end = Math.Min(Intensity.Length / thread * (i + 1), Intensity.Length);
+            //260712Cl 末尾チャンクは Length まで処理 (旧: Length/thread*(i+1) は切り捨てで余り Length%thread 個が未集計だった)
+            int end = i == thread - 1 ? Intensity.Length : Intensity.Length / thread * (i + 1);
             var freq = new SortedList<uint, int>();
             for (int j = start; j < end; j++)
             {
@@ -475,7 +476,8 @@ public static class Ring
         }
     }
 
-    private delegate void FindSpotsThread1Delegate(int yMin, int yMax, int[] r, ref double[] SumOfIntensity, ref double[] SumOfIntensitySquare, ref double[] pixels);
+    //260712Cl 削除: ソリューション内で未参照のデッドコード (FindSpotsThread1 は Parallel.For のラムダから直接呼ばれる。対の FindSpotsThread0Delegate は既にコメントアウト済み)
+    //private delegate void FindSpotsThread1Delegate(int yMin, int yMax, int[] r, ref double[] SumOfIntensity, ref double[] SumOfIntensitySquare, ref double[] pixels);
 
     public static void FindSpotsThread1(int yMin, int yMax, int[] r, ref double[] SumOfIntensity, ref double[] SumOfIntensitySquare, ref double[] pixels)
     {
@@ -562,9 +564,12 @@ public static class Ring
         //20190906追記
         //補正式は、Icorr = I / (sin(kai)^2 + cos(kai)^2 * cos(2th)^2 ) / cos(2th)
 
-        Func<double, double, double> coeff1 = rotate == 0 || rotate == 2 ?
-            (x2, y2) => 2 * (y2 + fd2) / (x2 + y2 + 2 * fd2) :
-            (x2, y2) => 2 * (x2 + fd2) / (x2 + y2 + 2 * fd2);
+        //260712Cl 全画素で呼ばれるループ不変の Func デリゲート (JIT インライン化を阻害) を、ループ外の bool 分岐に置換。
+        //         演算内容・順序は同一なので結果はビット一致。574行「Parallel.Forを使わないほうが早い」の直列方針は維持。
+        //旧: Func<double, double, double> coeff1 = rotate == 0 || rotate == 2 ?
+        //        (x2, y2) => 2 * (y2 + fd2) / (x2 + y2 + 2 * fd2) :
+        //        (x2, y2) => 2 * (x2 + fd2) / (x2 + y2 + 2 * fd2);
+        bool horizontal = rotate == 0 || rotate == 2;
 
         //var coeff2 = new Func<double, double, double>((x2, y2) => Math.Sqrt( fd2 / (x2 + y2 + fd2)));
 
@@ -585,7 +590,9 @@ public static class Ring
                 double temp8 = fd / (temp4 + tempX * Denom2);
                 double x = (temp5 + tempX * Numer2) * temp8;
                 double y = (tempX * Numer1 + temp6) * temp8;
-                result[i] = intensity[i] / coeff1(x * x, y * y);// *coeff2(x * x, y * y);
+                double x2 = x * x, y2 = y * y;
+                double coeff = horizontal ? 2 * (y2 + fd2) / (x2 + y2 + 2 * fd2) : 2 * (x2 + fd2) / (x2 + y2 + 2 * fd2);
+                result[i] = intensity[i] / coeff;// *coeff2(x * x, y * y);
                 i++;
             }
         }
@@ -612,34 +619,37 @@ public static class Ring
 
         var len = IsOutsideOfIntegralRegion.Length;
 
-        //if (tempArray.Length != IsValid.Length)
-        //    tempArray = [.. Enumerable.Repeat(true, IsOutsideOfIntegralRegion.Length)];
-
-        // IsValid = tempArray;
-        IsValid = [..Enumerable.Repeat(true, len)] ;
-
-        if (OmitSpots)
-        {
-            for (int i = 0; i < len; i++)
-                if (IsOutsideOfIntegralRegion[i] || IsOutsideOfIntegralProperty[i] || IsSpots[i])
-                    IsValid[i] = false;
-        }
-        else
-        {
-            for (int i = 0; i < len; i++)
-                if (IsOutsideOfIntegralRegion[i] || IsOutsideOfIntegralProperty[i])
-                    IsValid[i] = false;
-        }
-
-        if (OmitTheresholdMin)
-            for (int i = 0; i < len; i++)
-                if (IsThresholdUnder[i])
-                    IsValid[i] = false;
-
-        if (OmitTheresholdMax)
-            for (int i = 0; i < len; i++)
-                if (IsThresholdOver[i])
-                    IsValid[i] = false;
+        //260712Cl Enumerable.Repeat 初期化 + 最大4回の全画素パスを1パスに融合 (bool 演算のみで結果は完全同一、メモリ帯域を節約)。
+        //         Omit* フラグは反復間不変で JIT の分岐予測によりほぼゼロコスト。
+        //旧:
+        //IsValid = [..Enumerable.Repeat(true, len)] ;
+        //if (OmitSpots)
+        //{
+        //    for (int i = 0; i < len; i++)
+        //        if (IsOutsideOfIntegralRegion[i] || IsOutsideOfIntegralProperty[i] || IsSpots[i])
+        //            IsValid[i] = false;
+        //}
+        //else
+        //{
+        //    for (int i = 0; i < len; i++)
+        //        if (IsOutsideOfIntegralRegion[i] || IsOutsideOfIntegralProperty[i])
+        //            IsValid[i] = false;
+        //}
+        //if (OmitTheresholdMin)
+        //    for (int i = 0; i < len; i++)
+        //        if (IsThresholdUnder[i])
+        //            IsValid[i] = false;
+        //if (OmitTheresholdMax)
+        //    for (int i = 0; i < len; i++)
+        //        if (IsThresholdOver[i])
+        //            IsValid[i] = false;
+        var valid = new bool[len];
+        for (int i = 0; i < len; i++)
+            valid[i] = !(IsOutsideOfIntegralRegion[i] || IsOutsideOfIntegralProperty[i]
+                      || (OmitSpots && IsSpots[i])
+                      || (OmitTheresholdMin && IsThresholdUnder[i])
+                      || (OmitTheresholdMax && IsThresholdOver[i]));
+        IsValid = valid;
     }
 
     #endregion
@@ -785,7 +795,9 @@ public static class Ring
                             else//左に伸びた半直線のときは
                             {
                                 midI = (int)(CenterX - Band * Math.Abs(sin) + 0.5);
-                                endI = Math.Max(Width, (int)(CenterX + Band * Math.Abs(sin) + 0.5));
+                                //260712Cl バグ修正: Math.Max→Math.Min (対称な上下ケース 731行 endJ=Math.Min(Height,...) と揃える。
+                                //         旧 Math.Max では endI が常に Width 以上になり、右端付近で i が範囲外→隣行の誤書き込み/末尾行で IndexOutOfRange)
+                                endI = Math.Min(Width, (int)(CenterX + Band * Math.Abs(sin) + 0.5));
                                 for (int i = 0; i < endI; i++)
                                 {
                                     cy = tan * i + CenterYMinusTanCenterX;
@@ -839,9 +851,10 @@ public static class Ring
                     var (sinEndAngle, cosEndAngle) = Math.SinCos(endAngle);
                     double X1 = cosStartAngle, Y1 = sinStartAngle;
                     double X2 = cosEndAngle, Y2 = sinEndAngle;
+                    //260712Cl 条件式の両腕に紛れ込んでいた冗長な自己代入 (func = ...) を削除 (意味は同一)
                     Func<double, double, bool> func = endAngle - startAngle < Math.PI ?
-                         func = (x, y) => x * Y1 - y * X1 < 0 && x * Y2 - y * X2 > 0 :
-                        func = (x, y) => x * Y1 - y * X1 < 0 || x * Y2 - y * X2 > 0;
+                        (x, y) => x * Y1 - y * X1 < 0 && x * Y2 - y * X2 > 0 :
+                        (x, y) => x * Y1 - y * X1 < 0 || x * Y2 - y * X2 > 0;
 
                     SetTiltParameter();
                     Parallel.For(0, Height, j =>
@@ -994,7 +1007,9 @@ public static class Ring
                 //角度ステップの区切り位置を設定する
                 Parallel.For(0, thread, i =>
                 {
-                    int hUnit = IP.SrcHeight / thread;
+                    //260712Cl バグ修正: 切り上げ除算に (旧 IP.SrcHeight/thread は切り捨てで下端 SrcHeight%thread 行が未処理→
+                    //         既定 false=積分対象のまま残り、角度範囲外であるべき下端画素が積分に混入していた。FindSpots 355行等の正しい端数処理と揃える)
+                    int hUnit = (IP.SrcHeight + thread - 1) / thread;
                     for (int y = hUnit * i; y < Math.Min(hUnit * (i + 1), IP.SrcHeight); y++)
                         for (int x = 0; x < IP.SrcWidth; x++)
                         {
@@ -1054,9 +1069,7 @@ public static class Ring
     /// <param name="angle"></param>
     public static void CircumferentialBlur(double theta)
     {
-        double[] pixels = new double[Intensity.Length];
-        for (int i = 0; i < pixels.Length; i++)
-            pixels[i] = 0;
+        double[] pixels = new double[Intensity.Length]; //260712Cl new double[] はゼロ初期化済みのため冗長な初期化ループを削除
 
         double sin3theta = Math.Sin(3 * theta);
 
@@ -1109,8 +1122,7 @@ public static class Ring
             }
         }
 
-        for (int i = 0; i < pixels.Length; i++)
-            Intensity[i] = pixels[i];
+        Array.Copy(pixels, Intensity, pixels.Length); //260712Cl 手動コピーを Array.Copy に (長さは冒頭で一致確保済み)
     }
 
     #endregion
@@ -1124,9 +1136,7 @@ public static class Ring
     /// <returns></returns>
     public static double[] GetCorrectedImageArray(IntegralProperty iP, double resolution, Size size, PointD center)
     {
-        double[] pixels = new double[size.Height * size.Width];
-        for (int i = 0; i < pixels.Length; i++)
-            pixels[i] = 0;
+        double[] pixels = new double[size.Height * size.Width]; //260712Cl new double[] はゼロ初期化済みのため冗長な初期化ループを削除
 
         IP = iP;
         SetTiltParameter();
@@ -1589,10 +1599,8 @@ public static class Ring
         //Profile(各ステップごとの強度)とPixels(各ステップに寄与したピクセル数)を作成
         int length = (int)(360.0 / iP.RadialSectorAngle + 0.5);
         //のりしろ部分を作るために2倍の配列を確保
-        double[] tempProfileIntensity = new double[length * 2];
+        double[] tempProfileIntensity = new double[length * 2]; //260712Cl new double[] はゼロ初期化済みのため冗長な初期化ループを削除
         //このとき、tempProfileIntensity[i]は (i-0.5)*stepから(i+0.5)*stepの角度範囲内の強度を意味する
-        for (int i = 0; i < tempProfileIntensity.Length; i++)
-            tempProfileIntensity[i] = 0;
 
         for (int j = 0; j < IP.SrcHeight; j++)
         {
@@ -1736,12 +1744,16 @@ public static class Ring
         //各スレッドの上限と下限を決める
         int[] yThreadMin = new int[thread];
         int[] yThreadMax = new int[thread];
-        int yStep = (yMax - yMin) / thread;
+        // 260712Cl 修正: 旧実装は (1) 最終スレッドを全域に拡張しないため剰余行が脱落し、(2) 包含的な yMax を排他的上限に使うため最終行も脱落していた。
+        // 姉妹メソッド FindSpots(L356-359) と同じく、区間を [yMin, yMax] 包含として端数分だけ広げ、最終スレッドを yMax+1(排他) まで拡張する。
+        // int yStep = (yMax - yMin) / thread; ... yThreadMax[i] = Math.Min(yMin + (i + 1) * yStep, yMax); // 260712Cl 変更前
+        int yStep = (yMax - yMin + 1) / thread;
         for (int i = 0; i < thread; i++)
         {
             yThreadMin[i] = yMin + i * yStep;
-            yThreadMax[i] = Math.Min(yMin + (i + 1) * yStep, yMax);
+            yThreadMax[i] = yMin + (i + 1) * yStep;
         }
+        yThreadMax[thread - 1] = yMax + 1;// 最終行 yMax まで含める排他的上限 (下流ループは j < yThreadMax)
 
         //フラットパネルモードの時
         if (IP.Camera == IntegralProperty.CameraEnum.FlatPanel)
@@ -1804,12 +1816,13 @@ public static class Ring
             int w = IP.SrcWidth;
             int jw, jw1, j1w1;
 
-            for (int j = yMin; j < yMax; j++)
+            // 260712Cl 修正: 排他的上限のままだと有効領域の最終行 yMax・最終列 xMax の交点が未計算になり積分から漏れる。包含的上限 (<=) に統一。
+            for (int j = yMin; j <= yMax; j++)
             {
                 jw = j * w;
                 jw1 = j * (w + 1);
                 j1w1 = (j + 1) * (w + 1);
-                for (int i = xMin; i < xMax; i++)
+                for (int i = xMin; i <= xMax; i++)
                     if (IsValid[jw + i])
                         IsCalcPosition[jw1 + i] = IsCalcPosition[jw1 + i + 1] = IsCalcPosition[j1w1 + i] = IsCalcPosition[j1w1 + i + 1] = true;
             }
@@ -1848,13 +1861,15 @@ public static class Ring
                 //else
                 #endregion
 
+                // 260712Cl 修正: xMax は有効領域の最大列(包含的)。下流は i < xMax の排他ループなので最終列が漏れる。xMax+1 を渡して最終列も積分する。
                 Parallel.For(0, thread, i =>
-                        (tempProfileIntensity[i], tempContibutedPixels[i]) = GetProfileThreadWithTiltCorrectionNew(xMin, xMax, yThreadMin[i], yThreadMax[i]));
+                        (tempProfileIntensity[i], tempContibutedPixels[i]) = GetProfileThreadWithTiltCorrectionNew(xMin, xMax + 1, yThreadMin[i], yThreadMax[i]));
             }
 
             else if (IP.Mode == HorizontalAxis.Length)
-                Parallel.For(0, thread, i 
-                    =>  GetProfileThreadWithTiltCorrection(xMin, xMax, yThreadMin[i], yThreadMax[i], ref tempProfileIntensity[i][0], ref tempContibutedPixels[i][0]));
+                // 260712Cl 修正: 同上 (最終列 xMax を含めるため xMax+1)
+                Parallel.For(0, thread, i
+                    =>  GetProfileThreadWithTiltCorrection(xMin, xMax + 1, yThreadMin[i], yThreadMax[i], ref tempProfileIntensity[i][0], ref tempContibutedPixels[i][0]));
 
 
             for (int i = 0; i < thread; i++)
@@ -1940,7 +1955,9 @@ public static class Ring
                     if (double.IsNaN(temp) || double.IsInfinity(temp))
                         temp = 0;
                     profile.Pt.Add(new PointD(tempD * 10, temp));
-                    profile.Err.Add(new PointD(tempD * 10, temp / Math.Sqrt(ProfileIntensity[i])));
+                    // 260712Cl 修正: d値モードは強度を反転(length-1-i)して出力するのに、誤差だけ鏡像位置 ProfileIntensity[i] の統計で割っていた。Pt と同じビンを参照させる。
+                    // profile.Err.Add(new PointD(tempD * 10, temp / Math.Sqrt(ProfileIntensity[i]))); // 260712Cl 変更前
+                    profile.Err.Add(new PointD(tempD * 10, temp / Math.Sqrt(ProfileIntensity[length - 1 - i])));
                 }
             else if (IP.Mode == HorizontalAxis.Length)//Lengthモードのとき
                 for (int i = 0; i < length; i++)

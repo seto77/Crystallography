@@ -203,8 +203,11 @@ public class NumericalFormula
         if (list.Count % 2 != 1)
             return double.NaN;
 
+        // 260712Cl 修正: 条件が && だと i%2==0 と i%2==1 が同時成立せず恒偽で、型検証が死んでいた。|| が正しく、
+        // 不正なトークン列 (偶数位置が非double / 奇数位置が非char) を下流のキャスト例外でなく NaN で穏当に弾く。正常入力は不変。
+        // if ((i % 2 == 0 && list[i].GetType() != typeof(double)) && (i % 2 == 1 && list[i].GetType() != typeof(char))) // 260712Cl 変更前
         for (int i = 0; i < list.Count; i++)
-            if ((i % 2 == 0 && list[i].GetType() != typeof(double)) && (i % 2 == 1 && list[i].GetType() != typeof(char)))
+            if ((i % 2 == 0 && list[i].GetType() != typeof(double)) || (i % 2 == 1 && list[i].GetType() != typeof(char)))
                 return double.NaN;
 
         //まず^を後ろから探す
