@@ -180,17 +180,46 @@ public sealed class SymmetryElementsTable
     /// 主軸は絞った raw 軸から再導出する (4 回軸が失われ 2 回軸が残る等の降格を捕捉)。主対称面・反転中心は
     /// 幾何要素の保持で絞る (同一格子なら glide coset も保持されるので代表面はそのまま)。各要素→代表操作の復元は
     /// SeitzTranslation を保つので、H の操作署名 (線形部+並進 mod1) と突き合わせれば所属を正しく判定できる。</summary>
-    public SymmetryElementsTable FilterByOperationMembership(Func<SymmetryOperation, bool> operationInSubgroup)
+    public SymmetryElementsTable FilterByOperationMembership(SymmetryOperation[] subgroupOperations)
     {
+        // 軸・反転: 操作署名 (線形部 R を基底 ApplyMatrix 3 列で + 並進 t mod1) で所属判定。軸の Direction は
+        // 直空間 uvw なので再構築が正しく、hex でも成立する。
+        var opSigs = subgroupOperations.Select(o => OpSignature(new SymmetryOperation(o, SeriesNumber))).ToHashSet();
         SymmetryOperation AxisOp(in SymmetryAxis a) => new(a.Order, 1, a.Direction, (a.X, a.Y, a.Z), a.IntrinsicTranslation, SeriesNumber);
-        SymmetryOperation PlaneOp(in SymmetryPlane p) => new(-2, 1, p.Normal, (p.X, p.Y, p.Z), p.Glide, SeriesNumber);
         SymmetryOperation InvOp(in InversionCenter c) => new(-1, 1, (0, 0, 1), (c.X, c.Y, c.Z), (0, 0, 0), SeriesNumber);
 
-        var axes = SymmetryAxes.Where(a => operationInSubgroup(AxisOp(a))).ToArray();       // raw 軸を絞る (主軸は constructor が再導出)
-        var rawPlanes = SymmetryPlanes.Where(p => operationInSubgroup(PlaneOp(p))).ToArray();
-        var principalPlanes = PrincipalSymmetryPlanes.Where(p => operationInSubgroup(PlaneOp(p))).ToArray();
-        var inv = InversionCenters.Where(c => operationInSubgroup(InvOp(c))).ToArray();
+        // 面: 操作署名だと SymmetryPlane.Normal が Miller (逆格子 hkl) なので mirror を直空間 Direction として
+        // 再構築すると hex で R がずれる (R3mHex→Cm 等で鏡映が retained に入らない)。そこで部分群自身の面テーブルを
+        // 同じ ConvertPlaneIndex 経路で作り、**代表非依存な平面署名 (Normal, 面オフセット d=Normal·Position, Glide)**
+        // で照合する。d は平面方程式の不変量なので代表点差 (中心化コピー等) に強い。
+        var subTable = FromOperations(subgroupOperations, SeriesNumber);
+        var subPlaneSigs = (subTable?.SymmetryPlanes ?? []).Select(p => PlaneSignature(p)).ToHashSet();
+
+        var axes = SymmetryAxes.Where(a => opSigs.Contains(OpSignature(AxisOp(a)))).ToArray(); // raw 軸を絞る (主軸は constructor が再導出)
+        var inv = InversionCenters.Where(c => opSigs.Contains(OpSignature(InvOp(c)))).ToArray();
+        var rawPlanes = SymmetryPlanes.Where(p => subPlaneSigs.Contains(PlaneSignature(p))).ToArray();
+        var principalPlanes = PrincipalSymmetryPlanes.Where(p => subPlaneSigs.Contains(PlaneSignature(p))).ToArray();
         return new SymmetryElementsTable(SeriesNumber, inv, axes, rawPlanes, principalPlanes, Centerings);
+    }
+
+    /// <summary>260713Cl 追加: 対称操作の表現非依存な同一性キー = 線形部 R (基底 ApplyMatrix 3 列) + 並進 t mod1。</summary>
+    private static (long, long, long, long, long, long, long, long, long, long, long, long) OpSignature(in SymmetryOperation op)
+    {
+        var (ax, ay, az) = op.ApplyMatrix(1, 0, 0);
+        var (bx, by, bz) = op.ApplyMatrix(0, 1, 0);
+        var (cx, cy, cz) = op.ApplyMatrix(0, 0, 1);
+        var t = op.SeitzTranslation;
+        static long M1(double x) { double m = x - Math.Floor(x); if (m > 1 - 1e-7) m -= 1; return (long)Math.Round(m * 1e6); }
+        return (R6(ax), R6(ay), R6(az), R6(bx), R6(by), R6(bz), R6(cx), R6(cy), R6(cz), M1(t.U), M1(t.V), M1(t.W));
+    }
+
+    /// <summary>260713Cl 追加: 平面の代表非依存署名 = (Normal, 面オフセット d=Normal·Position を [0,1) 折り畳み, Glide)。
+    /// d は平面上の任意点で不変なので代表点の選び方に依らない。</summary>
+    private static (int, int, int, long, long, long, long) PlaneSignature(in SymmetryPlane p)
+    {
+        double d = p.Normal.U * p.X + p.Normal.V * p.Y + p.Normal.W * p.Z;
+        double m = d - Math.Floor(d); if (m > 1 - 1e-7) m -= 1;
+        return (p.Normal.U, p.Normal.V, p.Normal.W, (long)Math.Round(m * 1e6), R6(p.Glide.U), R6(p.Glide.V), R6(p.Glide.W));
     }
 
     /// <summary>260713Cl 追加: 操作集合から反転中心を直接列挙する (Wyckoff サイト対称でなく操作ベース)。
