@@ -202,6 +202,55 @@ public sealed class SymmetryElementsTable
         return new SymmetryElementsTable(SeriesNumber, inv, axes, rawPlanes, principalPlanes, Centerings);
     }
 
+    /// <summary>260713Cl 追加 (③-2 描画順): retained (H) を黒で上書きした後、lost 要素を赤で最前面に描くための
+    /// 「lost かつ <paramref name="retained"/> と幾何 carrier が非共存」な部分テーブルを返す。carrier は order/screw/glide の
+    /// 種別を含まない純粋な幾何要素: 軸は無限直線 (向きの符号を同一視し、軸方向のずれ=原点最近点で無視)、面は無限平面
+    /// (法線の符号を同一視した法線オフセット)、反転中心は点。retained は本テーブルの raw を絞った部分集合なので代表点まで
+    /// 一致し、同一直線/平面上に retained と lost が両立するスポット (4→2 降格など) の lost はここから除外され、L2 の黒が
+    /// 上に残る。孤立した lost だけが赤で最前面に来て、近接する黒 (と白ハロー) に隠されなくなる。260713Cl 追加。</summary>
+    public SymmetryElementsTable LostNotCoincidentWith(SymmetryElementsTable retained)
+    {
+        var retAxis = retained.SymmetryAxes.Select(a => AxisCarrier(a)).ToHashSet();
+        var retPlane = retained.SymmetryPlanes.Select(p => PlaneCarrier(p))
+            .Concat(retained.PrincipalSymmetryPlanes.Select(p => PlaneCarrier(p))).ToHashSet();
+        var retInv = retained.InversionCenters.Select(c => InvCarrier(c)).ToHashSet();
+        var axes = SymmetryAxes.Where(a => !retAxis.Contains(AxisCarrier(a))).ToArray();
+        var rawPlanes = SymmetryPlanes.Where(p => !retPlane.Contains(PlaneCarrier(p))).ToArray();
+        var principalPlanes = PrincipalSymmetryPlanes.Where(p => !retPlane.Contains(PlaneCarrier(p))).ToArray();
+        var inv = InversionCenters.Where(c => !retInv.Contains(InvCarrier(c))).ToArray();
+        return new SymmetryElementsTable(SeriesNumber, inv, axes, rawPlanes, principalPlanes, Centerings);
+    }
+
+    /// <summary>260713Cl 追加: integer 方向を gcd 約分し、最初の非ゼロ成分が正になるよう符号を揃えた正準方向 (± 同一視)。</summary>
+    private static (int, int, int) CanonicalDir((int U, int V, int W) d)
+    {
+        static int G(int a, int b) { a = Math.Abs(a); b = Math.Abs(b); while (b != 0) { (a, b) = (b, a % b); } return a; }
+        int g = G(G(d.U, d.V), d.W);
+        if (g == 0) return (0, 0, 0);
+        int u = d.U / g, v = d.V / g, w = d.W / g;
+        if (u < 0 || (u == 0 && v < 0) || (u == 0 && v == 0 && w < 0)) { u = -u; v = -v; w = -w; }
+        return (u, v, w);
+    }
+
+    /// <summary>260713Cl 追加: 軸の carrier = (正準方向, 原点最近点)。原点最近点は Euclidean foot なので直線上の代表点の
+    /// 選び方に依らず一意 (metric 非依存。同一直線上の別 order 軸=降格を同一 carrier に束ねる)。</summary>
+    private static (int, int, int, long, long, long) AxisCarrier(in SymmetryAxis a)
+    {
+        var (u, v, w) = CanonicalDir(a.Direction);
+        double dd = (double)u * u + (double)v * v + (double)w * w;
+        double t = dd > 0 ? (a.X * u + a.Y * v + a.Z * w) / dd : 0.0;
+        return (u, v, w, R6(a.X - t * u), R6(a.Y - t * v), R6(a.Z - t * w));
+    }
+
+    /// <summary>260713Cl 追加: 面の carrier = (正準法線, 正準法線オフセット)。法線 ± を同一視 (glide 種別は含めない)。</summary>
+    private static (int, int, int, long) PlaneCarrier(in SymmetryPlane p)
+    {
+        var (u, v, w) = CanonicalDir(p.Normal);
+        return (u, v, w, R6(u * p.X + v * p.Y + w * p.Z));
+    }
+
+    private static (long, long, long) InvCarrier(in InversionCenter c) => (R6(c.X), R6(c.Y), R6(c.Z)); // 260713Cl 追加
+
     /// <summary>260713Cl 追加: 対称操作の表現非依存な同一性キー = 線形部 R (基底 ApplyMatrix 3 列) + 並進 t mod1。</summary>
     private static (long, long, long, long, long, long, long, long, long, long, long, long) OpSignature(in SymmetryOperation op)
     {
