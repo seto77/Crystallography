@@ -129,6 +129,93 @@ public sealed class SymmetryElementsTable
             [.. centerings]);
     }
 
+    /// <summary>260713Cl 追加 (③-2 lost/retained 重ね描き用): 空間群番号ではなく<b>任意の対称操作集合</b>から
+    /// 対称要素テーブルを構築する。<paramref name="settingSeriesNumber"/> は <see cref="SymmetryOperation.ApplyMatrix(double, double, double)"/> の
+    /// 晶系判定 (isHex) と、glide 分類フラグ・レイアウトを親設定に合わせるためのもの。
+    /// <paramref name="operations"/> は<b>その設定の座標系で表現され、かつ中心化展開済み</b>であること
+    /// (部分群 H の <c>GroupRelation.Operations</c> がこれに該当)。既存 <see cref="Compute"/> と異なり
+    /// <see cref="ExpandWithCentering"/> は呼ばない (二重展開回避)。反転中心は Wyckoff ではなく操作 (Order==-1) から
+    /// 直接列挙する。キャッシュしない (呼び出し側が保持する)。
+    /// 用途は主に translationengleiche (t-) 部分群で、H の格子が親と同一 (T_H = T_G) のとき厳密に正しい。</summary>
+    public static SymmetryElementsTable FromOperations(SymmetryOperation[] operations, int settingSeriesNumber)
+    {
+        if (operations == null || operations.Length == 0) return null;
+        if (settingSeriesNumber <= 0 || settingSeriesNumber >= SymmetryStatic.TotalSpaceGroupNumber) return null;
+        // 親設定の seriesNumber を付け替えて (isHex を親に合わせる) 正準化。中心化は既に展開済みなので再展開しない。
+        var ops = operations.Select(op => Canonicalize(new SymmetryOperation(op, settingSeriesNumber))).ToArray();
+        var centerings = ops
+            .Where(o => o.Order == 1 && Math.Abs(o.IntrinsicTranslation.U) + Math.Abs(o.IntrinsicTranslation.V) + Math.Abs(o.IntrinsicTranslation.W) > 1e-6)
+            .Select(o => (o.IntrinsicTranslation.U, o.IntrinsicTranslation.V, o.IntrinsicTranslation.W))
+            .Distinct()
+            .ToList();
+
+        var sym = SymmetryStatic.Symmetries[settingSeriesNumber];
+        int crystalSystemNumber = sym.CrystalSystemNumber;
+        bool allowDoubleGlidePlane = crystalSystemNumber != 5 && crystalSystemNumber != 6;
+        bool useCenteringForPrincipalPlaneGlide = !(sym.LatticeTypeStr == "R" && sym.SpaceGroupHMStr.Contains("Hex", StringComparison.Ordinal));
+        var planes = CollectSymmetryPlanes(ops, centerings, allowDoubleGlidePlane, useCenteringForPrincipalPlaneGlide, out var principalPlanes);
+        return new SymmetryElementsTable(
+            settingSeriesNumber,
+            CollectInversionsFromOperations(ops),
+            CollectSymmetryAxes(ops, centerings),
+            planes,
+            principalPlanes,
+            [.. centerings]);
+    }
+
+    /// <summary>260713Cl 追加: 空間群 sn の中心化展開済み操作 (Compute が内部で対称要素構築に使う ops) を返す。
+    /// TSubgroupFinder.GetExpandedOps と異なり<b>中心化コピーまで展開</b>する。FromOperations の自己整合性検証
+    /// (FromOperations(ExpandedOperations(sn), sn) ≡ Get(sn)) や、親全操作を渡す用途に使う。</summary>
+    public static SymmetryOperation[] ExpandedOperations(int seriesNumber)
+    {
+        if (seriesNumber <= 0 || seriesNumber >= SymmetryStatic.TotalSpaceGroupNumber) return [];
+        var baseOps = SymmetryStatic.WyckoffPositions[seriesNumber][0].PositionOperations;
+        return baseOps == null ? [] : ExpandWithCentering(baseOps, seriesNumber);
+    }
+
+    /// <summary>260713Cl 追加 (③-2 lost/retained 重ね描き用): 本テーブルの各対称要素を、それが表す対称操作が
+    /// <paramref name="operationInSubgroup"/> を満たすかで絞り込んだ<b>部分テーブル</b>を返す。要素は自分自身
+    /// (同一 raw オブジェクト・同一代表位置) を再利用するので、元テーブルの上に重ね描いても代表点がピクセル厳密に
+    /// 一致する (別テーブルを独立構築すると FromOperations が非単調で代表点がずれ赤ゴーストになる問題を回避)。
+    /// 主軸は絞った raw 軸から再導出する (4 回軸が失われ 2 回軸が残る等の降格を捕捉)。主対称面・反転中心は
+    /// 幾何要素の保持で絞る (同一格子なら glide coset も保持されるので代表面はそのまま)。各要素→代表操作の復元は
+    /// SeitzTranslation を保つので、H の操作署名 (線形部+並進 mod1) と突き合わせれば所属を正しく判定できる。</summary>
+    public SymmetryElementsTable FilterByOperationMembership(Func<SymmetryOperation, bool> operationInSubgroup)
+    {
+        SymmetryOperation AxisOp(in SymmetryAxis a) => new(a.Order, 1, a.Direction, (a.X, a.Y, a.Z), a.IntrinsicTranslation, SeriesNumber);
+        SymmetryOperation PlaneOp(in SymmetryPlane p) => new(-2, 1, p.Normal, (p.X, p.Y, p.Z), p.Glide, SeriesNumber);
+        SymmetryOperation InvOp(in InversionCenter c) => new(-1, 1, (0, 0, 1), (c.X, c.Y, c.Z), (0, 0, 0), SeriesNumber);
+
+        var axes = SymmetryAxes.Where(a => operationInSubgroup(AxisOp(a))).ToArray();       // raw 軸を絞る (主軸は constructor が再導出)
+        var rawPlanes = SymmetryPlanes.Where(p => operationInSubgroup(PlaneOp(p))).ToArray();
+        var principalPlanes = PrincipalSymmetryPlanes.Where(p => operationInSubgroup(PlaneOp(p))).ToArray();
+        var inv = InversionCenters.Where(c => operationInSubgroup(InvOp(c))).ToArray();
+        return new SymmetryElementsTable(SeriesNumber, inv, axes, rawPlanes, principalPlanes, Centerings);
+    }
+
+    /// <summary>260713Cl 追加: 操作集合から反転中心を直接列挙する (Wyckoff サイト対称でなく操作ベース)。
+    /// 正準化済みの反転操作 {−I | t} は Order==-1・IntrinsicTranslation≈0 で Position が代表反転中心。
+    /// 反転操作は単位胞内に <c>Position + {0,1/2}³</c> の 8 個の中心を持つ (2x ≡ 2·Position (mod Z³) の解) ので、
+    /// 各操作から 8 点を生成して [0,1) 正規化・重複除去する。非中心対称群では反転操作が無く空になる。</summary>
+    private static InversionCenter[] CollectInversionsFromOperations(SymmetryOperation[] ops)
+    {
+        var list = new List<InversionCenter>();
+        var seen = new HashSet<(long, long, long)>();
+        foreach (var op in ops)
+        {
+            if (op.Order != -1) continue; // Order==-1 のみが純反転 (−2=鏡映, −3/−4/−6=回反は別軸カテゴリ)
+            var (px, py, pz) = op.Position;
+            for (int mx = 0; mx <= 1; mx++)
+                for (int my = 0; my <= 1; my++)
+                    for (int mz = 0; mz <= 1; mz++)
+                    {
+                        double x = Mod1(px + mx * 0.5), y = Mod1(py + my * 0.5), z = Mod1(pz + mz * 0.5);
+                        if (seen.Add((R6(x), R6(y), R6(z)))) list.Add(new InversionCenter(x, y, z));
+                    }
+        }
+        return [.. list];
+    }
+
     #region 反転中心
     /// <summary>(260502Cl) Wyckoff position の site symmetry が中心対称で全 Free=false の WP を反転中心として収集。
     /// `GeneratePositions` で対称軌道全体を展開し、unit cell [0, 1)³ 内に正規化した上で重複除去する。</summary>
