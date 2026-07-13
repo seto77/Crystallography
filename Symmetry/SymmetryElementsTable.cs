@@ -222,6 +222,102 @@ public sealed class SymmetryElementsTable
         return (p.Normal.U, p.Normal.V, p.Normal.W, (long)Math.Round(m * 1e6), R6(p.Glide.U), R6(p.Glide.V), R6(p.Glide.W));
     }
 
+    /// <summary>260713Cl 追加 (③-2 K2 胞拡大 tiling 用): baseline 自身の要素を、それを親格子で <paramref name="tileX/Y/Z"/> だけ
+    /// 平行移動した親胞タイル上の要素とみなし、その操作が<b>拡大部分群 H に mod T_H で属するか</b>で絞った部分テーブルを返す。
+    /// H は coset 代表 (<paramref name="cosetReps"/>) と部分格子基底 <paramref name="sublatticeBasis"/> (T_H、親座標) で定義される。
+    /// 拡大胞 (isomorphic・胞倍化 k-) で「タイルごとにどの要素が保持されるか」を判定する。要素は baseline の raw を再利用する
+    /// ので代表点はピクセル一致 (ゴースト無し)。軸/反転は操作署名 (R + 並進を mod T_H)、面は代表非依存な平面署名 (Normal, 面
+    /// オフセット d を T_H の面間隔 mod, Glide) で照合 (hex 対応)。</summary>
+    public SymmetryElementsTable FilterRetainedInTile(SymmetryOperation[] cosetReps, double[] sublatticeBasis,
+                                                      double tileX, double tileY, double tileZ)
+    {
+        var bInv = TSubgroupFinder.Invert3(sublatticeBasis);
+        if (bInv == null) return this; // 特異 (理論上発生しない) なら全保持で防御
+        static bool IsInt(double x) => Math.Abs(x - Math.Round(x)) < 1e-5;
+        bool InTH(double vx, double vy, double vz) =>
+            IsInt(bInv[0] * vx + bInv[1] * vy + bInv[2] * vz) &&
+            IsInt(bInv[3] * vx + bInv[4] * vy + bInv[5] * vz) &&
+            IsInt(bInv[6] * vx + bInv[7] * vy + bInv[8] * vz);
+
+        // coset 代表を線形部署名 R でグループ化し、各 R の並進 t_rep を保持。
+        var repTByR = new Dictionary<(long, long, long, long, long, long, long, long, long), List<(double U, double V, double W)>>();
+        foreach (var h in cosetReps)
+        {
+            var hh = new SymmetryOperation(h, SeriesNumber);
+            var (rax, ray, raz) = hh.ApplyMatrix(1, 0, 0); var (rbx, rby, rbz) = hh.ApplyMatrix(0, 1, 0); var (rcx, rcy, rcz) = hh.ApplyMatrix(0, 0, 1);
+            var key = (R6(rax), R6(ray), R6(raz), R6(rbx), R6(rby), R6(rbz), R6(rcx), R6(rcy), R6(rcz));
+            if (!repTByR.TryGetValue(key, out var list)) repTByR[key] = list = [];
+            list.Add(hh.SeitzTranslation);
+        }
+        (long, long, long, long, long, long, long, long, long) Rsig(in SymmetryOperation op)
+        {
+            var (ax, ay, az) = op.ApplyMatrix(1, 0, 0); var (bx, by, bz) = op.ApplyMatrix(0, 1, 0); var (cx, cy, cz) = op.ApplyMatrix(0, 0, 1);
+            return (R6(ax), R6(ay), R6(az), R6(bx), R6(by), R6(bz), R6(cx), R6(cy), R6(cz));
+        }
+        // 操作 (親胞タイル上) が H に属するか: 同一 R の coset 代表があり (t_op − t_rep) ∈ T_H。
+        bool OpInH(in SymmetryOperation opAtTile)
+        {
+            if (!repTByR.TryGetValue(Rsig(opAtTile), out var reps)) return false;
+            var t = opAtTile.SeitzTranslation;
+            foreach (var tr in reps) if (InTH(t.U - tr.U, t.V - tr.V, t.W - tr.W)) return true;
+            return false;
+        }
+        SymmetryOperation AxisOp(in SymmetryAxis a) => new(a.Order, 1, a.Direction, (a.X + tileX, a.Y + tileY, a.Z + tileZ), a.IntrinsicTranslation, SeriesNumber);
+        SymmetryOperation InvOp(in InversionCenter c) => new(-1, 1, (0, 0, 1), (c.X + tileX, c.Y + tileY, c.Z + tileZ), (0, 0, 0), SeriesNumber);
+
+        // 面: 部分群 (coset 代表) 自身の面テーブルから、同じ ConvertPlaneIndex 経路で Normal を計算した代表面を取り、
+        // (Normal, Glide) 一致かつ (d_tile − d_rep) が T_H の面間隔で割り切れるかで照合 (hex 対応、代表非依存)。
+        var subTable = FromOperations(cosetReps, SeriesNumber);
+        var subPlanesByNG = new Dictionary<(int, int, int, long, long, long), List<double>>(); // (Normal,Glide) → d_rep 群
+        foreach (var sp in subTable?.SymmetryPlanes ?? [])
+        {
+            var ng = (sp.Normal.U, sp.Normal.V, sp.Normal.W, R6(sp.Glide.U), R6(sp.Glide.V), R6(sp.Glide.W));
+            double dr = sp.Normal.U * sp.X + sp.Normal.V * sp.Y + sp.Normal.W * sp.Z;
+            if (!subPlanesByNG.TryGetValue(ng, out var l)) subPlanesByNG[ng] = l = [];
+            l.Add(dr);
+        }
+        bool PlaneInH(in SymmetryPlane p)
+        {
+            var ng = (p.Normal.U, p.Normal.V, p.Normal.W, R6(p.Glide.U), R6(p.Glide.V), R6(p.Glide.W));
+            if (!subPlanesByNG.TryGetValue(ng, out var reps)) return false;
+            double dTile = p.Normal.U * (p.X + tileX) + p.Normal.V * (p.Y + tileY) + p.Normal.W * (p.Z + tileZ);
+            double period = PlaneSpacingInSublattice(p.Normal, sublatticeBasis); // Normal 方向の T_H 面間隔
+            foreach (var dr in reps)
+            {
+                double diff = dTile - dr;
+                if (period > 1e-9)
+                {
+                    double n = diff / period;
+                    if (IsInt(n)) return true;
+                }
+                else if (Math.Abs(diff - Math.Round(diff)) < 1e-5) return true;
+            }
+            return false;
+        }
+
+        var axes = SymmetryAxes.Where(a => OpInH(AxisOp(a))).ToArray();
+        var inv = InversionCenters.Where(c => OpInH(InvOp(c))).ToArray();
+        var rawPlanes = SymmetryPlanes.Where(p => PlaneInH(p)).ToArray();
+        var principalPlanes = PrincipalSymmetryPlanes.Where(p => PlaneInH(p)).ToArray();
+        return new SymmetryElementsTable(SeriesNumber, inv, axes, rawPlanes, principalPlanes, Centerings);
+    }
+
+    /// <summary>260713Cl 追加: Miller 法線 <paramref name="normal"/> を持つ部分格子 (基底 <paramref name="sublatticeBasis"/>) の
+    /// 面の間隔 (fractional の面オフセット周期) = { normal·τ : τ ∈ T_H } が張る R の部分群の生成元 = gcd(normal^T·B 各列)。</summary>
+    private static double PlaneSpacingInSublattice((int U, int V, int W) normal, double[] b)
+    {
+        double c0 = normal.U * b[0] + normal.V * b[3] + normal.W * b[6]; // normal · B_col0
+        double c1 = normal.U * b[1] + normal.V * b[4] + normal.W * b[7];
+        double c2 = normal.U * b[2] + normal.V * b[5] + normal.W * b[8];
+        static double GcdD(double a, double bb)
+        {
+            a = Math.Abs(a); bb = Math.Abs(bb);
+            for (int i = 0; i < 50 && bb > 1e-9; i++) { double t = a % bb; a = bb; bb = t; }
+            return a;
+        }
+        return GcdD(GcdD(c0, c1), c2);
+    }
+
     /// <summary>260713Cl 追加: 操作集合から反転中心を直接列挙する (Wyckoff サイト対称でなく操作ベース)。
     /// 正準化済みの反転操作 {−I | t} は Order==-1・IntrinsicTranslation≈0 で Position が代表反転中心。
     /// 反転操作は単位胞内に <c>Position + {0,1/2}³</c> の 8 個の中心を持つ (2x ≡ 2·Position (mod Z³) の解) ので、
