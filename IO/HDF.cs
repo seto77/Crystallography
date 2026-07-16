@@ -5,8 +5,11 @@ using System.Data;
 using System.Linq;
 
 namespace Crystallography;
-public class HDF
+//public class HDF// (260715Ch) 旧: OpenRead した NativeFile の所有権を保持・解放できなかった
+public class HDF : IDisposable// (260715Ch)
 {
+    private readonly IDisposable file;// (260715Ch) H5DatasetAdv の遅延 Read が終わるまで NativeFile を保持する
+
     /// <summary>データ型が不明なときに使うダミークラス</summary>
     private class Unknown() { }
 
@@ -210,8 +213,18 @@ public class HDF
                 addDatasetRecursively(childGroup, $"{path}/{childGroup.Name}");
         }
 
-        var file = H5File.OpenRead(filename);
-        addDatasetRecursively(file.Group("/"), "");
+        //var file = H5File.OpenRead(filename);// (260715Ch) 旧: ローカル変数のまま破棄されず、ファイルハンドルをリークした
+        var openedFile = H5File.OpenRead(filename);// (260715Ch)
+        file = openedFile;
+        try
+        {
+            addDatasetRecursively(openedFile.Group("/"), "");
+        }
+        catch
+        {
+            openedFile.Dispose();// (260715Ch) 列挙中に例外が出たコンストラクタ経路でも所有ハンドルを解放する
+            throw;
+        }
 
         #region コメントアウト
         //var rootId = H5G.open(h5, "/");
@@ -258,6 +271,9 @@ public class HDF
         //}
         #endregion
     }
+
+    /// <summary>HDF5 ファイルと、そこから取得した遅延読み込み Dataset の所有リソースを解放する。</summary>
+    public void Dispose() => file.Dispose();// (260715Ch)
 
     #region コメントアウト
     //public bool Move(string path)

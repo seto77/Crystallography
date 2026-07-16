@@ -367,7 +367,8 @@ public class Tiff
             //MDScaleFactor = 1;
             bool originalEndian = BitConverter.IsLittleEndian;
 
-            var br = new BinaryReader(new FileStream(fileName, FileMode.Open, FileAccess.Read));
+            //var br = new BinaryReader(new FileStream(fileName, FileMode.Open, FileAccess.Read));// (260715Ch) 旧: 不正ヘッダーの早期 return / 例外時にファイルを解放しない
+            using var br = new BinaryReader(new FileStream(fileName, FileMode.Open, FileAccess.Read));// (260715Ch)
 
             //まず最初の2Byteを読み込んでバイトオーダーを決める
             var temp = new byte[2];
@@ -853,7 +854,8 @@ public class Tiff
                     case 7: ifd.Data[i] = data[i][0]; break;
                     case 8: ifd.Data[i] = (int)BitConverter.ToInt16(data[i], 0); break;
                     case 9: ifd.Data[i] = (int)BitConverter.ToInt32(data[i], 0); break;
-                    case 10: ifd.Data[i] = (double)(BitConverter.ToInt32(data[i], 0) / BitConverter.ToInt32(data[i], 4)); break;
+                    //case 10: ifd.Data[i] = (double)(BitConverter.ToInt32(data[i], 0) / BitConverter.ToInt32(data[i], 4)); break;// (260715Ch) 旧: SRATIONAL を整数除算して小数部を失っていた
+                    case 10: ifd.Data[i] = (double)BitConverter.ToInt32(data[i], 0) / BitConverter.ToInt32(data[i], 4); break;// (260715Ch)
                     case 11: ifd.Data[i] = (double)BitConverter.ToSingle(data[i], 0); break;
                     case 12: ifd.Data[i] = (double)BitConverter.ToDouble(data[i], 0); break;
                 }

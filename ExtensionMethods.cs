@@ -455,7 +455,11 @@ public static class GraphicsAlpha
     public static void DrawCircle(this Graphics graphics, in Color c, in PointD pt, in double radius)
     {
         if (Math.Abs(pt.X) < 1E6 && Math.Abs(pt.Y) < 1E6)
-            graphics.DrawEllipse(new Pen(c, 0.0001f), (float)(pt.X - radius), (float)(pt.Y - radius), (float)(2 * radius), (float)(2 * radius));
+        {
+            //graphics.DrawEllipse(new Pen(c, 0.0001f), (float)(pt.X - radius), (float)(pt.Y - radius), (float)(2 * radius), (float)(2 * radius));// (260715Ch) 旧: 描画ごとに GDI Pen を解放しない
+            using var pen = new Pen(c, 0.0001f);// (260715Ch)
+            graphics.DrawEllipse(pen, (float)(pt.X - radius), (float)(pt.Y - radius), (float)(2 * radius), (float)(2 * radius));
+        }
     }
 
     /// <summary>拡張メソッド</summary>
@@ -468,11 +472,18 @@ public static class GraphicsAlpha
     /// <param name="resetTransform"></param>
     public static void DrawString(this Graphics graphics, string s, Font font, Color color, double x, double y, bool resetTransform = false)
     {
-        var transform = graphics.Transform;
+        //var transform = graphics.Transform;// (260715Ch) 旧: getter が返す Matrix の所有権を解放しない
+        using var transform = graphics.Transform;// (260715Ch)
         if (resetTransform)
-            graphics.Transform = new System.Drawing.Drawing2D.Matrix(1, 0, 0, 1, 1, 1);
+        {
+            //graphics.Transform = new System.Drawing.Drawing2D.Matrix(1, 0, 0, 1, 1, 1);// (260715Ch) 旧: setter 後も一時 Matrix を解放しない
+            using var resetMatrix = new System.Drawing.Drawing2D.Matrix(1, 0, 0, 1, 1, 1);// (260715Ch)
+            graphics.Transform = resetMatrix;
+        }
 
-        graphics.DrawString(s, font, new SolidBrush(color), (float)x, (float)y);
+        //graphics.DrawString(s, font, new SolidBrush(color), (float)x, (float)y);// (260715Ch) 旧: 描画ごとに GDI Brush を解放しない
+        using var brush = new SolidBrush(color);// (260715Ch)
+        graphics.DrawString(s, font, brush, (float)x, (float)y);
 
         if (resetTransform)
             graphics.Transform = transform;
@@ -495,7 +506,9 @@ public static class GraphicsAlpha
         (this Graphics graphics, string text, Font font, Color color, PointD pt, Size maximumSize, HorizontalAlignment horizontal, VerticalAlignment vertical)
     {
 
-       var rect = MeasureStringPrecisely(graphics, text, font, maximumSize, new StringFormat());
+        //var rect = MeasureStringPrecisely(graphics, text, font, maximumSize, new StringFormat());// (260715Ch) 旧: 一時 StringFormat を解放しない
+        using var stringFormat = new StringFormat();// (260715Ch)
+        var rect = MeasureStringPrecisely(graphics, text, font, maximumSize, stringFormat);
 
         float x= (float)pt.X, y = (float)pt.Y ;
         if (horizontal == HorizontalAlignment.Right)
@@ -507,7 +520,9 @@ public static class GraphicsAlpha
         else if (vertical == VerticalAlignment.Bottom)
             y -= rect.Height;
         
-        graphics.DrawString(text, font, new SolidBrush(color), x, y);
+        //graphics.DrawString(text, font, new SolidBrush(color), x, y);// (260715Ch) 旧: 描画ごとに GDI Brush を解放しない
+        using var brush = new SolidBrush(color);// (260715Ch)
+        graphics.DrawString(text, font, brush, x, y);
     }
 
     /// <summary>Graphics.DrawStringで文字列を描画した時の大きさと位置を正確に計測する</summary>

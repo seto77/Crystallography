@@ -653,9 +653,13 @@ public class PseudoBitmap : IDisposable
         int width = destSize.Width, height = destSize.Height;
 
         //まずbmpが前回作られていなかったら作成
-        if (destBmp == null || destBmp.Width != width || destBmp.Height != height || destBmp.PixelFormat == (AlphaEnabled ? PixelFormat.Format32bppPArgb : PixelFormat.Format24bppRgb))
+        //if (destBmp == null || destBmp.Width != width || destBmp.Height != height || destBmp.PixelFormat == (AlphaEnabled ? PixelFormat.Format32bppPArgb : PixelFormat.Format24bppRgb)) // 旧: 同じ形式のたびに再生成していた
+        var pixelFormat = AlphaEnabled ? PixelFormat.Format32bppPArgb : PixelFormat.Format24bppRgb; // (260715Ch) キャッシュの期待形式を一度だけ決定
+        if (destBmp == null || destBmp.Width != width || destBmp.Height != height || destBmp.PixelFormat != pixelFormat) // (260715Ch) サイズまたは形式が変わった場合だけ再生成
         {
-            destBmp = new Bitmap(width, height, AlphaEnabled ? PixelFormat.Format32bppPArgb : PixelFormat.Format24bppRgb);
+            //destBmp = new Bitmap(width, height, AlphaEnabled ? PixelFormat.Format32bppPArgb : PixelFormat.Format24bppRgb); // 旧: 置換前の Bitmap が未解放
+            destBmp?.Dispose(); // (260715Ch) GDI ハンドルを失わないよう、キャッシュ差し替え前に解放
+            destBmp = new Bitmap(width, height, pixelFormat); // (260715Ch)
         }
         //bmpをロック
         BitmapData bmpData;
@@ -891,14 +895,18 @@ public class PseudoBitmap : IDisposable
     /// <returns></returns>
     public void Rotate(double angle)
     {
-        var destBitmap = new Bitmap(SrcBitmap.Width, SrcBitmap.Height, PixelFormat.Format24bppRgb);
-        var g = Graphics.FromImage(destBitmap);
-        g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.HighQuality;
-        g.TranslateTransform((float)SrcBitmap.Width / 2, (float)SrcBitmap.Height / 2);
-        g.RotateTransform((float)(angle * 180 / Math.PI));
-        g.TranslateTransform(-(float)SrcBitmap.Width / 2, -(float)SrcBitmap.Height / 2);
-        g.Clear(Color.White);
-        g.DrawImage(SrcBitmap, new RectangleF(0, 0, SrcBitmap.Width, SrcBitmap.Height), new RectangleF(0, 0, SrcBitmap.Width, SrcBitmap.Height), GraphicsUnit.Pixel);
+        //var destBitmap = new Bitmap(SrcBitmap.Width, SrcBitmap.Height, PixelFormat.Format24bppRgb); // 旧: ローカル Bitmap が未解放
+        using var destBitmap = new Bitmap(SrcBitmap.Width, SrcBitmap.Height, PixelFormat.Format24bppRgb); // (260715Ch)
+        //var g = Graphics.FromImage(destBitmap); // 旧: Graphics が未解放
+        using (var g = Graphics.FromImage(destBitmap)) // (260715Ch) LockBits 前に描画を完了して解放
+        {
+            g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.HighQuality;
+            g.TranslateTransform((float)SrcBitmap.Width / 2, (float)SrcBitmap.Height / 2);
+            g.RotateTransform((float)(angle * 180 / Math.PI));
+            g.TranslateTransform(-(float)SrcBitmap.Width / 2, -(float)SrcBitmap.Height / 2);
+            g.Clear(Color.White);
+            g.DrawImage(SrcBitmap, new RectangleF(0, 0, SrcBitmap.Width, SrcBitmap.Height), new RectangleF(0, 0, SrcBitmap.Width, SrcBitmap.Height), GraphicsUnit.Pixel);
+        }
 
         //SourceBitmapをロックする
         var bitmapData = destBitmap.LockBits(new Rectangle(0, 0, Width, Height), ImageLockMode.ReadWrite, SrcBitmap.PixelFormat);

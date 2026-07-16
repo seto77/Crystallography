@@ -154,8 +154,11 @@ public static partial class ImageIO
 
         using var sr = new StreamReader(new FileStream(fileName, FileMode.Open, FileAccess.Read));
         for (int i = 0; i < 5; i++)//5行以内に"Rigaku 2D-PXD Image Header Format"が含まれているはずなので、5行読む
-            if (sr.ReadLine().Contains("Rigaku 2D-PXD Image Header Format"))
+        {
+            //if (sr.ReadLine().Contains("Rigaku 2D-PXD Image Header Format"))// (260715Ch) 旧: 5行未満の短いファイルで null を逆参照した
+            if (sr.ReadLine()?.Contains("Rigaku 2D-PXD Image Header Format", StringComparison.Ordinal) == true)// (260715Ch)
                 return true;
+        }
         return false;
     }
 
@@ -199,7 +202,8 @@ public static partial class ImageIO
         {
             if (File.Exists(str[..^3] + "inf"))
             {//Fujiのとき
-                var reader = new StreamReader($"{str[..^3]}inf");
+                //var reader = new StreamReader($"{str[..^3]}inf");// (260715Ch) 旧: 読み込み後もファイルを解放しない
+                using var reader = new StreamReader($"{str[..^3]}inf");// (260715Ch)
                 var strList = new List<string>();
                 string tempstr;
                 while ((tempstr = reader.ReadLine()) != null)
@@ -888,7 +892,8 @@ public static partial class ImageIO
 
     public static bool NXS(string filename)
     {
-        var hdf = new HDF(filename);
+        //var hdf = new HDF(filename);// (260715Ch) 旧: Dataset 読み込み後も HDF5 ファイルを解放しない
+        using var hdf = new HDF(filename);// (260715Ch)
 
         var header = "/entry/instrument/detector/";
 
@@ -1170,7 +1175,8 @@ public static partial class ImageIO
     {
         try
         {
-            var br = new BinaryReader(new FileStream(str, FileMode.Open, FileAccess.Read));
+            //var br = new BinaryReader(new FileStream(str, FileMode.Open, FileAccess.Read));// (260715Ch) 旧: 解析例外時にファイルを解放しない
+            using var br = new BinaryReader(new FileStream(str, FileMode.Open, FileAccess.Read));// (260715Ch)
             var headers = new string(br.ReadChars(512)).Split('\n');
 
             int imageWidth = Convert.ToInt32(headers[4].Split(['=', ';'])[1]);
@@ -1225,7 +1231,8 @@ public static partial class ImageIO
     {
         try
         {
-            var br = new BinaryReader(new FileStream(str, FileMode.Open, FileAccess.Read));
+            //var br = new BinaryReader(new FileStream(str, FileMode.Open, FileAccess.Read));// (260715Ch) 旧: 解析例外時にファイルを解放しない
+            using var br = new BinaryReader(new FileStream(str, FileMode.Open, FileAccess.Read));// (260715Ch)
             br.BaseStream.Position = 0;
 
             //ヘッダ部分読み込み
@@ -1257,7 +1264,7 @@ public static partial class ImageIO
                 return true;
             });
 
-            Ring.BitsPerPixels = fileType switch { 0 => 8, 2 => 16, 3 => 32, _ => 0 };
+            //Ring.BitsPerPixels = fileType switch { 0 => 8, 2 => 16, 3 => 32, _ => 0 };// (260715Ch) 旧: 最初のヘッダーを読む前なので初期値 fileType=1 から常に 0 になった
             Ring.SequentialImageIntensities = [];
             Ring.SequentialImageNames = [];
 
@@ -1274,6 +1281,7 @@ public static partial class ImageIO
                     break;
             }
 
+            Ring.BitsPerPixels = fileType switch { 0 => 8, 2 => 16, 3 => 32, _ => 0 };// (260715Ch) 実際に読み取った ITEX fileType を反映する
             Ring.Intensity = [.. Ring.SequentialImageIntensities[0]];
             Ring.ImageType = Ring.ImageTypeEnum.ITEX;
 
@@ -1790,7 +1798,8 @@ public static partial class ImageIO
         try
         {
             //FujiFDL
-            var reader = new StreamReader(str[..^3] + "tem");
+            //var reader = new StreamReader(str[..^3] + "tem");// (260715Ch) 旧: 正常終了・例外のどちらでもテンプレートファイルを解放しない
+            using var reader = new StreamReader(str[..^3] + "tem");// (260715Ch)
             var strList = new List<string>();
             string tempstr;
             while ((tempstr = reader.ReadLine()) != null)
@@ -1805,7 +1814,8 @@ public static partial class ImageIO
             Ring.SrcImgSize = new Size(numPixelX, numPixelY);
             int length = Ring.SrcImgSize.Width * Ring.SrcImgSize.Height;
             //イメージデータ読みこみ
-            var br = new BinaryReader(new FileStream(str, FileMode.Open, FileAccess.ReadWrite));
+            //var br = new BinaryReader(new FileStream(str, FileMode.Open, FileAccess.ReadWrite));// (260715Ch) 旧: 解析例外時に画像ファイルを解放しない
+            using var br = new BinaryReader(new FileStream(str, FileMode.Open, FileAccess.ReadWrite));// (260715Ch)
 
             var convertTable = new uint[65536];
 

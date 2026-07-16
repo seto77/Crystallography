@@ -1582,22 +1582,26 @@ public class Crystal : IEquatable<Crystal>, ICloneable, IComparable<Crystal>
         double realSum = 0, imagSum = 0;
         Complex f = 0;
         int atomicNum = -1, subNum = -1;
+        double occ = double.NaN;// (260715Ch) 散乱因子は Occ 込みなので、同元素・同イオンでも占有率が違うサイトは再計算する
         bool xrayDisp = IsXrayDispersionActive(wave, xrayEnergyKeV, anomalousDispersion);//260606Cl 異常分散の有効判定(anomalousDispersion=false で従来動作)
 
         foreach (var atoms in atomsArray)
         {
             if (wave == WaveSource.Electron)
             {
-                if (atoms.AtomicNumber != atomicNum || atoms.SubNumberElectron != subNum)
+                //if (atoms.AtomicNumber != atomicNum || atoms.SubNumberElectron != subNum)// (260715Ch) 旧: Occ が異なる連続サイトで先頭サイトの因子を再利用していた
+                if (atoms.AtomicNumber != atomicNum || atoms.SubNumberElectron != subNum || atoms.Occ != occ)// (260715Ch)
                 {
                     f = new Complex(atoms.GetAtomicScatteringFactorForElectron(s2), 0);
                     atomicNum = atoms.AtomicNumber;
                     subNum = atoms.SubNumberElectron;
+                    occ = atoms.Occ;// (260715Ch)
                 }
             }
             else if (wave == WaveSource.Xray)
             {
-                if (atoms.AtomicNumber != atomicNum || atoms.SubNumberXray != subNum)
+                //if (atoms.AtomicNumber != atomicNum || atoms.SubNumberXray != subNum)// (260715Ch) 旧: Occ が異なる連続サイトで先頭サイトの因子を再利用していた
+                if (atoms.AtomicNumber != atomicNum || atoms.SubNumberXray != subNum || atoms.Occ != occ)// (260715Ch)
                 {
                     double f0 = atoms.GetAtomicScatteringFactorForXray(s2);//WK·Occ (nm単位)
                     f = xrayDisp//260606Cl 異常分散込み(なければ f0 のみ)
@@ -1605,6 +1609,7 @@ public class Crystal : IEquatable<Crystal>, ICloneable, IComparable<Crystal>
                         : new Complex(f0, 0);
                     atomicNum = atoms.AtomicNumber;
                     subNum = atoms.SubNumberXray;
+                    occ = atoms.Occ;// (260715Ch)
                 }
             }
             else
@@ -1656,6 +1661,7 @@ public class Crystal : IEquatable<Crystal>, ICloneable, IComparable<Crystal>
         double realSum = 0, imagSum = 0;
         Complex f = 0;
         int atomicNum = -1, subNum = -1;
+        double occ = double.NaN;// (260715Ch) 散乱因子は Occ 込みなので、同元素・同イオンでも占有率が違うサイトは再計算する
         // 260606Cl X線異常分散(f'/f'')有効時は虚部を持つので複素経路へ。電子は実数のまま、中性子は従来どおり複素。anomalousDispersion=false で従来動作。
         bool xrayDisp = IsXrayDispersionActive(wave, xrayEnergyKeV, anomalousDispersion);
         bool realAmp = wave == WaveSource.Electron || (wave == WaveSource.Xray && !xrayDisp);
@@ -1665,16 +1671,19 @@ public class Crystal : IEquatable<Crystal>, ICloneable, IComparable<Crystal>
             var atoms = atomsArray[n];
             if (wave == WaveSource.Electron)
             {
-                if (atoms.AtomicNumber != atomicNum || atoms.SubNumberElectron != subNum)
+                //if (atoms.AtomicNumber != atomicNum || atoms.SubNumberElectron != subNum)// (260715Ch) 旧: Occ が異なる連続サイトで先頭サイトの因子を再利用していた
+                if (atoms.AtomicNumber != atomicNum || atoms.SubNumberElectron != subNum || atoms.Occ != occ)// (260715Ch)
                 {
                     f = new Complex(atoms.GetAtomicScatteringFactorForElectron(s2), 0);
                     atomicNum = atoms.AtomicNumber;
                     subNum = atoms.SubNumberElectron;
+                    occ = atoms.Occ;// (260715Ch)
                 }
             }
             else if (wave == WaveSource.Xray)
             {
-                if (atoms.AtomicNumber != atomicNum || atoms.SubNumberXray != subNum)
+                //if (atoms.AtomicNumber != atomicNum || atoms.SubNumberXray != subNum)// (260715Ch) 旧: Occ が異なる連続サイトで先頭サイトの因子を再利用していた
+                if (atoms.AtomicNumber != atomicNum || atoms.SubNumberXray != subNum || atoms.Occ != occ)// (260715Ch)
                 {
                     double f0 = atoms.GetAtomicScatteringFactorForXray(s2);//WK·Occ (nm単位)
                     if (xrayDisp)//260606Cl 異常分散込み。f'/f'' はループ不変 → SetVectorOfG が事前計算した xrayDispFactors[n] を優先(無ければ都度 native 呼び)
@@ -1686,6 +1695,7 @@ public class Crystal : IEquatable<Crystal>, ICloneable, IComparable<Crystal>
                         f = new Complex(f0, 0);
                     atomicNum = atoms.AtomicNumber;
                     subNum = atoms.SubNumberXray;
+                    occ = atoms.Occ;// (260715Ch)
                 }
             }
             else

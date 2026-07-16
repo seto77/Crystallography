@@ -36,7 +36,9 @@ public static class ProgramUpdates
             var newVersion = temp.First(s => s.Contains(" ver", StringComparison.Ordinal));
             newVersion = newVersion.Substring(newVersion.IndexOf("ver") + 3, 5);
 
-            if (Convert.ToDouble(newVersion) <= Convert.ToDouble(version.Substring(3, 5)))
+            //if (Convert.ToDouble(newVersion) <= Convert.ToDouble(version.Substring(3, 5))) //260715Ch 変更前: 小数点記号がカンマのカルチャでは解析に失敗する
+            if (double.Parse(newVersion, System.Globalization.CultureInfo.InvariantCulture) <=
+                double.Parse(version.Substring(3, 5), System.Globalization.CultureInfo.InvariantCulture)) //260715Ch バージョン表記は常にドット区切りとして比較する
                 return ("Update checked!", $"You are running the latest version of {software}. Thank you!", false, "", "");
             else
             {
@@ -45,11 +47,14 @@ public static class ProgramUpdates
                 //          「新版は出ているが当該アーキのインストーラが未添付」の時間窓がある。
                 //          DL を 404 で失敗させる前に GET (ヘッダのみ) で存在を確認して案内する。
                 var asset = string.IsNullOrEmpty(installerAssetName) ? software + "Setup.msi" : installerAssetName;
-                var url = $"http://github.com/seto77/{software}/releases/download/v.{newVersion}/{asset}";
-                using (var res = httpClient.Send(new HttpRequestMessage(HttpMethod.Get, url), HttpCompletionOption.ResponseHeadersRead))
-                    if (!res.IsSuccessStatusCode)
-                        return ("Update checked!", $"New version {newVersion} is available, but the installer for this architecture ({asset}) " +
-                            $"has not been published yet. Please try again later, or download the latest package from\r\nhttps://github.com/seto77/{software}/releases/latest", false, "", "");
+                //var url = $"http://github.com/seto77/{software}/releases/download/v.{newVersion}/{asset}"; //260715Ch 変更前
+                var url = $"https://github.com/seto77/{software}/releases/download/v.{newVersion}/{asset}"; //260715Ch 更新インストーラを最初のリクエストから TLS で取得する
+                //using (var res = httpClient.Send(new HttpRequestMessage(HttpMethod.Get, url), HttpCompletionOption.ResponseHeadersRead)) //260715Ch 変更前
+                using var request = new HttpRequestMessage(HttpMethod.Get, url); //260715Ch Send 後も request を確実に破棄する
+                using var res = httpClient.Send(request, HttpCompletionOption.ResponseHeadersRead); //260715Ch ヘッダ確認後に response を破棄する
+                if (!res.IsSuccessStatusCode)
+                    return ("Update checked!", $"New version {newVersion} is available, but the installer for this architecture ({asset}) " +
+                        $"has not been published yet. Please try again later, or download the latest package from\r\nhttps://github.com/seto77/{software}/releases/latest", false, "", "");
                 return ($"Update checked!", $"Now, new version {newVersion} is available.\r\n" +
                      $"If you press 'Yes', the current {software} will be closed immediately and the installer of new {software} launched.", true,
                      url, UserAppDataPath + asset);

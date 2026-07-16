@@ -854,7 +854,8 @@ public class Vector3DBase : ICloneable
         if (aCos > 1)
             return 0;
         else
-            return aCos < -1 ? Math.PI / 2 : Math.Acos(aCos);
+            //return aCos < -1 ? Math.PI / 2 : Math.Acos(aCos);// (260715Ch) 旧: 丸めで -1 を僅かに下回る反平行ベクトルを 90° としていた
+            return aCos < -1 ? Math.PI : Math.Acos(aCos);// (260715Ch)
     }
 
     /// <summary>平均値を返す</summary>
@@ -1094,7 +1095,8 @@ public class Vector3D : Vector3DBase, IComparable<Vector3D>, ICloneable
     {
         double aCos = Vector3D.Normarize(v1) * Vector3D.Normarize(v2);
         if (aCos > 1) return 0;
-        if (aCos < -1) return Math.PI / 2;
+        //if (aCos < -1) return Math.PI / 2;// (260715Ch) 旧: 丸めで -1 を僅かに下回る反平行ベクトルを 90° としていた
+        if (aCos < -1) return Math.PI;// (260715Ch)
         return Math.Acos(aCos);
     }
 
@@ -1106,7 +1108,8 @@ public class Vector3D : Vector3DBase, IComparable<Vector3D>, ICloneable
     {
         double aCos = Vector3D.SphereVector(pt1) * Vector3D.SphereVector(pt2);
         if (aCos > 1) return 0;
-        if (aCos < -1) return Math.PI / 2;
+        //if (aCos < -1) return Math.PI / 2;// (260715Ch) 旧: 丸めで -1 を僅かに下回る反平行ベクトルを 90° としていた
+        if (aCos < -1) return Math.PI;// (260715Ch)
         return Math.Acos(aCos);
     }
 
@@ -1118,7 +1121,8 @@ public class Vector3D : Vector3DBase, IComparable<Vector3D>, ICloneable
     {
         double aCos = Vector3D.SphereVector(pt1) * Vector3D.SphereVector(pt2);
         if (aCos > 1) return 0;
-        if (aCos < -1) return Math.PI / 2;
+        //if (aCos < -1) return Math.PI / 2;// (260715Ch) 旧: 丸めで -1 を僅かに下回る反平行ベクトルを 90° としていた
+        if (aCos < -1) return Math.PI;// (260715Ch)
         return Math.Acos(aCos);
     }
 

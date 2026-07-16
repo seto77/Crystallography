@@ -352,10 +352,13 @@ public class Statistics
         /// <returns></returns>
         public static IEnumerable<T[]> GetElements<T>(IEnumerable<T> items, int m, bool withRedandant = false)
         {
+            if (m <= 0)
+                yield break;// (260715Ch) 不正な選択数で withRedandant=true の無限再帰へ入らない
             if (m == 1)
             {
                 foreach (var n in items)
                     yield return new T[] { n };
+                yield break;// (260715Ch) withRedandant=true では同じ列を保ったまま m<=0 へ再帰し続けるため、基底ケースで終了する
             }
             foreach (var atom in items)
             {
