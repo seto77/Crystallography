@@ -305,7 +305,7 @@ public static class Fourier
         return new Complex[]{
                new Complex(src[0].Real + src[1].Real, src[0].Imaginary + src[1].Imaginary),
                //new Complex(src[0].Real- src[1].Imaginary, src[0].Imaginary - src[1].Imaginary)
-               new Complex(src[0].Real - src[1].Real, src[0].Imaginary - src[1].Imaginary) // 260718Cl: 長さ2 DFT の X1 = s0 - s1。実部が src[1].Imaginary になっていた typo を修正 (fftAny 経由で長さ 2×奇数 の FFT から到達する)
+               new Complex(src[0].Real - src[1].Real, src[0].Imaginary - src[1].Imaginary) // 260718Cl: 長さ2 DFT の X1 = s0 - s1。実部が src[1].Imaginary になっていた typo を修正 (長さ2の配列を直接 fft() に渡した場合に到達。fftAny の因数探索は n<length/2 で m=2 を除外するため、そちら経由では到達しない)
                               };
     }
 
