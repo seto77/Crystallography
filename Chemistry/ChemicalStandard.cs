@@ -196,7 +196,8 @@ namespace Crystallography
             new Molecule("CO3", -2),
             new Molecule("BO3", -3),
             new Molecule("SO4", -2),
-            new Molecule("PO4", -2  )};
+            //new Molecule("PO4", -2  )};
+            new Molecule("PO4", -3)}; // 260718Cl: リン酸イオン PO4³⁻ は -3 (SO4 -2 からのコピペで -2 になっていた)
 
         /// <summary>二つのMoleculeを結合した分子式(文字列)を返す</summary>
         /// <param name="m1"></param>
@@ -223,11 +224,15 @@ namespace Crystallography
                         break;
                     }
                 }
-                if (a != 1 && m1.Formula.Length > 2) formula += "(" + m1.Formula + ")";
+                // 260718Cl: 括弧判定を「文字数>2」から「大文字2個以上(=多元素)」に変更。旧判定は "OH"(2文字2元素) を素通しし Mg(OH)₂ が "MgOH2" になっていた。
+                //           OH→(OH)、CO3→(CO3)、Cl→Cl(単元素は括弧なし) が正しく出る。
+                //if (a != 1 && m1.Formula.Length > 2) formula += "(" + m1.Formula + ")";
+                if (a != 1 && m1.Formula.Count(char.IsAsciiLetterUpper) >= 2) formula += "(" + m1.Formula + ")";
                 else formula += m1.Formula;
                 if (a != 1) formula += a.ToString();
 
-                if (b != 1 && m2.Formula.Length > 2) formula += "(" + m2.Formula + ")";
+                //if (b != 1 && m2.Formula.Length > 2) formula += "(" + m2.Formula + ")";
+                if (b != 1 && m2.Formula.Count(char.IsAsciiLetterUpper) >= 2) formula += "(" + m2.Formula + ")";
                 else formula += m2.Formula;
                 if (b != 1) formula += b.ToString();
             }

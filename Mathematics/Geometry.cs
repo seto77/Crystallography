@@ -1009,7 +1009,8 @@ public static class Geometry
                         return null;
                     pts = ptsNew;
                 }
-                else if ((pb > 0 && b[3] < p[3]) || (pb < 0 && b[3] < p[3]))  //bとPlaneが平行な場合、法線の向きに注意してnullを返す
+                //else if ((pb > 0 && b[3] < p[3]) || (pb < 0 && b[3] < p[3]))  //bとPlaneが平行な場合、法線の向きに注意してnullを返す
+                else if (b[3] < pb / p2 * p[3])  // 260718Cl: 平行面では b=(pb/p2)·p なので面p上の b 左辺は b[3]-(pb/p2)·p[3]。旧条件は両分岐とも b[3]<p[3] で pb 符号が無意味な書き損じ (Codex検証済・正規化非依存)
                     return null;
             }
         }

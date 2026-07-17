@@ -638,23 +638,9 @@ public class Crystallite
     public void SetDiffractedPixels(AreaDetector detector)
     {
         stopwatch.Restart();
-        BaseCrystal.ElasticStiffness[0, 0] = BaseCrystal.ElasticStiffness[1, 1] = 1350;
-        BaseCrystal.ElasticStiffness[2, 2] = 1310;
-        BaseCrystal.ElasticStiffness[3, 3] = BaseCrystal.ElasticStiffness[4, 4] = 400;
-        BaseCrystal.ElasticStiffness[5, 5] = 230;
-        BaseCrystal.ElasticStiffness[0, 1] = BaseCrystal.ElasticStiffness[1, 0] = 890;
-        BaseCrystal.ElasticStiffness[0, 2] = BaseCrystal.ElasticStiffness[2, 0] = 900;
-        BaseCrystal.ElasticStiffness[1, 2] = BaseCrystal.ElasticStiffness[2, 1] = 900;
-
+        // 260718Cl: デバッグ用ハードコード (弾性定数 c11=1350 等・応力 E11=-10・歪み・HillCoefficient=1 の毎回上書き) を削除。
+        //           応力が非ゼロになるため全結晶子で偽の Hill 歪みが常時適用され物理的に誤り+低速だった。ユーザー設定の BaseCrystal 値をそのまま使う (同型の clean 版が GetSimulatedPattern 側に既存)。
         var elasticity = new Elasticity(DenseMatrix.OfArray(BaseCrystal.ElasticStiffness), Elasticity.Mode.Stiffness);
-
-        BaseCrystal.Stress.E11 = -10;
-        BaseCrystal.Stress.E22 = 5;
-        BaseCrystal.Stress.E33 = 5;
-        BaseCrystal.Strain.E11 = 0;
-        BaseCrystal.Strain.E22 = 0;
-        BaseCrystal.Strain.E33 = 0;
-        BaseCrystal.HillCoefficient = 1;
 
         bool strainFree = BaseCrystal.Stress.IsZero() && BaseCrystal.Strain.IsZero();
         bool rotationFree = WholeRotation.IsIdentity();

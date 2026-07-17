@@ -1050,7 +1050,7 @@ public class FittingPeak
                     for (int i = 0; i < xLength; i++)
                         for (int j = 0; j < yLength; j++)
                             ResidualCurrent[i, j] = ResidualNew[i, j];//残差行列を書き換える
-                    A = A_New; Eta = Eta_New; Hk = Hk_New; X = X_New; Y = Y_New; // B1 = B1_New; B2 = B2_New; B3 = B3_New; C = C_New;//新旧パラメータを書き換える
+                    A = A_New; Eta = Eta_New; Hk = Hk_New; X = X_New; Y = Y_New; C = C_New; // 260718Cl: C が書き戻されず「残差は C_New・保持は旧C」の不整合だった (C も delta 適用・残差評価されるフィット対象)。B1/B2/B3 は delta 適用も残差も除外で一貫のためコメントアウトのまま維持
                 }
                 else
                     break;

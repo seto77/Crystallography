@@ -822,9 +822,10 @@ public class PseudoBitmap : IDisposable
                         }
                         if (Filter5Visible && Filter5 != null && Filter5[srcPosition])//もし範囲外だったら全体を2/3にして(0,85,0)をたす
                         {//BR
+                            // 260718Cl: p[1]=p[2]*0.8; p[2]=(書換後の)p[1]*0.8+51 という自己二重依存のチャネル取り違えを、他フィルタと同じ自チャネル参照に修正
                             p[0] = (byte)(p[0] * 0.8 + 51);
-                            p[1] = (byte)(p[2] * 0.8);
-                            p[2] = (byte)(p[1] * 0.8 + 51);
+                            p[1] = (byte)(p[1] * 0.8);
+                            p[2] = (byte)(p[2] * 0.8 + 51);
                         }
                         #endregion
 
