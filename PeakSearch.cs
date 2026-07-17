@@ -121,17 +121,26 @@ public class PeakFunction : IComparable
 
     public double[] GetDifferentialValue(double x, bool IsNewParamNeeded)
     {
+        int n = GetParamNumber();
+        if (n < 0) { if (IsNewParamNeeded) RenewParameter(); return null; }
+        var d = new double[n];
+        GetDifferentialValue(x, IsNewParamNeeded, d);
+        return d;
+    }
+
+    /// <summary>偏微分値を呼び出し側バッファ d へ書き込む (割り当てなし版)。d は GetParamNumber() 以上の長さが必要。260718Cl 追加</summary>
+    public void GetDifferentialValue(double x, bool IsNewParamNeeded, Span<double> d)
+    {
         if (IsNewParamNeeded)
             RenewParameter();
 
-        return Option switch
+        switch (Option)
         {
-            PeakFunctionForm.PseudoVoigt => differentialPseudoVoigt(x),
-            PeakFunctionForm.Peason => differectialPeasonIV(x),
-            PeakFunctionForm.SplitPseudoVoigt => differentialSplitPseudoVoigt(x),
-            PeakFunctionForm.SplitPearson => differentialSplitPearsonIV(x),
-            _ => null
-        };
+            case PeakFunctionForm.PseudoVoigt: differentialPseudoVoigt(x, d); break;
+            case PeakFunctionForm.Peason: differectialPeasonIV(x, d); break;
+            case PeakFunctionForm.SplitPseudoVoigt: differentialSplitPseudoVoigt(x, d); break;
+            case PeakFunctionForm.SplitPearson: differentialSplitPearsonIV(x, d); break;
+        }
     }
 
     public double GetIntegral()
@@ -172,7 +181,7 @@ public class PeakFunction : IComparable
         return Int * ((eta / Math.PI / (1 + fourx2PerHk2) + (1 - eta) * SqrtLn2PerPI * Math.Exp(-Ln2 * fourx2PerHk2)) * 2 / Hk);
     }
 
-    private double[] differentialPseudoVoigt(double x)
+    private void differentialPseudoVoigt(double x, Span<double> d) // 260718Cl: return [...] (double[] 割り当て) を Span への書き込みに変更 (式は不変)
     {
         var tmp3 = 4 * (X - x) * (X - x);
         var tmp2 = Hk * Hk;
@@ -181,12 +190,10 @@ public class PeakFunction : IComparable
         var tmp5 = SqrtLn2PI * Math.Exp(-Ln2 * tmp1);
         var tmp6 = 2.0 / Hk / PI;
         var _eta = 1 - eta;
-        return [
-            tmp6 * (eta * tmp4 + _eta * tmp5),
-            Int * tmp6 * (tmp4 - tmp5),
-            -2 *Int * ( eta * (tmp2 - tmp3) / PI / (tmp2 + tmp3) / (tmp2 + tmp3) + _eta * (tmp2 - 2 * tmp3 * Ln2) / (tmp2 * tmp2) * tmp5),
-            Int * 8 * tmp6 * (X - x) / tmp2 * (-eta * tmp4 * tmp4 - _eta * Ln2 * tmp5)
-        ];
+        d[0] = tmp6 * (eta * tmp4 + _eta * tmp5);
+        d[1] = Int * tmp6 * (tmp4 - tmp5);
+        d[2] = -2 * Int * (eta * (tmp2 - tmp3) / PI / (tmp2 + tmp3) / (tmp2 + tmp3) + _eta * (tmp2 - 2 * tmp3 * Ln2) / (tmp2 * tmp2) * tmp5);
+        d[3] = Int * 8 * tmp6 * (X - x) / tmp2 * (-eta * tmp4 * tmp4 - _eta * Ln2 * tmp5);
     }
     //Pseudo Voigt ここまで
 
@@ -227,10 +234,9 @@ public class PeakFunction : IComparable
         }
     }
 
-    private double[] differentialSplitPseudoVoigt(double x)
+    private void differentialSplitPseudoVoigt(double x, Span<double> d) // 260718Cl: double[] 割り当てを廃し Span へ書き込み (式は不変)
     {
         b = x - X;
-        double[] d = new double[6];
 
         if (b < 0)
         {
@@ -258,7 +264,6 @@ public class PeakFunction : IComparable
             d[4] = -((a6 * a6 * Int * SqrtLn2PI * ((-1 + b6) * Hk * Hk + b * b * b6 * Z2 * Z2)) / (Hk * Hk + b * b * Z2 * Z2));
             d[5] = 2 * a6 * a7 * a7 * b * (-(a9 * b6) + b4 * b4 * etaH) * Int * Z2 * Z2;
         }
-        return d;
     }
 
     //Split Pseudo Voigt ここまで
@@ -279,9 +284,8 @@ public class PeakFunction : IComparable
         return Int * a6;
     }
 
-    private double[] differectialPeasonIV(double x)
+    private void differectialPeasonIV(double x, Span<double> d) // 260718Cl: double[] 割り当てを廃し Span へ書き込み (式は不変)
     {
-        double[] d = new double[4];
         a3 = x - X;
         a4 = a2 - 1;
         a5 = 1 + 4 * a1 * a1 * a3 * a3 * a4;
@@ -290,7 +294,6 @@ public class PeakFunction : IComparable
         d[1] = (8 * a1 * a1 * a1 * a3 * a3 * a4 * a6 * Int * m) / a5;
         d[2] = a6 * Int * ((4 * a2 * a3 * a3 * Ln2) / ((4 * a3 * a3 * a4 + Hk * Hk) * m) - Math.Log(a5));
         d[3] = (8 * a1 * a1 * a3 * a4 * a6 * Int * m) / a5;
-        return d;
     }
 
     //Pearson VII ここまで
@@ -321,10 +324,9 @@ public class PeakFunction : IComparable
             return Int * Math.Pow(1 + a7 * b1 * b1 * Z2 * Z2, -Rh);
     }
 
-    private double[] differentialSplitPearsonIV(double x)
+    private void differentialSplitPearsonIV(double x, Span<double> d) // 260718Cl: double[] 割り当てを廃し Span へ書き込み (式は不変)
     {
         b1 = x - X;
-        double[] d = new double[6];
 
         if (b1 < 0)
         {
@@ -352,7 +354,6 @@ public class PeakFunction : IComparable
             d[4] = (a2 * a5 * a5 * a9 * b7 * Ln2) / (b3 * Rh) - b5 * Int * Math.Log(b3);
             d[5] = (2 * a7 * a9 * b1 * b5 * Rh) / b3;
         }
-        return d;
     }
 
     //Split Pearson VII ここまで
@@ -593,6 +594,7 @@ public class FittingPeak
             }
             double ramda = 10;
             counter = 0;
+            Span<double> dbuf = stackalloc double[6]; // 260718Cl: 偏微分値の受け皿を反復ループ外で1回だけ確保して再利用 (旧: GetDifferentialValue が反復×点×ピークごとに double[] を new)
             do
             {
                 counter++;
@@ -602,13 +604,14 @@ public class FittingPeak
                 {
                     n = m;
                     pCurrent[j].RenewParameter();
+                    int pn = pCurrent[j].GetParamNumber();
                     for (int i = 0; i < length; i++)
                     {
                         m = n;
-                        var d = pCurrent[j].GetDifferentialValue(pt[i].X, false);
-                        for (int k = 0; k < d.Length; k++)
+                        pCurrent[j].GetDifferentialValue(pt[i].X, false, dbuf);
+                        for (int k = 0; k < pn; k++)
                         {
-                            diff[m, i] = d[k];
+                            diff[m, i] = dbuf[k];
                             m++;
                         }
                     }
