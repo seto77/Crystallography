@@ -1605,7 +1605,7 @@ public static partial class ImageIO
     {
         try
         {
-            var br = new BinaryReader(new FileStream(str, FileMode.Open, FileAccess.ReadWrite));
+            var br = new BinaryReader(new FileStream(str, FileMode.Open, FileAccess.Read)) /* 260718Cl: 読取専用処理につき ReadWrite→Read (書込ロック不要・読み取り専用ファイルも開ける) */;
             Ring.SrcImgSize = new Size(8000, 4000);
             Ring.Intensity = new double[Ring.SrcImgSize.Width * Ring.SrcImgSize.Height];
 
@@ -1745,7 +1745,7 @@ public static partial class ImageIO
             Ring.SrcImgSize = new Size(numPixelX, numPixelY);
             int length = Ring.SrcImgSize.Width * Ring.SrcImgSize.Height;
             //イメージデータ読みこみ
-            var br = new BinaryReader(new FileStream(str, FileMode.Open, FileAccess.ReadWrite));
+            var br = new BinaryReader(new FileStream(str, FileMode.Open, FileAccess.Read)) /* 260718Cl: 読取専用処理につき ReadWrite→Read (書込ロック不要・読み取り専用ファイルも開ける) */;
 
             // var x = latitude / Math.Pow(2, bitsPerPixel);
             var x = Math.ScaleB(latitude, -bitsPerPixel);
@@ -1815,7 +1815,7 @@ public static partial class ImageIO
             int length = Ring.SrcImgSize.Width * Ring.SrcImgSize.Height;
             //イメージデータ読みこみ
             //var br = new BinaryReader(new FileStream(str, FileMode.Open, FileAccess.ReadWrite));// (260715Ch) 旧: 解析例外時に画像ファイルを解放しない
-            using var br = new BinaryReader(new FileStream(str, FileMode.Open, FileAccess.ReadWrite));// (260715Ch)
+            using var br = new BinaryReader(new FileStream(str, FileMode.Open, FileAccess.Read));// (260715Ch), 260718Cl: 読取専用処理につき ReadWrite→Read
 
             var convertTable = new uint[65536];
 

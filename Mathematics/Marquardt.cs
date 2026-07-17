@@ -143,7 +143,8 @@ public class Marquardt
                     break;
 
                 case FuncType.L2E:
-                    Formula = (x, p) => Gaussian(x[0], x[1], p[0], p[1], p[2], p[3], p[4], p[5]);
+                    //Formula = (x, p) => Gaussian(x[0], x[1], p[0], p[1], p[2], p[3], p[4], p[5]);
+                    Formula = (x, p) => Lorenzian(x[0], x[1], p[0], p[1], p[2], p[3], p[4], p[5]); // 260718Cl: Lorentzian 2D楕円 (L2E) が Gaussian を呼ぶコピペバグを修正 (8引数 Lorenzian は下方に存在)
                     Constraints = p => [p[0], p[1], Max(p[2], inf), Max(p[3], inf), p[4], Max(p[5], inf)];
                     break;
 

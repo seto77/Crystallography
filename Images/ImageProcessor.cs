@@ -292,6 +292,10 @@ public static class ImageProcess
         var height = pixels.Length / width;
         var pixelsH1 = ArrayPool<double>.Shared.Rent(pixels.Length);
         var pixelsV1 = ArrayPool<double>.Shared.Rent(pixels.Length);
+        // 260718Cl: ArrayPool.Rent は前回使用時の内容が残るため、下の 2 ループが書き込まない領域 (pixelsH1 の列 0・pixelsV1 の行 0) を
+        //           2 周目で読むとゴミが混入する。旧実装の new double[] (ゼロ初期化) と等価にするため Clear する
+        Array.Clear(pixelsH1, 0, pixels.Length);
+        Array.Clear(pixelsV1, 0, pixels.Length);
         try
         {
             Parallel.For(0, height - 1, y =>
