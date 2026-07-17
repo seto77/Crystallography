@@ -294,7 +294,8 @@ public static class SeitzNotation
 
     #region CIF ループ
     /// <summary>全対称操作 (中心化展開済み ops) を CIF の _space_group_symop_operation_xyz ループ文字列にする。</summary>
-    public static string ToCifSymopLoop(System.Collections.Generic.IReadOnlyList<SymmetryOperation> ops)
+    //public static string ToCifSymopLoop(System.Collections.Generic.IReadOnlyList<SymmetryOperation> ops) // 260717Cl: using 済み名前空間の冗長な完全修飾を除去
+    public static string ToCifSymopLoop(IReadOnlyList<SymmetryOperation> ops)
     {
         var sb = new StringBuilder(64 + ops.Count * 24);
         sb.AppendLine("loop_");

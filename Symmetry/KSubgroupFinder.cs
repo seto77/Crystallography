@@ -108,7 +108,7 @@ public static class KSubgroupFinder
         var linKeys = new List<int[]>();
         foreach (var op in ops)
         {
-            var key = LinKeyOf(op);
+            var key = TSubgroupFinder.LinKey(op); // 260717Cl: 重複ヘルパー LinKeyOf を TSubgroupFinder.LinKey へ集約
             if (!linKeys.Any(k => SameIntVec(k, key))) linKeys.Add(key);
         }
         var basis = GetPrimitiveBasis(seriesNumber);
@@ -162,11 +162,13 @@ public static class KSubgroupFinder
         return true;
     }
 
-    private static int[] LinKeyOf(in SymmetryOperation op)
-    {
-        var m = SeitzNotation.LinearMatrix(op);
-        return [m[0, 0], m[0, 1], m[0, 2], m[1, 0], m[1, 1], m[1, 2], m[2, 0], m[2, 1], m[2, 2]];
-    }
+    // 260717Cl: TSubgroupFinder.LinKey と一字一句同一だった LinKeyOf を削除し、呼び出し側を集約
+    // (ヘッダの「格子ユーティリティは今後の共通化候補」の一部を実施)。
+    //private static int[] LinKeyOf(in SymmetryOperation op)
+    //{
+    //    var m = SeitzNotation.LinearMatrix(op);
+    //    return [m[0, 0], m[0, 1], m[0, 2], m[1, 0], m[1, 1], m[1, 2], m[2, 0], m[2, 1], m[2, 2]];
+    //}
 
     internal static bool SameIntVec(int[] a, int[] b)
     {
@@ -234,7 +236,7 @@ public static class KSubgroupFinder
         var t0List = new List<Fraction[]>();
         foreach (var op in ops)
         {
-            var key = LinKeyOf(op);
+            var key = TSubgroupFinder.LinKey(op); // 260717Cl: 重複ヘルパー LinKeyOf を TSubgroupFinder.LinKey へ集約
             if (linKeys.Any(k => SameIntVec(k, key))) continue;
             linKeys.Add(key);
             var t = op.SeitzTranslation;
@@ -242,7 +244,7 @@ public static class KSubgroupFinder
             t0List.Add(RationalMatrix.MulVec(basisInv, tConv));
         }
         int m = linKeys.Count;
-        int e = Enumerable.Range(0, m).First(i => IsIdentityLin(linKeys[i]));
+        int e = Enumerable.Range(0, m).First(i => TSubgroupFinder.IsIdentity(linKeys[i])); // 260717Cl: 重複ヘルパー IsIdentityLin を TSubgroupFinder.IsIdentity へ集約
         // 260705Cl: 恒等線形部の基準並進は必ず 0 に固定 (上記コメント参照)。
         t0List[e] = [Fraction.Zero, Fraction.Zero, Fraction.Zero];
 
@@ -498,8 +500,9 @@ public static class KSubgroupFinder
         throw new InvalidOperationException("linear part not found in point-group closure (multiplication table bug)");
     }
 
-    private static bool IsIdentityLin(int[] m)
-        => m[0] == 1 && m[4] == 1 && m[8] == 1 && m[1] == 0 && m[2] == 0 && m[3] == 0 && m[5] == 0 && m[6] == 0 && m[7] == 0;
+    // 260717Cl: TSubgroupFinder.IsIdentity と一字一句同一だった IsIdentityLin を削除し、呼び出し側を集約。
+    //private static bool IsIdentityLin(int[] m)
+    //    => m[0] == 1 && m[4] == 1 && m[8] == 1 && m[1] == 0 && m[2] == 0 && m[3] == 0 && m[5] == 0 && m[6] == 0 && m[7] == 0;
     #endregion
 
     #region 型同定 (Step 3, IdentifyK)
@@ -578,7 +581,7 @@ public static class KSubgroupFinder
         var rt = new List<Fraction[]>();
         foreach (var op in ops)
         {
-            var key = LinKeyOf(op);
+            var key = TSubgroupFinder.LinKey(op); // 260717Cl: 重複ヘルパー LinKeyOf を TSubgroupFinder.LinKey へ集約
             if (linKeys.Any(k => SameIntVec(k, key))) continue;
             linKeys.Add(key);
             var t = op.SeitzTranslation;
@@ -595,7 +598,7 @@ public static class KSubgroupFinder
         var centering = new List<Fraction[]>();
         foreach (var op in ops)
         {
-            if (!IsIdentityLin(LinKeyOf(op))) continue;
+            if (!TSubgroupFinder.IsIdentity(TSubgroupFinder.LinKey(op))) continue; // 260717Cl: 重複ヘルパーを TSubgroupFinder 側へ集約
             var t = op.SeitzTranslation;
             var v = RationalMatrix.ModVec1([Fraction.FromDouble(t.U), Fraction.FromDouble(t.V), Fraction.FromDouble(t.W)]);
             if (!centering.Any(x => RationalMatrix.VecEquals(x, v))) centering.Add(v);
@@ -1370,7 +1373,7 @@ public static class KSubgroupFinder
         var baseOpByLin = new SymmetryOperation?[m];
         foreach (var op in TSubgroupFinder.GetExpandedOps(sn))
         {
-            var key = LinKeyOf(op);
+            var key = TSubgroupFinder.LinKey(op); // 260717Cl: 重複ヘルパー LinKeyOf を TSubgroupFinder.LinKey へ集約
             int idx = -1;
             for (int i = 0; i < m; i++) if (SameIntVec(pg.LinKeys[i], key)) { idx = i; break; }
             if (idx >= 0 && baseOpByLin[idx] == null) baseOpByLin[idx] = op;

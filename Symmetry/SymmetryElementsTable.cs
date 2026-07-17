@@ -68,7 +68,8 @@ public sealed class SymmetryElementsTable
     }
 
     private static readonly Dictionary<int, SymmetryElementsTable> _cache = [];
-    private static readonly object _lock = new();
+    //private static readonly object _lock = new();
+    private static readonly System.Threading.Lock _lock = new(); // 260717Cl: .NET 9+ の専用 Lock 型へ (lock 文はそのまま、Monitor より軽量)
 
     /// <summary>seriesNumber に対応する事前計算テーブルを取得。
     /// 三方晶系 Rho 設定は同一空間群の Hex 設定にリダイレクトされる。

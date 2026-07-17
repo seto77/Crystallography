@@ -569,8 +569,12 @@ public static class TSubgroupFinder
             int a = queue.Dequeue();
             foreach (var b in s.ToArray())
             {
-                foreach (var c in new[] { mul[a, b], mul[b, a] })
-                    if (s.Add(c)) queue.Enqueue(c);
+                //foreach (var c in new[] { mul[a, b], mul[b, a] })
+                //    if (s.Add(c)) queue.Enqueue(c);
+                // 260717Cl: 最内ループの一時配列生成を除去 (KSubgroupFinder.ClosureLin と同形に)。
+                int ab = mul[a, b], ba = mul[b, a];
+                if (s.Add(ab)) queue.Enqueue(ab);
+                if (s.Add(ba)) queue.Enqueue(ba);
             }
         }
         return s;
@@ -970,7 +974,7 @@ public static class TSubgroupFinder
         return true;
     }
 
-    private static bool IsIdentity(int[] m)
+    internal static bool IsIdentity(int[] m) // 260717Cl: internal 化 (KSubgroupFinder.IsIdentityLin / PointGroupCatalog のインライン判定と重複していた実装を集約)
         => m[0] == 1 && m[4] == 1 && m[8] == 1 && m[1] == 0 && m[2] == 0 && m[3] == 0 && m[5] == 0 && m[6] == 0 && m[7] == 0;
 
     private static int[] MatMul(int[] a, int[] b)
