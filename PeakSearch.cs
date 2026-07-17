@@ -538,6 +538,7 @@ public class FittingPeak
         int bestInitial = 0, startInitial = 0, endInitial = 11;// 2;
 
         int counter;
+        Span<double> dbuf = stackalloc double[6]; // 260718Cl: 偏微分値の受け皿。外側の Initial ループ・内側の do ループの両方の外で1回だけ確保して再利用 (CA2014 回避)
         for (int Initial = startInitial; Initial < endInitial; Initial++)
         {
             double[] c = Initial switch
@@ -594,7 +595,6 @@ public class FittingPeak
             }
             double ramda = 10;
             counter = 0;
-            Span<double> dbuf = stackalloc double[6]; // 260718Cl: 偏微分値の受け皿を反復ループ外で1回だけ確保して再利用 (旧: GetDifferentialValue が反復×点×ピークごとに double[] を new)
             do
             {
                 counter++;
