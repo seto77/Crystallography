@@ -16,24 +16,7 @@ namespace Crystallography;
 // public static class AtomStatic
 public static partial class AtomStatic // (260401Ch) generated NIST elastic sampler データを partial class で追加できるようにする
 {
-    #region 静的コンストラクタ
-    static AtomStatic()
-    {
-        //AtomConstantsSub.LinearAbsorptionCoefficient = new PointD[AtomConstantsSub.MassAbsorptionCoefficient.Length][][];
-        //for (int i = 0; i < AtomConstantsSub.LinearAbsorptionCoefficient.Length; i++)
-        //{
-        //	AtomConstantsSub.LinearAbsorptionCoefficient[i] = new PointD[AtomConstantsSub.MassAbsorptionCoefficient[i].Length][];
-        //	for (int j = 0; j < AtomConstantsSub.MassAbsorptionCoefficient[i].Length; j++)
-        //	{
-        //		AtomConstantsSub.LinearAbsorptionCoefficient[i][j] = new PointD[AtomConstantsSub.MassAbsorptionCoefficient[i][j].Length];
-        //		for (int k = 0; k < AtomConstantsSub.LinearAbsorptionCoefficient[i][j].Length; k++)
-        //			AtomConstantsSub.LinearAbsorptionCoefficient[i][j][k] = new PointD(AtomConstantsSub.MassAbsorptionCoefficient[i][j][k]) * AtomStatic.NominalDensity(i);
-        //	}
-        //}
-        // 260604Cl: PCHIP elastic sampler は埋め込みリソース NistElasticPchip.bin から元素単位 lazy decode に変更 (旧: RegisterGeneratedNistElasticPchip で cctor 一括登録)。NistElasticPchipResource 参照。
-    }
-    #endregion
-
+    // 260604Cl: PCHIP elastic sampler は埋め込みリソース NistElasticPchip.bin から元素単位 lazy decode (旧: RegisterGeneratedNistElasticPchip で cctor 一括登録)。NistElasticPchipResource 参照。
     #region static readonly フィールド
 
     /// <summary>同位体存在度 (天然存在比). IsotopeAbundance[z][a]: z 原子番号, a 質量数
@@ -467,21 +450,6 @@ public static partial class AtomStatic // (260401Ch) generated NIST elastic samp
             [ +2.095,  +8.947, -36.510,   +55.694,  -46.079, +15.851]
             #endregion
     ];
-
-    // EPMA 後方散乱/阻止能補正の係数 [5][5]。出典: H. E. Bishop (1966), "Some electron backscattering measurements
-    // for solid targets", in R. Castaing, P. Deschamps and J. Philibert (eds.), X-Ray Optics and Microanalysis
-    // (Proc. 4th Int. Congr. on X-ray Optics and Microanalysis), Hermann, Paris, pp.153-158 (cf. H. E. Bishop (1967),
-    // Br. J. Appl. Phys. 18, 703-715, DOI:10.1088/0508-3443/18/6/302)。
-    // ⚠ 260606Cl: このテーブルは現在どこからも参照されていない (デッドコード)。BackScatteredFactor は Ducumb を使用。
-    private static readonly double[][] Bishop1966 = [
-			#region
-			[1.0088E2,-7.6070E-1,-3.5702E-3,1.6329E-4,-9.6521E-7],
-           [-6.1134E-1,6.0271E-1,1.6222E2,-4.5936E-4,2.5267E-6],
-            [-9.1447E-1,2.9326E0,-7.636E-1,2.8558E-3,-1.3294E-5],
-            [-7.0753E-1,-4.6855E0,2.9116E-1,-4.6797E-3,2.1597E-5],
-            [1.3735E0,1.9015E0,-1.2703E-1,2.1144E-3,-9.8423E-6]
-			#endregion
-		];
 
     /// <summary>純元素の密度 [g/cm^3] (室温・標準状態の代表値)
     /// <para>出典: 標準的なハンドブック値 (CRC Handbook of Chemistry and Physics, "Physical Constants of Inorganic Compounds" / WebElements https://www.webelements.com 系)。
@@ -2791,18 +2759,6 @@ new(4.86738014,0.319974401,4.58872425,
         }
 
         /// <summary>電子線用のコンストラクタ (Five gaussian)</summary>
-        /// <param name="a1"></param>
-        /// <param name="a2"></param>
-        /// <param name="a3"></param>
-        /// <param name="a4"></param>
-        /// <param name="a5"></param>
-        /// <param name="b1"></param>
-        /// <param name="b2"></param>
-        /// <param name="b3"></param>
-        /// <param name="b4"></param>
-        /// <param name="b5"></param>
-        /// <param name="valence"></param>
-        /// <param name="methods"></param>
         public ES(double a1, double a2, double a3, double a4, double a5, double b1, double b2, double b3, double b4, double b5, int valence, string methods)
         {
             Valence = valence;
@@ -2826,18 +2782,6 @@ new(4.86738014,0.319974401,4.58872425,
         /// <para>散乱因子 f_e(q) = Σ a_i/(q²+b_i) + Σ c_i·exp(-d_i·q²) [式 C.15], 投影ポテンシャル v_z(r) = 4π²a0·e·Σ a_i·K0(2πr√b_i) + 2π²a0·e·Σ (c_i/d_i)·exp(-π²r²/d_i) [式 C.20]。</para>
         /// <para>重要: Kirkland の独立変数 q は q = 2sinθ/λ = 1/d (逆格子ベクトル長, 単位 Å⁻¹) であり, Peng/Eight-gaussian が用いる s = sinθ/λ とは異なる (q = 2s)。パラメータの単位は a_i,c_i: Å, b_i: Å⁻², d_i: Å²。</para>
         /// </summary>
-        /// <param name="a1"></param>
-        /// <param name="a2"></param>
-        /// <param name="a3"></param>
-        /// <param name="b1"></param>
-        /// <param name="b2"></param>
-        /// <param name="b3"></param>
-        /// <param name="c1"></param>
-        /// <param name="c2"></param>
-        /// <param name="c3"></param>
-        /// <param name="d1"></param>
-        /// <param name="d2"></param>
-        /// <param name="d3"></param>
         public ES(double a1, double a2, double a3, double b1, double b2, double b3, double c1, double c2, double c3, double d1, double d2, double d3)
         {
             //260606Cl 修正: Kirkland の独立変数は q = 2sinθ/λ = 1/d [Å⁻¹], パラメータ単位は Å 系。
@@ -2845,8 +2789,6 @@ new(4.86738014,0.319974401,4.58872425,
             //  q²[Å⁻²] = 4·s²[Å⁻²] = 4·(S2·0.01) = 0.04·S2。 さらに出力 [Å] を [nm] へ ×0.1。
             //  旧コードは S2 をそのまま q² に入れ, 単位変換(×0.01)・q=2s 規約(×4)・出力変換(×0.1) を全て欠いていたため,
             //  Eight-gaussian 等 (s 規約) と大きく食い違っていた (本番は ProjectedPotential のみ使用するため実害なし)。
-            //Factor = new Func<double, double>(
-            //    S2 => a1 / (S2 + b1) + a2 / (S2 + b2) + a3 / (S2 + b3) + c1 * Math.Exp(-S2 * d1) + c2 * Math.Exp(-S2 * d2) + c3 * Math.Exp(-S2 * d3));
             Factor = new Func<double, double>(S2 =>
             {
                 var q2 = S2 * 0.04;//s²(nm⁻²) → ×0.01 で Å⁻², ×4 で Kirkland の q=2s 規約 → 計 ×0.04
@@ -2958,29 +2900,6 @@ new(4.86738014,0.319974401,4.58872425,
             var gamma = 1 + UniversalConstants.e0 * kV * 1E3 / UniversalConstants.m0 / UniversalConstants.c2;
             var k0 = UniversalConstants.Convert.EnergyToElectronWaveNumber(kV);
 
-            #region 260316Cl以前のコード (Vector3DBase をループ内で生成していたためヒープ割り当てが多い)
-            //var g2 = g / 2;
-            //var result = GaussLegendreRule.Integrate(θ =>
-            //{
-            //    var sinθ = Math.Sin(θ);
-            //    var cosθ = Math.Cos(θ);
-            //    return GaussLegendreRule.Integrate(φ =>
-            //    {
-            //        var k = new Vector3DBase(k0 * sinθ * Math.Cos(φ), k0 * sinθ * Math.Sin(φ), k0 * cosθ - k0);
-            //        var kMinusG = (k - g2).Length2 / 4;
-            //        var kPlusG = (k + g2).Length2 / 4;
-            //        double f_kMinusG = 0, f_kPlusG = 0;
-            //        foreach (var (A, B) in Prms)
-            //        {
-            //            f_kMinusG += A * Math.Exp(-kMinusG * B / 100);
-            //            f_kPlusG += A * Math.Exp(-kPlusG * B / 100);
-            //        }
-            //        return f_kMinusG * f_kPlusG * (1 - Math.Exp(m * (g2.Length2 - kMinusG - kPlusG)));
-            //    }, 0, 2 * Math.PI, nPhi) * sinθ;
-            //}, inner, outer, nTheta);
-            //return gamma * k0 / 2 * result * 0.01;
-            #endregion
-
             // 260316Cl ヒープ割り当て回避のためベクトル演算をスカラーにインライン展開
             // g/2 の各成分を事前計算 (ループ内での Vector3DBase 生成を回避)
             double gx2 = g.X / 2, gy2 = g.Y / 2, gz2 = g.Z / 2;
@@ -3033,28 +2952,6 @@ new(4.86738014,0.319974401,4.58872425,
             if (double.IsNaN(m)) return 0;
             var gamma = 1 + UniversalConstants.e0 * kV * 1E3 / UniversalConstants.m0 / UniversalConstants.c2;
             var k0 = UniversalConstants.Convert.EnergyToElectronWaveNumber(kV);
-
-            #region 260316Cl以前のコード (Vector3DBase をループ内で生成していたためヒープ割り当てが多い)
-            //var g_h = ((g - h) / 2).Length2;
-            //return gamma * k0 / 2 * GaussLegendreRule.Integrate(θ =>
-            //{
-            //    var sinθ = Math.Sin(θ);
-            //    var cosθ = Math.Cos(θ);
-            //    return GaussLegendreRule.Integrate(φ =>
-            //    {
-            //        var k = new Vector3DBase(k0 * sinθ * Math.Cos(φ), k0 * sinθ * Math.Sin(φ), k0 * cosθ - k0);
-            //        var k_g = (k - g).Length2 / 400;
-            //        var k_h = (k - h).Length2 / 400;
-            //        double f_k_g = 0, f_k_h = 0;
-            //        foreach (var (A, B) in Prms)
-            //        {
-            //            f_k_g += A * Math.Exp(-k_g * B);
-            //            f_k_h += A * Math.Exp(-k_h * B);
-            //        }
-            //        return f_k_g * f_k_h * 0.01 * (1 - Math.Exp(m * (g_h - k_g * 100 - k_h * 100)));
-            //    }, 0, 2 * Math.PI, nPhi) * sinθ;
-            //}, inner, outer, nTheta);
-            #endregion
 
             // 260316Cl ヒープ割り当て回避のためベクトル演算をスカラーにインライン展開
             double gx = g.X, gy = g.Y, gz = g.Z;
@@ -5619,10 +5516,6 @@ new(4.86738014,0.319974401,4.58872425,
                     case XrayLine.La1: return double.NaN;
                     case XrayLine.Lb1: return double.NaN;
                     case XrayLine.Lb2: return double.NaN;
-                        //case XrayLine.Kabs: return double.NaN;
-                        //case XrayLine.L1abs: return double.NaN;
-                        //case XrayLine.L2abs: return double.NaN;
-                        //case XrayLine.L3abs: return double.NaN;
                 }
                 break;
 
@@ -5639,10 +5532,6 @@ new(4.86738014,0.319974401,4.58872425,
                     case XrayLine.La1: return double.NaN;
                     case XrayLine.Lb1: return double.NaN;
                     case XrayLine.Lb2: return double.NaN;
-                        //case XrayLine.Kabs: return 918;
-                        //case XrayLine.L1abs: return double.NaN;
-                        //case XrayLine.L2abs: return double.NaN;
-                        //case XrayLine.L3abs: return double.NaN;
                 }
                 break;
 
@@ -5659,10 +5548,6 @@ new(4.86738014,0.319974401,4.58872425,
                     case XrayLine.La1: return double.NaN;
                     case XrayLine.Lb1: return double.NaN;
                     case XrayLine.Lb2: return double.NaN;
-                        //case XrayLine.Kabs: return 504;
-                        //case XrayLine.L1abs: return double.NaN;
-                        //case XrayLine.L2abs: return double.NaN;
-                        //case XrayLine.L3abs: return double.NaN;
                 }
                 break;
 
@@ -5679,10 +5564,6 @@ new(4.86738014,0.319974401,4.58872425,
                     case XrayLine.La1: return double.NaN;
                     case XrayLine.Lb1: return double.NaN;
                     case XrayLine.Lb2: return double.NaN;
-                        //case XrayLine.Kabs: return 226.953;
-                        //case XrayLine.L1abs: return double.NaN;
-                        //case XrayLine.L2abs: return double.NaN;
-                        //case XrayLine.L3abs: return double.NaN;
                 }
                 break;
 
@@ -5699,10 +5580,6 @@ new(4.86738014,0.319974401,4.58872425,
                     case XrayLine.La1: return double.NaN;
                     case XrayLine.Lb1: return double.NaN;
                     case XrayLine.Lb2: return double.NaN;
-                        //case XrayLine.Kabs: return 106.9;
-                        //case XrayLine.L1abs: return double.NaN;
-                        //case XrayLine.L2abs: return double.NaN;
-                        //case XrayLine.L3abs: return double.NaN;
                 }
                 break;
 
@@ -5719,10 +5596,6 @@ new(4.86738014,0.319974401,4.58872425,
                     case XrayLine.La1: return double.NaN;
                     case XrayLine.Lb1: return double.NaN;
                     case XrayLine.Lb2: return double.NaN;
-                        //case XrayLine.Kabs: return 64.6;
-                        //case XrayLine.L1abs: return double.NaN;
-                        //case XrayLine.L2abs: return double.NaN;
-                        //case XrayLine.L3abs: return double.NaN;
                 }
                 break;
 
@@ -5739,10 +5612,6 @@ new(4.86738014,0.319974401,4.58872425,
                     case XrayLine.La1: return double.NaN;
                     case XrayLine.Lb1: return double.NaN;
                     case XrayLine.Lb2: return double.NaN;
-                        //case XrayLine.Kabs: return 43.767;
-                        //case XrayLine.L1abs: return double.NaN;
-                        //case XrayLine.L2abs: return double.NaN;
-                        //case XrayLine.L3abs: return double.NaN;
                 }
                 break;
 
@@ -5759,10 +5628,6 @@ new(4.86738014,0.319974401,4.58872425,
                     case XrayLine.La1: return double.NaN;
                     case XrayLine.Lb1: return double.NaN;
                     case XrayLine.Lb2: return double.NaN;
-                        //case XrayLine.Kabs: return 31.052;
-                        //case XrayLine.L1abs: return double.NaN;
-                        //case XrayLine.L2abs: return double.NaN;
-                        //case XrayLine.L3abs: return double.NaN;
                 }
                 break;
 
@@ -5779,10 +5644,6 @@ new(4.86738014,0.319974401,4.58872425,
                     case XrayLine.La1: return double.NaN;
                     case XrayLine.Lb1: return double.NaN;
                     case XrayLine.Lb2: return double.NaN;
-                        //case XrayLine.Kabs: return 23.367;
-                        //case XrayLine.L1abs: return double.NaN;
-                        //case XrayLine.L2abs: return double.NaN;
-                        //case XrayLine.L3abs: return double.NaN;
                 }
                 break;
 
@@ -5799,10 +5660,6 @@ new(4.86738014,0.319974401,4.58872425,
                     case XrayLine.La1: return double.NaN;
                     case XrayLine.Lb1: return double.NaN;
                     case XrayLine.Lb2: return double.NaN;
-                        //case XrayLine.Kabs: return 18.05;
-                        //case XrayLine.L1abs: return double.NaN;
-                        //case XrayLine.L2abs: return double.NaN;
-                        //case XrayLine.L3abs: return double.NaN;
                 }
                 break;
 
@@ -5819,10 +5676,6 @@ new(4.86738014,0.319974401,4.58872425,
                     case XrayLine.La1: return double.NaN;
                     case XrayLine.Lb1: return double.NaN;
                     case XrayLine.Lb2: return double.NaN;
-                        //case XrayLine.Kabs: return 14.30201;
-                        //case XrayLine.L1abs: return double.NaN;
-                        //case XrayLine.L2abs: return double.NaN;
-                        //case XrayLine.L3abs: return double.NaN;
                 }
                 break;
 
@@ -5839,10 +5692,6 @@ new(4.86738014,0.319974401,4.58872425,
                     case XrayLine.La1: return double.NaN;
                     case XrayLine.Lb1: return double.NaN;
                     case XrayLine.Lb2: return double.NaN;
-                        //case XrayLine.Kabs: return 11.5692;
-                        //case XrayLine.L1abs: return double.NaN;
-                        //case XrayLine.L2abs: return double.NaN;
-                        //case XrayLine.L3abs: return double.NaN;
                 }
                 break;
 
@@ -5859,10 +5708,6 @@ new(4.86738014,0.319974401,4.58872425,
                     case XrayLine.La1: return double.NaN;
                     case XrayLine.Lb1: return double.NaN;
                     case XrayLine.Lb2: return double.NaN;
-                        //case XrayLine.Kabs: return 9.51234;
-                        //case XrayLine.L1abs: return double.NaN;
-                        //case XrayLine.L2abs: return double.NaN;
-                        //case XrayLine.L3abs: return double.NaN;
                 }
                 break;
 
@@ -5879,10 +5724,6 @@ new(4.86738014,0.319974401,4.58872425,
                     case XrayLine.La1: return double.NaN;
                     case XrayLine.Lb1: return double.NaN;
                     case XrayLine.Lb2: return double.NaN;
-                        //case XrayLine.Kabs: return 7.948249;
-                        //case XrayLine.L1abs: return double.NaN;
-                        //case XrayLine.L2abs: return double.NaN;
-                        //case XrayLine.L3abs: return double.NaN;
                 }
                 break;
 
@@ -5899,10 +5740,6 @@ new(4.86738014,0.319974401,4.58872425,
                     case XrayLine.La1: return double.NaN;
                     case XrayLine.Lb1: return double.NaN;
                     case XrayLine.Lb2: return double.NaN;
-                        //case XrayLine.Kabs: return 6.7381;
-                        //case XrayLine.L1abs: return double.NaN;
-                        //case XrayLine.L2abs: return double.NaN;
-                        //case XrayLine.L3abs: return 123.0;
                 }
                 break;
 
@@ -5919,10 +5756,6 @@ new(4.86738014,0.319974401,4.58872425,
                     case XrayLine.La1: return double.NaN;
                     case XrayLine.Lb1: return double.NaN;
                     case XrayLine.Lb2: return double.NaN;
-                        //case XrayLine.Kabs: return 5.7841;
-                        //case XrayLine.L1abs: return double.NaN;
-                        //case XrayLine.L2abs: return double.NaN;
-                        //case XrayLine.L3abs: return double.NaN;
                 }
                 break;
 
@@ -5939,10 +5772,6 @@ new(4.86738014,0.319974401,4.58872425,
                     case XrayLine.La1: return double.NaN;
                     case XrayLine.Lb1: return double.NaN;
                     case XrayLine.Lb2: return double.NaN;
-                        //case XrayLine.Kabs: return 5.01858;
-                        //case XrayLine.L1abs: return double.NaN;
-                        //case XrayLine.L2abs: return double.NaN;
-                        //case XrayLine.L3abs: return double.NaN;
                 }
                 break;
 
@@ -5959,10 +5788,6 @@ new(4.86738014,0.319974401,4.58872425,
                     case XrayLine.La1: return double.NaN;
                     case XrayLine.Lb1: return double.NaN;
                     case XrayLine.Lb2: return double.NaN;
-                        //case XrayLine.Kabs: return 4.39717;
-                        //case XrayLine.L1abs: return double.NaN;
-                        //case XrayLine.L2abs: return double.NaN;
-                        //case XrayLine.L3abs: return double.NaN;
                 }
                 break;
 
@@ -5979,10 +5804,6 @@ new(4.86738014,0.319974401,4.58872425,
                     case XrayLine.La1: return double.NaN;
                     case XrayLine.Lb1: return double.NaN;
                     case XrayLine.Lb2: return double.NaN;
-                        //case XrayLine.Kabs: return 3.870958;
-                        //case XrayLine.L1abs: return double.NaN;
-                        //case XrayLine.L2abs: return double.NaN;
-                        //case XrayLine.L3abs: return double.NaN;
                 }
                 break;
 
@@ -5999,10 +5820,6 @@ new(4.86738014,0.319974401,4.58872425,
                     case XrayLine.La1: return double.NaN;
                     case XrayLine.Lb1: return double.NaN;
                     case XrayLine.Lb2: return double.NaN;
-                        //case XrayLine.Kabs: return 3.43655;
-                        //case XrayLine.L1abs: return double.NaN;
-                        //case XrayLine.L2abs: return double.NaN;
-                        //case XrayLine.L3abs: return double.NaN;
                 }
                 break;
 
@@ -6019,10 +5836,6 @@ new(4.86738014,0.319974401,4.58872425,
                     case XrayLine.La1: return 36.331;
                     case XrayLine.Lb1: return 35.941;
                     case XrayLine.Lb2: return double.NaN;
-                        //case XrayLine.Kabs: return 3.07035;
-                        //case XrayLine.L1abs: return double.NaN;
-                        //case XrayLine.L2abs: return 35.131;
-                        //case XrayLine.L3abs: return 35.491;
                 }
                 break;
 
@@ -6039,10 +5852,6 @@ new(4.86738014,0.319974401,4.58872425,
                     case XrayLine.La1: return 31.350;
                     case XrayLine.Lb1: return 31.020;
                     case XrayLine.Lb2: return double.NaN;
-                        //case XrayLine.Kabs: return 2.7620;
-                        //case XrayLine.L1abs: return double.NaN;
-                        //case XrayLine.L2abs: return double.NaN;
-                        //case XrayLine.L3abs: return double.NaN;
                 }
                 break;
 
@@ -6059,10 +5868,6 @@ new(4.86738014,0.319974401,4.58872425,
                     case XrayLine.La1: return 27.420;
                     case XrayLine.Lb1: return 27.050;
                     case XrayLine.Lb2: return double.NaN;
-                        //case XrayLine.Kabs: return 2.497377;
-                        //case XrayLine.L1abs: return double.NaN;
-                        //case XrayLine.L2abs: return 27.290;
-                        //case XrayLine.L3abs: return 27.290;
                 }
                 break;
 
@@ -6079,10 +5884,6 @@ new(4.86738014,0.319974401,4.58872425,
                     case XrayLine.La1: return 24.250;
                     case XrayLine.Lb1: return 23.880;
                     case XrayLine.Lb2: return double.NaN;
-                        //case XrayLine.Kabs: return 2.269211;
-                        //case XrayLine.L1abs: return double.NaN;
-                        //case XrayLine.L2abs: return double.NaN;
-                        //case XrayLine.L3abs: return double.NaN;
                 }
                 break;
 
@@ -6099,10 +5900,6 @@ new(4.86738014,0.319974401,4.58872425,
                     case XrayLine.La1: return 21.640;
                     case XrayLine.Lb1: return 21.270;
                     case XrayLine.Lb2: return double.NaN;
-                        //case XrayLine.Kabs: return 2.070193;
-                        //case XrayLine.L1abs: return 16.70;
-                        //case XrayLine.L2abs: return 17.90;
-                        //case XrayLine.L3abs: return 20.70;
                 }
                 break;
 
@@ -6119,10 +5916,6 @@ new(4.86738014,0.319974401,4.58872425,
                     case XrayLine.La1: return 19.450;
                     case XrayLine.Lb1: return 19.110;
                     case XrayLine.Lb2: return double.NaN;
-                        //case XrayLine.Kabs: return 1.8964592;
-                        //case XrayLine.L1abs: return double.NaN;
-                        //case XrayLine.L2abs: return double.NaN;
-                        //case XrayLine.L3abs: return double.NaN;
                 }
                 break;
 
@@ -6139,10 +5932,6 @@ new(4.86738014,0.319974401,4.58872425,
                     case XrayLine.La1: return 17.590;
                     case XrayLine.Lb1: return 17.260;
                     case XrayLine.Lb2: return double.NaN;
-                        //case XrayLine.Kabs: return 1.7436170;
-                        //case XrayLine.L1abs: return double.NaN;
-                        //case XrayLine.L2abs: return 17.2023;
-                        //case XrayLine.L3abs: return 17.5253;
                 }
                 break;
 
@@ -6159,10 +5948,6 @@ new(4.86738014,0.319974401,4.58872425,
                     case XrayLine.La1: return 15.9722;
                     case XrayLine.Lb1: return 15.666;
                     case XrayLine.Lb2: return double.NaN;
-                        //case XrayLine.Kabs: return 1.6083510;
-                        //case XrayLine.L1abs: return double.NaN;
-                        //case XrayLine.L2abs: return 15.6182;
-                        //case XrayLine.L3abs: return 15.9152;
                 }
                 break;
 
@@ -6179,10 +5964,6 @@ new(4.86738014,0.319974401,4.58872425,
                     case XrayLine.La1: return 14.5612;
                     case XrayLine.Lb1: return 14.2712;
                     case XrayLine.Lb2: return double.NaN;
-                        //case XrayLine.Kabs: return 1.4881401;
-                        //case XrayLine.L1abs: return double.NaN;
-                        //case XrayLine.L2abs: return 14.2422;
-                        //case XrayLine.L3abs: return 14.5252;
                 }
                 break;
 
@@ -6199,10 +5980,6 @@ new(4.86738014,0.319974401,4.58872425,
                     case XrayLine.La1: return 13.3362;
                     case XrayLine.Lb1: return 13.0532;
                     case XrayLine.Lb2: return double.NaN;
-                        //case XrayLine.Kabs: return 1.3805971;
-                        //case XrayLine.L1abs: return double.NaN;
-                        //case XrayLine.L2abs: return 13.0142;
-                        //case XrayLine.L3abs: return 13.2882;
                 }
                 break;
 
@@ -6219,10 +5996,6 @@ new(4.86738014,0.319974401,4.58872425,
                     case XrayLine.La1: return 12.2542;
                     case XrayLine.Lb1: return 11.9832;
                     case XrayLine.Lb2: return double.NaN;
-                        //case XrayLine.Kabs: return 1.2833798;
-                        //case XrayLine.L1abs: return 13.060;
-                        //case XrayLine.L2abs: return 11.8622;
-                        //case XrayLine.L3abs: return 12.1312;
                 }
                 break;
 
@@ -6239,10 +6012,6 @@ new(4.86738014,0.319974401,4.58872425,
                     case XrayLine.La1: return 11.2922;
                     case XrayLine.Lb1: return 11.0232;
                     case XrayLine.Lb2: return double.NaN;
-                        //case XrayLine.Kabs: return 1.19582;
-                        //case XrayLine.L1abs: return 9.5171;
-                        //case XrayLine.L2abs: return 10.8282;
-                        //case XrayLine.L3abs: return 11.1002;
                 }
                 break;
 
@@ -6259,10 +6028,6 @@ new(4.86738014,0.319974401,4.58872425,
                     case XrayLine.La1: return 10.4363;
                     case XrayLine.Lb1: return 10.1752;
                     case XrayLine.Lb2: return double.NaN;
-                        //case XrayLine.Kabs: return 1.116597;
-                        //case XrayLine.L1abs: return 8.7731;
-                        //case XrayLine.L2abs: return 9.9241;
-                        //case XrayLine.L3abs: return 10.1872;
                 }
                 break;
 
@@ -6279,10 +6044,6 @@ new(4.86738014,0.319974401,4.58872425,
                     case XrayLine.La1: return 9.6710;
                     case XrayLine.Lb1: return 9.4142;
                     case XrayLine.Lb2: return double.NaN;
-                        //case XrayLine.Kabs: return 1.04502;
-                        //case XrayLine.L1abs: return 8.1071;
-                        //case XrayLine.L2abs: return 9.1251;
-                        //case XrayLine.L3abs: return 9.3671;
                 }
                 break;
 
@@ -6299,10 +6060,6 @@ new(4.86738014,0.319974401,4.58872425,
                     case XrayLine.La1: return 8.99013;
                     case XrayLine.Lb1: return 8.73593;
                     case XrayLine.Lb2: return double.NaN;
-                        //case XrayLine.Kabs: return 0.979755;
-                        //case XrayLine.L1abs: return 7.5031;
-                        //case XrayLine.L2abs: return 8.4071;
-                        //case XrayLine.L3abs: return 8.6461;
                 }
                 break;
 
@@ -6319,10 +6076,6 @@ new(4.86738014,0.319974401,4.58872425,
                     case XrayLine.La1: return 8.37473;
                     case XrayLine.Lb1: return 8.12522;
                     case XrayLine.Lb2: return double.NaN;
-                        //case XrayLine.Kabs: return 0.92041;
-                        //case XrayLine.L1abs: return 6.9591;
-                        //case XrayLine.L2abs: return 7.7531;
-                        //case XrayLine.L3abs: return 7.9841;
                 }
                 break;
 
@@ -6339,10 +6092,6 @@ new(4.86738014,0.319974401,4.58872425,
                     case XrayLine.La1: return 7.82032;
                     case XrayLine.Lb1: return 7.574441;
                     case XrayLine.Lb2: return double.NaN;
-                        //case XrayLine.Kabs: return 0.865533;
-                        //case XrayLine.L1abs: return 6.470;
-                        //case XrayLine.L2abs: return 7.1681;
-                        //case XrayLine.L3abs: return 7.3921;
                 }
                 break;
 
@@ -6359,10 +6108,6 @@ new(4.86738014,0.319974401,4.58872425,
                     case XrayLine.La1: return 7.31841;
                     case XrayLine.Lb1: return 7.07601;
                     case XrayLine.Lb2: return double.NaN;
-                        //case XrayLine.Kabs: return 0.815552;
-                        //case XrayLine.L1abs: return 6.0081;
-                        //case XrayLine.L2abs: return 6.6441;
-                        //case XrayLine.L3abs: return 6.8621;
                 }
                 break;
 
@@ -6379,10 +6124,6 @@ new(4.86738014,0.319974401,4.58872425,
                     case XrayLine.La1: return 6.86290;
                     case XrayLine.Lb1: return 6.62400;
                     case XrayLine.Lb2: return double.NaN;
-                        //case XrayLine.Kabs: return 0.769742;
-                        //case XrayLine.L1abs: return 5.5921;
-                        //case XrayLine.L2abs: return 6.1731;
-                        //case XrayLine.L3abs: return 6.3871;
                 }
                 break;
 
@@ -6399,10 +6140,6 @@ new(4.86738014,0.319974401,4.58872425,
                     case XrayLine.La1: return 6.44890;
                     case XrayLine.Lb1: return 6.21209;
                     case XrayLine.Lb2: return double.NaN;
-                        //case XrayLine.Kabs: return 0.7277514;
-                        //case XrayLine.L1abs: return 5.2171;
-                        //case XrayLine.L2abs: return 5.7561;
-                        //case XrayLine.L3abs: return 5.9621;
                 }
                 break;
 
@@ -6419,10 +6156,6 @@ new(4.86738014,0.319974401,4.58872425,
                     case XrayLine.La1: return 6.070250;
                     case XrayLine.Lb1: return 5.836214;
                     case XrayLine.Lb2: return 5.58638;
-                        //case XrayLine.Kabs: return 0.6889591;
-                        //case XrayLine.L1abs: return 4.8791;
-                        //case XrayLine.L2abs: return 5.3781;
-                        //case XrayLine.L3abs: return 5.5791;
                 }
                 break;
 
@@ -6439,10 +6172,6 @@ new(4.86738014,0.319974401,4.58872425,
                     case XrayLine.La1: return 5.72439;
                     case XrayLine.Lb1: return 5.49238;
                     case XrayLine.Lb2: return 5.23798;
-                        //case XrayLine.Kabs: return 0.6531341;
-                        //case XrayLine.L1abs: return 4.5751;
-                        //case XrayLine.L2abs: return 5.0311;
-                        //case XrayLine.L3abs: return 5.2301;
                 }
                 break;
 
@@ -6459,10 +6188,6 @@ new(4.86738014,0.319974401,4.58872425,
                     case XrayLine.La1: return 5.40663;
                     case XrayLine.Lb1: return 5.17716;
                     case XrayLine.Lb2: return 4.92327;
-                        //case XrayLine.Kabs: return 0.61991006;
-                        //case XrayLine.L1abs: return 4.3041;
-                        //case XrayLine.L2abs: return 4.7191;
-                        //case XrayLine.L3abs: return 4.9131;
                 }
                 break;
 
@@ -6479,10 +6204,6 @@ new(4.86738014,0.319974401,4.58872425,
                     case XrayLine.La1: return 5.11488;
                     case XrayLine.Lb1: return 4.8874;
                     case XrayLine.Lb2: return double.NaN;
-                        //case XrayLine.Kabs: return 0.589069;
-                        //case XrayLine.L1abs: return 4.0581;
-                        //case XrayLine.L2abs: return 4.4361;
-                        //case XrayLine.L3abs: return 4.6301;
                 }
                 break;
 
@@ -6499,10 +6220,6 @@ new(4.86738014,0.319974401,4.58872425,
                     case XrayLine.La1: return 4.845823;
                     case XrayLine.Lb1: return 4.620649;
                     case XrayLine.Lb2: return 4.37187;
-                        //case XrayLine.Kabs: return 0.560518;
-                        //case XrayLine.L1abs: return 3.8351;
-                        //case XrayLine.L2abs: return 4.1801;
-                        //case XrayLine.L3abs: return 4.3691;
                 }
                 break;
 
@@ -6519,10 +6236,6 @@ new(4.86738014,0.319974401,4.58872425,
                     case XrayLine.La1: return 4.59750;
                     case XrayLine.Lb1: return 4.374206;
                     case XrayLine.Lb2: return 4.13106;
-                        //case XrayLine.Kabs: return 0.5339086;
-                        //case XrayLine.L1abs: return 3.6291;
-                        //case XrayLine.L2abs: return 3.94256;
-                        //case XrayLine.L3abs: return 4.12996;
                 }
                 break;
 
@@ -6539,10 +6252,6 @@ new(4.86738014,0.319974401,4.58872425,
                     case XrayLine.La1: return 4.367736;
                     case XrayLine.Lb1: return 4.146282;
                     case XrayLine.Lb2: return 3.908929;
-                        //case XrayLine.Kabs: return 0.5091212;
-                        //case XrayLine.L1abs: return 3.4371;
-                        //case XrayLine.L2abs: return 3.72286;
-                        //case XrayLine.L3abs: return 3.90746;
                 }
                 break;
 
@@ -6559,10 +6268,6 @@ new(4.86738014,0.319974401,4.58872425,
                     case XrayLine.La1: return 4.154492;
                     case XrayLine.Lb1: return 3.934789;
                     case XrayLine.Lb2: return 3.703406;
-                        //case XrayLine.Kabs: return 0.4859155;
-                        //case XrayLine.L1abs: return 3.25645;
-                        //case XrayLine.L2abs: return 3.51645;
-                        //case XrayLine.L3abs: return 3.69996;
                 }
                 break;
 
@@ -6579,10 +6284,6 @@ new(4.86738014,0.319974401,4.58872425,
                     case XrayLine.La1: return 3.956409;
                     case XrayLine.Lb1: return 3.738286;
                     case XrayLine.Lb2: return 3.514133;
-                        //case XrayLine.Kabs: return 0.4641293;
-                        //case XrayLine.L1abs: return 3.08495;
-                        //case XrayLine.L2abs: return 3.32575;
-                        //case XrayLine.L3abs: return 3.50475;
                 }
                 break;
 
@@ -6599,10 +6300,6 @@ new(4.86738014,0.319974401,4.58872425,
                     case XrayLine.La1: return 3.771977;
                     case XrayLine.Lb1: return 3.555363;
                     case XrayLine.Lb2: return 3.338430;
-                        //case XrayLine.Kabs: return 0.4437454;
-                        //case XrayLine.L1abs: return 2.92604;
-                        //case XrayLine.L2abs: return 3.14735;
-                        //case XrayLine.L3abs: return 3.32375;
                 }
                 break;
 
@@ -6619,10 +6316,6 @@ new(4.86738014,0.319974401,4.58872425,
                     case XrayLine.La1: return 3.599994;
                     case XrayLine.Lb1: return 3.384921;
                     case XrayLine.Lb2: return 3.175098;
-                        //case XrayLine.Kabs: return 0.4245978;
-                        //case XrayLine.L1abs: return 2.77694;
-                        //case XrayLine.L2abs: return 2.98234;
-                        //case XrayLine.L3abs: return 3.15575;
                 }
                 break;
 
@@ -6639,10 +6332,6 @@ new(4.86738014,0.319974401,4.58872425,
                     case XrayLine.La1: return 3.439462;
                     case XrayLine.Lb1: return 3.225718;
                     case XrayLine.Lb2: return 3.023395;
-                        //case XrayLine.Kabs: return 0.4066324;
-                        //case XrayLine.L1abs: return 2.63884;
-                        //case XrayLine.L2abs: return 2.82944;
-                        //case XrayLine.L3abs: return 3.00035;
                 }
                 break;
 
@@ -6659,10 +6348,6 @@ new(4.86738014,0.319974401,4.58872425,
                     case XrayLine.La1: return 3.289249;
                     case XrayLine.Lb1: return 3.076816;
                     case XrayLine.Lb2: return 2.88221;
-                        //case XrayLine.Kabs: return 0.389746;
-                        //case XrayLine.L1abs: return 2.50994;
-                        //case XrayLine.L2abs: return 2.68794;
-                        //case XrayLine.L3abs: return 2.85554;
                 }
                 break;
 
@@ -6679,10 +6364,6 @@ new(4.86738014,0.319974401,4.58872425,
                     case XrayLine.La1: return 3.148647;
                     case XrayLine.Lb1: return 2.937484;
                     case XrayLine.Lb2: return 2.75057;
-                        //case XrayLine.Kabs: return 0.373816;
-                        //case XrayLine.L1abs: return 2.38804;
-                        //case XrayLine.L2abs: return 2.55424;
-                        //case XrayLine.L3abs: return 2.71964;
                 }
                 break;
 
@@ -6699,10 +6380,6 @@ new(4.86738014,0.319974401,4.58872425,
                     case XrayLine.La1: return 3.016582;
                     case XrayLine.Lb1: return 2.806553;
                     case XrayLine.Lb2: return double.NaN;
-                        //case XrayLine.Kabs: return 0.35841;
-                        //case XrayLine.L1abs: return 2.27373;
-                        //case XrayLine.L2abs: return 2.42924;
-                        //case XrayLine.L3abs: return 2.59264;
                 }
                 break;
 
@@ -6719,10 +6396,6 @@ new(4.86738014,0.319974401,4.58872425,
                     case XrayLine.La1: return 2.89244;
                     case XrayLine.Lb1: return 2.68374;
                     case XrayLine.Lb2: return 2.51184;
-                        //case XrayLine.Kabs: return 0.344515;
-                        //case XrayLine.L1abs: return 2.16733;
-                        //case XrayLine.L2abs: return 2.31393;
-                        //case XrayLine.L3abs: return 2.47404;
                 }
                 break;
 
@@ -6739,10 +6412,6 @@ new(4.86738014,0.319974401,4.58872425,
                     case XrayLine.La1: return 2.775992;
                     case XrayLine.Lb1: return 2.568249;
                     case XrayLine.Lb2: return 2.404386;
-                        //case XrayLine.Kabs: return 0.331045;
-                        //case XrayLine.L1abs: return 2.06783;
-                        //case XrayLine.L2abs: return 2.20483;
-                        //case XrayLine.L3abs: return 2.36294;
                 }
                 break;
 
@@ -6759,10 +6428,6 @@ new(4.86738014,0.319974401,4.58872425,
                     case XrayLine.La1: return 2.665740;
                     case XrayLine.Lb1: return 2.458947;
                     case XrayLine.Lb2: return 2.303312;
-                        //case XrayLine.Kabs: return 0.318445;
-                        //case XrayLine.L1abs: return 1.97803;
-                        //case XrayLine.L2abs: return 2.10533;
-                        //case XrayLine.L3abs: return 2.2610;
                 }
                 break;
 
@@ -6779,10 +6444,6 @@ new(4.86738014,0.319974401,4.58872425,
                     case XrayLine.La1: return 2.56163;
                     case XrayLine.Lb1: return 2.35580;
                     case XrayLine.Lb2: return 2.20900;
-                        //case XrayLine.Kabs: return 0.306485;
-                        //case XrayLine.L1abs: return 1.89343;
-                        //case XrayLine.L2abs: return 2.01243;
-                        //case XrayLine.L3abs: return 2.1660;
                 }
                 break;
 
@@ -6799,10 +6460,6 @@ new(4.86738014,0.319974401,4.58872425,
                     case XrayLine.La1: return 2.46304;
                     case XrayLine.Lb1: return 2.25883;
                     case XrayLine.Lb2: return 2.11943;
-                        //case XrayLine.Kabs: return 0.295184;
-                        //case XrayLine.L1abs: return 1.81413;
-                        //case XrayLine.L2abs: return 1.92553;
-                        //case XrayLine.L3abs: return 2.07913;
                 }
                 break;
 
@@ -6819,10 +6476,6 @@ new(4.86738014,0.319974401,4.58872425,
                     case XrayLine.La1: return 2.370526;
                     case XrayLine.Lb1: return 2.167008;
                     case XrayLine.Lb2: return 2.035448;
-                        //case XrayLine.Kabs: return 0.284534;
-                        //case XrayLine.L1abs: return 1.73903;
-                        //case XrayLine.L2abs: return 1.84403;
-                        //case XrayLine.L3abs: return 1.99673;
                 }
                 break;
 
@@ -6839,10 +6492,6 @@ new(4.86738014,0.319974401,4.58872425,
                     case XrayLine.La1: return 2.28223;
                     case XrayLine.Lb1: return 2.07973;
                     case XrayLine.Lb2: return 1.95593;
-                        //case XrayLine.Kabs: return 0.274314;
-                        //case XrayLine.L1abs: return 1.66743;
-                        //case XrayLine.L2abs: return 1.76763;
-                        //case XrayLine.L3abs: return 1.91913;
                 }
                 break;
 
@@ -6859,10 +6508,6 @@ new(4.86738014,0.319974401,4.58872425,
                     case XrayLine.La1: return 2.199873;
                     case XrayLine.Lb1: return 1.998432;
                     case XrayLine.Lb2: return 1.882206;
-                        //case XrayLine.Kabs: return 0.264644;
-                        //case XrayLine.L1abs: return 1.60022;
-                        //case XrayLine.L2abs: return 1.69533;
-                        //case XrayLine.L3abs: return 1.84573;
                 }
                 break;
 
@@ -6879,10 +6524,6 @@ new(4.86738014,0.319974401,4.58872425,
                     case XrayLine.La1: return 2.120673;
                     case XrayLine.Lb1: return 1.92053;
                     case XrayLine.Lb2: return 1.81215;
-                        //case XrayLine.Kabs: return 0.255534;
-                        //case XrayLine.L1abs: return 1.53812;
-                        //case XrayLine.L2abs: return 1.62712;
-                        //case XrayLine.L3abs: return 1.77613;
                 }
                 break;
 
@@ -6899,10 +6540,6 @@ new(4.86738014,0.319974401,4.58872425,
                     case XrayLine.La1: return 2.04683;
                     case XrayLine.Lb1: return 1.84683;
                     case XrayLine.Lb2: return 1.74553;
-                        //case XrayLine.Kabs: return 0.246814;
-                        //case XrayLine.L1abs: return 1.47842;
-                        //case XrayLine.L2abs: return 1.56322;
-                        //case XrayLine.L3abs: return 1.71173;
                 }
                 break;
 
@@ -6919,10 +6556,6 @@ new(4.86738014,0.319974401,4.58872425,
                     case XrayLine.La1: return 1.97653;
                     case XrayLine.Lb1: return 1.77683;
                     case XrayLine.Lb2: return 1.68303;
-                        //case XrayLine.Kabs: return 0.238414;
-                        //case XrayLine.L1abs: return 1.42232;
-                        //case XrayLine.L2abs: return 1.50232;
-                        //case XrayLine.L3abs: return 1.64972;
                 }
                 break;
 
@@ -6939,10 +6572,6 @@ new(4.86738014,0.319974401,4.58872425,
                     case XrayLine.La1: return 1.908839;
                     case XrayLine.Lb1: return 1.71065;
                     case XrayLine.Lb2: return 1.62371;
-                        //case XrayLine.Kabs: return 0.230483;
-                        //case XrayLine.L1abs: return 1.36922;
-                        //case XrayLine.L2abs: return 1.44452;
-                        //case XrayLine.L3abs: return 1.59162;
                 }
                 break;
 
@@ -6959,10 +6588,6 @@ new(4.86738014,0.319974401,4.58872425,
                     case XrayLine.La1: return 1.845092;
                     case XrayLine.Lb1: return 1.647484;
                     case XrayLine.Lb2: return 1.567168;
-                        //case XrayLine.Kabs: return 0.222913;
-                        //case XrayLine.L1abs: return 1.31902;
-                        //case XrayLine.L2abs: return 1.39052;
-                        //case XrayLine.L3abs: return 1.53682;
                 }
                 break;
 
@@ -6979,10 +6604,6 @@ new(4.86738014,0.319974401,4.58872425,
                     case XrayLine.La1: return 1.784481;
                     case XrayLine.Lb1: return 1.587466;
                     case XrayLine.Lb2: return 1.51401;
-                        //case XrayLine.Kabs: return 0.2156801;
-                        //case XrayLine.L1abs: return 1.27062;
-                        //case XrayLine.L2abs: return 1.33862;
-                        //case XrayLine.L3abs: return 1.48352;
                 }
                 break;
 
@@ -6999,10 +6620,6 @@ new(4.86738014,0.319974401,4.58872425,
                     case XrayLine.La1: return 1.7267720;
                     case XrayLine.Lb1: return 1.5302410;
                     case XrayLine.Lb2: return 1.46402;
-                        //case XrayLine.Kabs: return 0.208803;
-                        //case XrayLine.L1abs: return 1.22502;
-                        //case XrayLine.L2abs: return 1.28922;
-                        //case XrayLine.L3abs: return 1.43342;
                 }
                 break;
 
@@ -7019,10 +6636,6 @@ new(4.86738014,0.319974401,4.58872425,
                     case XrayLine.La1: return 1.671915;
                     case XrayLine.Lb1: return 1.475672;
                     case XrayLine.Lb2: return 1.415521;
-                        //case XrayLine.Kabs: return 0.202243;
-                        //case XrayLine.L1abs: return 1.18182;
-                        //case XrayLine.L2abs: return 1.24282;
-                        //case XrayLine.L3abs: return 1.38622;
                 }
                 break;
 
@@ -7039,10 +6652,6 @@ new(4.86738014,0.319974401,4.58872425,
                     case XrayLine.La1: return 1.619534;
                     case XrayLine.Lb1: return 1.423611;
                     case XrayLine.Lb2: return 1.370141;
-                        //case XrayLine.Kabs: return 0.195853;
-                        //case XrayLine.L1abs: return 1.14022;
-                        //case XrayLine.L2abs: return 1.19852;
-                        //case XrayLine.L3abs: return 1.34052;
                 }
                 break;
 
@@ -7059,10 +6668,6 @@ new(4.86738014,0.319974401,4.58872425,
                     case XrayLine.La1: return 1.569604;
                     case XrayLine.Lb1: return 1.374121;
                     case XrayLine.Lb2: return 1.326410;
-                        //case XrayLine.Kabs: return 0.189823;
-                        //case XrayLine.L1abs: return 1.1002640;
-                        //case XrayLine.L2abs: return 1.1548587;
-                        //case XrayLine.L3abs: return 1.2971383;
                 }
                 break;
 
@@ -7079,10 +6684,6 @@ new(4.86738014,0.319974401,4.58872425,
                     case XrayLine.La1: return 1.521993;
                     case XrayLine.Lb1: return 1.327000;
                     case XrayLine.Lb2: return 1.284559;
-                        //case XrayLine.Kabs: return 0.183943;
-                        //case XrayLine.L1abs: return 1.06132;
-                        //case XrayLine.L2abs: return 1.11372;
-                        //case XrayLine.L3abs: return 1.25532;
                 }
                 break;
 
@@ -7099,10 +6700,6 @@ new(4.86738014,0.319974401,4.58872425,
                     case XrayLine.La1: return 1.4763112;
                     case XrayLine.Lb1: return 1.281812;
                     case XrayLine.Lb2: return 1.2443048;
-                        //case XrayLine.Kabs: return 0.178373;
-                        //case XrayLine.L1abs: return 1.024685;
-                        //case XrayLine.L2abs: return 1.07452;
-                        //case XrayLine.L3abs: return 1.21552;
                 }
                 break;
 
@@ -7119,10 +6716,6 @@ new(4.86738014,0.319974401,4.58872425,
                     case XrayLine.La1: return 1.432922;
                     case XrayLine.Lb1: return 1.238599;
                     case XrayLine.Lb2: return 1.206618;
-                        //case XrayLine.Kabs: return 0.173023;
-                        //case XrayLine.L1abs: return 0.98941;
-                        //case XrayLine.L2abs: return 1.03712;
-                        //case XrayLine.L3abs: return 1.17732;
                 }
                 break;
 
@@ -7139,10 +6732,6 @@ new(4.86738014,0.319974401,4.58872425,
                     case XrayLine.La1: return 1.391231;
                     case XrayLine.Lb1: return 1.197288;
                     case XrayLine.Lb2: return 1.16981;
-                        //case XrayLine.Kabs: return 0.167873;
-                        //case XrayLine.L1abs: return 0.95581;
-                        //case XrayLine.L2abs: return 1.00142;
-                        //case XrayLine.L3abs: return 1.14082;
                 }
                 break;
 
@@ -7159,10 +6748,6 @@ new(4.86738014,0.319974401,4.58872425,
                     case XrayLine.La1: return 1.351300;
                     case XrayLine.Lb1: return 1.157827;
                     case XrayLine.Lb2: return 1.135337;
-                        //case XrayLine.Kabs: return 0.162922;
-                        //case XrayLine.L1abs: return 0.92361;
-                        //case XrayLine.L2abs: return 0.96711;
-                        //case XrayLine.L3abs: return 1.10582;
                 }
                 break;
 
@@ -7179,10 +6764,6 @@ new(4.86738014,0.319974401,4.58872425,
                     case XrayLine.La1: return 1.313060;
                     case XrayLine.Lb1: return 1.119917;
                     case XrayLine.Lb2: return 1.102017;
-                        //case XrayLine.Kabs: return 0.158182;
-                        //case XrayLine.L1abs: return 0.893213;
-                        //case XrayLine.L2abs: return 0.9341861;
-                        //case XrayLine.L3abs: return 1.0722721;
                 }
                 break;
 
@@ -7199,10 +6780,6 @@ new(4.86738014,0.319974401,4.58872425,
                     case XrayLine.La1: return 1.276419;
                     case XrayLine.Lb1: return 1.083546;
                     case XrayLine.Lb2: return 1.070236;
-                        //case XrayLine.Kabs: return 0.1535953;
-                        //case XrayLine.L1abs: return 0.863683;
-                        //case XrayLine.L2abs: return 0.9027409;
-                        //case XrayLine.L3abs: return 1.0401625;
                 }
                 break;
 
@@ -7219,10 +6796,6 @@ new(4.86738014,0.319974401,4.58872425,
                     case XrayLine.La1: return 1.241219;
                     case XrayLine.Lb1: return 1.048696;
                     case XrayLine.Lb2: return 1.03977;
-                        //case XrayLine.Kabs: return 0.149182;
-                        //case XrayLine.L1abs: return 0.83531;
-                        //case XrayLine.L2abs: return 0.87221;
-                        //case XrayLine.L3abs: return 1.00912;
                 }
                 break;
 
@@ -7239,10 +6812,6 @@ new(4.86738014,0.319974401,4.58872425,
                     case XrayLine.La1: return 1.207408;
                     case XrayLine.Lb1: return 1.015145;
                     case XrayLine.Lb2: return 1.010325;
-                        //case XrayLine.Kabs: return 0.144952;
-                        //case XrayLine.L1abs: return 0.80811;
-                        //case XrayLine.L2abs: return 0.84341;
-                        //case XrayLine.L3abs: return 0.97931;
                 }
                 break;
 
@@ -7259,10 +6828,6 @@ new(4.86738014,0.319974401,4.58872425,
                     case XrayLine.La1: return 1.175028;
                     case XrayLine.Lb1: return 0.982925;
                     case XrayLine.Lb2: return 0.98222;
-                        //case XrayLine.Kabs: return 0.1408821;
-                        //case XrayLine.L1abs: return 0.7818404;
-                        //case XrayLine.L2abs: return 0.8157395;
-                        //case XrayLine.L3abs: return 0.9511590;
                 }
                 break;
 
@@ -7279,10 +6844,6 @@ new(4.86738014,0.319974401,4.58872425,
                     case XrayLine.La1: return 1.143877;
                     case XrayLine.Lb1: return 0.951992;
                     case XrayLine.Lb2: return 0.955194;
-                        //case XrayLine.Kabs: return 0.136942;
-                        //case XrayLine.L1abs: return 0.75711;
-                        //case XrayLine.L2abs: return 0.78871;
-                        //case XrayLine.L3abs: return 0.92341;
                 }
                 break;
 
@@ -7299,10 +6860,6 @@ new(4.86738014,0.319974401,4.58872425,
                     case XrayLine.La1: return 1.113877;
                     case XrayLine.Lb1: return 0.92201;
                     case XrayLine.Lb2: return 0.929384;
-                        //case XrayLine.Kabs: return double.NaN;
-                        //case XrayLine.L1abs: return double.NaN;
-                        //case XrayLine.L2abs: return double.NaN;
-                        //case XrayLine.L3abs: return double.NaN;
                 }
                 break;
 
@@ -7319,10 +6876,6 @@ new(4.86738014,0.319974401,4.58872425,
                     case XrayLine.La1: return 1.085016;
                     case XrayLine.Lb1: return 0.89350;
                     case XrayLine.Lb2: return double.NaN;
-                        //case XrayLine.Kabs: return double.NaN;
-                        //case XrayLine.L1abs: return double.NaN;
-                        //case XrayLine.L2abs: return double.NaN;
-                        //case XrayLine.L3abs: return double.NaN;
                 }
                 break;
 
@@ -7339,10 +6892,6 @@ new(4.86738014,0.319974401,4.58872425,
                     case XrayLine.La1: return 1.057246;
                     case XrayLine.Lb1: return 0.86606;
                     case XrayLine.Lb2: return double.NaN;
-                        //case XrayLine.Kabs: return double.NaN;
-                        //case XrayLine.L1abs: return double.NaN;
-                        //case XrayLine.L2abs: return double.NaN;
-                        //case XrayLine.L3abs: return double.NaN;
                 }
                 break;
 
@@ -7359,10 +6908,6 @@ new(4.86738014,0.319974401,4.58872425,
                     case XrayLine.La1: return 1.030505;
                     case XrayLine.Lb1: return 0.83941;
                     case XrayLine.Lb2: return 0.8580;
-                        //case XrayLine.Kabs: return double.NaN;
-                        //case XrayLine.L1abs: return double.NaN;
-                        //case XrayLine.L2abs: return double.NaN;
-                        //case XrayLine.L3abs: return double.NaN;
                 }
                 break;
 
@@ -7379,10 +6924,6 @@ new(4.86738014,0.319974401,4.58872425,
                     case XrayLine.La1: return 1.004745;
                     case XrayLine.Lb1: return 0.813762;
                     case XrayLine.Lb2: return 0.835383;
-                        //case XrayLine.Kabs: return double.NaN;
-                        //case XrayLine.L1abs: return 0.64451;
-                        //case XrayLine.L2abs: return 0.67071;
-                        //case XrayLine.L3abs: return 0.80281;
                 }
                 break;
 
@@ -7399,10 +6940,6 @@ new(4.86738014,0.319974401,4.58872425,
                     case XrayLine.La1: return 0.979945;
                     case XrayLine.Lb1: return 0.78904;
                     case XrayLine.Lb2: return double.NaN;
-                        //case XrayLine.Kabs: return double.NaN;
-                        //case XrayLine.L1abs: return double.NaN;
-                        //case XrayLine.L2abs: return double.NaN;
-                        //case XrayLine.L3abs: return double.NaN;
                 }
                 break;
 
@@ -7419,10 +6956,6 @@ new(4.86738014,0.319974401,4.58872425,
                     case XrayLine.La1: return 0.9560826;
                     case XrayLine.Lb1: return 0.7652610;
                     case XrayLine.Lb2: return 0.7935516;
-                        //case XrayLine.Kabs: return 0.113072;
-                        //case XrayLine.L1abs: return 0.60591;
-                        //case XrayLine.L2abs: return 0.62991;
-                        //case XrayLine.L3abs: return 0.76071;
                 }
                 break;
 
@@ -7439,10 +6972,6 @@ new(4.86738014,0.319974401,4.58872425,
                     case XrayLine.La1: return 0.932854;
                     case XrayLine.Lb1: return 0.742331;
                     case XrayLine.Lb2: return 0.77371;
-                        //case XrayLine.Kabs: return double.NaN;
-                        //case XrayLine.L1abs: return double.NaN;
-                        //case XrayLine.L2abs: return double.NaN;
-                        //case XrayLine.L3abs: return double.NaN;
                 }
                 break;
 
@@ -7459,10 +6988,6 @@ new(4.86738014,0.319974401,4.58872425,
                     case XrayLine.La1: return 0.910653;
                     case XrayLine.Lb1: return 0.719995;
                     case XrayLine.Lb2: return 0.754692;
-                        //case XrayLine.Kabs: return 0.107232;
-                        //case XrayLine.L1abs: return 0.56951;
-                        //case XrayLine.L2abs: return 0.59191;
-                        //case XrayLine.L3abs: return 0.72231;
                 }
                 break;
 
@@ -7479,10 +7004,6 @@ new(4.86738014,0.319974401,4.58872425,
                     case XrayLine.La1: return 0.889141;
                     case XrayLine.Lb1: return 0.698488;
                     case XrayLine.Lb2: return 0.736241;
-                        //case XrayLine.Kabs: return 0.1044605;
-                        //case XrayLine.L1abs: return 0.55239;
-                        //case XrayLine.L2abs: return 0.57368;
-                        //case XrayLine.L3abs: return 0.704136;
                 }
                 break;
 
@@ -7499,10 +7020,6 @@ new(4.86738014,0.319974401,4.58872425,
                     case XrayLine.La1: return double.NaN;
                     case XrayLine.Lb1: return double.NaN;
                     case XrayLine.Lb2: return double.NaN;
-                        //case XrayLine.Kabs: return double.NaN;
-                        //case XrayLine.L1abs: return 0.53651;
-                        //case XrayLine.L2abs: return 0.55721;
-                        //case XrayLine.L3abs: return 0.68671;
                 }
                 break;
 
@@ -7519,10 +7036,6 @@ new(4.86738014,0.319974401,4.58872425,
                     case XrayLine.La1: return double.NaN;
                     case XrayLine.Lb1: return double.NaN;
                     case XrayLine.Lb2: return double.NaN;
-                        //case XrayLine.Kabs: return double.NaN;
-                        //case XrayLine.L1abs: return double.NaN;
-                        //case XrayLine.L2abs: return double.NaN;
-                        //case XrayLine.L3abs: return double.NaN;
                 }
                 break;
 
@@ -7539,10 +7052,6 @@ new(4.86738014,0.319974401,4.58872425,
                     case XrayLine.La1: return double.NaN;
                     case XrayLine.Lb1: return double.NaN;
                     case XrayLine.Lb2: return double.NaN;
-                        //case XrayLine.Kabs: return double.NaN;
-                        //case XrayLine.L1abs: return double.NaN;
-                        //case XrayLine.L2abs: return double.NaN;
-                        //case XrayLine.L3abs: return double.NaN;
                 }
                 break;
 
@@ -7559,10 +7068,6 @@ new(4.86738014,0.319974401,4.58872425,
                     case XrayLine.La1: return double.NaN;
                     case XrayLine.Lb1: return double.NaN;
                     case XrayLine.Lb2: return double.NaN;
-                        //case XrayLine.Kabs: return double.NaN;
-                        //case XrayLine.L1abs: return 0.49060;
-                        //case XrayLine.L2abs: return 0.50851;
-                        //case XrayLine.L3abs: return 0.63748;
                 }
                 break;
 
@@ -7579,10 +7084,6 @@ new(4.86738014,0.319974401,4.58872425,
                     case XrayLine.La1: return double.NaN;
                     case XrayLine.Lb1: return double.NaN;
                     case XrayLine.Lb2: return double.NaN;
-                        //case XrayLine.Kabs: return 0.091862;
-                        //case XrayLine.L1abs: return 0.476569;
-                        //case XrayLine.L2abs: return 0.493804;
-                        //case XrayLine.L3abs: return 0.62300;
                 }
                 break;
 
@@ -7599,10 +7100,6 @@ new(4.86738014,0.319974401,4.58872425,
                     case XrayLine.La1: return double.NaN;
                     case XrayLine.Lb1: return double.NaN;
                     case XrayLine.Lb2: return double.NaN;
-                        //case XrayLine.Kabs: return 0.0895878;
-                        //case XrayLine.L1abs: return double.NaN;
-                        //case XrayLine.L2abs: return double.NaN;
-                        //case XrayLine.L3abs: return double.NaN;
                 }
                 break;
 
@@ -7619,10 +7116,6 @@ new(4.86738014,0.319974401,4.58872425,
                     case XrayLine.La1: return 0.75674;
                     case XrayLine.Lb1: return 0.56619;
                     case XrayLine.Lb2: return 0.62369;
-                        //case XrayLine.Kabs: return 0.0873356;
-                        //case XrayLine.L1abs: return 0.44966;
-                        //case XrayLine.L2abs: return 0.46534;
-                        //case XrayLine.L3abs: return 0.59414;
                 }
                 break;
 
@@ -7679,9 +7172,6 @@ new(4.86738014,0.319974401,4.58872425,
     /// <returns></returns>
     public static double MassAbsorption(double energy, int z)
     {
-        //if (z < 1 || z > AtomStaticSub.MassAbsorptionCoefficient.Length || energy <= 0) return double.NaN;
-        //if (massAbsorption[z] != null && massAbsorption[z].TryGetValue(energy, out double val))
-        //    return val;
         // (260320Ch) 境界チェックを修正し、ConcurrentDictionary 経由でキャッシュを参照する
         if (z < 1 || z >= AtomStaticSub.MassAbsorptionCoefficient.Length || energy <= 0) return double.NaN;
 
@@ -7706,10 +7196,6 @@ new(4.86738014,0.319974401,4.58872425,
             for (int i = 0; i < coef.Length && position == int.MinValue; i++)
                 if (energy == coef[i].X)
                 {
-                    //if (massAbsorption[z] == null)
-                    //    massAbsorption[z] = [];
-                    //lock (lockObjForMassAbsorption)
-                    //    massAbsorption[z].Add(energy, coef[i].Y);
                     // (260320Ch) 重複計算や競合時も例外にしない
                     _ = GetMassAbsorptionCache(z).TryAdd(energy, coef[i].Y);
                     return coef[i].Y;
@@ -7754,12 +7240,6 @@ new(4.86738014,0.319974401,4.58872425,
         for (int j = 0; j < order + 1; j++)
             value += a[j, 0] * Math.Pow(c1 * energy + c2, j);
 
-        //if (massAbsorption[z] == null)
-        //    massAbsorption[z] = [];
-        //
-        //if (massAbsorption[z].Count < 1E4)
-        //    lock (lockObjForMassAbsorption)
-        //        massAbsorption[z].Add(energy, value);
         // (260320Ch) キャッシュ件数を抑えつつ、重複追加は TryAdd で吸収する
         cache = GetMassAbsorptionCache(z);
         if (cache.Count < 1E4)
@@ -7774,7 +7254,7 @@ new(4.86738014,0.319974401,4.58872425,
     /// <summary>平均イオン化エネルギー J [keV] (引数 mode で式を選択。既定 mode=0)
     /// <para>260606Cl: 旧 summary の出典対応 (mode1:Ducumb / mode2:Berger / mode3:Pouchou-Pichoir) は誤りだったので訂正。各 mode の実際の式と出典:</para>
     /// <para>mode 0: J = Z[14(1-exp(-0.1Z)) + 75.5/Z^(Z/7.5) - Z/(Z+100)] — Duncumb 式 (P. Duncumb, P. K. Shields-Mason and C. da Casa, 1969, Proc. 5th ICXOM, p.146; NBS SP-460 でも Duncumb equation として記載)。</para>
-    /// <para>mode 1: J = Z(9.76 + 58.8 Z^-0.19) — Berger and Seltzer (1964), "Tables of Energy Losses and Ranges of Electrons and Positrons", NASA SP-3012 / NAS-NRC Publ. 1133。</para>
+    /// <para>mode 1: J = 9.76·Z + 58.8·Z^-0.19 (= Z(9.76 + 58.8·Z^-1.19)) — Berger and Seltzer (1964), "Tables of Energy Losses and Ranges of Electrons and Positrons", NASA SP-3012 / NAS-NRC Publ. 1133。260718Cl 指数の誤記を訂正 (コードは元から正)。</para>
     /// <para>その他 (mode 2 等, 既定 else): J = Z[10.04 + 8.25 exp(-Z/11.22)] — Zeller (unpublished), J. Ruste and M. Gantois (1975), J. Phys. D 8, 872-890 経由; PAP モデル J.-L. Pouchou and F. Pichoir (1991), "Quantitative Analysis ... model PAP", in Electron Probe Quantitation, Plenum, pp.31-75 で採用。</para>
     /// </summary>
     /// <param name="z"></param>
@@ -7793,10 +7273,11 @@ new(4.86738014,0.319974401,4.58872425,
     /// 出典: H. A. Bethe (1930); EPMA での定式化は P. Duncumb and S. J. B. Reed (1968), NBS Special Publication 298, pp.133-154
     /// および S. J. B. Reed, "Electron Microprobe Analysis", Cambridge Univ. Press。260606Cl 出典追記</para>
     /// </summary>
-    /// <param name="z"></param>
-    /// <param name="line"></param>
-    /// <param name="incidentEnergy"></param>
+    /// <param name="ec">臨界励起エネルギー Ec [keV]</param>
+    /// <param name="e0">入射エネルギー E0 [keV]</param>
+    /// <param name="z">原子番号</param>
     /// <returns></returns>
+    // 260718Cl <param> を実シグネチャ (ec, e0, z) に合わせて修正 (旧: z/line/incidentEnergy)
     public static double StoppingFactor(double ec, double e0, int z)
         => z / AtomicWeight(z) * Math.Log(1.166 * (2 * e0 + ec) / 3 / AtomStatic.MeanExcitationEnergy(z));
     #endregion
@@ -7807,10 +7288,11 @@ new(4.86738014,0.319974401,4.58872425,
     /// "The calculation of stopping power and backscatter effects in electron probe microanalysis",
     /// NBS Special Publication 298, pp.133-154 ( https://nvlpubs.nist.gov/nistpubs/Legacy/SP/nbsspecialpublication298.pdf )。260606Cl 出典追記</para>
     /// </summary>
-    /// <param name="z"></param>
-    /// <param name="line"></param>
-    /// <param name="incidentEnergy"></param>
+    /// <param name="ec">臨界励起エネルギー Ec [keV]</param>
+    /// <param name="e0">入射エネルギー E0 [keV]</param>
+    /// <param name="z">原子番号</param>
     /// <returns></returns>
+    // 260718Cl <param> を実シグネチャ (ec, e0, z) に合わせて修正 (旧: z/line/incidentEnergy)
     public static double BackScatteredFactor(double ec, double e0, int z)
     {
         double u = ec / e0;
@@ -7838,8 +7320,6 @@ new(4.86738014,0.319974401,4.58872425,
         return double.NaN;
     }
     #endregion
-
-    //public static double NominalDensity(int z) => NominalDensity[z];
 
 
 
@@ -7924,7 +7404,6 @@ new(4.86738014,0.319974401,4.58872425,
                     var parts = str[i].Split([' '], StringSplitOptions.RemoveEmptyEntries);
                     absorp.Add(new PointD(double.Parse(parts[0]), double.Parse(parts[1])));
                 }
-            //sbAbsorption.AppendLine("new PointD(" + str[i].Replace("  ", ",") + ")" + (i == str.Count - 2 ? "" : ","));
             absorp.Sort();
             var pf = new List<Profile> { new() };
             for (int j = 0; j < absorp.Count; j++)

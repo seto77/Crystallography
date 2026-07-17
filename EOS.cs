@@ -1,7 +1,5 @@
-﻿﻿using Crystallography;
-using System;
+﻿using System;
 using System.Collections.Generic;
-using System.Windows.Forms;
 
 namespace Crystallography;
 
@@ -15,7 +13,7 @@ public enum IsothermalPressure
     BM3, BM4, Vinet, Vinet3, AP2, Keane
 }
 
-/// <summary>EOS の概要の説明です。</summary>
+/// <summary>状態方程式 (EOS)。等温圧縮 (BM3/BM4/Vinet/AP2/Keane) + 熱圧 (Mie-Grüneisen / T依存BM) による圧力計算と、Au/Pt/MgO/NaCl 等の標準物質 P-V-T スケール</summary>
 [Serializable()]
 public class EOS
 {
@@ -117,14 +115,7 @@ public class EOS
     public bool ShouldSerializeTemperature() => Temperature != 300;
     public bool ShouldSerializePressure() => Pressure != 0;
 
-    #endregion 
-
-    public EOS()
-    {
-        //
-        // TODO: コンストラクタ ロジックをここに追加してください。
-        //
-    }
+    #endregion
 
     public double GetPressure(double cellVolume)
     {
@@ -184,9 +175,9 @@ public class EOS
     /// <param name="gamma0">Grüneisen Parameter at Standard Volume</param>
     /// <param name="q">Volume dependence of Grüneisen parameter</param>
     /// <param name="t0">Standard temperature</param>
-    /// <param name="v0">Stamdard volume (nm^3)</param>
-    /// <param name="v">Target temperature</param>
-    /// <param name="t">Target volume (nm^3)</param>
+    /// <param name="v0">Standard volume (nm^3)</param>
+    /// <param name="v">Target volume (nm^3)</param>
+    /// <param name="t">Target temperature</param>
     /// <returns></returns>
     public static double MieGruneisen(double z, double n, double theta0, double gamma0, double q, double t0, double v0, double t, double v)
     {
@@ -211,9 +202,9 @@ public class EOS
     /// <param name="gamma0">Grüneisen Parameter at Standard Volume</param>
     /// <param name="q">Volume dependence of Grüneisen parameter</param>
     /// <param name="t0">Standard temperature</param>
-    /// <param name="v0">Stamdard volume (nm^3)</param>
-    /// <param name="v">Target temperature</param>
-    /// <param name="t">Target volume (nm^3)</param>
+    /// <param name="v0">Standard volume (nm^3)</param>
+    /// <param name="v">Target volume (nm^3)</param>
+    /// <param name="t">Target temperature</param>
     /// <param name="a">Yokoo et al などで使われている変化球</param>
     /// <param name="b">Yokoo et al などで使われている変化球</param>
     /// <returns></returns>
@@ -252,7 +243,7 @@ public class EOS
         return 3 * k0 * (1 - x) / Math.Pow(x, 5) * Math.Exp(C0 * (1 - x)) * (1 + x * C2 * (1 - x));
     }
 
-    /// <summary>3次のBurchiNurnaghan</summary>
+    /// <summary>3次のBirch-Murnaghan</summary>
     /// <param name="k0"></param>
     /// <param name="k_prime"></param>
     /// <param name="v0"></param>
@@ -261,11 +252,10 @@ public class EOS
     public static double BirchMurnaghan3rd(double k0, double k_prime, double v0, double v)
         => BirchMurnaghan3rd(k0, k_prime, v0 / v);
 
-    /// <summary>3次のBurchiNurnaghan</summary>
+    /// <summary>3次のBirch-Murnaghan</summary>
     /// <param name="k0"></param>
     /// <param name="k_prime"></param>
-    /// <param name="v0"></param>
-    /// <param name="v"></param>
+    /// <param name="V0perV"></param>
     /// <returns></returns>
     public static double BirchMurnaghan3rd(double k0, double k_prime, double V0perV) =>
         1.5 * k0 * (Math.Pow(V0perV, 7.0 / 3) - Math.Pow(V0perV, 5.0 / 3)) * (1 - 0.75 * (4 - k_prime) * (Math.Pow(V0perV, 2.0 / 3) - 1));
@@ -274,14 +264,6 @@ public class EOS
     {
         double a = Math.Pow(V0perV, 1.0 / 3.0), a2 = a * a, a4 = a2 * a2;
         return 1.5 * k0 * (a4 * a * (a2 - 1)) * (1 + 0.75 * (kp - 4) * (a2 - 1) + (9 * k0 * kpp + 9 * kp * kp - 63 * kp + 143) / 24.0 * (a4 - 2 * a2 + 1));
-
-        //double b1 = k0 * kpp + (kp - 4) * (kp - 5) + 59.0 / 9.0;
-        //double b2 = 3 * k0 * kpp + (kp - 4) * (3 * kp - 13) + 129.0 / 9.0;
-        //double b3 = 3 * k0 * kpp + (kp - 4) * (3 * kp - 11) + 105.0 / 9.0;
-        //double b4 = k0 * kpp + (kp - 4) * (kp - 3) + 35.0 / 9.0;
-
-        //return 9.0 / 16 * k0 * (-b1 * Math.Pow(a, 5) + b2 * Math.Pow(a, 7) - b3 * Math.Pow(a, 9) + b4 * Math.Pow(a, 11));
-
     }
 
     public static double InverseThirdBirchMurnaghan(double k0, double k_prime, double pressure)
@@ -337,7 +319,7 @@ public class EOS
         double temp = 0;
         int num = 100000;
         for (int i = 1; i <= num; i++)
-        {//10000分割で数値積分
+        {//num(=100000)分割で数値積分
             z = (i + 0.5) * x / num;
             f = z * z * z / (Math.Exp(z) - 1);
             temp += f;
@@ -465,7 +447,7 @@ public class EOS
     public static double NaClB2_Ueda(double A, double T)
     {
         double V = A * A * A;
-        double V0 = 24.76 / 6.0221367 * 10; ;
+        double V0 = 24.76 / 6.0221367 * 10;
 
         double Kt0 = 28.45;//Kt0
         double KpT0 = 5.16;// K'tO
@@ -551,7 +533,7 @@ public class EOS
 
         double KTperT = -0.020;
         double KTperP = 4.88;
-        double KT = 258 + KTperT * (T - T0); ;
+        double KT = 258 + KTperT * (T - T0);
         double a = 2.6E-5, b = 1.81E-9, c = -0.67;
 
         double v0 = V0 * Math.Exp(a * (T - T0) + b / 2 * (T * T - T0 * T0) - c * (1 / T - 1 / T0));
@@ -559,130 +541,6 @@ public class EOS
 
         return 3.0 / 2.0 * KT * (Math.Pow(V0perV, 7.0 / 3.0) - Math.Pow(V0perV, 5.0 / 3.0)) * (1 - 3.0 / 4.0 * (4 - KTperP) * (Math.Pow(V0perV, 2.0 / 3.0) - 1));
     }
-
-    #region Brownの正攻法の解き方
-    /*
-    public static double NaClB1_Brown(double a, double T)
-    {
-        Profile dest = new Profile();
-        //単位格子の体積 / 単位格子の質量
-        double V = a * a * a / (22.99 + 35.45) * 6.0221367 / 4 * 100;
-        //double V = 0.4500;
-        dest.pt = new Pt[] { new Pt(V, 0) };
-
-        //まず zero-kelvin のstatic compressionカーブから 0Kの圧力を求める
-        List<Pt> pt = new List<Pt>();
-        pt.Add(new Pt(0.3143, 23.12));
-        pt.Add(new Pt(0.3256, 19.33));
-        pt.Add(new Pt(0.3369, 16.03));
-        pt.Add(new Pt(0.3482, 13.17));
-        pt.Add(new Pt(0.3595, 10.07));
-        pt.Add(new Pt(0.3709, 8.57));
-        pt.Add(new Pt(0.3822, 6.73));
-        pt.Add(new Pt(0.3935, 5.14));
-        pt.Add(new Pt(0.4048, 3.77));
-        pt.Add(new Pt(0.4161, 2.60));
-        pt.Add(new Pt(0.4274, 1.59));
-        pt.Add(new Pt(0.4387, 0.71));
-        pt.Add(new Pt(0.4500, -0.05));
-        pt.Add(new Pt(0.4613, -0.69));
-        pt.Add(new Pt(0.4726, -1.23));
-        pt.Add(new Pt(0.4839, -1.68));
-        pt.Add(new Pt(0.4953, -2.05));
-        pt.Add(new Pt(0.5066, -2.35));
-        pt.Add(new Pt(0.5179, -2.59));
-        pt.Add(new Pt(0.5292, -2.80));
-        pt.Add(new Pt(0.5405, -2.97));
-
-        Profile controlPoints = new Profile();
-        controlPoints.pt = pt.ToArray();
-
-        double P0 = Spline.GetSpline(controlPoints, dest).pt[0].Y;
-
-        pt.Clear();
-        pt.Add(new Pt(0.3143, 0.93));//446,402,402,388,375
-        pt.Add(new Pt(0.3256, 0.98));
-        pt.Add(new Pt(0.3369, 1.03));
-        pt.Add(new Pt(0.3482, 1.08));
-        pt.Add(new Pt(0.3595, 1.13));
-        pt.Add(new Pt(0.3709, 1.19));
-        pt.Add(new Pt(0.3822, 1.24));
-        pt.Add(new Pt(0.3935, 1.29));
-        pt.Add(new Pt(0.4048, 1.35));
-        pt.Add(new Pt(0.4161, 1.40));
-        pt.Add(new Pt(0.4274, 1.46));
-        pt.Add(new Pt(0.4387, 1.51));
-        pt.Add(new Pt(0.4500, 1.55));
-        pt.Add(new Pt(0.4613, 1.59));
-        pt.Add(new Pt(0.4726, 1.62));
-        pt.Add(new Pt(0.4839, 1.63));
-        pt.Add(new Pt(0.4953, 1.63));
-        pt.Add(new Pt(0.5066, 1.63));
-        pt.Add(new Pt(0.5179, 1.63));
-        pt.Add(new Pt(0.5292, 1.63));
-        pt.Add(new Pt(0.5405, 1.63));
-
-        controlPoints.pt = pt.ToArray();
-        double Gamma = Spline.GetSpline(controlPoints, dest).pt[0].Y;
-
-        pt.Clear();
-        pt.Add(new Pt(0.3143, 446));
-        pt.Add(new Pt(0.3256, 431));
-        pt.Add(new Pt(0.3369, 417));
-        pt.Add(new Pt(0.3482, 402));
-        pt.Add(new Pt(0.3595, 388));
-        pt.Add(new Pt(0.3709, 375));
-        pt.Add(new Pt(0.3822, 361));
-        pt.Add(new Pt(0.3935, 348));
-        pt.Add(new Pt(0.4048, 336));
-        pt.Add(new Pt(0.4161, 323));
-        pt.Add(new Pt(0.4274, 311));
-        pt.Add(new Pt(0.4387, 299));
-        pt.Add(new Pt(0.4500, 288));
-        pt.Add(new Pt(0.4613, 277));
-        pt.Add(new Pt(0.4726, 266));
-        pt.Add(new Pt(0.4839, 256));
-        pt.Add(new Pt(0.4953, 247));
-        pt.Add(new Pt(0.5066, 238));
-        pt.Add(new Pt(0.5179, 229));
-        pt.Add(new Pt(0.5292, 221));
-        pt.Add(new Pt(0.5405, 214));
-
-        controlPoints.pt = pt.ToArray();
-        double Theta = Spline.GetSpline(controlPoints, dest).pt[0].Y;
-
-        double x = Theta / T;
-        V = a * a * a * 6.0221367 / 4 / 10000;//1molあたりの体積に直す
-        //V = a * a * a   / 10000;//1molあたりの体積に直す
-        double Pth = 0;
-        double Eth = 9 * 4 * 8.31451 * T / x / x / x * integ(x);
-        if (T > 0)
-            Pth = Gamma / V * Eth / 1000000000;
-        //Pth = gamma / V * DebyeFunction(Theta,T) /100000;
-
-        return P0 + Pth;
-    }
-
-    static double DebyeFunction(double Theta, double T)
-    { 		//∫z^3/(e^z-1)dz 0～xの積分を求める関数
-        double x = Theta / T;
-        double z = 0;
-        double f = 0;
-        double temp = 0;
-        for (int i = 0; i < 100000; i++)
-        {//10000分割で数値積分
-            z = (i + 0.5) * x / 100000;
-            f = z * z * z * z * Math.Exp(z) / (Math.Exp(z) - 1) / (Math.Exp(z) - 1);
-            temp += f;
-        }
-        return 3 / x / x * temp / 100000;
-    }
-    */
-    #endregion Brownの正攻法の解き方
-
-    #region
-
-    #endregion
 
     #region AuJamiesonの定義
 
@@ -1236,40 +1094,6 @@ new( [0.08,0.1,0.12,0.14,0.16,0.18,0.2,0.22,0.24,0.26,0.28,0.3,0.32,0.34,0.36,0.
             InitializeSpline(ref SplineAuYokoo, Table_Au_Yokoo); // 260604Cl lazy 初期化 (deveropper+Clipboard 焼き込みコード除去)
         }
         return GetPressureFromSplineMethods(SplineAuYokoo, 1 - v / v0, T);
-        /*
-        double a = 0.45;
-        double b = 4.2;
-        double theta = 170;
-        double gamma0 = 2.96;
-        double b0 = 167.5;
-        double b_prime=5.79;
-
-        double p_ph = MieGruneisen(4, 1, theta, gamma0, 0, 300, v0/1000, T, v / 1000, a, b);
-
-        double Pc = ThirdBirchMurnaghan(b0, b_prime, v0 / v);
-
-        double T0 = 300;
-
-        double q_ph = a * b * Math.Pow(v / v0, b) / (1 + a * (Math.Pow(v / v0, b) - 1));
-        double gamma_ph = gamma0 * (1 + a * (Math.Pow(v / v0, b) - 1));
-
-        double theta_d = theta * Math.Pow(v / v0, -(1 - a) * gamma0) * Math.Exp(-(gamma_ph - gamma0) / b);
-
-        double x = theta_d / T;
-        double x0 = theta_d / T0;
-
-        double d3 = 1 / x / x / x * integ(x);
-        double d3_0 = 1 / x0 / x0 / x0 * integ(x0);
-        double e_ph = 9 * 8.31451 * T * d3;
-        double e_ph0 = 9 * 8.31451 * T0 * d3_0;
-
-        double p_ph = gamma_ph / v * e_ph;
-        double p_ph_0 = gamma_ph / v * e_ph0;
-
-        //double deltaPth = (p_ph - p_ph_0) / 1000000;
-
-        return Pc + p_ph;
-        */
     }
 
     #region Yokoo, Ptのてーぶる　

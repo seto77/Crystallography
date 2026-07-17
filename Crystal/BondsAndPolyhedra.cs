@@ -143,8 +143,6 @@ public partial class Bonds
     /// <returns></returns>
     public static Bonds[] GetVestaBonds(IEnumerable<string> elementNames)
     {
-        //var list = elementNames.ToList().Distinct().ToArray();
-        //var list2 = list.Select(l => l.Split(" ", true)[1]).ToList();
         // (260320Ch) 元素記号の逆引きを先に作り、Contains / IndexOf の繰り返しを避ける
         var list = elementNames.Distinct().ToArray();
         var symbolToElement = new Dictionary<string, string>(list.Length, StringComparer.Ordinal);

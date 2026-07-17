@@ -32,7 +32,6 @@ public class Crystal : IEquatable<Crystal>, ICloneable, IComparable<Crystal>
         return crystal;
     }
 
-    //public int CompareTo(Crystal o) => Residual.CompareTo(o.Residual);
     // (260320Ch) null 比較でも安全に扱えるようにする
     public int CompareTo(Crystal o) => o is null ? 1 : Residual.CompareTo(o.Residual);
 
@@ -42,15 +41,6 @@ public class Crystal : IEquatable<Crystal>, ICloneable, IComparable<Crystal>
         if (o == null)
             return false;
         // 260605Cl 旧実装は最初の1原子が一致した時点で return true となり、全原子一致を確認していなかった（バグ）。
-        //if (A == o.A && B == o.B && C == o.C && Alpha == o.Alpha && Beta == o.Beta && Gamma == o.Gamma &&
-        //           SymmetrySeriesNumber == o.SymmetrySeriesNumber && Name == o.Name && JournalName == o.JournalName && PublSectionTitle == o.PublSectionTitle && JournalName == o.JournalName && ChemicalFormulaSum == o.ChemicalFormulaSum
-        //           && Density == o.Density)
-        //    if (Atoms.Length == o.Atoms.Length)
-        //        for (int l = 0; l < Atoms.Length; l++)
-        //            if (Atoms[l].X == o.Atoms[l].X && Atoms[l].Y == o.Atoms[l].Y && Atoms[l].Z == o.Atoms[l].Z &&
-        //                Atoms[l].Occ == o.Atoms[l].Occ && Atoms[l].Label == o.Atoms[l].Label && Atoms[l].SubNumberElectron == o.Atoms[l].SubNumberElectron)
-        //                return true;
-        //return false;
         if (A != o.A || B != o.B || C != o.C || Alpha != o.Alpha || Beta != o.Beta || Gamma != o.Gamma ||
             SymmetrySeriesNumber != o.SymmetrySeriesNumber || Name != o.Name || JournalName != o.JournalName ||
             PublSectionTitle != o.PublSectionTitle || ChemicalFormulaSum != o.ChemicalFormulaSum || Density != o.Density)
@@ -75,7 +65,6 @@ public class Crystal : IEquatable<Crystal>, ICloneable, IComparable<Crystal>
     {
         // 260605Cl 旧実装は Atoms 配列の参照ハッシュを含むため、内容が等しい結晶でも別ハッシュになり Equals と非整合だった。
         // Equals が一致を要求するフィールドのみで構成し、配列参照を排除して整合性とゼロ割り当てを確保する。
-        //return new { CellValue, Atoms, JournalInformation }.GetHashCode();
         return HashCode.Combine(A, B, C, Alpha, Beta, Gamma, SymmetrySeriesNumber, Atoms.Length);
     }
 
@@ -98,7 +87,6 @@ public class Crystal : IEquatable<Crystal>, ICloneable, IComparable<Crystal>
     public static bool operator >=(Crystal left, Crystal right) => left is null ? right is null : left.CompareTo(right) >= 0;
     #endregion
 
-    //public override string ToString() => Name.ToString();
     // (260320Ch) Name 未設定時の NullReferenceException を防ぐ
     public override string ToString() => Name ?? string.Empty;
 
@@ -183,20 +171,22 @@ public class Crystal : IEquatable<Crystal>, ICloneable, IComparable<Crystal>
     public double A, B, C, Alpha, Beta, Gamma;
 
     /// <summary>格子定数の誤差</summary>
-    public double A_err, B_err, C_err, Alpha_err, Beta_err, Gamma_err;  //格子定数の誤差
+    public double A_err, B_err, C_err, Alpha_err, Beta_err, Gamma_err;
     public (double A, double B, double C, double Alpha, double Beta, double Gamma) CellValue
     {
         get => (A, B, C, Alpha, Beta, Gamma);
         set { A = value.A; B = value.B; C = value.C; Alpha = value.Alpha; Beta = value.Beta; Gamma = value.Gamma; }
     }
 
+    /// <summary>初期格子定数</summary>
     [NonSerialized]
     [XmlIgnore]
-    public double InitialA, InitialB, InitialC, InitialAlpha, InitialBeta, InitialGamma;    //格子定数
+    public double InitialA, InitialB, InitialC, InitialAlpha, InitialBeta, InitialGamma;
 
+    /// <summary>初期格子定数の誤差</summary>
     [NonSerialized]
     [XmlIgnore]
-    public double InitialA_err, InitialB_err, InitialC_err, InitialAlpha_err, InitialBeta_err, InitialGamma_err;    //格子定数の誤差
+    public double InitialA_err, InitialB_err, InitialC_err, InitialAlpha_err, InitialBeta_err, InitialGamma_err;
 
     [NonSerialized]
     [XmlIgnore]
@@ -299,7 +289,7 @@ public class Crystal : IEquatable<Crystal>, ICloneable, IComparable<Crystal>
     /// <summary>密度 (g/cc)</summary>
     [NonSerialized]
     [XmlIgnore]
-    public double Density, Density_err;//密度
+    public double Density, Density_err;
 
     [NonSerialized]
     [XmlIgnore]
@@ -556,7 +546,7 @@ public class Crystal : IEquatable<Crystal>, ICloneable, IComparable<Crystal>
     {
         A = cry.A; B = cry.B; C = cry.C; Alpha = cry.Alpha; Beta = cry.Beta; Gamma = cry.Gamma;
         A_err = cry.A_err; B_err = cry.B_err; C_err = cry.C_err; Alpha_err = cry.Alpha_err; Beta_err = cry.Beta_err; Gamma_err = cry.Gamma_err;
-        Name = cry.Name; Note = cry.Note; /*color = col;*/ Argb = cry.Argb;
+        Name = cry.Name; Note = cry.Note; Argb = cry.Argb;
         SetAxis();
 
         SymmetrySeriesNumber = cry.SymmetrySeriesNumber;
@@ -665,9 +655,7 @@ public class Crystal : IEquatable<Crystal>, ICloneable, IComparable<Crystal>
 
         var (SinAlpha, CosAlpha) = Math.SinCos(Alpha);
         var (SinBeta, CosBeta) = Math.SinCos(Beta);
-        var (SinGamma, CosGamma) = Math.SinCos(Gamma); 
-        //double SinAlpha = Math.Sin(Alpha), SinBeta = Math.Sin(Beta), SinGamma = Math.Sin(Gamma);
-        //double CosAlpha = Math.Cos(Alpha), CosBeta = Math.Cos(Beta), CosGamma = Math.Cos(Gamma);
+        var (SinGamma, CosGamma) = Math.SinCos(Gamma);
         double a2 = A * A; double b2 = B * B; var c2 = C * C;
 
         C_Axis = new Vector3DBase(0, 0, C);
@@ -979,7 +967,6 @@ public class Crystal : IEquatable<Crystal>, ICloneable, IComparable<Crystal>
         var gMax = 1 / dMin;
         var gMin = 1 / dMax;
 
-        //var shift = directions.Select(dir => (MatrixInverse * dir).Length).Max();
         // (260322Ch) 小さな LINQ 割り当てを避けるため、6方向を直接走査して最大シフトを求める
         var shift = 0.0;
         foreach (var dir in directions)
@@ -990,17 +977,14 @@ public class Crystal : IEquatable<Crystal>, ICloneable, IComparable<Crystal>
         }
 
         var maxNum = _maxNum;
-        //var outer = new List<(int H, int K, int L, double len)>() { (0, 0, 0, 0) };
         // (260322Ch) frontier は sorted List のまま使い、毎回の Min/FindLastIndex を避けて先頭から処理する
         var outer = new List<(int H, int K, int L, double len)>() { (0, 0, 0, 0) };
         var whole = new HashSet<(int H, int K, int L)>((int)(maxNum * 8)) { (0, 0, 0) }; //全ての hkl を検索するため、composeを使えないことに注意
         var listPlane = new List<Plane>((int)(maxNum * 1.5));
 
-        //while (listPlane.Count < maxNum && (minG = outer.Min(o => o.len)) < gMax)
         while (listPlane.Count < maxNum && outer.Count > 0 && outer[0].len < gMax)
         {
             var minG = outer[0].len;
-            //var end = outer.FindLastIndex(o => o.len - minG < shift * 2);
             // (260322Ch) sort 済みの先頭から閾値を超えるまで進めればよいので、全体走査を避ける
             var end = 1;
             var expandLimit = minG + shift * 2;
@@ -1020,7 +1004,6 @@ public class Crystal : IEquatable<Crystal>, ICloneable, IComparable<Crystal>
                         if (len < gMax && len > gMin)
                         {
                             var root = SymmetryStatic.IsRootPlane((h, k, l), Symmetry, out var indices);
-                            //var extinction = Symmetry.CheckExtinctionRule(h, k, l);
                             // (260322Ch) 禁制面を除外しない場合は消滅則チェックを省略して割り当てを減らす
                             var hasExtinction = excludeForbiddenPlane && Symmetry.HasExtinction(h, k, l);//260605Cl 旧: CheckExtinctionRule(h,k,l).Length != 0 (bool判定のみなので割り当て無しのHasExtinctionへ)
                             if ((!excludeEquivalentPlane || root) && !hasExtinction)
@@ -1040,38 +1023,9 @@ public class Crystal : IEquatable<Crystal>, ICloneable, IComparable<Crystal>
                     }
                 }
             }
-            //outer.RemoveRange(0, end + 1);
-            //outer.Sort((e1, e2) => e1.len.CompareTo(e2.len));
             outer.RemoveRange(0, end);
             outer.Sort((e1, e2) => e1.len.CompareTo(e2.len));
         }
-
-        #region お蔵入り
-        //if (dMin < (A + B + C) / 3 / 30)
-        //    dMin = (A + B + C) / 3 / 30;
-        //var hMax = (int)(A / dMin);
-        //var kMax = (int)(B / dMin);
-        //var lMax = (int)(C / dMin);
-
-
-
-        //for (int h = -hMax; h <= hMax; h++)//hは0からはじめる
-        //    for (int k = -kMax; k <= kMax; k++)
-        //        for (int l = -lMax; l <= lMax; l++)
-        //            if ((d = GetLengthPlane(h, k, l)) > dMin && d < dMax)
-        //                if (!excludeEquivalentPlane || SymmetryStatic.IsRootIndex((h, k, l), Symmetry, ref multi))
-        //                {
-        //                    var temp = new Plane { IsRootIndex = SymmetryStatic.IsRootIndex((h, k, l), Symmetry, ref multi) };
-        //                    if (!excludeForbiddenPlane || (temp.strCondition = Symmetry.CheckExtinctionRule(h, k, l)).Length == 0)
-        //                    {
-        //                        temp.Multi[0] = multi;
-        //                        temp.h = h; temp.k = k; temp.l = l; temp.d = d;
-        //                        temp.strHKL = $"{h} {k} {l}";
-        //                        temp.IsRootIndex = true;
-        //                        listPlane.Add(temp);
-        //                    }
-        //                }
-        #endregion
 
         listPlane.Sort();
 
@@ -1135,7 +1089,6 @@ public class Crystal : IEquatable<Crystal>, ICloneable, IComparable<Crystal>
             }
         }
 
-        //var temp_plane = listPlane.ToArray();
         for (int n = 0; n < listPlane.Count; n++)
         {
             listPlane[n].F2[0] = -1;
@@ -1159,12 +1112,11 @@ public class Crystal : IEquatable<Crystal>, ICloneable, IComparable<Crystal>
                 listPlane[n].Intensity = Plane[n].Intensity;
                 listPlane[n].observedIntensity = Plane[n].observedIntensity;
             }
-        //Plane.Clear();
         Plane = listPlane;
     }
     #endregion 面ベクトルの計算
 
-    # region plene[]のd値を計算する。計算する面の範囲は変えない
+    #region Plane[]のd値を計算する。計算する面の範囲は変えない
     public void SetPlanes()
     {
         for (int i = 0; i < Plane.Count; i++)
@@ -1189,7 +1141,6 @@ public class Crystal : IEquatable<Crystal>, ICloneable, IComparable<Crystal>
     /// <summary>dMin以上の逆格子ベクトルを計算し、wavesorceに従って、構造因子を計算</summary>
     /// <param name="dMin"></param>
     /// <param name="wavesource"></param>
-    /// <param name="excludeLatticeCondition"></param>
     public void SetVectorOfG(double dMin, WaveSource wavesource, int maxNum = 25000, double xrayEnergyKeV = double.NaN, bool anomalousDispersion = true)  => SetVectorOfG(dMin, double.PositiveInfinity, wavesource, maxNum, xrayEnergyKeV, anomalousDispersion);//260606Cl xrayEnergyKeV 追加 / anomalousDispersion 追加(既定ON=正しい物理。false で従来動作)
 
     /// <summary>dMin以上、dMax以下の範囲で逆格子ベクトルを計算し、wavesorceに従って、構造因子を計算</summary>
@@ -1209,34 +1160,10 @@ public class Crystal : IEquatable<Crystal>, ICloneable, IComparable<Crystal>
         double gMax = 1 / dMin, gMax2 = gMax * gMax;
 
         #region directionを初期化
-        var directions = new[] { (1, 0, 0), (0, 1, 0), (0, -1, 0), (0, 0, 1), (0, 0, -1) }.ToFrozenSet();
-
-        //if (excludeLatticeCondition)
-        //{
-        //if (Symmetry.LatticeTypeStr == "F")
-        //    directions = new [] { (1, 1, 1), (1, 1, -1), (1, -1, 1), (1, -1, -1), (-1, 1, 1), (-1, 1, -1), (-1, -1, 1), (-1, -1, -1) };
-        //else if (Symmetry.LatticeTypeStr == "A")
-        //    directions = new [] { (0, 1, 1), (0, 1, -1), (0, -1, 1), (0, -1, -1), (1, 0, 0), (-1, 0, 0) };
-        //else if (Symmetry.LatticeTypeStr == "B")
-        //    directions = new [] { (1, 0, 1), (1, 0, -1), (-1, 0, 1), (-1, 0, -1), (0, 1, 0), (0, -1, 0) };
-        //else if (Symmetry.LatticeTypeStr == "C")
-        //    directions = new [] { (1, 1, 0), (1, -1, 0), (-1, 1, 0), (-1, -1, 0), (0, 0, 1), (0, 0, -1) };
-        //else if (Symmetry.LatticeTypeStr == "I")
-        //    directions = new [] { (1, 1, 0), (1, -1, 0), (-1, 1, 0), (-1, -1, 0), (0, 1, 1), (0, 1, -1), (0, -1, 1), (0, -1, -1), (1, 0, 1), (1, 0, -1), (-1, 0, 1), (-1, 0, -1) };
-        //else if (Symmetry.LatticeTypeStr == "R" && Symmetry.SpaceGroupHMsubStr == "H")
-        //    directions = new [] { (1, 0, 1), (0, -1, 1), (-1, 1, 1), (-1, 0, -1), (0, 1, -1), (1, -1, -1) };
-        //else if (Symmetry.CrystalSystemStr == "trigonal" || Symmetry.CrystalSystemStr == "hexagonal")
-        //    directions = new [] { (1, 0, 0), (-1, 0, 0), (0, 1, 0), (0, -1, 0), (1, -1, 0), (-1, 1, 0), (0, 0, 1), (0, 0, -1) };
-        //else
-        //directions = new[] { (1, 0, 0), (0, 1, 0), (0, -1, 0), (0, 0, 1), (0, 0, -1) };//(-1, 0, 0)は除いておく
-        //}
-        //else
-        // directions = new[] { (1, 0, 0), (0, 1, 0), (0, -1, 0), (0, 0, 1), (0, 0, -1) };//(-1, 0, 0)は除いておく
-
+        var directions = new[] { (1, 0, 0), (0, 1, 0), (0, -1, 0), (0, 0, 1), (0, 0, -1) }.ToFrozenSet();//(-1, 0, 0)は除いておく
         #endregion
 
         //260605Cl 小さな LINQ 割り当てを避け、各方向を直接走査して最大シフトを求める(SetPlanes と同形・shift値は bit 一致)
-        //var shift = directions.Select(dir => (MatrixInverse * dir).Length).Max();
         var shift = 0.0;
         foreach (var dir in directions)
         {
@@ -1245,7 +1172,6 @@ public class Crystal : IEquatable<Crystal>, ICloneable, IComparable<Crystal>
                 shift = candidate;
         }
 
-        //var maxNum = 250000;
         var zeroKey = (255 << 20) + (255 << 10) + 255;
         var gHash = new HashSet<int>((int)(maxNum * 1.5)) { zeroKey };
         var gList = new List<(int key, double x, double y, double z, double len)>((int)(maxNum * 1.5)) { (zeroKey, 0, 0, 0, 0) };
@@ -1282,23 +1208,10 @@ public class Crystal : IEquatable<Crystal>, ICloneable, IComparable<Crystal>
                 gList.RemoveRange(0, i);
         }
         VectorOfG = new Vector3D[gList.Count * 2];
-        //260605Cl 生成・F計算・最大値reductionを1つの Parallel.For に融合(旧: 生成→F→Max→正規化の最大4走査 → 2走査)。
-        // Xray/Electron は散乱因子が実数 → F(-G)=conj(F(G)) が解析的に厳密(異方性ADP含む)なので -側を Conjugate で埋め、構造因子計算をほぼ半減。
-        // Neutron は複素散乱長があり得るため両側を別計算する。globalMax>0 ガードで旧 0/0=NaN を回避。
-        //【旧実装(commit 442e0d90)】
-        //Parallel.For(0, gList.Count, i => {
-        //    var (key, x, y, z, glen) = gList[i]; var (h, k, l) = decomposeKey(key);
-        //    var rule = Symmetry.GetFirstExtinctionRule(h, k, l);
-        //    VectorOfG[i*2]   = new Vector3D(x, y, z, false)    { Index=(h,k,l),    d=1/glen, ExtinctionRule=rule, Text=$"{h} {k} {l}" };
-        //    VectorOfG[i*2+1] = new Vector3D(-x, -y, -z, false) { Index=(-h,-k,-l), d=1/glen, ExtinctionRule=rule, Text=$"{-h} {-k} {-l}" };
-        //});
-        //if (VectorOfG != null && VectorOfG.Length > 0 && wavesource != WaveSource.None) {
-        //    Parallel.ForEach(VectorOfG, _g => { _g.F = _g.ExtinctionRule is null ? GetStructureFactor(wavesource, Atoms, _g.Index, _g.Length2 / 4.0) : 0; _g.RawIntensity = _g.F.MagnitudeSquared(); });
-        //    var maxIntensity = VectorOfG.Max(v => v.RawIntensity);
-        //    Parallel.ForEach(VectorOfG, _g => _g.RelativeIntensity = _g.RawIntensity / maxIntensity);
-        //}
+        //260605Cl 生成・F計算・最大値reductionを1つの Parallel.For に融合(旧: 生成→F→Max→正規化の最大4走査。旧実装は親 ReciPro リポ (junction時代) の commit 442e0d90)。
+        //260606Cl ±両側は常に独立計算: X線異常分散(f'/f'')有効時は F(−G)≠conj(F(+G)) (Bijvoet 差) のため、−側を Conjugate で埋める共役融合は撤廃。
+        // Neutron は複素散乱長があり得るため元々両側独立。globalMax>0 ガードで旧 0/0=NaN を回避。
         bool calcF = wavesource != WaveSource.None;
-        //260606Cl ±共役融合は撤廃。X線異常分散(f'/f'')有効時は F(−G)≠conj(F(+G)) (Bijvoet 差) のため、両 member を常に独立計算する(計算コストは非クリティカル・判定ロジックも削減)。
         //260605Cl Neutron散乱因子は s2非依存なので site ごとに1回だけ事前計算し全反射で使い回す(反射ごとの isotope 加重和を回避)
         var neutronFactors = wavesource == WaveSource.Neutron ? Atoms.Select(a => a.GetAtomicScatteringFactorForNeutron()).ToArray() : null;
         //260606Cl X線異常分散 f'/f'' は (Z,energy) のみ依存=全反射でループ不変 → サイトごとに1回だけ事前計算(neutronFactors と同型)。Parallel.For 内の native 呼び(反射数×元素数)を回避。anomalousDispersion=false なら null(=分散なし=従来動作)。
@@ -1371,7 +1284,7 @@ public class Crystal : IEquatable<Crystal>, ICloneable, IComparable<Crystal>
         Parallel.ForEach(VectorOfG_KikuchiLine, _g =>
         {
             _g.F = _g.ExtinctionRule is null ? GetStructureFactor(wavesource, Atoms, _g.Index, _g.Length2 / 4.0) : 0;//260605Cl 旧: _g.Extinction.Length == 0
-            _g.RawIntensity = _g.F.MagnitudeSquared();// _g.F.Magnitude2();
+            _g.RawIntensity = _g.F.MagnitudeSquared();
         });
 
         var maxIntensity = VectorOfG_KikuchiLine.Max(v => v.RawIntensity);
@@ -1397,7 +1310,6 @@ public class Crystal : IEquatable<Crystal>, ICloneable, IComparable<Crystal>
         var list = new List<(double D, double intensity)>(maxNum * 2);
 
         //260605Cl 小さな LINQ 割り当てを避け、各方向を直接走査して最大シフトを求める(SetPlanes と同形・shift値は bit 一致)
-        //var shift = directions.Select(dir => (MatrixInverse * dir).Length).Max();
         var shift = 0.0;
         foreach (var dir in directions)
         {
@@ -1574,7 +1486,6 @@ public class Crystal : IEquatable<Crystal>, ICloneable, IComparable<Crystal>
     /// <returns></returns>
     public static Complex GetStructureFactor(WaveSource wave, Atoms[] atomsArray, (double h, double k, double l) index, double s2, double xrayEnergyKeV = double.NaN, bool anomalousDispersion = true)//260606Cl xrayEnergyKeV 追加(X線異常分散用, NaN=分散なし) / anomalousDispersion 追加(既定ON。false で従来動作)
     {
-        #region
         (double h, double k, double l) = index;
         //s2 = (sin(theta)/ramda)^2 = 1 / 4 /d^2
         if (atomsArray.Length == 0)
@@ -1638,8 +1549,7 @@ public class Crystal : IEquatable<Crystal>, ICloneable, IComparable<Crystal>
                 }
             }
         }
-        return new Complex(realSum, imagSum);// Complex(Real, Inverse);
-        #endregion
+        return new Complex(realSum, imagSum);
     }
     /// <summary>構造散乱因子(熱散漫散乱込み)のF (複素数) を求める s2の単位はnm^-2</summary>
     /// <param name="wave"></param>
@@ -1651,7 +1561,6 @@ public class Crystal : IEquatable<Crystal>, ICloneable, IComparable<Crystal>
     /// <returns></returns>
     private static Complex GetStructureFactor(WaveSource wave, Atoms[] atomsArray, (int h, int k, int l) index, double s2, Complex[] neutronFactors = null, double xrayEnergyKeV = double.NaN, (double fp, double fpp)[] xrayDispFactors = null, bool anomalousDispersion = true)//260606Cl xrayEnergyKeV/xrayDispFactors 追加(X線異常分散用, NaN/null=分散なし。xrayDispFactors は SetVectorOfG が事前計算したループ不変 f'/f'') / anomalousDispersion 追加(既定ON。false で従来動作)
     {
-        #region
         //260605Cl 実数振幅高速パス(Xray/Electron)＋Neutron散乱因子の事前計算対応で再構成。旧構造は直上の public double 版(未最適化)と同形、変更前は commit 87045348 参照。
         // neutronFactors: wave==Neutron のとき呼び出し側(SetVectorOfG)が atomsArray と同順で事前計算した散乱因子(s2非依存)。null なら従来どおり都度計算。
         (int h, int k, int l) = index;
@@ -1736,8 +1645,7 @@ public class Crystal : IEquatable<Crystal>, ICloneable, IComparable<Crystal>
                 }
             }
         }
-        return new Complex(realSum, imagSum);// Complex(Real, Inverse);
-        #endregion
+        return new Complex(realSum, imagSum);
     }
     /// <summary>構造散乱因子(熱散漫散乱込み)のF (複素数) を求める s2の単位はnm^-2</summary>
     /// <param name="index"></param>
@@ -1753,7 +1661,6 @@ public class Crystal : IEquatable<Crystal>, ICloneable, IComparable<Crystal>
     /// <param name="ramda">波長</param>
     public void SetPeakIntensity(WaveSource waveSource, WaveColor waveColor, double ramda, Profile whiteProfile, double xrayEnergyKeV = double.NaN, bool anomalousDispersion = true)//260606Cl xrayEnergyKeV/anomalousDispersion 追加(X線異常分散用, 既定ON。energy 未指定 or false で従来=分散なし)
     {
-        #region
         if (Atoms == null || Atoms.Length == 0 || Plane == null || Plane.Count == 0) return;
 
         //260606Cl X線異常分散 f'/f'' を事前計算(Z,energy のみ依存=ループ不変。SetVectorOfG と同型)。条件を満たさなければ null=従来動作(分散なし)。
@@ -1766,8 +1673,6 @@ public class Crystal : IEquatable<Crystal>, ICloneable, IComparable<Crystal>
             var sinTheta = ramda / 2 / Plane[i].d;
             var twoTheta = Plane[i].XCalc = 2 * Math.Asin(sinTheta);
             var (sinTwoTheta,cosTwoTheta)= Math.SinCos(twoTheta);
-            //var cosTwoTheta = 1 - 2 * sinTheta * sinTheta;
-            //var sinTwoTheta = Math.Sin(twoTheta);
             
             var s = Plane[i].strHKL.Split('+', true);
             Plane[i].F2 = new double[s.Length];
@@ -1816,12 +1721,10 @@ public class Crystal : IEquatable<Crystal>, ICloneable, IComparable<Crystal>
         var max = Plane.Max(p => p.RawIntensity);
         for (int i = 0; i < Plane.Count; i++)
         {
-            //Plane[i].XCalc = 2 * Math.Asin(ramda / 2 / Plane[i].d) / Math.PI * 180;
             Plane[i].Intensity = Plane[i].RawIntensity / max;
             for (int j = 0; j < Plane[i].eachIntensity.Length; j++)
                 Plane[i].eachIntensity[j] /= max;
         }
-        #endregion
     }
 
     #endregion
@@ -1863,7 +1766,6 @@ public class Crystal : IEquatable<Crystal>, ICloneable, IComparable<Crystal>
     /// <summary>現在の原子種と格子定数から、組成と密度を計算します。</summary>
     public void GetFormulaAndDensity()
     {
-        #region
         if (Atoms == null || Atoms.Length == 0) return;
 
         var dic = new Dictionary<string, double>();
@@ -1967,7 +1869,6 @@ public class Crystal : IEquatable<Crystal>, ICloneable, IComparable<Crystal>
             WeightPerFormula = TotalWeightPerUnitCell / ChemicalFormulaZ;
         }
         return;
-        #endregion
     }
 
     #endregion

@@ -223,7 +223,6 @@ namespace Crystallography
         public static void FindWaveLengthFromFixedPixelSize(List<EllipseParameter> ellipse, double FilmDistance,
             ref double WaveLength, ref double WaveLengthDev)
         {
-            //int n = 0;
             double tempTotal = 0;
             double weightTotal = 0;
             double weight, temp, diff;
@@ -351,42 +350,6 @@ namespace Crystallography
             return Discrepancy / (L2 - L1) * L1;
         }
 
-        /*
-        public static void FindPixelSize(RingParameter[] p, double WaveLength, double[] FilmDistance, ref double PixelSize,ref double PixelSizeDev)
-        {
-            //int n = 0;
-            double tempTotal = 0;
-            double weightTotal = 0;
-            List<double> PS = new List<double>();
-            double temp,weight,sigma;
-            for (int i = 0; i < p.Length; i++)
-            {
-                if (p[i].IsChecked)
-                {
-                    temp = FilmDistance[0] / p[i].millimeter1 * Math.Tan(2 * Math.Asin(WaveLength / 2 / p[i].d));
-                    sigma = FilmDistance[0] / (p[i].millimeter1 + 0.1) * Math.Tan(2 * Math.Asin(WaveLength / 2 / p[i].d));
-                    weight = 1 / sigma / sigma;
-                    tempTotal += temp * weight;
-                    weightTotal += weight;
-                    PS.Add(temp);
-
-                    if (!p[i].Is1ImageMode)
-                    {
-                        temp = FilmDistance[1] / p[i].millimeter2 * Math.Tan(2 * Math.Asin(WaveLength / 2 / p[i].d));
-                        sigma = FilmDistance[1] / (p[i].millimeter2 + 0.1) * Math.Tan(2 * Math.Asin(WaveLength / 2 / p[i].d));
-                        weight = 1 / sigma / sigma;
-                        tempTotal += temp * weight;
-                        weightTotal += weight;
-                        PS.Add(temp);
-                    }
-                }
-            }
-            if (weightTotal > 0 && !double.IsInfinity(weightTotal))
-            {
-                PixelSize = tempTotal / weightTotal;
-                PixelSizeDev = Statistics.Deviation(PS.ToArray()) / Math.Sqrt(PS.Count);
-            }
-        }*/
     }
 
     public class EllipseParameter
@@ -398,12 +361,6 @@ namespace Crystallography
         public bool IsValid;
         public double d;
         public string strHKL;
-
-        public EllipseParameter()
-        {
-            millimeters.Clear();
-            points.Clear();
-        }
 
         public double GetAverageRadius()
         {
