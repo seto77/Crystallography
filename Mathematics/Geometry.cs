@@ -529,7 +529,20 @@ public static class Geometry
     /// <summary>与えられた点(右回りか左回り)で囲まれる面積を返す</summary>
     /// <param name="pt"></param>
     /// <returns></returns>
-    public static double GetPolygonalArea(PointD[] pt) => GetPolygonalArea(pt.Select(p => (p.X, p.Y)).ToArray());
+    //public static double GetPolygonalArea(PointD[] pt) => GetPolygonalArea(pt.Select(p => (p.X, p.Y)).ToArray());
+    public static double GetPolygonalArea(PointD[] pt) => GetPolygonalArea((ReadOnlySpan<PointD>)pt); // 260718Cl: タプル配列への変換割り当てを除去し PointD を直接読む Span 版へ委譲 (Ring の画素ループ等の hot path)
+
+    /// <summary>与えられた点(右回りか左回り)で囲まれる面積を返す (PointD の Span 版・割り当てなし)</summary>
+    public static double GetPolygonalArea(ReadOnlySpan<PointD> pt) // 260718Cl 追加
+    {
+        if (pt.Length < 3) return 0;
+
+        double area = 0;
+        for (int i = 0; i < pt.Length - 1; i++)
+            area += (pt[i].X - pt[i + 1].X) * (pt[i].Y + pt[i + 1].Y);
+        area += (pt[^1].X - pt[0].X) * (pt[^1].Y + pt[0].Y);
+        return Math.Abs(area * 0.5);
+    }
 
     /// <summary>与えられた点(右回りか左回り)で囲まれる面積を返す</summary>
     /// <param name="pt"></param>

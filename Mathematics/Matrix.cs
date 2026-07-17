@@ -864,13 +864,14 @@ public class Vector3DBase : ICloneable
     public static Vector3DBase Average(IEnumerable<Vector3DBase> vectors)
     {
         double x = 0, y = 0, z = 0;
+        int count = 0;
         foreach (var v in vectors)
         {
             x += v.X;
             y += v.Y;
             z += v.Z;
+            count++; // 260718Cl: 末尾の vectors.Count() による二重列挙を解消 (single-use な IEnumerable でも正しく動く)。加算順・count は不変
         }
-        var count = vectors.Count();
         return new Vector3DBase(x / count, y / count, z / count);
     }
 
