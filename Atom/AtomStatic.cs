@@ -2747,7 +2747,9 @@ new(4.86738014,0.319974401,4.58872425,
             Valence = valence;
             Method = methods;
             Prms = [(a1, b1), (a2, b2), (a3, b3), (a4, b4)];
-            Factor = new Func<double, double>(s2 => (Prms.Sum(p => p.A * Math.Exp(-s2 * 0.01 * p.B)) + c) * 0.1);
+            //Factor = new Func<double, double>(s2 => (Prms.Sum(p => p.A * Math.Exp(-s2 * 0.01 * p.B)) + c) * 0.1);
+            var prms = Prms; // 260718Cl: Factor 呼び出し毎の LINQ Sum (クロージャ+列挙子割り当て) を順序保存ループに置換。加算順は Enumerable.Sum と同一でビット一致
+            Factor = s2 => { double sum = 0; foreach (var (A, B) in prms) sum += A * Math.Exp(-s2 * 0.01 * B); return (sum + c) * 0.1; };
         }
 
         public ES(double a1, double b1, double a2, double b2, double a3, double b3, double a4, double b4, double a5, double b5, double c, int valence, string methods)
@@ -2755,7 +2757,9 @@ new(4.86738014,0.319974401,4.58872425,
             Valence = valence;
             Method = methods;
             Prms = [(a1, b1), (a2, b2), (a3, b3), (a4, b4), (a5, b5)];
-            Factor = new Func<double, double>(s2 => (Prms.Sum(p => p.A * Math.Exp(-s2 * 0.01 * p.B)) + c) * 0.1);
+            //Factor = new Func<double, double>(s2 => (Prms.Sum(p => p.A * Math.Exp(-s2 * 0.01 * p.B)) + c) * 0.1);
+            var prms = Prms; // 260718Cl: LINQ Sum → 順序保存ループ (ビット一致)
+            Factor = s2 => { double sum = 0; foreach (var (A, B) in prms) sum += A * Math.Exp(-s2 * 0.01 * B); return (sum + c) * 0.1; };
         }
 
         /// <summary>電子線用のコンストラクタ (Five gaussian)</summary>
@@ -2764,7 +2768,9 @@ new(4.86738014,0.319974401,4.58872425,
             Valence = valence;
             Method = methods;
             Prms = [(a1, b1), (a2, b2), (a3, b3), (a4, b4), (a5, b5)];
-            Factor = new Func<double, double>(s2 => Prms.Sum(p => p.A * Math.Exp(-s2 * 0.01 * p.B)) * 0.1);//0.1倍や0.01倍は単位の修正
+            //Factor = new Func<double, double>(s2 => Prms.Sum(p => p.A * Math.Exp(-s2 * 0.01 * p.B)) * 0.1);//0.1倍や0.01倍は単位の修正
+            var prms = Prms; // 260718Cl: LINQ Sum → 順序保存ループ (ビット一致)。0.1倍や0.01倍は単位の修正
+            Factor = s2 => { double sum = 0; foreach (var (A, B) in prms) sum += A * Math.Exp(-s2 * 0.01 * B); return sum * 0.1; };
         }
 
         /// <summary>電子線用のコンストラクタ (Eight gaussian)</summary>
@@ -2774,7 +2780,9 @@ new(4.86738014,0.319974401,4.58872425,
             Valence = 0;
             Method = "";
             Prms = [(a1, b1), (a2, b2), (a3, b3), (a4, b4), (a5, b5), (a6, b6), (a7, b7), (a8, b8)];
-            Factor = new Func<double, double>(s2 => Prms.Sum(p => p.A * Math.Exp(-s2 * 0.01 * p.B)) * 0.1);//0.1倍や0.01倍は単位の修正
+            //Factor = new Func<double, double>(s2 => Prms.Sum(p => p.A * Math.Exp(-s2 * 0.01 * p.B)) * 0.1);//0.1倍や0.01倍は単位の修正
+            var prms = Prms; // 260718Cl: LINQ Sum → 順序保存ループ (ビット一致)。0.1倍や0.01倍は単位の修正
+            Factor = s2 => { double sum = 0; foreach (var (A, B) in prms) sum += A * Math.Exp(-s2 * 0.01 * B); return sum * 0.1; };
         }
 
         /// <summary>電子線用のコンストラクタ (3 lorentzian + 3 gaussian)
@@ -2831,14 +2839,30 @@ new(4.86738014,0.319974401,4.58872425,
 
             s2 *= 0.01;//単位を修正
             m *= 100;//単位を修正
-            return Prms.Sum(p1 => Prms.Sum(p2 =>
+            // 260718Cl: 呼び出し毎のネスト LINQ Sum (p1 毎のクロージャ+列挙子) を二重ループに置換。
+            //           inner を p1 毎に分離して Sum-of-Sum と同じ結合順を保つ (sum==0 は term=0 加算のまま) のでビット一致
+            //return Prms.Sum(p1 => Prms.Sum(p2 => { ... })) * Math.PI * gamma * 2 / k0;
+            double total = 0;
+            foreach (var p1 in Prms)
             {
-                var sum = p1.B + p2.B;
-                if (sum == 0) return 0;
-                var product = p1.B * p2.B;
-                var sum2m = sum + 2 * m;
-                return p1.A * p2.A * (Math.Exp(-s2 * product / sum) / sum - Math.Exp(-s2 * (product - m * m) / sum2m) / sum2m);
-            })) * Math.PI * gamma * 2 / k0;
+                double inner = 0;
+                foreach (var p2 in Prms)
+                {
+                    var sum = p1.B + p2.B;
+                    double term;
+                    if (sum == 0)
+                        term = 0;
+                    else
+                    {
+                        var product = p1.B * p2.B;
+                        var sum2m = sum + 2 * m;
+                        term = p1.A * p2.A * (Math.Exp(-s2 * product / sum) / sum - Math.Exp(-s2 * (product - m * m) / sum2m) / sum2m);
+                    }
+                    inner += term;
+                }
+                total += inner;
+            }
+            return total * Math.PI * gamma * 2 / k0;
         }
        
 
@@ -7184,7 +7208,8 @@ new(4.86738014,0.319974401,4.58872425,
         for (int j = AtomStaticSub.MassAbsorptionCoefficient[z].Length - 1; j >= 0 && segNo == 0; j--)//上位から順に探す
             if (energy >= AtomStaticSub.MassAbsorptionCoefficient[z][j][0].X)
                 segNo = j;
-        PointD[] coef = [.. AtomStaticSub.MassAbsorptionCoefficient[z][segNo].Select(e => new PointD(e))];
+        //PointD[] coef = [.. AtomStaticSub.MassAbsorptionCoefficient[z][segNo].Select(e => new PointD(e))];
+        var coef = AtomStaticSub.MassAbsorptionCoefficient[z][segNo]; // 260718Cl: セグメント全体を PointD[] にコピーせず tuple 配列 (X/Y 名前付き) を直接参照。値・比較は完全同一
 
         //点の位置を探す
         int position = int.MinValue;//この値と この値+1 の間のindexにxが存在する
@@ -7204,31 +7229,31 @@ new(4.86738014,0.319974401,4.58872425,
                     position = i;
 
         int pointNum = 3, order = 2;
-        var pt = new List<PointD>();
-        //次に、この点から前後にPointNumだけ近い点を探す
-        for (int i = Math.Max(position - pointNum, 0); i < Math.Min(position + pointNum + 1, coef.Length); i++)
-            pt.Add(coef[i]);
-        while (pt.Count > pointNum)
-            pt.RemoveAt(Math.Abs(pt[0].X - energy) > Math.Abs(pt[^1].X - energy) ? 0 : pt.Count - 1);
+        // 260718Cl: 前後 pointNum 点を List<PointD> に集めて両端トリムしていた処理を coef 上の窓 [lo, hi) インデックスに置換。
+        //           RemoveAt(0)→lo++, RemoveAt(末尾)→hi-- と等価で、選ばれる点・順序は完全同一 (割り当てゼロ)
+        int lo = Math.Max(position - pointNum, 0), hi = Math.Min(position + pointNum + 1, coef.Length);
+        while (hi - lo > pointNum)
+            if (Math.Abs(coef[lo].X - energy) > Math.Abs(coef[hi - 1].X - energy)) lo++; else hi--;
+        int count = hi - lo;
 
-        if (pt.Count < pointNum)
+        if (count < pointNum)
         {
-            pointNum = pt.Count;
+            pointNum = count;
             if (order > pointNum - 1)
                 order = pointNum - 1;
         }
 
         //計算精度のため、xの範囲を1から+2に変換する 式は X = c1 x + c2;
-        double c1 = 1.0 / (pt[^1].X - pt[0].X);
-        double c2 = 1 - pt[0].X * c1;
+        double c1 = 1.0 / (coef[hi - 1].X - coef[lo].X);
+        double c2 = 1 - coef[lo].X * c1;
 
         var m = new DenseMatrix(pointNum, order + 1);
         var y = new DenseMatrix(pointNum, 1);
         for (int j = 0; j < pointNum; j++)
         {
-            y[j, 0] = pt[j].Y;
+            y[j, 0] = coef[lo + j].Y;
             for (int i = 0; i < order + 1; i++)
-                m[j, i] = Math.Pow(c1 * pt[j].X + c2, i);
+                m[j, i] = Math.Pow(c1 * coef[lo + j].X + c2, i);
         }
         double value = 0;
 
