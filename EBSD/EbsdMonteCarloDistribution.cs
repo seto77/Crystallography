@@ -20,10 +20,11 @@ public sealed class EbsdMonteCarloDistribution
     /// <summary>model 2 用。detector bin の absolute 強度を保った depth-slice 重み。260325Ch 追加</summary>
     public double[,][] BinAbsoluteSliceWeights { get; }
 
+    // 260718Cl: smpTilt 引数を削除。BSE の Vec は MC 内で試料傾斜を織り込んで lab 座標系で追跡され、検出器 (detY/detZ/detTilt も lab 座標系) への投影に試料傾斜は不要 (Codex 検証済: 適用すると二重計上)。
     public EbsdMonteCarloDistribution(
         (double Depth, V3 Vec, double Energy)[] bseList,
         double beamEnergy,
-        double smpTilt, double detTilt,
+        double detTilt,
         double detY, double detZ, double detR,
         double[] energies, double[] depths,
         int binCount = 8)
