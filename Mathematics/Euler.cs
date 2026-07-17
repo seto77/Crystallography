@@ -29,7 +29,8 @@ public class Euler
 
         var (sinTilt1, cosTilt1) = Math.SinCos(tilt1);
         var (sinTilt2, cosTilt2) = Math.SinCos(tilt2);
-        Vector3D V = new(-sinTilt1, -cosTilt1 * sinTilt2, cosTilt1 * cosTilt1);
+        //Vector3D V = new(-sinTilt1, -cosTilt1 * sinTilt2, cosTilt1 * cosTilt1);
+        Vector3D V = new(-sinTilt1, -cosTilt1 * sinTilt2, cosTilt1 * cosTilt2); // 260718Cl: Z 成分が cosTilt1*cosTilt1 で |V|≠1 になるコピペバグを修正。2軸版/3軸版 (下方) は全て cosTilt*cosAzimuth の形で、単一軸版では tilt2 が azimuth の役を担う
 
         double Phi, phi1, phi2, PhiStart, PhiEnd, phi1Start, phi1End, phi2Start, phi2End, step, PhiBest, phi1Best, phi2Best;
         double dev, devTemp;

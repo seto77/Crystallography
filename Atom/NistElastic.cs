@@ -214,7 +214,8 @@ internal static class NistElasticPchipResource
     private const string ResourceName = "Crystallography.NistElasticPchip.bin"; // csproj の EmbeddedResource LogicalName と一致
     private const int Magic = 0x3350454E; // "NEP3"
 
-    private static byte[] _blob;
+    //private static byte[] _blob;
+    private static volatile byte[] _blob; // 260718Cl: double-checked locking の publish フィールド。volatile なしでは弱メモリモデル (win-arm64) で _blob 非 null を観測しつつ _index 等の先行 store が未可視になり得るため volatile 化 (writer は _blob を最後に代入している)
     private static Dictionary<int, (int Offset, int Length)> _index;
     private static int _codec, _method, _energyCount, _knotCount, _payloadStart;
     private static readonly object _sync = new();

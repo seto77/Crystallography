@@ -14,9 +14,10 @@ public static class DiffractionOptics
             var ct = fi.CreationTime;//作成日時の取得
             var lwt = fi.LastWriteTime;//更新日時の取得
 
-            var sr = new StreamReader(filename);
-            var str = sr.ReadToEnd();
-            sr.Close();
+            //var sr = new StreamReader(filename);
+            //var str = sr.ReadToEnd();
+            //sr.Close();
+            var str = File.ReadAllText(filename); // 260718Cl: 例外時に StreamReader がリークしファイルロックが残るため置換 (既定エンコーディング挙動は同一)
 
             var replace = new Func<string, string, string, string>((string srcString, string oldValue, string newValue)
                 => srcString.Replace("<" + oldValue, "<" + newValue).Replace("</" + oldValue, "</" + newValue));
@@ -33,10 +34,10 @@ public static class DiffractionOptics
             str = replace(str, "SACLA_EH5_FootY", "FootY");
             str = replace(str, "SACLA_EH5_CameraLength2", "CameraLength2");
 
-            var sw = new StreamWriter(filename);
-
-            sw.Write(str);
-            sw.Close();
+            //var sw = new StreamWriter(filename);
+            //sw.Write(str);
+            //sw.Close();
+            File.WriteAllText(filename, str); // 260718Cl: 同上 (StreamWriter リーク対策)
 
             fi = new FileInfo(filename)//FileInfoオブジェクトを作成
             {
@@ -45,10 +46,11 @@ public static class DiffractionOptics
             };
 
             System.Xml.Serialization.XmlSerializer serializer = new(typeof(Parameter));
-            var fs = new FileStream(filename, FileMode.Open);
-
+            //var fs = new FileStream(filename, FileMode.Open);
+            //var prm = (Parameter)serializer.Deserialize(fs);
+            //fs.Close();
+            using var fs = new FileStream(filename, FileMode.Open); // 260718Cl: Deserialize 例外時 (不正XML) に FileStream がリークし、ユーザーがファイル修正後に再読込できなくなるため using 化
             var prm = (Parameter)serializer.Deserialize(fs);
-            fs.Close();
 
             return prm;
         }

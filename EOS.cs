@@ -1405,17 +1405,21 @@ new([4.5, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19], [0, 0, -438.37
     //与えられたパラメータから温度ごとのスプライン曲線を設定する関数
     private static void InitializeSpline(ref Spline[] Splines, double[][] param)
     {
-        Splines = new Spline[param[0].Length - 1];
-        for (int i = 0; i < Splines.Length; i++)
+        // 260718Cl: ref 先の static フィールドへ new 直後に代入すると、lazy 初期化 (MgO_Jamieson) の並行初回呼び出しで
+        //           他スレッドが null 要素・T 未設定の配列を観測し得るため、ローカルで充填してから最後に一括 publish する (数値・順序は不変)
+        //Splines = new Spline[param[0].Length - 1];
+        var tmp = new Spline[param[0].Length - 1];
+        for (int i = 0; i < tmp.Length; i++)
         {
             List<PointD> pt = [];
             for (int j = 0; j < param.Length - 1; j++)
                 if (!double.IsNaN(param[j + 1][i + 1]))
                     pt.Add(new PointD(param[j + 1][0], param[j + 1][i + 1]));
             var p = new Profile { Pt = pt };
-            Splines[i] = Spline.GetSpline(p);
-            Splines[i].T = param[0][i + 1];
+            tmp[i] = Spline.GetSpline(p);
+            tmp[i].T = param[0][i + 1];
         }
+        Splines = tmp;
     }
 
     //温度ごとのスプライン曲線から各温度の圧力を計算し、それをスプラインで返す

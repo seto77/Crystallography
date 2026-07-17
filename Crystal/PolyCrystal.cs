@@ -758,6 +758,7 @@ public class Crystallite
                     var tempIntensity = Intensity2 / subDiv3 * SolidAngle[num];
 
                     var angle = (int)((Math.Atan2(Y, X) / Math.PI + 1.0) * SpotShapesAngleDivision / 2);
+                    if (angle >= SpotShapesAngleDivision) angle = 0; // 260718Cl: Atan2==π ちょうどのとき angle==SpotShapesAngleDivision となり配列範囲外 (2π 周期なので 0 と同値)
                     foreach (var index in SpotShapesSortedIndex[gNum][angle]) //現在のピクセル位置から、周辺強度を計算していって、半値幅の2倍以上になったら終了
                     {
                         int pos = startPosition + index;
@@ -793,8 +794,8 @@ public class Crystallite
             double remain = ratio > 0 ? sec * (1 - ratio) / ratio : 0;
             ProgressChanged?.Invoke(this, new ProgressChangedEventArgs((int)(100.0 * ratio), new object[] { ratio, $"Elapsed: {sec:f2}sec.  Remaining: {remain:f2}sec." }));
 
-            Parallel.For(TotalCrystalline / div * i, Math.Min(TotalCrystalline, TotalCrystalline / div * (i + 1)), num =>
-            //for(int num= TotalCrystalline / div * i; num< Math.Min(TotalCrystalline, TotalCrystalline / div * (i + 1)); i++)
+            //Parallel.For(TotalCrystalline / div * i, Math.Min(TotalCrystalline, TotalCrystalline / div * (i + 1)), num =>
+            Parallel.For((int)((long)TotalCrystalline * i / div), (int)((long)TotalCrystalline * (i + 1) / div), num => // 260718Cl: chunk 幅 TotalCrystalline/div の切り捨てにより、TotalCrystalline が div で割り切れないとき末尾の結晶子 (最大 div-1 個) が計算されず強度に寄与しないバグを修正。この境界式は全域をちょうど被覆する
             {
                 if (ValidIndex[num] == null)
                     ValidIndex[num] = searchValidIndex(num);

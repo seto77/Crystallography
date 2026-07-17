@@ -778,6 +778,9 @@ public class MonteCarlo
             TrySampleMottElasticCosTheta(kev, nistEnergyIndex, out var cosTheta)) // 260401Cl
             return cosTheta;
 
+        if (double.IsNaN(α))
+            α = coeff0 / kev; // 260718Cl: Mott 経路では ScreeningParameter=NaN が渡ってくるため、PCHIP サンプリング失敗時の Rutherford フォールバックで cosθ=NaN → 方向ベクトルが無音で NaN 汚染されていた。非 Mott 分岐 (ComputeTransportParameters) と同式で α を再計算するガードを追加 (正常経路は bit 不変)
+
         var rnd = Rnd.NextDouble();
         return 1 - 2 * α * rnd / (1 + α - rnd);
     }

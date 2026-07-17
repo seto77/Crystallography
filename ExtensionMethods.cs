@@ -73,7 +73,8 @@ public static class MathnetEx
     public static bool TryInverse(this Matrix<double> mat, out Matrix matInv)
     {
         matInv = (Matrix)mat.TryInverse();
-        return mat != null;
+        //return mat != null;
+        return matInv != null; // 260718Cl: mat はレシーバで常に非 null のため、失敗時 (matInv=null) も true を返すバグだった。他 2 オーバーロードと同じ matInv 判定に修正
     }
 
     /// <summary>拡張メソッド. 逆行列に変換する。成功した場合はtrueを返す。</summary>

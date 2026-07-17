@@ -512,7 +512,8 @@ public readonly struct Symmetry
 
         if (sym.LatticeTypeStr != "P")
         {
-            str.Add(sym.LatticeTypeStr switch
+            //str.Add(sym.LatticeTypeStr switch ...); // 260718Cl: R 菱面体設定 (R3Rho 等) で空文字列 "" がルールリストに混入し、GUI に空ラベルが並ぶため、空でないときだけ Add する形に変更
+            var rule = sym.LatticeTypeStr switch
             {
                 "A" => "hkl: k+l=2n: A",
                 "B" => "hkl: h+l=2n: B",
@@ -521,7 +522,9 @@ public readonly struct Symmetry
                 "F" => "hkl: h+k=2n k+l=2n: F",
                 "R" => sym.SpaceGroupHMStr.Contains("Hex") ? "hkl: -h+k+l=3n: R" : "",
                 _ => ""
-            });
+            };
+            if (rule.Length > 0)
+                str.Add(rule);
         }
 
         switch (sym.CrystalSystemNumber)

@@ -50,8 +50,15 @@ public class WaveProperty
     public WaveProperty(int xrayElementNumber, XrayLine xrayLine)
     {
         Source = WaveSource.Xray;
-        WaveLength = AtomStatic.CharacteristicXrayWavelength(xrayElementNumber, xrayLine);
-        Energy = AtomStatic.CharacteristicXrayWavelength(xrayElementNumber, xrayLine);
+        //WaveLength = AtomStatic.CharacteristicXrayWavelength(xrayElementNumber, xrayLine);
+        //Energy = AtomStatic.CharacteristicXrayWavelength(xrayElementNumber, xrayLine);
+        // 260718Cl: 4点修正 — (1) CharacteristicXrayWavelength は Å を返すため nm 規約 (本クラスの WaveLength doc) に *0.1 で換算
+        //           (2) Energy に波長が代入されていたコピペバグ → CharacteristicXrayEnergy (keV) * 1000 = eV
+        //           (3)(4) XrayElementNumber / XrayLine が未設定で 0 (=特性X線でないマーカー) のままだった
+        WaveLength = AtomStatic.CharacteristicXrayWavelength(xrayElementNumber, xrayLine) * 0.1;
+        Energy = AtomStatic.CharacteristicXrayEnergy(xrayElementNumber, xrayLine) * 1000;
+        XrayElementNumber = xrayElementNumber;
+        XrayLine = xrayLine;
     }
 
     public WaveProperty(WaveSource source, double value, bool isEnergy = true)

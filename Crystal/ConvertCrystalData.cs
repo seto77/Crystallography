@@ -70,9 +70,11 @@ public class ConvertCrystalData
         try
         {
             var serializer = new System.Xml.Serialization.XmlSerializer(typeof(Crystal[]));
-            var fs = new FileStream(filename, FileMode.Create);
+            //var fs = new FileStream(filename, FileMode.Create);
+            //serializer.Serialize(fs, crystals);
+            //fs.Close();
+            using var fs = new FileStream(filename, FileMode.Create); // 260718Cl: Serialize 例外時に FileStream がリークしファイルロックが残るため using 化
             serializer.Serialize(fs, crystals);
-            fs.Close();
             return true;
         }
         catch { return false; }
@@ -238,7 +240,8 @@ public class ConvertCrystalData
                         string temp;
 
                         int atomicNumber = 0;
-                        for (int q = label.Length; q > 0; q--)
+                        //for (int q = label.Length; q > 0; q--)
+                        for (int q = label.Length; q > 0 && atomicNumber == 0; q--) // 260718Cl: 一致後も外側ループが回り続け、より短いプレフィックス一致 (例: "Si1"→Si の後に S) が上書きするバグを修正 (AMC 経路と同形の最長一致ガード)
                         {
                             temp = label[..q];
                             for (int k = 0; k <= 96; k++)
@@ -629,7 +632,8 @@ public class ConvertCrystalData
         else if (SgName == "Ia3") SgName = "Ia-3";
 
         else if (SgName == "Pm3m") SgName = "Pm-3m";
-        else if (SgName == "Pn3n") SgName = "Pm-3m";
+        //else if (SgName == "Pn3n") SgName = "Pm-3m";
+        else if (SgName == "Pn3n") SgName = "Pn-3n"; // 260718Cl: Pn3n (SG222) が Pm-3m (SG221) に誤マップされていたコピペバグを修正 (前後の行は全て文字保存の変換)
         else if (SgName == "Pm3n") SgName = "Pm-3n";
         else if (SgName == "Pn3m") SgName = "Pn-3m";
         else if (SgName == "Fm3m") SgName = "Fm-3m";
@@ -1599,7 +1603,8 @@ public class ConvertCrystalData
         else if (temp == "Ia3") SgNameHM = "I a -3";
 
         else if (temp == "Pm3m") SgNameHM = "P m -3 m";
-        else if (temp == "Pn3n") SgNameHM = "P m -3 m";
+        //else if (temp == "Pn3n") SgNameHM = "P m -3 m";
+        else if (temp == "Pn3n") SgNameHM = "P n -3 n"; // 260718Cl: AMC 経路 (SearchSGseriesNumberForAmc) と同じ Pn3n→Pm-3m 誤マップを修正
         else if (temp == "Pm3n") SgNameHM = "P m -3 n";
         else if (temp == "Pn3m") SgNameHM = "P n -3 m";
         else if (temp == "Fm3m") SgNameHM = "F m -3 m";
@@ -1608,7 +1613,8 @@ public class ConvertCrystalData
         else if (temp == "Fd3c") SgNameHM = "F d -3 c";
         else if (temp == "Im3m") SgNameHM = "I m -3 m";
         else if (temp == "Ia3d") SgNameHM = "I a -3 d";
-        else if (temp == "I2sub1/a-3") SgNameHM = "I a 3";
+        //else if (temp == "I2sub1/a-3") SgNameHM = "I a 3";
+        else if (temp == "I2sub1/a-3") SgNameHM = "I a -3"; // 260718Cl: マイナス欠落。空白除去後の検索語 "Ia3" はテーブル名 "Ia-3" と絶対に一致しない (AMC 経路は正しく Ia-3)
 
 
         else if (temp == "R-32/c") SgNameHM = "R -3 c";
@@ -1747,15 +1753,18 @@ public class ConvertCrystalData
         }
 
         //Rhombohedoralのときの処置
-        if (isRhomboShape && SymmetryStatic.Symmetries[symmetrySeriesNumber].SpaceGroupHMStr.Contains("Hex", StringComparison.Ordinal))
+        //if (isRhomboShape && SymmetryStatic.Symmetries[symmetrySeriesNumber].SpaceGroupHMStr.Contains("Hex", StringComparison.Ordinal))
+        if (isRhomboShape && symmetrySeriesNumber >= 0 && SymmetryStatic.Symmetries[symmetrySeriesNumber].SpaceGroupHMStr.Contains("Hex", StringComparison.Ordinal)) // 260718Cl: HM名不一致 (-1) のとき Symmetries[-1] で例外になり、番号による救済 (下の SpaceGroupNumber ループ) が死んでいたため -1 ガードを追加 (3箇所)
             symmetrySeriesNumber++;
 
         //originChoiceが2のときの対処
-        if (IsOrigineChoice2 && SymmetryStatic.Symmetries[symmetrySeriesNumber].SpaceGroupHMStr.Contains("(1)"))
+        //if (IsOrigineChoice2 && SymmetryStatic.Symmetries[symmetrySeriesNumber].SpaceGroupHMStr.Contains("(1)"))
+        if (IsOrigineChoice2 && symmetrySeriesNumber >= 0 && SymmetryStatic.Symmetries[symmetrySeriesNumber].SpaceGroupHMStr.Contains("(1)"))
             symmetrySeriesNumber++;
 
         if (SpaceGroupNumber >= 1 && SpaceGroupNumber <= 230)
-            if (symmetrySeriesNumber >= 1 || SpaceGroupNumber != SymmetryStatic.Symmetries[symmetrySeriesNumber].SpaceGroupNumber)
+            //if (symmetrySeriesNumber >= 1 || SpaceGroupNumber != SymmetryStatic.Symmetries[symmetrySeriesNumber].SpaceGroupNumber)
+            if (symmetrySeriesNumber == -1 || symmetrySeriesNumber >= 1 || SpaceGroupNumber != SymmetryStatic.Symmetries[symmetrySeriesNumber].SpaceGroupNumber)
                 for (int i = 0; i < SymmetryStatic.TotalSpaceGroupNumber; i++)
                     if (SymmetryStatic.Symmetries[i].SpaceGroupNumber == SpaceGroupNumber)
                     {

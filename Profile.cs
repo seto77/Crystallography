@@ -136,7 +136,8 @@ public partial class Profile : ICloneable
     /// <returns></returns>
     public double GetErr(double x)
     {
-        if (Err.Count != Pt.Count)
+        //if (Err.Count != Pt.Count)
+        if (Err.Count != Pt.Count || Err.Count == 0) // 260718Cl: 空プロファイル (両方 0) がガードを素通りして Err[0] で例外になっていたため空チェック追加 (非空時の挙動は不変)
             return 0;
 
         //まず点の位置を探す

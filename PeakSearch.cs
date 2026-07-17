@@ -455,7 +455,8 @@ public class FittingPeak
                 var max = double.NegativeInfinity;
                 double tempX = 0;
                 for (int j = 0; j < pt.Count; j++)
-                    if (pt[j].X >= prms[i].X - prms[i].range && pt[j].X <= prms[0].X + prms[0].range)
+                    //if (pt[j].X >= prms[i].X - prms[i].range && pt[j].X <= prms[0].X + prms[0].range)
+                    if (pt[j].X >= prms[i].X - prms[i].range && pt[j].X <= prms[i].X + prms[i].range) // 260718Cl: 探索窓の上限だけ prms[0] 固定だったコピペバグを修正。i 番ピークが 0 番より高角側だと窓が空になり tempX=0 → prms[i].X=0 に破綻していた
                         if (max < pt[j].Y)
                         {
                             max = pt[j].Y;

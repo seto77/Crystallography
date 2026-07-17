@@ -431,7 +431,8 @@ public static class Ring
                         for (int j = -maskArea; j <= maskArea; j++)
                         {
                             if (i * i + j * j < maskArea * maskArea)
-                                if (n + i + j * w >= 0 && n + i + j * w < total)
+                                //if (n + i + j * w >= 0 && n + i + j * w < total)
+                                if ((uint)(n % w + i) < (uint)w && n + i + j * w >= 0 && n + i + j * w < total) // 260718Cl: x 方向の境界チェックが無く、画像左右端のスポットで前後の行の反対端画素を誤マスクしていた (水平ラップアラウンド) ため列境界条件を追加
                                     IsSpots[n + i + j * w] = true;
                         }
                 }

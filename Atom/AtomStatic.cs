@@ -3382,9 +3382,11 @@ new(4.86738014,0.319974401,4.58872425,
     {
         if (!caseSensitive)
         {
-            atomicName = atomicName.ToLower();
-            System.Globalization.TextInfo ti = System.Globalization.CultureInfo.CurrentCulture.TextInfo;
-            atomicName = ti.ToTitleCase(atomicName);
+            //atomicName = atomicName.ToLower();
+            //System.Globalization.TextInfo ti = System.Globalization.CultureInfo.CurrentCulture.TextInfo;
+            //atomicName = ti.ToTitleCase(atomicName);
+            atomicName = atomicName.ToLowerInvariant(); // 260718Cl: CurrentCulture 依存だとトルコ語ロケール等で "SI"→"Sı" となり元素記号に一致しない (元素記号は文化非依存の固定綴りのため Invariant 化)
+            atomicName = System.Globalization.CultureInfo.InvariantCulture.TextInfo.ToTitleCase(atomicName);
         }
         return atomicName switch
         #region

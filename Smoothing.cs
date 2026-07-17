@@ -88,7 +88,8 @@ public class Smoothing
                 for (int i = 0; i < order + 1; i++)
                     m[j, i] = Math.Pow(c1 * tempPt[j].X + c2, i);
             }
-            if (!(m.TransposeThisAndMultiply(m)).TryInverse(out Matrix inv))
+            //if (!(m.TransposeThisAndMultiply(m)).TryInverse(out Matrix inv))
+            if ((m.TransposeThisAndMultiply(m)).TryInverse(out Matrix inv)) // 260718Cl: 条件が反転しており、逆行列が求まると本体をスキップ (=平滑化が no-op)・失敗時に null の inv を使う状態だった。TryInverse(out Matrix) が常に true を返すバグ (ExtensionMethods.cs) と相殺して例外だけは出ていなかった。成功時にフィット・失敗時は当該点を元の Y のまま残す本来の意図に修正
             {
                 var a = inv * m.TransposeThisAndMultiply(y);
 

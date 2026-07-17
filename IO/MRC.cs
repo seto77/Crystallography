@@ -535,6 +535,7 @@ namespace Crystallography
                     Bitmask_1 = br.ReadUInt32();//8
                     Timestamp = br.ReadDouble();//12
                     Microscope_type = new string(br.ReadChars(16));//20
+                    D_Number = new string(br.ReadChars(16));//36 // 260718Cl: D_Number (オフセット36) の読み込みが抜けており、Application/Application_version が 1 フィールド分ずれていた (次セクションは Position 再設定のため波及なし)
                     Application = new string(br.ReadChars(16));//52
                     Application_version = new string(br.ReadChars(16));//68
 
