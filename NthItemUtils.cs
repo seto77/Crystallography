@@ -382,7 +382,6 @@ public static class NthItemExtensions
 
 public static class QuickSelect
 {
-    /// <param name="indices"></param>
     public static void Iota(Span<int> indices)
     {
         for (int i = 0; i < indices.Length; i++)
@@ -494,14 +493,12 @@ public static class QuickSelect
                 break;
 
             (source[l], source[r]) = (source[r], source[l]);
-            //Swap(source, l, r);
 
             l++;
             r--;
         }
 
         (source[l], source[endIndex]) = (source[endIndex], source[l]);
-        //Swap(source, l, endIndex);
         
         return l;
     }

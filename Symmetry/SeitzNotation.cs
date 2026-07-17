@@ -41,7 +41,6 @@ public static class SeitzNotation
     #region 座標トリプレット (例 "-y, x-y, z+1/3")
     /// <summary>操作を座標トリプレット文字列 "…, …, …" に整形する。</summary>
     // 260705Cl: 全呼び出しで未使用だった投機的パラメータ extraTranslation を削除 (ops は中心化展開済みで不要)。
-    //public static string Triplet(in SymmetryOperation op, (double U, double V, double W) extraTranslation = default)
     public static string Triplet(in SymmetryOperation op)
     {
         var R = LinearMatrix(op);
@@ -112,7 +111,6 @@ public static class SeitzNotation
     }
 
     // 260705Cl: 私製 Gcd を削除し既存 GammaFunction.Gcd (Mathematics/GammaFunction.cs) に一本化。
-    //private static int Gcd(int a, int b) { a = Math.Abs(a); b = Math.Abs(b); while (b != 0) (a, b) = (b, a % b); return a == 0 ? 1 : a; }
     #endregion
 
     #region Seitz 記号 (例 "3+ [111]", "m [1-10]", "-1")
@@ -122,8 +120,6 @@ public static class SeitzNotation
         int order = op.Order;
         var t = op.SeitzTranslation; // 260708Ch: 中心化並進を 1/-1 でも落とさない
         string trans = HasTranslation(t) ? $" {FractionTriplet(t)}" : ""; // 260708Ch
-        //if (order == 1) return "1"; // 260708Ch: F/I/A/B/C/R 格子の中心化並進が消えていた
-        //if (order == -1) return "-1"; // 260708Ch
         if (order == 1) return $"1{trans}"; // 260708Ch
         if (order == -1) return $"-1{trans}"; // 260708Ch
 
@@ -188,7 +184,6 @@ public static class SeitzNotation
             var t = op.SeitzTranslation; // 260708Ch
             return HasTranslation(t) ? $"Translation {FractionTriplet(t)}" : "Identity"; // 260708Ch
         }
-        //if (order == -1) return $"Inversion centre at {PointStr(op.Position)}"; // 260708Ch: {-1|t} の中心は t/2
         if (order == -1) // 260708Ch
         {
             var t = op.SeitzTranslation; // 260708Ch
@@ -211,7 +206,6 @@ public static class SeitzNotation
             return $"{n}-fold rotoinversion (-{n}{(op.Sense ? "+" : "-")}) {DirectionStr(dir)}";
 
         // 正の回転 or 螺旋
-        //int pitch = ScrewPitch(op.IntrinsicTranslation, dir, n);
         int pitch = ScrewPitch(op.IntrinsicTranslation, dir, n, op.SeriesNumber); // 260709Cl: 中心化補正 (下記)
         if (pitch > 0)
             return $"{ScrewLabel(n, pitch)} screw axis {DirectionStr(dir)}";
@@ -230,9 +224,6 @@ public static class SeitzNotation
         double len2 = (double)dir.U * dir.U + (double)dir.V * dir.V + (double)dir.W * dir.W;
         if (len2 < Tol) return 0;
         double proj = (it.U * dir.U + it.V * dir.V + it.W * dir.W) / len2; // 軸方向の並進 (格子単位)
-        //int p = (int)Math.Round(proj * n);
-        //p = ((p % n) + n) % n;
-        //return p;
         double primitive = SymmetryElementsTable.PrimitiveAlongDirectionInDUnits(dir, CenteringsOf(seriesNumber)); // 260709Cl
         double alongPrim = proj / primitive; // 260709Cl: d 単位 → primitive_along_d 単位
         alongPrim -= Math.Floor(alongPrim);
@@ -294,7 +285,6 @@ public static class SeitzNotation
 
     #region CIF ループ
     /// <summary>全対称操作 (中心化展開済み ops) を CIF の _space_group_symop_operation_xyz ループ文字列にする。</summary>
-    //public static string ToCifSymopLoop(System.Collections.Generic.IReadOnlyList<SymmetryOperation> ops) // 260717Cl: using 済み名前空間の冗長な完全修飾を除去
     public static string ToCifSymopLoop(IReadOnlyList<SymmetryOperation> ops)
     {
         var sb = new StringBuilder(64 + ops.Count * 24);

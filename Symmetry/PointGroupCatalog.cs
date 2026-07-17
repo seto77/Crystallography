@@ -97,8 +97,6 @@ public static class PointGroupCatalog
                     mul[i, j] = TSubgroupFinder.FindKey(linKeys, KSubgroupFinder.MatMulInt(linKeys[i], linKeys[j]));
                     if (mul[i, j] < 0) throw new InvalidOperationException("point group not closed under multiplication");
                 }
-            //int e = Enumerable.Range(0, n).First(i => linKeys[i][0] == 1 && linKeys[i][4] == 1 && linKeys[i][8] == 1
-            //    && linKeys[i][1] == 0 && linKeys[i][2] == 0 && linKeys[i][3] == 0 && linKeys[i][5] == 0 && linKeys[i][6] == 0 && linKeys[i][7] == 0);
             int e = Enumerable.Range(0, n).First(i => TSubgroupFinder.IsIdentity(linKeys[i])); // 260717Cl: インライン判定を既存 IsIdentity へ集約
 
             var subs = TSubgroupFinder.EnumerateSubgroups(n, mul, e);

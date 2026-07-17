@@ -59,9 +59,6 @@ public sealed class SymmetryProperties
 
         // 一般位置の対称操作 (中心化展開済み)。SeriesNumber を付け直して hex 系の ApplyMatrix を正しく効かせる。
         // 260705Cl: 展開処理を TSubgroupFinder.GetExpandedOps に一本化 (4 箇所に散在していた同型ブロックの解消)。
-        //var wyck = SymmetryStatic.WyckoffPositions[sn][0];
-        //var ops = wyck.PositionOperations;
-        //GeneralMultiplicity = wyck.Multiplicity;
         GeneralMultiplicity = SymmetryStatic.WyckoffPositions[sn][0].Multiplicity;
         var ops = TSubgroupFinder.GetExpandedOps(sn);
 
@@ -93,8 +90,6 @@ public sealed class SymmetryProperties
         // 260705Cl 修正: StrArray の点群表記には mm2 の設定バリアント "2mm"/"m2m" が存在し (計 67 設定)、
         // 生文字列比較ではそれらの設定で旋光性が誤って「禁止」になっていた。TSubgroupFinder と同じ正規化を適用。
         // is432 も導出ロジックをやめ既存データ (PointGroupHMStr) の直参照に単純化。
-        //bool is432 = sym.CrystalSystemNumber == 7 && IsSohncke && PointGroupOrder == 24; // 立方の回転群 O
-        //var pg = sym.PointGroupHMStr;
         var pg = sym.PointGroupHMStr switch { "2mm" or "m2m" => "mm2", var t => t };
         bool is432 = pg == "432";
         PyroelectricAllowed = IsPolar;
@@ -105,7 +100,6 @@ public sealed class SymmetryProperties
         // --- 小テーブル / 合成 ---
         int itno = sym.SpaceGroupNumber;
         IsSymmorphic = SymmorphicNumbers.Contains(itno);
-        //EnantiomorphPartnerNumber = EnantiomorphPairs.TryGetValue(itno, out var partner) ? partner : 0; // 260708Cl: 静的入口へ一本化
         EnantiomorphPartnerNumber = GetEnantiomorphPartnerNumber(itno);
         HasEnantiomorph = EnantiomorphPartnerNumber != 0;
 
@@ -227,7 +221,6 @@ public sealed class SymmetryProperties
     }
 
     // 260705Cl: 私製 Gcd を削除し既存 GammaFunction.Gcd (Mathematics/GammaFunction.cs) に一本化。
-    //private static int Gcd(int a, int b) { while (b != 0) (a, b) = (b, a % b); return a == 0 ? 1 : a; }
     #endregion
 
     #region 格子記述子 / Patterson
@@ -269,20 +262,6 @@ public sealed class SymmetryProperties
     }
 
     // 260705Cl: 上記の修正に伴い廃止 (螺旋添字を含む HM で誤判別するバグがあった)。
-    ///// <summary>P-31m 系か P-3m1 系か: HM の '3' 直後の文字が '1' なら -31m、それ以外なら -3m1。</summary>
-    //private static string TrigonalMinus3mOrientation(string hm)
-    //{
-    //    var s = hm.Replace("sub", "").Replace("-", "").Replace("Hex", "").Replace("Rho", "");
-    //    int idx = s.IndexOf('3');
-    //    if (idx >= 0 && idx + 1 < s.Length)
-    //    {
-    //        // '3' の次の桁 (螺旋番号) を飛ばして最初の英字/桁を見る
-    //        int j = idx + 1;
-    //        while (j < s.Length && char.IsDigit(s[j]) && s[j] != '1' && s[j] != '2') j++;
-    //        if (j < s.Length && s[j] == '1') return "-31m";
-    //    }
-    //    return "-3m1";
-    //}
     #endregion
 
     #region 静的テーブル

@@ -53,8 +53,6 @@ public class BetheMethod
     // a1 * b1 + a2 * b2 + a3 * b3
     private static double Dot3(double a1, double b1, double a2, double b2, double a3, double b3)
         => Math.FusedMultiplyAdd(a1, b1, Math.FusedMultiplyAdd(a2, b2, a3 * b3));
-    /// <summary>(001)ベクトル</summary>
-    private static readonly Vector3DBase zNorm = new(0, 0, 1);
     //public static bool EigenEnabled, MklEnabled, BlasEnabled, CudaEnabled;//260711Cl 変更前
     public static bool EigenEnabled, BlasEnabled, CudaEnabled;//260711Cl 変更: Blas/Cuda は probe 廃止に伴い常に false (BetheBench header 互換のため残置)
     /// <summary>260711Cl 変更: 現在の MathNet LinearAlgebra provider が MKL native かどうか (MathNetProviderManager が一元管理)。
@@ -93,7 +91,7 @@ public class BetheMethod
     public Vector3DBase[] BeamDirections { get; set; }
     public int RotationArrayValidLength { get; set; } = 0;
 
-    /// <summary>サンプル表面(から内部への)の法線単位ベクトル. ReciProの座標系は、画面右が+X、上が+Y,手前が+Zなので、初期値は(0,0,-1)</summary>==null
+    /// <summary>サンプル表面(から内部への)の法線単位ベクトル. ReciProの座標系は、画面右が+X、上が+Y,手前が+Zなので、初期値は(0,0,-1)</summary>
     public Vector3D Surface { get; set; } = new Vector3D(0, 0, -1);
     public int MaxNumOfBloch { get; set; }
     public double Thickness { get; set; }
@@ -177,9 +175,6 @@ public class BetheMethod
 
     public bool IsCBED_Busy => bwCBED is null || bwCBED.IsBusy;
     public bool IsSTEM_Busy => bwSTEM is null || bwSTEM.IsBusy;
-    #region お蔵入り // (260327Ch) 旧 bwEBSD の状態参照は ebsdNew 本命化に伴い退避
-    //public bool IsEBSD_Busy => bwEBSD is null || bwEBSD.IsBusy;
-    #endregion
     public bool IsEBSDNew_Busy => bwEBSDNew is null || bwEBSDNew.IsBusy; // (260327Ch) 以後はこちらを EBSD の本命 worker の稼働状態として使う
 
     /// <summary>CBEDのディスク情報 Disks[Z(thickness)_index][G_index], EBSDのときは [Voltage][Z(thickness)_index]</summary>
@@ -194,10 +189,6 @@ public class BetheMethod
     public event ProgressChangedEventHandler CBED_ProgressChanged;
     public event RunWorkerCompletedEventHandler CBED_Completed;
 
-    #region お蔵入り // (260327Ch) 旧 EBSD worker は残すがコメントアウトして退避
-    //[NonSerialized]
-    //public readonly BackgroundWorker bwEBSD = new();
-    #endregion
     [NonSerialized]
     public readonly BackgroundWorker bwEBSDNew = new(); // (260327Ch) 旧 bwEBSD の後継としてこちらを EBSD の本命 worker にする
     public event ProgressChangedEventHandler EBSD_ProgressChanged;
@@ -208,15 +199,12 @@ public class BetheMethod
     public event ProgressChangedEventHandler StemProgressChanged;
     public event RunWorkerCompletedEventHandler StemCompleted;
 
-    private readonly Lock lockObj1 = new(), lockObj2 = new();
-
     /// <summary>Result_STEM_Ela[thickness][defocus]</summary>
     public (Size Size, double Resolution, double[] Thicknesses, double[] Defocusses, Matrix3D rot, double[][][] ImageBoth, double[][][] ImageEla, double[][][] ImageTDS) ResultSTEM;
 
     /// <summary>Result_STEM_TDS[thickness][defocus]</summary>
     public (Size Size, double Resolution, double[] Thicknesses, double[] Defocusses, Matrix3D rot, double[][][] Image) ResultHRTEM;
 
-    /// <summary></summary>
     public (int Width, int Height, double Resolution, double[][][] Image) Result_Potential;
 
     #endregion
@@ -245,17 +233,6 @@ public class BetheMethod
         bwCBED.RunWorkerCompleted += Cbed_RunWorkerCompleted;
         bwCBED.ProgressChanged += Cbed_ProgressChanged;
         bwCBED.DoWork += cbed_DoWork;
-
-        #region お蔵入り
-        //bwEBSD = new BackgroundWorker
-        //{
-        //    WorkerSupportsCancellation = true,
-        //    WorkerReportsProgress = true
-        //};
-        //bwEBSD.RunWorkerCompleted += Ebsd_RunWorkerCompleted;
-        //bwEBSD.ProgressChanged += Ebsd_ProgressChanged;
-        //bwEBSD.DoWork += ebsd_DoWork;
-        #endregion
 
         bwEBSDNew = new BackgroundWorker
         {
@@ -368,7 +345,6 @@ public class BetheMethod
         var diskAmplitudeValid = beamDirectionsP.Select(beamDirection =>
         {
             if (bwCBED.CancellationPending) return null;
-            //var rotZ = beamDirection * zNorm;
             var coeff = Math.Abs(1.0 / beamDirection.Z); // = 1/cosTau
 
             var vecK0 = getVecK0(kvac, u0, beamDirection);
@@ -521,8 +497,6 @@ public class BetheMethod
                     {
                         //Ewald球中心(試料)から見た、逆格子ベクトルの方向
                         var vec = kvac * BeamDirections[r] + Disks[0][g].G;
-                        //var vec = BeamDirections[r] * (new Vector3DBase(0, 0, kvac) - Disks[0][g].G);
-                        //var vec = BeamDirections[r] - Disks[0][g].G;
                         pos[r] = new PointD(vec.X / vec.Z, vec.Y / vec.Z); //カメラ長 1 を想定した検出器上のピクセルの座標値を格納
                     }
                     diskTemp[g] = (new RectangleD(new PointD(pos.Min(p => p.X), pos.Min(p => p.Y)), new PointD(pos.Max(p => p.X), pos.Max(p => p.Y))), pos);
@@ -638,39 +612,6 @@ public class BetheMethod
     private void Ebsd_ProgressChanged(object sender, ProgressChangedEventArgs e) => EBSD_ProgressChanged?.Invoke(sender, e);
 
     private void Ebsd_RunWorkerCompleted(object sender, RunWorkerCompletedEventArgs e) => EBSD_Completed?.Invoke(sender, e);
-
-    #region お蔵入り // (260327Ch) 旧 bwEBSD 起動・停止 API は ebsdNew 本命化に伴い退避
-    //public void CancelEBSD()
-    //{
-    //    if (bwEBSD.IsBusy)
-    //        bwEBSD.CancelAsync();
-    //}
-    #endregion
-
-    /// <summary>
-    /// EBSD 計算を開始する本命 API。
-    /// 旧 RunEBSD はお蔵入りとし、以後はこの worker を使う。
-    /// </summary>
-    /// <param name="maxNumOfBloch"></param>
-    /// <param name="voltage">加速電圧(kV)</param>
-    /// <param name="rotation">基準となる方位</param>
-    /// <param name="thickness">厚みの配列</param>
-    /// <param name="beamRotations">基準となる方位に乗算する方位配列</param>
-    // 260316Cl useNonLocalAbsorption, includeTDSBackground 引数を追加
-    #region お蔵入り // (260327Ch) 旧 RunEBSD は旧 worker 前提なのでコメントアウトして残す
-    //public void RunEBSD(int maxNumOfBloch, double[] voltages, Matrix3D rotation, double[] thickness, Vector3DBase[] beamDirections, Solver solver = Solver.Auto, int thread = 1, bool useNonLocalAbsorption = false, bool includeTDSBackground = false)
-    //{
-    //    MaxNumOfBloch = maxNumOfBloch;
-    //    UseNonLocalAbsorption = useNonLocalAbsorption;
-    //    IncludeTDSBackground = includeTDSBackground;
-    //
-    //    BaseRotation = new Matrix3D(rotation);
-    //    BeamDirections = beamDirections;
-    //    Thicknesses = thickness;
-    //
-    //    bwEBSD.RunWorkerAsync((solver, thread, voltages));
-    //}
-    #endregion
 
     /// <summary>
     /// crystal-fixed master 向けの EBSD 計算を開始する。
@@ -2020,201 +1961,6 @@ public class BetheMethod
         return tdsIntensity;
     }
 
-    #region お蔵入り // (260327Ch) 旧 EBSD solver と専用 helper は参照されなくなったのでコメントアウトして退避
-    /*
-    /// <summary>EBSD計算用 ずっと悩んでいたバージョン。 結局Claudeに助けてもらって、上のバージョンに落ち着いた。</summary>
-    /// <param name="sender"></param>
-    /// <param name="e"></param>
-    private void ebsd_DoWork_old(object sender, DoWorkEventArgs e)
-    {
-        var (solver, thread, voltages) = ((Solver, int, double[]))e.Argument;
-
-        Disks = new CBED_Disk[voltages.Length][];
-        int count = 0;
-
-        var beamDirectionsP = BeamDirections.AsParallel();
-        int width = (int)Math.Sqrt(BeamDirections.Length);
-        double radius = width / 2.0;
-
-        var lockObjs = ValueEnumerable.Range(0, BeamDirections.Length).Select(_ => new Lock()).ToArray();
-
-        //bool inside(int i) => (i % width - radius + 0.5) * (i % width - radius + 0.5) + (i / width - radius + 0.5) * (i / width - radius + 0.5) <= radius * radius;
-        //bool inside(int i) => true;
-
-        //進捗状況報告用の各種定数を初期化
-        #region solver, thread の設定
-        if (solver == Solver.Auto || (!EigenEnabled && (solver == Solver.Eigen_Eigen || solver == Solver.MtxExp_Eigen)))
-        {
-            if (EigenEnabled)
-                (solver, thread) = (Solver.MtxExp_Eigen, ProcessorCount);
-            else
-                (solver, thread) = (Solver.Eigen_MKL, MklEnabled ? Math.Max(1, ProcessorCount / 4) : ProcessorCount);
-        }
-        var reportString = $"{SolverLabel(solver)}{thread}"; //260611Cl 旧: $"{solver}{thread}" (MKL 不在時の managed 実行を可視化)
-        #endregion
-
-        for (int vIndex = 0; vIndex < voltages.Length; vIndex++)
-        {
-            AccVoltage = voltages[vIndex];
-            //波数を計算
-            var kvac = UniversalConstants.Convert.EnergyToElectronWaveNumber(AccVoltage);
-            //U0を計算
-            var u0 = getU(AccVoltage).Real.Real;
-            uDictionary.Clear();
-
-            //beamsの計算コストが非常に高いので、4×4のグリッドを作って、中心ピクセルのbeamsで代表する
-            var grid = 2;
-            var beamsPreliminary = beamDirectionsP
-                .Where((e, i) => (i % width) % grid == grid / 2 && (i / width) % grid == grid / 2)
-                .Select(e =>
-                {
-                    var beams = Find_gVectors(BaseRotation, getVecK0(kvac, u0, e), MaxNumOfBloch);
-                    var potentialMatrix = getPotentialMatrix(beams);
-                    return (beams, potentialMatrix);
-                }).ToArray();
-            //ここまで
-
-            //diskAmplitude[r][t][g]
-            var diskAmplitude = beamDirectionsP.WithDegreeOfParallelism(Math.Max(thread / 2, 1)).Select((beamDirection, i) =>
-            {
-                //if (!inside(i)) return (null, null);
-                if (bwEBSD.CancellationPending) return (null, null);
-
-                var coeff = Math.Abs(1.0 / beamDirection.Z); // = 1/cosTau
-                var vecK0 = getVecK0(kvac, u0, beamDirection);
-
-                //var beams = Find_gVectors(BaseRotation, vecK0, MaxNumOfBloch);
-                var (beamsBase, potentialMatrix) = beamsPreliminary[(i / width) / grid * (width / grid) + (i % width) / grid];
-                var beams = reset_gVectors(beamsBase, BaseRotation, vecK0).Where(e => e.P > 0).ToArray();//BeamsのPやQをリセット
-
-                var bLen = beams.Length;
-                var eigenMatrix = Shared.Rent(bLen * bLen);
-                getEigenMatrix(bLen, beams, ref eigenMatrix, potentialMatrix);//ポテンシャル行列をセット //コスト高い
-
-                //入射面での波動関数を定義
-                var psi0 = new DVec([.. ValueEnumerable.Range(0, bLen).Select(g => g == 0 ? One : 0)]);
-
-                Complex[] result;
-
-                //ポテンシャル行列の固有値、固有ベクトルを取得し、resultに格納
-                #region 各ソルバーによる計算
-                //Eigen＿Eigenの場合
-                if (solver == Solver.Eigen_Eigen && EigenEnabled)
-                    result = NativeWrapper.CBEDSolver_Eigen(eigenMatrix, [.. psi0], Thicknesses);
-                //Eigen_MKL あるいは Eigen_Managedの場合    
-                else if (solver == Solver.Eigen_MKL)
-                {
-                    var evd = new DMat(bLen, bLen, eigenMatrix).Evd(Symmetricity.Asymmetric);
-                    var alpha = evd.EigenVectors.LU().Solve(psi0);
-                    var resultMat = new DMat(bLen, Thicknesses.Length);
-                    for (int t = 0; t < Thicknesses.Length; t++)
-                    {
-                        //ガンマの対称行列×アルファを作成
-                        var gammmaAlpha = new DVec([.. evd.EigenValues.Select((ev, i) => Exp(TwoPiI * ev * t * coeff) * alpha[i])]);
-                        //深さtにおけるψを求める
-                        resultMat.SetColumn(t, evd.EigenVectors.Multiply(gammmaAlpha));
-                    }
-                    result = resultMat.Values;
-                }
-                //MtxExp_Eigenの場合
-                else if (solver == Solver.MtxExp_Eigen && EigenEnabled)
-                    result = NativeWrapper.CBEDSolver_MatExp(eigenMatrix, [.. psi0], Thicknesses);
-                //MtxExp_MKLの場合 
-                else
-                {
-                    var resultMat = new DMat(bLen, Thicknesses.Length);
-                    var matExp = (DMat)(TwoPiI * coeff * Thicknesses[0] * new DMat(bLen, bLen, eigenMatrix)).Exponential();
-                    var vec = matExp.Multiply(psi0);
-                    resultMat.SetColumn(0, vec);
-
-                    if (Thicknesses.Length > 1)
-                    {
-                        if (Thicknesses[1] - Thicknesses[0] == Thicknesses[0])
-                            matExp = (DMat)(TwoPiI * coeff * (Thicknesses[1] - Thicknesses[0]) * new DMat(bLen, bLen, eigenMatrix)).Exponential();
-                        for (int t = 1; t < Thicknesses.Length; t++)
-                        {
-                            vec = (DVec)matExp.Multiply(vec);
-                            resultMat.SetColumn(t, vec);
-                        }
-                    }
-                    result = resultMat.Values;
-                }
-                //出射面での境界条件を考慮した位相にするため、以下のように変更 (20220803)
-                for (int t = 0; t < Thicknesses.Length; t++)
-                    for (int b = 0; b < bLen; b++)
-                        result[t * bLen + b] *= Exp(PiI * (beams[b].P - 2 * kvac * Surface.Z) * Thicknesses[t]);
-                #endregion
-
-                Shared.Return(eigenMatrix);//eigenMatrixを返却
-
-                if (Interlocked.Increment(ref count) % 50 == 0)
-                    bwEBSD.ReportProgress(count, reportString);//進捗状況を報告
-                return (result, beams);
-            }).ToArray();
-
-            //count = 0;
-            //bwEBSD.ReportProgress(0, "Compiling disks");
-
-            var directDiskIntensities = new double[Thicknesses.Length][];
-            Parallel.For(0, Thicknesses.Length, t =>
-            {
-                directDiskIntensities[t] = new double[BeamDirections.Length];
-                for (int r = 0; r < directDiskIntensities[t].Length; r++)
-                    if (diskAmplitude[r].result is not null)
-                        directDiskIntensities[t][r] = diskAmplitude[r].result[t * diskAmplitude[r].beams.Length + 0].MagnitudeSquared();
-            });
-
-            var directDiskPositions = new PointD[BeamDirections.Length];
-            Parallel.For(0, BeamDirections.Length, r =>
-            {
-                //var vec = BeamDirections[r] * new Vector3DBase(0, 0, kvac);//Ewald球中心(試料)から見た、逆格子ベクトルの方向
-                var vec = kvac * BeamDirections[r];//Ewald球中心(試料)から見た、逆格子ベクトルの方向
-                directDiskPositions[r] = new PointD(vec.X / vec.Z, vec.Y / vec.Z); //カメラ長 1 を想定した検出器上のピクセルの座標値を格納
-            });
-
-            double xMax = directDiskPositions.Max(e => e.X), xMin = directDiskPositions.Min(e => e.X);
-            double yMax = directDiskPositions.Max(e => e.Y), yMin = directDiskPositions.Min(e => e.Y);
-
-            //r1方向でg番目のベクトルに対応するダイレクト方向r2を調べ、強度をインコヒーレントに加算
-            //for(int r1=0; r1< BeamDirections.Length; r1++)
-            Parallel.For(0, BeamDirections.Length, r1 =>
-            {
-                var (result, beams) = diskAmplitude[r1];
-                if (result is not null)
-                    for (int g = 1; g < beams.Length; g++)
-                    {
-                        var vec = kvac * BeamDirections[r1] - beams[g].Vec;//Ewald球中心(試料)から見た、逆格子ベクトルの方向
-                        double posX = vec.X / vec.Z, posY = vec.Y / vec.Z; //カメラ長 1 を想定した検出器上のピクセルの座標値を格納
-                        if (posX < xMax && posX > xMin && posY < yMax && posY > yMin)
-                        {
-                            var r2 = getIndex(posX, posY, directDiskPositions, width);
-                            if (r2 >= 0)
-                                lock (lockObjs[r2])
-                                    for (int t = 0; t < Thicknesses.Length; t++)
-                                        directDiskIntensities[t][r2] += result[t * beams.Length + g].MagnitudeSquared();
-                        }
-                    }
-            });
-
-            Disks[vIndex] = new CBED_Disk[Thicknesses.Length];
-            Parallel.For(0, Thicknesses.Length, t =>
-            {
-                Disks[vIndex][t] = new CBED_Disk([0, 0, 0], new Vector3DBase(0, 0, 0), Thicknesses[t],
-                    [.. directDiskIntensities[t].Select(intensity => new Complex(Math.Sqrt(intensity), 0))]);
-                Disks[vIndex][t].Amplitudes = Disks[vIndex][t].RawAmplitudes;
-            });
-
-            if (bwEBSD.CancellationPending)
-                e.Cancel = true;
-        }
-    }
-
-    */
-    #endregion
-
-
- 
-
     #endregion
 
     #region 平行ビーム電子回折
@@ -2429,11 +2175,9 @@ public class BetheMethod
         MaxNumOfBloch = maxNumOfBloch;
 
         AccVoltage = voltage;
-        //Wavelength = UniversalConstants.Convert.EnergyToElectronWaveLength(voltage);
         BaseRotation = new Matrix3D(baseRotation);
         BeamDirections = beamDirections;
         Thicknesses = thicknesses;
-        //if (!bwSTEM.IsBusy) //260711Cl 変更前
         bwSTEM.RunWorkerAsync((solver, thread, cs, delta, sliceThickness, convergenceAngle, detAngleInner, detAngleOuter, thicknesses, defocusses, imageSize, resolution, sourceSize));
     }
     public unsafe void StemDoWork(object sender, DoWorkEventArgs e)
@@ -2455,40 +2199,6 @@ public class BetheMethod
         var vecK0 = getVecK0(kvac, u0);
         //計算対象のg-Vectorsを決める。indexが小さく、かつsg(励起誤差)の小さいg-vectorを抽出する
         Beams = [.. Find_gVectors(BaseRotation, vecK0).OrderBy(e => e.Vec.Length2)];
-
-        #region 検証コード 25nm^-1 以上のビームは削除  25nm^-1 = 62.7mrad
-        //var _beam = new List<Beam>();
-        //foreach (var beam in Beams)
-        //    if (Math.Abs(beam.Vec.Z) < 1.0E-10 && beam.Vec.X2Y2 < 20 * 20)
-        //        _beam.Add(beam);
-        //Beams = _beam.ToArray();
-        #endregion
-
-        #region 検証用コード
-        //uDictionary.Clear();
-
-        //var temp1 = new (Complex real, Complex imag)[Beams.Length * Beams.Length];
-        //int n = 0;
-        //for (int i = 0; i < Beams.Length; i++)
-        //    for (int j = 0; j < Beams.Length; j++)
-        //        temp1[n++] = getU(AccVoltage, Beams[i] - Beams[j]);
-
-        //uDictionary.Clear();
-        //var temp2 = new (Complex real, Complex imag)[Beams.Length * Beams.Length];
-
-        //uDictionary.Clear();
-        //var xx = getU(AccVoltage, Beams[0] - Beams[0], null, 0.06, 0.12).Imag * 1 / 1.39139014900906 * 6.62606896 * 6.62606896 / 2 / 9.1093897 / 1.60217733;
-        //uDictionary.Clear();
-        //var yy = getU(AccVoltage, Beams[0] - Beams[0], null, 0.00, 1.0).Imag * 1 / 1.39139014900906 * 6.62606896 * 6.62606896 / 2 / 9.1093897 / 1.60217733;
-
-        //n = 0;
-        //for (int i = 0; i < Beams.Length; i++)
-        //    for (int j = 0; j < Beams.Length; j++)
-        //    {
-        //        temp2[n++] = getU(AccVoltage, Beams[i] - Beams[j], null, 0.06, 120);
-        //        _sum += Math.Pow(temp2[n - 1].imag.Real - temp1[n - 1].imag.Real, 2);
-        //    }
-        #endregion
 
         int dLen = defocusses.Length, tLen = thicknesses.Length, bLen = Beams.Length;
 
@@ -2672,7 +2382,6 @@ public class BetheMethod
         #endregion
 
         var k_xy = k_vec.Select(e => e.ToPointD).ToArray();
-        //var k_z = k_vec.Select(e => e.Z).ToArray();
 
         #region レンズ収差関数、収束絞り関数、検出器関数
         //レンズ収差関数 W
@@ -2688,7 +2397,6 @@ public class BetheMethod
             tmp2 = -tmp2 * tmp2;
             return Exp(tmp1 + tmp2);
         }
-        //double W(in PointD q, in double defocus) => 0;//検証用コード
 
         //収束絞り関数 A
         double conv = Math.Sin(convergenceAngle) / lambda, conv2 = conv * conv;
@@ -2705,9 +2413,6 @@ public class BetheMethod
         var mat = BaseRotation * Crystal.MatrixInverseTransposed;
         var qList = Beams.AsParallel().SelectMany(e1 => Beams.Select(e2 => (e1 - e2).Index)).Distinct()
             .Select(e => new Beam(e, mat * e)).Where(e => k_xy.Any(e2 => A(e2) && A(e2 + e.Vec.ToPointD))).OrderBy(e => e.Vec.Length2).ToList();
-
-        //if(qList.Count > Beams.Length)
-        //    qList.RemoveRange(Beams.Length, qList.Count - Beams.Length);
 
         //g_q_index (あるq[m]に対して、g-qの反射は、Beams配列で何番目か)
         // var g_qIndex = qList.Select(q => Beams.Select((g1, n) => (g: n, g_q: Array.FindIndex(Beams, g2 => g2.Index == (g1 - q).Index))).Where(e => e.g_q != -1).ToArray()).ToArray(); // 260610Cl 変更前: Array.FindIndex (O(N)) を q×g1 の全組合せで呼ぶため O(Q·N²)
@@ -2729,40 +2434,8 @@ public class BetheMethod
         }).ToArray();
         #endregion
 
-        #region 検証用コード
-        //var sb = new StringBuilder();
-        //foreach (var q in qList)
-        //{
-        //    sb.Append($"({q.H} {q.K} {q.L})\t");
-
-        //    uDictionary.Clear();
-        //    var (real, imag) = getU(AccVoltage, q);
-        //    real *= 1 / 1.39139014900906 * 6.62606896 * 6.62606896 / 2 / 9.1093897 / 1.60217733;
-        //    imag *= 1 / 1.39139014900906 * 6.62606896 * 6.62606896 / 2 / 9.1093897 / 1.60217733;
-        //    sb.Append($"{real.Real}\t{real.Imaginary}\t{imag.Real}\t{imag.Imaginary}\t");
-
-        //    uDictionary.Clear();
-        //    (real, imag) = getU(AccVoltage, q, null, 0.0, 1.0);
-        //    real *= 1 / 1.39139014900906 * 6.62606896 * 6.62606896 / 2 / 9.1093897 / 1.60217733;
-        //    imag *= 1 / 1.39139014900906 * 6.62606896 * 6.62606896 / 2 / 9.1093897 / 1.60217733;
-
-        //    sb.Append($"{imag.Real}\t{imag.Imaginary}\t");
-
-        //    uDictionary.Clear();
-        //    (real, imag) = getU(AccVoltage, q, null, 0.06, 0.12);
-        //    real *= 1 / 1.39139014900906 * 6.62606896 * 6.62606896 / 2 / 9.1093897 / 1.60217733;
-        //    imag *= 1 / 1.39139014900906 * 6.62606896 * 6.62606896 / 2 / 9.1093897 / 1.60217733;
-
-        //    sb.Append($"{imag.Real}\t{imag.Imaginary}\r\n");
-        //}
-        //;
-        //Clipboard.SetDataObject(sb.ToString());
-
-        #endregion
-
         //必要な情報だけを追加してParallelにしたtcP
         //260317Cl 変更: tcPArray.Lengthがループ内で毎回列挙されるのを防ぐためToArrayで具体化
-        //var tcP = tc.AsParallel().Select((e, i) => (index: i, result: e, xy: k_xy[i])).Where(e => e.result is not null && A(e.xy)).Select(e => e.index);//.WithDegreeOfParallelism(1);
         var tcPArray = tc.Select((e, i) => (index: i, result: e, xy: k_xy[i])).Where(e => e.result is not null && A(e.xy)).Select(e => e.index).ToArray();
         var tcP = tcPArray.AsParallel();
 
@@ -2858,22 +2531,6 @@ public class BetheMethod
         var U = useUStream ? null : new Complex[qList.Count * bLen2];//260711Cl 変更 (Phase4 q-major streaming): 全 q 分の U (Q×N²×16B) を保持しない
         uDictionary.Clear();
 
-        //マルチスレッドの効率を上げるため、まずqList[qIndex] + Beams[i] - Beams[j]の重複を除く
-        //var tmpDic = new Dictionary<(int h, int k, int l), (Beam b, int q, int i, int j)>();
-        //for (int q = 0; q < qList.Count; q++)
-        //    for (int j = 0; j < bLen; j++)
-        //        for (int i = 0; i < bLen; i++)
-        //        {
-        //            var b = qList[q] + Beams[i] - Beams[j];
-        //            tmpDic.TryAdd(b.Index, (b, q, i, j));
-        //        }
-        //tmpDic.AsParallel().ForAll(d =>
-        //{
-        //    getU(AccVoltage, d.Value.b, null, detAngleInner, detAngleOuter);
-        //    if (Interlocked.Increment(ref count) % 10 == 0) bwSTEM.ReportProgress((int)(1E6 * count / tmpDic.Count), "Calculating U matrix");//状況を報告
-        //    if (bwSTEM.CancellationPending) { e.Cancel = true; return; }
-        //});
-
         //260711Cl 追加 (Phase4): U の 1 q 分 (bLen×bLen) を dest[destOffset..] へ生成するローカル関数 (一括構築と q-major streaming で共用)。
         // 260602Cl 変更を継承: qList[qIndex] + Beams[i] - Beams[j] の Beam 一時生成 (要素ごと2個) を除去し、
         //   combined index と元の3ベクトルを渡す getU overload で cache hit 時は割り当てゼロにする。
@@ -2912,27 +2569,9 @@ public class BetheMethod
         {
             bwSTEM.ReportProgress(0, "Calculating I_inelastic(Q)");
 
-            #region 各厚みを、指定された厚み程度で切り分ける 260711Cl: EVD 前へ移動 (_thick/tStep/sliceOffset/sliceTotal は上で構築済み)
-            //var _thick = new double[Thicknesses.Length][];
-            //var tStep = new double[Thicknesses.Length];
-            //for (int t = 0; t < Thicknesses.Length; t++)
-            //{
-            //    var start = t == 0 ? 0 : Thicknesses[t - 1];
-            //    var slices = Math.Max(1, (int)((Thicknesses[t] - start) / sliceThickness));
-            //    tStep[t] = (Thicknesses[t] - start) / slices;
-            //    _thick[t] = [.. ValueEnumerable.Range(1, slices).Select(e => start + tStep[t] * e)];
-            //}
-            #endregion
+            // 各厚みを、指定された厚み程度で切り分ける 260711Cl: EVD 前へ移動 (_thick/tStep/sliceOffset/sliceTotal は上で構築済み)
 
-            #region あらかじめeVecにαを掛けておく。260711Cl: EVD ラムダ内 (計算直後) へ移動したため不要 (全 eVec の cold sweep を除去)
-            //Parallel.For(0, tc.Length, kIndex =>
-            //{
-            //    if (eVal[kIndex] is not null)
-            //        for (int col = 0; col < bLen; col++)
-            //            for (int row = 0; row < bLen; row++)
-            //                eVec[kIndex][col * bLen + row] *= α[kIndex][col];
-            //});
-            #endregion
+            // あらかじめeVecにαを掛けておく。260711Cl: EVD ラムダ内 (計算直後) へ移動したため不要 (全 eVec の cold sweep を除去)
 
             #region 各種変数の設定
             //var tc_k = GC.AllocateUninitializedArray<Complex>(tc.Length * bLen);//260711Cl 変更前
@@ -3193,86 +2832,6 @@ public class BetheMethod
             #endregion
             #endregion
 
-            #region 解析的に非弾性を計算する場合 
-            //else
-            //{
-            //    //ZOLZのみだったらこれでいいが、HOLZや晶帯軸から傾いている場合に対応できていない。
-            //    //対応しようとするとものすごい計算コスト。あきらめるか。
-
-            //    //固有値・ベクトルをブレンドするのではなく、最後にブレンドする。
-
-            //    //最初にeVecにαを掛けておく
-            //    Parallel.For(0, tc.Length, kIndex =>
-            //    {
-            //        if (eVal[kIndex] != null)
-            //            for (int col = 0; col < bLen; col++)
-            //                for (int row = 0; row < bLen; row++)
-            //                    eVec[kIndex][col * bLen + row] *= α[kIndex][col];
-            //    });
-
-            //    //複素共役なC, λ, αを用意
-            //    Complex[][] C = eVec, _C = new Complex[tc.Length][], λ = eVal, _λ = new Complex[tc.Length][];
-            //    Complex[][] exp = new Complex[tc.Length][], _exp = new Complex[tc.Length][];
-            //    list.AsParallel().Where(e1 => e1 != null).SelectMany(e2 => e2.SelectMany(e3 => e3.N)).Distinct().ForAll(kIndex =>
-            //    {
-            //        _C[kIndex] = (new DMat(bLen, bLen, C[kIndex]).ConjugateTranspose() as DMat).Values;
-            //        _λ[kIndex] = (new DVec(λ[kIndex]).Conjugate() as DVec).Values;
-
-            //        exp[kIndex] = new Complex[tLen * bLen];
-            //        _exp[kIndex] = new Complex[tLen * bLen];
-            //        for (int t = 0; t < tLen; t++)
-            //            for (int j = 0; j < bLen; j++)
-            //            {
-            //                exp[kIndex][t * bLen + j] = Exp(TwoPiI * (λ[kIndex][j] + kg_z[kIndex][j]) * Thicknesses[t]);
-            //                _exp[kIndex][t * bLen + j] = exp[kIndex][t * bLen + j].Conjugate();
-            //            }
-            //    });
-
-
-            //    var total = tcPArray.Length;
-            //    count = 0;
-            //    tcP.ForAll(kIndex =>
-            //    {
-            //        if (bwSTEM.CancellationPending) return;
-
-            //        Complex[] λ_k = λ[kIndex], exp_k = exp[kIndex];
-            //        double[] kz_k = kg_z[kIndex];
-
-            //        Complex[] TDS = Shared.Rent(bLen * bLen), tmpMat = Shared.Rent(bLen * bLen);
-            //        try
-            //        {
-            //            foreach (var (qIndex, n, r, lenz) in list[kIndex])
-            //            {
-            //                NativeWrapper.MultiplyMxM(bLen, U[qIndex], C[kIndex], ref tmpMat);
-            //                var tmpSum = new Complex[tLen];
-            //                for (int m = 0; m < n.Length; m++)
-            //                {
-            //                    NativeWrapper.MultiplyMxM(bLen, _C[n[m]], tmpMat, ref TDS);
-
-            //                    Complex[] λ_kq = _λ[n[m]], exp_kq = _exp[n[m]];
-            //                    double[] kz_kq = kg_z[n[m]];
-
-            //                    //B行列の中身を計算し、アダマール積を取る
-            //                    for (int t = 0; t < tLen; t++)
-            //                    {
-            //                        int l = 0;
-            //                        for (int j = 0; j < bLen; j++)
-            //                            for (int i = 0; i < bLen; i++)
-            //                                tmpSum[t] += r[m] * ((exp_k[t * bLen + j] * exp_kq[t * bLen + i] - 1) / TwoPiI / (kz_k[j] - kz_kq[i] + λ_k[j] - λ_kq[i])) * TDS[l++];//B行列は作らず、直接アダマール積を取る
-            //                    }
-            //                }
-            //                lock (lockObj2)
-            //                    for (int t = 0; t < tLen; t++)
-            //                        for (int d = 0; d < dLen; d++)
-            //                            I_Inel[qIndex, t, d] += tmpSum[t] / kvac * lenz[d];
-            //            }
-            //        }
-            //        finally { Shared.Return(TDS); Shared.Return(tmpMat); }
-            //        if (Interlocked.Increment(ref count) % 10 == 0) bwSTEM.ReportProgress((int)(1000000.0 / total * count), "Calculating I_inelastic(Q)");//状況を報告
-            //    });
-
-            //}
-            #endregion
         }
         if (bwSTEM.CancellationPending) { e.Cancel = true; return; }
         #endregion
@@ -3285,27 +2844,6 @@ public class BetheMethod
 
         double cX = width / 2.0, cY = height / 2.0, radiusPix2 = radiusPix * radiusPix;
         var shift = (Crystal.RotationMatrix * (Crystal.A_Axis + Crystal.B_Axis + Crystal.C_Axis) / 2).ToPointD;
-        // 260610Cl 変更前: Exp(q·r·2πi) を t,d ループの内側で計算していたため W×H×T×D×Q 回の Exp が発生していた
-        // Parallel.For(0, height, y =>
-        // {
-        //     for (int x = 0; x < width; x++)
-        //     {
-        //         var rVec = new PointD(resolution * (x - cX), -resolution * (y - cY)) + shift;//Y座標はマイナス。
-        //         for (int t = 0; t < Thicknesses.Length; t++)
-        //             for (int d = 0; d < dLen; d++)
-        //             {
-        //                 Complex elas = new(), tds = new();
-        //                 for (int qIndex = 0; qIndex < qList.Count; qIndex++)
-        //                 {
-        //                     var tmp = Exp(qList[qIndex].Vec.ToPointD * rVec * TwoPiI);
-        //                     elas += I_Elas[qIndex, t, d] * tmp;
-        //                     tds += I_Inel[qIndex, t, d] * tmp;
-        //                 }
-        //                 image_ela[t][d][x + y * width] = elas.Magnitude / radiusPix2;
-        //                 image_tds[t][d][x + y * width] = tds.Magnitude / radiusPix2;
-        //             }
-        //     }
-        // });
         // 260610Cl 変更: (1) q·r は t,d 非依存なので位相計算を t,d ループの外 (画素×q 単位) へ。
         //   (2) 行方向は等間隔 (Δ(q·r) = q.X·resolution) なので位相回転再帰 (複素乗算1回/画素/q) に置換し、
         //       Exp は行頭と 256 画素ごとの再アンカーのみに削減。位相ドリフトは 256·eps ~ 1e-13 オーダー。
@@ -3394,24 +2932,6 @@ public class BetheMethod
 
         var shift = Crystal.RotationMatrix * (Crystal.A_Axis + Crystal.B_Axis + Crystal.C_Axis) / 2;
         double cX = width / 2.0, cY = height / 2.0;
-        // 260610Cl 変更前: 画素ごとに gList 全件の Exp を計算していた (W×H×G 回)
-        // Parallel.For(0, width * height, n =>
-        // {
-        //     //単位格子軸の0.5倍だけシフトさせておく
-        //     var r = new PointD(-(n % width - cX) * res + shift.X, -(height - 1 - n / width - cY) * res + shift.Y);
-        //     //var sums = new Complex[2]; // 260402Cl 変更前
-        //     Complex sumCry = default, sumTher = default; // 260402Cl ヒープ割り当て廃止
-        //     foreach (var (uCry, uTher, vec) in gList)
-        //     {
-        //         var exp = Exp(vec * r * TwoPiI);
-        //         sumCry += uCry * exp; // 260402Cl sums[0] → sumCry
-        //         sumTher += uTher * exp; // 260402Cl sums[1] → sumTher
-        //     }
-        //     images[0][n] = phase ? sumCry.Magnitude : sumCry.Real; // 260402Cl 展開
-        //     images[1][n] = phase ? sumCry.Phase : sumCry.Imaginary;
-        //     images[2][n] = phase ? sumTher.Magnitude : sumTher.Real;
-        //     images[3][n] = phase ? sumTher.Phase : sumTher.Imaginary;
-        // });
         // 260610Cl 変更: 行方向は等間隔 (x が 1 進むと Δr.X = -res) なので位相回転再帰 (複素乗算1回/画素/g) に置換。
         //   Exp は行頭と 256 画素ごとの再アンカーのみ (位相ドリフト ~1e-13 オーダー)。行単位の並列化に変更
         int gLen = gList.Count;
@@ -3559,43 +3079,6 @@ public class BetheMethod
                     for (var i = 0; i < defLen; i++)
                         results.AsSpan(i * rows * width, rows * width).CopyTo(_images[t][i].AsSpan(rowStart * width, rows * width));
                 });
-                #region 260610Cl 変更前: 画素ごとの座標配列を渡す旧経路
-                //int divTotal = Environment.ProcessorCount * 4, step = width * height / divTotal;
-                //var threadLocalRVec = new ThreadLocal<double[]>(() => null, true); // (260403Ch) ネイティブ solver 入力座標をスレッドごとに再利用する
-                //try
-                //{
-                //    Parallel.For(0, divTotal, div =>
-                //    {
-                //        int start = step * div, count = div == divTotal - 1 ? width * height - start : step;
-                //        int vecLength = count * 2;
-                //        var rVec = threadLocalRVec.Value;
-                //        if (rVec is null || rVec.Length < vecLength)
-                //        {
-                //            if (rVec != null)
-                //                ArrayPool<double>.Shared.Return(rVec); // (260403Ch)
-                //            rVec = ArrayPool<double>.Shared.Rent(vecLength); // (260403Ch)
-                //            threadLocalRVec.Value = rVec; // (260403Ch)
-                //        }
-                //        for (int n = 0; n < count; n++)
-                //        {
-                //            int pixel = start + n;
-                //            int offset = n * 2;
-                //            rVec[offset] = res * (pixel % width - cX) + shift.X; // (260403Ch) Y座標はマイナス。
-                //            rVec[offset + 1] = -res * (pixel / width - cY) + shift.Y; // (260403Ch)
-                //        }
-                //        var results = NativeWrapper.HRTEM_Solver(gPsi, gVec, gLenz, rVec, quasiMode, vecLength); // (260403Ch) ArrayPool バッファの使用長を明示する
-                //        for (var i = 0; i < defLen; i++)
-                //            //260317Cl 変更: Array.Copy → Span.CopyTo
-                //            results.AsSpan(i * count, count).CopyTo(_images[t][i].AsSpan(start, count));
-                //    });
-                //}
-                //finally
-                //{
-                //    foreach (var rVec in threadLocalRVec.Values.OfType<double[]>()) // (260403Ch)
-                //        ArrayPool<double>.Shared.Return(rVec);
-                //    threadLocalRVec.Dispose(); // (260403Ch)
-                //}
-                #endregion
             }
             else//Managed
             {
@@ -3629,7 +3112,6 @@ public class BetheMethod
                     threadLocalSums.Dispose(); // (260402Ch)
                 }
             }
-            //return images;
         }
 
         ResultHRTEM = (new Size(width, height), res, thicknesses.ToArray(), defocusses.ToArray(), new Matrix3D(rot), _images);
@@ -4161,15 +3643,9 @@ public class BetheMethod
         //var (m11, m12, m13, m21, m22, m23, m31, m32, m33) = mat.Tuple;
         for (int i = 0; i < dim; i++)
         {
-            // var g = mat * beams[i].Index; // (260321Ch) 旧実装
             var g = beams[i].Vec; // (260321Ch) beamsBase は同じ baseRotation から作られているので既存 Vec をそのまま使う
-            //var (h, k, l) = beams[i].Index;
-            //double gX = m11 * h + m12 * k + m13 * l, gY = m21 * h + m22 * k + m23 * l, gZ = m31 * h + m32 * k + m33 * l;
 
-            // var prms = getQP(g, vecK0); // (260321Ch) 旧案: 固定表面法線で P, Q を求めていた
             var prms = getQP(g, vecK0, surface);
-            //var prms = getQP(beams[i].Vec, vecK0);
-            // newBeams[i] = new Beam(beams[i].Index, beams[i].Vec, (beams[i].Ureal, beams[i].Uimag), prms); // (260321Ch) 旧実装: 毎回 Beam を new していた
             if (newBeams[i] == null)
                 newBeams[i] = new Beam(beams[i].Index, beams[i].Vec, (beams[i].Ureal, beams[i].Uimag), prms); // (260321Ch) 初回だけ生成する
             else
@@ -4191,12 +3667,8 @@ public class BetheMethod
 
     private static double getQ(in Vector3DBase g, in Vector3DBase vecK0) => vecK0.Length2 - (vecK0 + g).Length2;
 
-    private double getP(in Vector3DBase g, in Vector3DBase vecK0) => getP(g, vecK0, Surface); // (260321Ch) 固定表面版 wrapper
-
     /// <summary>指定した表面法線に対する P を求める。</summary>
     private static double getP(in Vector3DBase g, in Vector3DBase vecK0, Vector3DBase surface) => 2 * surface * (vecK0 + g);
-
-    private (double Q, double P) getQP(in Vector3DBase g, in Vector3DBase vecK0) => getQP(g, vecK0, Surface); // (260321Ch) 固定表面版 wrapper
 
     /// <summary>指定した表面法線に対する Q, P を求める。</summary>
     private static (double Q, double P) getQP(in Vector3DBase g, in Vector3DBase vecK0, Vector3DBase surface) => (getQ(g, vecK0), getP(g, vecK0, surface));

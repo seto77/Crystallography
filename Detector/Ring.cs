@@ -558,9 +558,6 @@ public static class Ring
         // cos(2th)^2 = fd^2 / (x^2 + y^2 + fd^2)
         // cos(kai)^2 = x^2 / (x^2 + y^2)
         //まとめると分母の部分は、 1 - x2 / (x2 + y2 + fd2))
-        //var coeff1 = rotate == 0 || rotate == 2 ?
-        //    new Func<double, double, double>((x2, y2) => (y2+fd2)  / (x2 + y2 + fd2)) :
-        //    new Func<double, double, double>((x2, y2) => (x2+fd2) / (x2 + y2 + fd2));
 
         //20190906追記
         //補正式は、Icorr = I / (sin(kai)^2 + cos(kai)^2 * cos(2th)^2 ) / cos(2th)
@@ -571,8 +568,6 @@ public static class Ring
         //        (x2, y2) => 2 * (y2 + fd2) / (x2 + y2 + 2 * fd2) :
         //        (x2, y2) => 2 * (x2 + fd2) / (x2 + y2 + 2 * fd2);
         bool horizontal = rotate == 0 || rotate == 2;
-
-        //var coeff2 = new Func<double, double, double>((x2, y2) => Math.Sqrt( fd2 / (x2 + y2 + fd2)));
 
         var result = new double[intensity.Length];
         //Parallel.Forを使わないほうが早い
@@ -1834,33 +1829,7 @@ public static class Ring
         {
             if (IP.Mode == HorizontalAxis.Angle || IP.Mode == HorizontalAxis.d)
             {
-                #region ネイティブコードは思ったより早くなかった。
-                //if (NativeWrapper.Enabled)
-                //{
-                //	var intensityArray = Intensity.ToArray();
-                //                   var isValidArray = IsValid.Select(val => val ? (byte)1 : (byte)0).ToArray();
-                //                   var r2 = R2.ToArray();
-                //	Parallel.For(0, ThreadTotal, i =>
-                //	{
-                //		int yMin = yThreadMin[i], yMax = yThreadMax[i];
-                //		var intensity = intensityArray.AsSpan(yMin * IP.SrcWidth, (yMax - yMin) * IP.SrcWidth);
-                //		var isValid = isValidArray.AsSpan(yMin * IP.SrcWidth, (yMax - yMin) * IP.SrcWidth);
-
-                //		(tempProfileIntensity[i], tempContibutedPixels[i]) = NativeWrapper.Histogram(
-                //		   IP.SrcWidth, IP.SrcHeight,
-                //		   IP.CenterX, IP.CenterY,
-                //		   IP.PixSizeX, IP.PixSizeY,
-                //		   IP.FilmDistance,
-                //		   IP.ksi, IP.tau, IP.phi,
-                //		   IP.SpericalRadiusInverse,
-                //		   intensity.ToArray(), isValid.ToArray(),
-                //		   yThreadMin[i], yThreadMax[i],
-                //		   IP.StartAngle, IP.StepAngle,
-                //		   r2);
-                //	});
-                //               }
-                //else
-                #endregion
+                // NativeWrapper.Histogram 版は managed 実装より速くならなかったため、managed 実装を採用。
 
                 // 260712Cl 修正: xMax は有効領域の最大列(包含的)。下流は i < xMax の排他ループなので最終列が漏れる。xMax+1 を渡して最終列も積分する。
                 Parallel.For(0, thread, i =>

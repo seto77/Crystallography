@@ -69,7 +69,6 @@ public readonly struct WyckoffPosition
 
         PositionOperations = operations;
 
-        //if (PositionStr == null || PositionStr.Length == 0)
         // (260320Ch) パターンマッチで null/空配列判定を明示する
         if (PositionStr is not { Length: > 0 })
             Free = (true, true, true);
@@ -99,7 +98,6 @@ public readonly struct WyckoffPosition
             var (X, Y, Z) = PositionGenerator[i].Apply(x, y, z);
 
             //当たり判定
-            //if (pos.Count == 0 || pos.All(p => !chk(Z, p.Z) || !chk(X, p.X) || !chk(Y, p.Y)))
             // (260320Ch) LINQ All をループへ置き換えてホットパスの割り当てを減らす
             if (ContainsPosition(pos, X, Y, Z))
                 continue;
@@ -118,11 +116,6 @@ public readonly struct WyckoffPosition
     /// <returns></returns>
     public readonly bool CheckPosition(double x, double y, double z)
     {
-        //return PositionGenerator.Any(g =>
-        //{
-        //    var (X, Y, Z) = g(x, y, z);
-        //    return chk(X, x) && chk(Y, y) && chk(Z, z);
-        //});
         // (260320Ch) Any のラムダ割り当てを避ける
         foreach (var g in PositionGenerator)
         {

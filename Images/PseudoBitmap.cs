@@ -22,13 +22,6 @@ public class PseudoBitmap : IDisposable
 
     #region static なコンストラクタ、フィールド
 
-    //public static byte[] BrightnessScaleR = new byte[65536];//明るさスケール　16bit長に固定
-    //public static byte[] BrightnessScaleG = new byte[65536];//明るさスケール　16bit長に固定
-    //public static byte[] BrightnessScaleB = new byte[65536];//明るさスケール　16bit長に固定
-
-    //public static byte[] BrightnessScaleLog = new byte[65536];//ログ用の明るさスケール　16bit長に固定
-    //public static byte[] BrightnessScaleLiner = new byte[65536];//ログ用の明るさスケール　16bit長に固定
-
     public static (byte R, byte G, byte B)[] ColorScaleGrayLiner = new (byte R, byte G, byte B)[65536];
     public static (byte R, byte G, byte B)[] ColorScaleGrayLog = new (byte R, byte G, byte B)[65536];
 
@@ -284,31 +277,6 @@ public class PseudoBitmap : IDisposable
 
     public void initFilter()
     {
-        //if (Filter1.Count != Height * Width)
-        //{
-        //    Filter1 = Enumerable.Repeat(false, Height * Width).ToList();
-        //    Filter2 = Enumerable.Repeat(false, Height * Width).ToList();
-        //    Filter3 = Enumerable.Repeat(false, Height * Width).ToList();
-        //    Filter4 = Enumerable.Repeat(false, Height * Width).ToList();
-        //    Filter5 = Enumerable.Repeat(false, Height * Width).ToList();
-        //    FilterTemporary = Enumerable.Repeat(false, Height * Width).ToList();
-        //    if (Height * Width < 3001 * 3001)
-        //        FFT_Filter= Enumerable.Repeat(0f, Height * Width).ToList();
-        //}
-        //else
-        //{
-        //    for (int i = 0; i < Height * Width; i++)
-        //    {
-        //        if (Height * Width < 3001 * 3001)
-        //            FFT_Filter[i] = 0;
-        //        FilterTemporary[i] = false;
-        //        Filter1[i] = false;
-        //        Filter2[i] = false;
-        //        Filter3[i] = false;
-        //        Filter4[i] = false;
-        //        Filter5[i] = false;
-        //    }
-        //}
         Filter1.Clear();
         Filter1.AddRange(new bool[Height * Width]);
 
@@ -639,9 +607,6 @@ public class PseudoBitmap : IDisposable
 
     public delegate byte GetValue(double value, byte[] scale);
 
-    private RectangleD justBeforeSrcRect;
-    private Size justBeforeDestSize;
-
     /// <summary>指定された範囲のイメージを取得する</summary>
     /// <param name="srcRect"></param>
     /// <param name="destSize"></param>
@@ -884,8 +849,6 @@ public class PseudoBitmap : IDisposable
 
         destBmp.UnlockBits(bmpData);
 
-        justBeforeDestSize = destSize;
-        justBeforeSrcRect = srcRect;
         return destBmp;
     }
 
@@ -930,7 +893,7 @@ public class PseudoBitmap : IDisposable
         }
         else
         {
-            SrcValuesR.Clear(); ;
+            SrcValuesR.Clear();
             SrcValuesG.Clear();
             SrcValuesB.Clear();
             for (int yInit = 0; yInit < Height * bitmapData.Stride; yInit += BitmapStride)

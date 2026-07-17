@@ -164,11 +164,6 @@ public static class KSubgroupFinder
 
     // 260717Cl: TSubgroupFinder.LinKey と一字一句同一だった LinKeyOf を削除し、呼び出し側を集約
     // (ヘッダの「格子ユーティリティは今後の共通化候補」の一部を実施)。
-    //private static int[] LinKeyOf(in SymmetryOperation op)
-    //{
-    //    var m = SeitzNotation.LinearMatrix(op);
-    //    return [m[0, 0], m[0, 1], m[0, 2], m[1, 0], m[1, 1], m[1, 2], m[2, 0], m[2, 1], m[2, 2]];
-    //}
 
     internal static bool SameIntVec(int[] a, int[] b)
     {
@@ -501,8 +496,6 @@ public static class KSubgroupFinder
     }
 
     // 260717Cl: TSubgroupFinder.IsIdentity と一字一句同一だった IsIdentityLin を削除し、呼び出し側を集約。
-    //private static bool IsIdentityLin(int[] m)
-    //    => m[0] == 1 && m[4] == 1 && m[8] == 1 && m[1] == 0 && m[2] == 0 && m[3] == 0 && m[5] == 0 && m[6] == 0 && m[7] == 0;
     #endregion
 
     #region 型同定 (Step 3, IdentifyK)
@@ -519,7 +512,6 @@ public static class KSubgroupFinder
     // フィルタとして、A_H[i]=H⁻¹A[i]H (T′ 自身の座標系での親点群表現) を U で共役したものが、
     // 候補の A_cand[i]=C⁻¹R_i C と整数行列の集合として一致するかを先に見る (安価、格子一致は構成上自動)。
 
-    //private static readonly Dictionary<int, List<int[]>> _unimodularCache = []; // 260708Cl: 並列化に伴い ConcurrentDictionary+Lazy へ
     private static readonly ConcurrentDictionary<int, Lazy<List<int[]>>> _unimodularCache = new();
 
     /// <summary>成分が [-k,k] の unimodular (det=±1) 整数 3×3 行列を総当たりで列挙する (キャッシュ済み)。260705Cl 追加。
@@ -563,8 +555,6 @@ public static class KSubgroupFinder
         public int CDetSign { get; init; }           // 260708Cl 追加: sign(det C)。det(P)=det(S)·det(U)·det(C⁻¹) の符号事前判定用
     }
 
-    //private static readonly Dictionary<int, CandidateData> _candidateCache = []; // 260708Cl: 並列化に伴い ConcurrentDictionary へ
-    //private static Dictionary<int, List<int>> _candidatesByOrder;
     private static readonly ConcurrentDictionary<int, CandidateData> _candidateCache = new();
     private static readonly Lazy<Dictionary<int, List<int>>> _candidatesByOrder = new(BuildCandidatesByOrder, LazyThreadSafetyMode.ExecutionAndPublication); // 260708Cl
 
@@ -605,8 +595,6 @@ public static class KSubgroupFinder
         }
 
         return new CandidateData { LinKeys = [.. linKeys], CInv = cInv, ACand = aCand, Rt = [.. rt], Centering = [.. centering], CDetSign = RationalMatrix.Det3(c).Sign }; // 260708Cl: CDetSign 追加。格納は GetOrAdd 側
-        //_candidateCache[sn] = data;
-        //return data;
     }
 
     /// <summary>点群位数 (相異なる線形部数) ごとに候補設定の通し番号をまとめた索引 (初回のみ全 530 設定を走査)。
@@ -681,7 +669,6 @@ public static class KSubgroupFinder
         // BuildCandidateData (ConcurrentDictionary.GetOrAdd) を引いていたが、candList は呼び出し中不変。
         var cands = new CandidateData[candList.Count];
         for (int ci = 0; ci < candList.Count; ci++) cands[ci] = BuildCandidateData(candList[ci]);
-        //var candDetSigns = candList.Select(c => BuildCandidateData(c).CDetSign).Distinct().ToArray();
         var candDetSigns = cands.Select(c => c.CDetSign).Distinct().ToArray();
         foreach (var (pass, k) in new[] { (0, 1), (0, 2), (0, 3), (1, 1), (1, 2), (1, 3) })
         {
@@ -699,19 +686,6 @@ public static class KSubgroupFinder
                 int uDet = u[0] * (u[4] * u[8] - u[5] * u[7]) - u[1] * (u[3] * u[8] - u[5] * u[6]) + u[2] * (u[3] * u[7] - u[4] * u[6]);
                 // 全候補の det(C) 符号が同一 (通常ケース) なら、共役フィルタの前に u ごと枝刈りできる。
                 if (candDetSigns.Length == 1 && sSign * uDet * candDetSigns[0] != wanted) continue;
-                //var uFrac = RationalMatrix.FromInt(u);
-                //var uInv = RationalMatrix.Invert3(uFrac); // det=±1 なので必ず存在
-                //
-                //var conjugated = new int[m][];
-                //bool intAll = true;
-                //for (int i = 0; i < m && intAll; i++)
-                //{
-                //    var cf = RationalMatrix.Mul(RationalMatrix.Mul(uInv, RationalMatrix.FromInt(aH[i])), uFrac);
-                //    var ci = RationalMatrix.ToIntOrNull(cf);
-                //    if (ci == null) { intAll = false; break; } // U が unimodular なら理論上必ず整数 (防御的チェック)
-                //    conjugated[i] = ci;
-                //}
-                //if (!intAll) continue;
                 // 260708Cl: U は unimodular 整数行列なので U⁻¹ = det(U)·adj(U) も厳密に整数。最内ループの共役
                 // U⁻¹·A_H·U を Fraction (BigInteger) から純整数演算へ置換 (数学的に同値のまま桁違いに速い。
                 // この共役フィルタが k-エンジン全体の支配的ホットループだった。整数なので ToIntOrNull 検査も不要)。
@@ -720,9 +694,6 @@ public static class KSubgroupFinder
                 for (int i = 0; i < m; i++)
                     conjugated[i] = MatMulInt(MatMulInt(uInvInt, aH[i]), u);
 
-                //foreach (var candSn in candList) // 260708Cl (/simplify): ホイスト済み cands を index で走査 (辞書引き排除)
-                //{
-                //    var cand = BuildCandidateData(candSn);
                 for (int ci = 0; ci < cands.Length; ci++)
                 {
                     var cand = cands[ci];
@@ -730,7 +701,6 @@ public static class KSubgroupFinder
                     if (!SetEqualsIntMats(conjugated, cand.ACand)) continue;
 
                     var p = RationalMatrix.Mul(RationalMatrix.Mul(s, RationalMatrix.FromInt(u)), cand.CInv); // 260708Cl: uFrac は共役フィルタ整数化で不要になったためここで直接変換
-                    //if (pass == 0 && RationalMatrix.Det3(p).Sign < 0) continue; // 260708Cl: 上の符号事前判定に置換 (乗法性より等価)
                     // 260709Cl: 即 return せずバケット内の最簡 P を選ぶ (①非対角の非ゼロ ②負成分 ③絶対値和の
                     // 辞書式最小、同点は先勝ち = 決定的)。スコア判定は重い検証 (rChild 構築 + SolveOriginShiftK、
                     // Fraction/BigInteger 演算) の前に行い、既知 best を改善しない候補はここで棄却する
@@ -761,8 +731,6 @@ public static class KSubgroupFinder
                     if (origin == null) continue;
 
                     var pShift = RationalMatrix.MulVec(p, origin);
-                    //return (candSn, p, pShift);
-                    //return (candList[ci], p, pShift); // 260708Cl (/simplify): candSn → candList[ci]
                     if (k > 1 || perfect)
                         return (candList[ci], p, pShift);
                     if (best.Child < 0 || score.CompareTo(bestScore) < 0)
@@ -896,7 +864,6 @@ public static class KSubgroupFinder
         return null;
     }
 
-    //private static readonly Dictionary<string, List<Fraction[]>> _quotientRepsCache = []; // 260708Cl: 並列化に伴い ConcurrentDictionary へ
     private static readonly ConcurrentDictionary<string, List<Fraction[]>> _quotientRepsCache = new();
 
     /// <summary>整数行列 M (det≠0) について Z³/MZ³ (位数|det(M)|) の完全代表系を安全に構築する
@@ -935,8 +902,6 @@ public static class KSubgroupFinder
     // 中間格子 T″ (index n の真の約数、index2 のみ既存 index=2/3/4 列挙内で該当し得る) が存在し、
     // かつその T″ 上の何らかの complement H″ が H を包含する (各線形部で H の並進が H″ の並進と
     // T″ を法として一致する) ときに限る。index2/3 は中間指数が無いので自動的に極大。
-    //private static readonly Dictionary<int, GroupRelation[]> _kCache = []; // 260708Cl: 並列化に伴い per-type Lazy へ
-    //private static readonly object _kLock = new();
     private static readonly ConcurrentDictionary<int, Lazy<GroupRelation[]>> _kCache = new();
 
     /// <summary>親空間群 (通し番号) の maximal k-部分群を共役類単位で返す (index 2,3,4)。計算は初回のみ (キャッシュ)。
@@ -950,7 +915,6 @@ public static class KSubgroupFinder
     // (t-超群索引のような全 230 型走査は不要。この不変量は tools/SymmetryPropsCheck の広域 sweep で検証)。
     // 候補親の GetMaximalKSubgroups (キャッシュ共有) から子タイプ == itNumber の関係を拾う。
     // 同型 (Kind=Isomorphic) も klassengleiche なので含まれる (自分自身が超群になる場合を含む)。
-    //private static readonly Dictionary<int, GroupRelation[]> _kSupergroupCache = []; // 260708Cl: ConcurrentDictionary へ
     private static readonly ConcurrentDictionary<int, GroupRelation[]> _kSupergroupCache = new();
 
     /// <summary>itNumber (IT 番号) の k-超群逆引きが計算済みか。初回計算は同じ結晶類の全タイプの k-部分群計算を
@@ -1126,15 +1090,6 @@ public static class KSubgroupFinder
     }
 
     // 260709Cl (codex R11): 像格子の照合を CanonicalHnf 辞書キーへ置換したため Det3Int/IsSameLattice は不要に。
-    //private static long Det3Int(int[] h)
-    //    => (long)h[0] * (h[4] * h[8] - h[5] * h[7]) - (long)h[1] * (h[3] * h[8] - h[5] * h[6]) + (long)h[2] * (h[3] * h[7] - h[4] * h[6]);
-    ///// <summary>2 つの部分格子基底 (整数、同 det) が同一格子か: H1⁻¹·H2 が整数 (det 同一なので unimodular)。260709Cl 追加。</summary>
-    //private static bool IsSameLattice(int[] h1, int[] h2)
-    //{
-    //    var inv = RationalMatrix.Invert3(RationalMatrix.FromInt(h1));
-    //    if (inv == null) return false;
-    //    return RationalMatrix.ToIntOrNull(RationalMatrix.Mul(inv, RationalMatrix.FromInt(h2))) != null;
-    //}
 
     /// <summary>整数 3×3 基底 (列ベクトルが格子基底) の張る格子の一意な HNF 正規形を列演算で求める
     /// (EnumerateHnf と同じ規約: 下三角 [a,0,0, x,b,0, y,z,c]、対角正、0 ≤ x &lt; b・0 ≤ y,z &lt; c)。
@@ -1353,13 +1308,6 @@ public static class KSubgroupFinder
 
     // 260708Cl: enantiomorphic 対テーブルの複製を廃止し、SymmetryProperties.GetEnantiomorphPartnerNumber
     // (既存の掌性対 11 組テーブル) へ一本化 (二重保守防止、/simplify レビュー指摘)。
-    ///// <summary>ITA の enantiomorphic 対 (11 対、双方向)。同型 (IIc) 判定は「同一タイプまたは enantiomorphic 対」。260708Cl 追加。</summary>
-    //private static readonly Dictionary<int, int> _enantiomorphicPair = new()
-    //{
-    //    { 76, 78 }, { 78, 76 }, { 91, 95 }, { 95, 91 }, { 92, 96 }, { 96, 92 }, { 144, 145 }, { 145, 144 },
-    //    { 151, 153 }, { 153, 151 }, { 152, 154 }, { 154, 152 }, { 169, 170 }, { 170, 169 }, { 171, 172 }, { 172, 171 },
-    //    { 178, 179 }, { 179, 178 }, { 180, 181 }, { 181, 180 }, { 212, 213 }, { 213, 212 },
-    //};
 
     /// <summary>1 つの complement (T′=hnf, σ=sigma) から GroupRelation (Kind=K または Isomorphic) を構築する。260705Cl 追加。
     /// 260708Cl: 呼び出し元 (ComputeMaximalK) が memo 化した QuotientData を q で渡せる (null なら構築)。</summary>
@@ -1412,7 +1360,6 @@ public static class KSubgroupFinder
         // 同型は klassengleiche の特殊例なので、データ構造とタブ表示ロジックは K と共通 (codex R7 合意)。
         int parentNo = SymmetryStatic.Symmetries[sn].SpaceGroupNumber;
         int childNo = child >= 0 ? SymmetryStatic.Symmetries[child].SpaceGroupNumber : -1;
-        //bool isIso = childNo == parentNo || (_enantiomorphicPair.TryGetValue(parentNo, out int enPair) && enPair == childNo); // 260708Cl: テーブル一本化
         bool isIso = childNo == parentNo || (childNo > 0 && SymmetryProperties.GetEnantiomorphPartnerNumber(parentNo) == childNo);
 
         return new GroupRelation

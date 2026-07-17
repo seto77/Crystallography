@@ -102,8 +102,6 @@ public static class TSubgroupFinder
     private const double Tol = 1e-6;
     /// <summary>特殊関係 (x=y, 2x=z 等) を偶然踏まない generic サンプル点 (軌道分裂の t-/k- 共通)。260708Cl (/simplify): 2 箇所のローカル const を共有化。</summary>
     private const double GenericX = 0.127743, GenericY = 0.291317, GenericZ = 0.437129;
-    //private static readonly Dictionary<int, GroupRelation[]> _cache = []; // 260708Cl: 並列化に伴い per-type Lazy へ
-    //private static readonly object _lock = new();
     private static readonly ConcurrentDictionary<int, Lazy<GroupRelation[]>> _cache = new();
 
     #region 公開 API
@@ -117,7 +115,6 @@ public static class TSubgroupFinder
     // 通し番号、ChildSeriesNumber が引数 itNumber 側の設定。Operations/TransformP 等の全データが引き続き手に入るため、
     // Minimal supergroups 側でも Matrix/Orbit/Reflections タブが (P,p)⁻¹ 経由で正しく表示できる。
 
-    //private static Dictionary<int, List<GroupRelation>> _supergroupIndex; // 260708Cl: Lazy + 並列 warm へ
     private static readonly Lazy<Dictionary<int, List<GroupRelation>>> _supergroupIndex = new(BuildSupergroupIndex, LazyThreadSafetyMode.ExecutionAndPublication);
 
     /// <summary>逆引き索引が構築済みか。260705Cl 追加: 初回構築は全 230 タイプの部分群計算 (数秒) を伴うため、
@@ -136,7 +133,6 @@ public static class TSubgroupFinder
         var sns = new List<int>();
         for (int it = 1; it <= 230; it++)
         {
-            //int sn = FirstSeriesOf(it);
             int sn = SymmetryStatic.GetSeriesNumber(it, 1); // 260705Cl: 既存 API を再利用 (全 IT 番号で第 1 設定は sub=1)
             if (sn >= 0) sns.Add(sn);
         }
@@ -155,13 +151,6 @@ public static class TSubgroupFinder
     }
 
     // 260705Cl: 既存 SymmetryStatic.GetSeriesNumber(number, sub:1) の近似重複だったため削除。
-    //private static int FirstSeriesOf(int itNumber)
-    //{
-    //    for (int sn = 0; sn < SymmetryStatic.TotalSpaceGroupNumber; sn++)
-    //        if (SymmetryStatic.Symmetries[sn].SpaceGroupNumber == itNumber)
-    //            return sn;
-    //    return -1;
-    //}
 
     /// <summary>操作集合ベースの系統的消滅判定: ∃(R,t): h·R = h かつ h·t ∉ Z。</summary>
     public static bool IsExtinct(IReadOnlyList<SymmetryOperation> ops, int h, int k, int l)
@@ -183,9 +172,7 @@ public static class TSubgroupFinder
     /// <summary>親の各 Wyckoff 位置 (index 順) の H による軌道分裂を返す。generic 代表点によるサンプル計算。</summary>
     public static OrbitPart[][] GetOrbitSplitting(int parentSeries, GroupRelation sub)
     {
-        //if (sub.Kind == GroupRelationKind.K) return GetOrbitSplittingK(parentSeries, sub); // 260708Cl (Phase 2d)
         if (sub.Kind != GroupRelationKind.T) return GetOrbitSplittingK(parentSeries, sub); // 260708Cl: Isomorphic も k ロジック (同型は klassengleiche の特殊例)
-        //const double gx = 0.127743, gy = 0.291317, gz = 0.437129; // 260708Cl (/simplify): クラス定数 GenericX/Y/Z へ共有化
         var wycks = SymmetryStatic.WyckoffPositions[parentSeries];
         var parentOps = GetExpandedOps(parentSeries);
         var result = new OrbitPart[wycks.Length][];
@@ -232,7 +219,6 @@ public static class TSubgroupFinder
     /// 子の等価反射 (Friedel 込み) で代表 1 つに集約し、(代表 hkl, 等価数, 親の消滅則) を返す。</summary>
     public static (int H, int K, int L, int EquivCount, string ParentRule)[] GetNewReflections(int parentSeries, GroupRelation sub, int maxIndex = 4)
     {
-        //if (sub.Kind == GroupRelationKind.K) return GetNewReflectionsK(parentSeries, sub, maxIndex); // 260708Cl (Phase 2d)
         if (sub.Kind != GroupRelationKind.T) return GetNewReflectionsK(parentSeries, sub, maxIndex); // 260708Cl: Isomorphic も k ロジック (同型は klassengleiche の特殊例)
         var parentOps = GetExpandedOps(parentSeries);
         var parentSym = SymmetryStatic.Symmetries[parentSeries];
@@ -249,19 +235,6 @@ public static class TSubgroupFinder
                         continue;
 
                     // 子の等価反射 + Friedel 対で軌道を張り、代表 (辞書順最大) のみ採用
-                    //var orbit = new HashSet<(int, int, int)> { (h, k, l), (-h, -k, -l) }; // 260708Cl (/simplify): GrowReflectionOrbit へ共通化 (k-版と同一ロジック)
-                    //bool grown = true;
-                    //while (grown)
-                    //{
-                    //    grown = false;
-                    //    foreach (var q in orbit.ToArray())
-                    //        foreach (var rep in sub.Representatives)
-                    //        {
-                    //            var r = rep.ConvertPlaneIndex(q.Item1, q.Item2, q.Item3);
-                    //            if (orbit.Add(r) | orbit.Add((-r.H, -r.K, -r.L)))
-                    //                grown = true;
-                    //        }
-                    //}
                     var orbit = GrowReflectionOrbit(sub.Representatives, h, k, l);
                     foreach (var q in orbit)
                         seen.Add(q);
@@ -279,7 +252,6 @@ public static class TSubgroupFinder
     /// 子が未同定 (k ではほぼ発生しない) の場合は各 Wyckoff を空成分で返す。</summary>
     private static OrbitPart[][] GetOrbitSplittingK(int parentSeries, GroupRelation sub)
     {
-        //const double gx = 0.127743, gy = 0.291317, gz = 0.437129; // 260708Cl (/simplify): クラス定数 GenericX/Y/Z へ共有化
         var wycks = SymmetryStatic.WyckoffPositions[parentSeries];
         var result = new OrbitPart[wycks.Length][];
         if (sub.ChildSeriesNumber < 0 || sub.TransformP == null)
@@ -518,7 +490,6 @@ public static class TSubgroupFinder
 
     /// <summary>一般位置の全対称操作 (中心化展開済み・seriesNumber 付替え済み) を返す。
     /// 260705Cl: SymmetryProperties / FormSymmetryInformation と共用するため public 化 (4 箇所の同型展開を一本化)。</summary>
-    //private static SymmetryOperation[] GetExpandedOps(int sn)
     public static SymmetryOperation[] GetExpandedOps(int sn)
     {
         if (sn <= 0 || sn >= SymmetryStatic.TotalSpaceGroupNumber)
@@ -569,8 +540,6 @@ public static class TSubgroupFinder
             int a = queue.Dequeue();
             foreach (var b in s.ToArray())
             {
-                //foreach (var c in new[] { mul[a, b], mul[b, a] })
-                //    if (s.Add(c)) queue.Enqueue(c);
                 // 260717Cl: 最内ループの一時配列生成を除去 (KSubgroupFinder.ClosureLin と同形に)。
                 int ab = mul[a, b], ba = mul[b, a];
                 if (s.Add(ab)) queue.Enqueue(ab);
@@ -622,16 +591,6 @@ public static class TSubgroupFinder
         {
             // 260705Cl: 線形部抽出〜シグネチャ生成の重複実装を SettingSignature に一本化 (キャッシュも共用)。
             // 点群名も生配列添字 (StrArray[s][13]) から既存プロパティ参照へ。
-            //var ops = GetExpandedOps(s);
-            //if (ops.Length == 0) continue;
-            //var lin = new List<int[]>();
-            //foreach (var op in ops)
-            //{
-            //    var key = LinKey(op);
-            //    if (FindKey(lin, key) < 0) lin.Add(key);
-            //}
-            //var sig = Signature(lin);
-            //var name = SymmetryStatic.StrArray[s][13] switch { "2mm" or "m2m" => "mm2", var t2 => t2 };
             var sig = SettingSignature(s);
             if (sig == "") continue;
             var name = SymmetryStatic.Symmetries[s].PointGroupHMStr switch { "2mm" or "m2m" => "mm2", var t2 => t2 };
@@ -701,7 +660,6 @@ public static class TSubgroupFinder
     /// <summary>H (親基準系の操作集合) の空間群型を同定する。成功時 (childSeries, P, p)、失敗時 (-1, null, null)。</summary>
     private static (int Child, double[] P, double[] Shift) Identify(int parentSn, SymmetryOperation[] hOps, List<int[]> mLin)
     {
-        //var sigName = SignatureNameMap.Value; // 260705Cl: 未使用の死にローカル (Lazy の全設定走査を無駄に誘発) を削除
         string sig = Signature(mLin);
 
         // 親格子の生成元 (整数基底 + 中心化) — 恒等線形部の並進から抽出
@@ -792,7 +750,6 @@ public static class TSubgroupFinder
         return (-1, null, null);
     }
 
-    //private static readonly Dictionary<int, string> _settingSig = []; // 260708Cl: 並列化に伴い ConcurrentDictionary へ
     private static readonly ConcurrentDictionary<int, string> _settingSig = new();
     private static string SettingSignature(int s)
         => _settingSig.GetOrAdd(s, key =>
@@ -838,7 +795,6 @@ public static class TSubgroupFinder
     }
 
     /// <summary>子基準系での原点シフト q を求め、H と候補設定の操作集合が (子格子法で) 完全一致するか検証する。</summary>
-    //private static double[] SolveOriginShift(SymmetryOperation[] hOps, double[] P, double[] Pinv, SymmetryOperation[] candOps, List<double[]> lattice) // 260705Cl 旧シグネチャ: candOps から (R,T) を毎回構築していた
     private static double[] SolveOriginShift(SymmetryOperation[] hOps, double[] P, double[] Pinv, List<(int[] R, double[] T)> cand, List<double[]> lattice)
     {
         // H を子基準系へ (q=0): (R_c, t_c0)
@@ -855,8 +811,6 @@ public static class TSubgroupFinder
                 Pinv[6] * t.U + Pinv[7] * t.V + Pinv[8] * t.W,
             }));
         }
-        //var cand = candOps.Select(op => (R: LinKey(op), T: TVec(op))).ToList(); // 260705Cl: 呼び出し元で前計算済み
-
         // 候補 q の生成: det(R−I) ≠ 0 の R があれば解析解、無ければ 1/24 格子の総当たり
         var qCands = new List<double[]>();
         var pivot = hChild.Select(x => x.R).FirstOrDefault(r => Math.Abs(DetRmI(r)) > 0.5);

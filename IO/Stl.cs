@@ -10,7 +10,6 @@ namespace Crystallography
     public class StlFile
     {
         #region Constructions
-        /// <summary>コンストラクタ</summary>
         public StlFile()
         {
         }
@@ -339,7 +338,6 @@ namespace Crystallography
     public class StlFacet
     {
         #region Constructions
-        /// <summary>コンストラクタ</summary>
         public StlFacet()
         {
         }

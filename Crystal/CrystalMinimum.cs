@@ -12,8 +12,6 @@ using System.Windows.Forms;
 namespace Crystallography;
 
 //必要最小限の情報だけを保存するクラス
-//[ProtoContract]
-//[Serializable()]
 [MemoryPackable]
 public partial class Crystal2
 {
@@ -61,11 +59,6 @@ public partial class Crystal2
     public string[] CellTexts
     {
         get => cellBytes == null ? null : Array.ConvertAll(cellBytes, ToString);
-        //set
-        //{
-        //    if (value != null)
-        //        cellBytes = Array.ConvertAll(value, ToBytes);
-        //}
         // (260320Ch) null 指定時も内部状態を同期して古い値を残さない
         set => cellBytes = value == null ? null : Array.ConvertAll(value, ToBytes);
     }
@@ -297,19 +290,6 @@ public partial class Crystal2
             ,"0"            ,"1"            ,"2"            ,"3"            ,"4"            ,"5"            ,"6"            ,"7"            ,"8"            ,"9"            ,"."            ,"/"            ,"-"            ,"|"            ,"E"            ,""
             #endregion
         ];
-
-    //静的コンストラクタ
-    //static Crystal2()
-    //{
-    //    for (int i = 0; i < 16; i++)
-    //        for (int j = 0; j < 16; j++)
-    //        {
-    //            var s1 = i == 15 ? "" : new string(new[] { toCharDic[i] });
-    //            var s2 = j == 15 ? "" : new string(new[] { toCharDic[j] });
-
-    //            toStringDic.Add((byte)(i + j * 16), s1 + s2);
-    //        }
-    //}
 
     [MemoryPackIgnore]
     static readonly FrozenDictionary<char, byte> toByteDic = new Dictionary<char, byte>()

@@ -8,42 +8,6 @@ namespace Crystallography;
 
 public class Statistics
 {
-    ///// <summary>
-    ///// 単純平均を求めます
-    ///// </summary>
-    ///// <param name="values"></param>
-    ///// <returns></returns>
-    //public static double Average(params int[] values)
-    //{
-    //    try
-    //    {
-    //        int sum = 0;
-    //        foreach (int value in values)
-    //            sum += value;
-
-    //        return (double)sum / values.Length;
-    //    }
-    //    catch { return 0; }
-    //}
-
-    ///// <summary>
-    ///// 重み付き平均を求めます
-    ///// </summary>
-    ///// <param name="values"></param>
-    ///// <returns></returns>
-    //public static double Average(double[] values, double[] weight)
-    //{
-    //    try
-    //    {
-    //        double[] normarizedWeight = Normarize(weight);
-    //        double weightAverage = 0;
-    //        for (int i = 0; i < values.Length; i++)
-    //            weightAverage += values[i] * weight[i];
-    //        return weightAverage;
-    //    }
-    //    catch { return 0; }
-    //}
-
     /// <summary>標本の総和を1に規格化します</summary>
     /// <param name="values"></param>
     /// <returns></returns>

@@ -9,9 +9,6 @@ namespace Crystallography;
 public readonly struct Symmetry
 {
     #region プロパティ
-    //public enum CrystalSytem { Unknown, Triclinic, Monoclinic, Orthorhombic, Tetragonal, Trigonal, Hexagonal, Cubic }
-    //public enum LatticeType { P, A, B, C, I, F, R }
-
     //sub,SF,Hall,HM,HM_full,1軸p,1軸v,2軸p,2軸v,3軸p,3軸v,点群、ラウエ群、結晶系
     public string SpaceGroupHMsubStr { get; }
     public string SpaceGroupSFStr { get; }
@@ -103,14 +100,10 @@ public readonly struct Symmetry
 
     public readonly bool IsPlaneRootIndex((int h, int k, int l) index) => SymmetryStatic.IsRootPlane(index, this,out var indices);
 
-    //public readonly string[] CheckExtinctionRule((int h, int k, int l) index)
-    //    => [.. CheckExtinctionFunc.Select(check => check(index.h, index.k, index.l)).Where(str => str != null)];
     // (260320Ch) LINQ 経由の一時割り当てを避けつつ、未初期化 Symmetry では空配列を返す
     public readonly string[] CheckExtinctionRule((int h, int k, int l) index)
         => CollectExtinctionRules(index.h, index.k, index.l);
 
-    //public readonly string[] CheckExtinctionRule(int h, int k, int l)
-    //    => [.. CheckExtinctionFunc.Select(check => check(h, k, l)).Where(str => str != null)];
     public readonly string[] CheckExtinctionRule(int h, int k, int l)
         => CollectExtinctionRules(h, k, l);
 
@@ -121,14 +114,6 @@ public readonly struct Symmetry
 
         // 260605Cl 消滅則に1つもヒットしない反射(大多数)で List と zero-length 配列を毎回確保していたのを回避。
         // 最初のヒットまで List を作らず、ヒット0なら Array.Empty<string>() ([]) を返す。
-        //var result = new List<string>(CheckExtinctionFunc.Count);
-        //foreach (var check in CheckExtinctionFunc)
-        //{
-        //    var rule = check(h, k, l);
-        //    if (rule != null)
-        //        result.Add(rule);
-        //}
-        //return [.. result];
         List<string> result = null;
         foreach (var check in CheckExtinctionFunc)
         {
@@ -141,15 +126,6 @@ public readonly struct Symmetry
 
     /// <summary>消滅則に抵触するか(=禁制反射か)を割り当てなしで判定する。CheckExtinctionRule(h,k,l).Length != 0 と同値。260605Cl 追加</summary>
     // 260606Cl GetFirstExtinctionRule への委譲に変更し、ほぼ同一だった判定ループの二重管理を解消。委譲先も割り当てなし(rule 文字列の参照を返すだけ)なので性能は同等。
-    //public readonly bool HasExtinction(int h, int k, int l)
-    //{
-    //    if (CheckExtinctionFunc is not { Count: > 0 })
-    //        return false;
-    //    foreach (var check in CheckExtinctionFunc)
-    //        if (check(h, k, l) != null)
-    //            return true;
-    //    return false;
-    //}
     public readonly bool HasExtinction(int h, int k, int l) => GetFirstExtinctionRule(h, k, l) is not null;
 
     /// <summary>最初に抵触した消滅則の文字列を返す(なければ null)。割り当てなし。CheckExtinctionRule(h,k,l) の先頭要素に相当。260605Cl 追加</summary>
@@ -299,14 +275,6 @@ public readonly struct Symmetry
                 // 260704Cl 修正: 同一条件の else-if 連鎖は 2 分岐目以降が実行されないデッドコードだった
                 // (P4bm 系で 0kl: k=2n の判定が漏れ、禁制のはずの反射が許容扱いになる)。両方を 1 つの if に統合。
                 // 検証: tools/SymmetryPropsCheck の操作集合ベース判定 (h·R=h かつ h·t∉Z) との全 530 設定×|hkl|≤3 照合。
-                //if (sym.StrSE2v == "b")
-                //{
-                //    func.Add((h, k, l) => h % 2 != 0 && k == 0 ? "a⊥[010]" : null);
-                //}
-                //else if (sym.StrSE2v == "b")
-                //{
-                //    func.Add((h, k, l) => k % 2 != 0 && h == 0 ? "b⊥[100]" : null);
-                //}
                 if (sym.StrSE2v == "b")
                 {
                     func.Add((h, k, l) => h % 2 != 0 && k == 0 ? "a⊥[010]" : null);
@@ -363,11 +331,6 @@ public readonly struct Symmetry
                     // 菱面体軸の c 映進 (R3c/R-3c) は glide 並進 (1/2,1/2,1/2)、面は 3 回軸で結ばれた 3 枚:
                     //   ⊥[1-10] は (h,h,l) を固定 → 位相 h+l/2 → l 奇で消滅 / ⊥[01-1] は (h,k,k) → h 奇 / ⊥[-101] は (h,k,h) → k 奇。
                     // 検証: tools/SymmetryPropsCheck の操作集合ベース判定との全設定照合 (R3cRho/R-3cRho の不一致が解消)。
-                    //if (sym.StrSE2v == "c")
-                    //{
-                    //    func.Add((h, k, l) => l % 2 != 0 && h == k ? "c⊥[111]" : null);
-                    //    func.Add((h, k, l) => l % 2 != 0 && h == k && k == l ? "c⊥[111]" : null);//要チェック。なんか変だ。
-                    //}
                     if (sym.StrSE2v == "c" || sym.StrSE3v == "c")
                     {
                         func.Add((h, k, l) => l % 2 != 0 && h == k ? "c⊥[1-10]" : null);
@@ -392,12 +355,6 @@ public readonly struct Symmetry
                 // 260704Cl 修正: 同一条件の else-if 連鎖 (デッドコード) で 2, 3 枚目の等価な映進面の判定が漏れ、
                 // P6cc/P6sub3cm/P6sub3mc/P-6c2/P-62c/P6/mcc/P6sub3/mcm/P6sub3/mmc 等で禁制反射が許容扱いになっていた。
                 // 三方晶系 (case 5) と同じく 3 枚を全て登録する。検証: tools/SymmetryPropsCheck (操作集合ベースとの全設定照合)。
-                //if (sym.StrSE2v == "c")
-                //    func.Add((h, k, l) => l % 2 != 0 && h == -k ? "c⊥[-1-10]" : null);
-                //else if (sym.StrSE2v == "c")
-                //    func.Add((h, k, l) => l % 2 != 0 && h == 0 ? "c⊥[100]" : null);
-                //else if (sym.StrSE2v == "c")
-                //    func.Add((h, k, l) => l % 2 != 0 && k == 0 ? "c⊥[010]" : null);
                 if (sym.StrSE2v == "c")
                 {
                     func.Add((h, k, l) => l % 2 != 0 && h == -k ? "c⊥[-1-10]" : null);
@@ -405,12 +362,6 @@ public readonly struct Symmetry
                     func.Add((h, k, l) => l % 2 != 0 && k == 0 ? "c⊥[010]" : null);
                 }
 
-                //if (sym.StrSE3v == "c")
-                //    func.Add((h, k, l) => l % 2 != 0 && h == k ? "c⊥[1-10]" : null);
-                //else if (sym.StrSE3v == "c")
-                //    func.Add((h, k, l) => l % 2 != 0 && h == -2 * k ? "c⊥[120]" : null);
-                //else if (sym.StrSE3v == "c")
-                //    func.Add((h, k, l) => l % 2 != 0 && -2 * h == k ? "c⊥[-2-10]" : null);
                 if (sym.StrSE3v == "c")
                 {
                     func.Add((h, k, l) => l % 2 != 0 && h == k ? "c⊥[1-10]" : null);

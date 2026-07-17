@@ -69,51 +69,6 @@ namespace Crystallography
             }
         }
 
-        /*  public PhotoInformation(string l1, string l2, string l3, string theta, decimal l1err, decimal l2err, decimal l3err, decimal theta_err, string tilt1, string tilt2, decimal tilt1err, decimal tilt2err, bool isTriangleMode, double waveLength, double cameraLength)
-          {
-              try
-              {
-                  PhotoInformation temp;
-                  if (isTriangleMode)
-                      temp = new PhotoInformation(Convert.ToDouble(l1), Convert.ToDouble(l2), Convert.ToDouble(l3), 0,
-                          (double)l1err / 100, (double)l2err / 100, (double)l3err / 100, (double)theta_err /180 *Math.PI,
-                          Convert.ToDouble(tilt1) / 180 * Math.PI, Convert.ToDouble(tilt2) / 180 * Math.PI, isTriangleMode, waveLength, cameraLength);
-                  else
-                      temp = new PhotoInformation(Convert.ToDouble(l1), Convert.ToDouble(l2), 0, Convert.ToDouble(theta) / 180 * Math.PI,
-                            (double)l1err / 100, (double)l2err / 100, (double)l3err / 100, (double)theta_err / 180 * Math.PI,
-                          Convert.ToDouble(tilt1) / 180 * Math.PI, Convert.ToDouble(tilt2) / 180 * Math.PI, isTriangleMode, waveLength, cameraLength);
-                  this.L1 = temp.L1;
-                  this.L2 = temp.L2;
-                  this.L3 = temp.L3;
-                  this.Theta = temp.Theta;
-                  this.Tilt1 = temp.Tilt1;
-                  this.Tilt2 = temp.Tilt2;
-                  this.Paintable = temp.Paintable;
-                  this.P1 = temp.P1;
-                  this.P2 = temp.P2;
-                  this.d1 = temp.d1;
-                  this.d2 = temp.d2;
-                  this.d3 = temp.d3;
-                  this.IsTriangleMode = temp.IsTriangleMode;
-                  this.theta_err = temp.theta_err;
-                  this.d1max = temp.d1max;
-                  this.d2max = temp.d2max;
-                  this.d3max = temp.d3max;
-                  this.d1min = temp.d1min;
-                  this.d2min = temp.d2min;
-                  this.d3min = temp.d3min;
-                  this.Tilt1Err = (double)tilt1err / 180 * Math.PI;
-                  this.Tilt2Err = (double)tilt2err / 180 * Math.PI;
-              }
-              catch
-              {
-                  this.Paintable = false;
-                  this.IsTriangleMode = true;
-              }
-          }
-
-         */
-
         public void Rot(double angle)
         {
             P1 = new PointF((float)(Math.Cos(angle) * P1.X + Math.Sin(angle) * P1.Y), (float)(Math.Sin(angle) * P1.X + Math.Cos(angle) * P1.Y));

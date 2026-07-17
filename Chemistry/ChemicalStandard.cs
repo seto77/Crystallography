@@ -23,8 +23,6 @@ namespace Crystallography
         /// <summary>原子量</summary>
         public double MolarWeight;
 
-        /// <summary>同位体比</summary>
-        //public Dictionary<int, double> Isotopes;
         /// <summary>X線検出時間</summary>
         public double XrayCountTime;
 
@@ -72,7 +70,6 @@ namespace Crystallography
             AtomicName = AtomStatic.AtomicName(Z);
             MolarAbundance = molarAbundance;
             Valence = valence;
-            // Isotopes = AtomConstants.IsotopeAbundance[Z];
             MolarWeight = AtomStatic.AtomicWeight(Z);
         }
 
@@ -492,8 +489,8 @@ namespace Crystallography
             for (int i = 0; i < Elements.Count; i++)
             {
                 //原子番号補正
-                Elements[i].S = ZAFCorrection.StoppingFactor(Elements.ToArray(), i, IncidentEnergy);//AtomConstants.StoppingFactor(Elements[i].Z, Elements[i].Line, 20);
-                Elements[i].R = ZAFCorrection.BackscatteredFactor(Elements.ToArray(), i, IncidentEnergy); //AtomConstants.BackScatteredFactor(Elements[i].Z, Elements[i].Line, 20);
+                Elements[i].S = ZAFCorrection.StoppingFactor(Elements.ToArray(), i, IncidentEnergy);
+                Elements[i].R = ZAFCorrection.BackscatteredFactor(Elements.ToArray(), i, IncidentEnergy);
 
                 //吸収補正の計算
                 Elements[i].A = ZAFCorrection.AbsorptionCorrectionFunction(Elements.ToArray(), i, IncidentEnergy, TakeoffAngle);
@@ -558,7 +555,6 @@ namespace Crystallography
                     Molecules[i].WeightRatio /= weightTotal;
 
                 CalculateZAFParameters();
-                //double sum = 0;
                 for (int i = 0; i < Elements.Count; i++)
                     if (Elements[i].ApparentFullCPS != 0)//スタンダード登録されている元素であれば
                     {
@@ -569,7 +565,6 @@ namespace Crystallography
                             {
                                 double zaf = Elements[i].R / Elements[i].S * Elements[i].A * (1 + Elements[i].FchGamma + Elements[i].FcoGamma);
                                 Molecules[j].WeightRatio = Molecules[j].MolarWeight / (Molecules[j].Elements[k].MolarWeight * Molecules[j].Elements[k].MolarAbundance) * Elements[i].XrayCPS / Elements[i].IdealFullCPS / zaf;
-                                //sum+=Molecules[j].WeightRatio;
                                 break;
                             }
                         }
@@ -798,7 +793,7 @@ namespace Crystallography
             double chi = mu_rho / Math.Sin(theta);
             double ec = AtomStatic.CharacteristicXrayEnergy(z, edge);
             double sigma = 4.5E5 / (Math.Pow(incidentEnergy, 1.65) - Math.Pow(ec, 1.65));
-            return (1 + h) / (1 + chi / sigma) / (1 + h * (1 + chi / sigma)); ;
+            return (1 + h) / (1 + chi / sigma) / (1 + h * (1 + chi / sigma));
         }
     }
 }

@@ -2,11 +2,6 @@
 
 public class YusaGonio
 {
-    private enum ScanMode
-    { ZigzagScan, RotationalScan };
-
-    //ScanMode Mode = ScanMode.ZigzagScan;
-
     public bool Valid = false;
 
     public bool Rx = false;

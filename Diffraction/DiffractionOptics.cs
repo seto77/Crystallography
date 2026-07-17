@@ -3,16 +3,15 @@ using System.IO;
 
 namespace Crystallography;
 
-[Serializable()]
 public static class DiffractionOptics
 {
     public static Parameter Read(string filename)
     {
         try
         {
-            var fi = new FileInfo(filename);//FileInfoオブジェクトを作成
-            var ct = fi.CreationTime;//作成日時の取得
-            var lwt = fi.LastWriteTime;//更新日時の取得
+            var fi = new FileInfo(filename);
+            var ct = fi.CreationTime;
+            var lwt = fi.LastWriteTime;
 
             //var sr = new StreamReader(filename);
             //var str = sr.ReadToEnd();
@@ -39,10 +38,10 @@ public static class DiffractionOptics
             //sw.Close();
             File.WriteAllText(filename, str); // 260718Cl: 同上 (StreamWriter リーク対策)
 
-            fi = new FileInfo(filename)//FileInfoオブジェクトを作成
+            fi = new FileInfo(filename)
             {
-                CreationTime = ct,//作成日時の取得
-                LastWriteTime = lwt//更新日時の取得
+                CreationTime = ct,
+                LastWriteTime = lwt
             };
 
             System.Xml.Serialization.XmlSerializer serializer = new(typeof(Parameter));

@@ -92,19 +92,6 @@ public class Tiff
             return offset + 8;
         }
 
-        /*  public static void Write(BinaryWriter bw, ushort tag, uint value1, uint value2, long offset)
-          {
-              bw.Write(BitConverter.GetBytes(tag));
-              bw.Write(BitConverter.GetBytes((ushort)5));//type
-              bw.Write(BitConverter.GetBytes((uint)2));//count
-              bw.Write(BitConverter.GetBytes(offset));
-              long pos = bw.BaseStream.Position;
-              bw.BaseStream.Position = offset;
-              bw.Write(BitConverter.GetBytes(value1));
-              bw.Write(BitConverter.GetBytes(value2));
-              bw.BaseStream.Position = pos;
-          }*/
-
         public static uint Write(BinaryWriter bw, ushort tag, uint value1, uint value2, uint offset)
         {
             bw.Write(BitConverter.GetBytes(tag));
@@ -555,17 +542,6 @@ public class Tiff
                     image.ValueBlue = new uint[image.ImageLength * image.ImageWidth];
                 }
 
-                #region お蔵入り?
-                //int latitude = 0;
-                //if (image.ImageDescription.Contains("Latitude"))
-                //{
-                //    string[] tempStr = image.ImageDescription.Split('\n');
-                //    for (int j = 0; j < tempStr.Length; j++)
-                //        if (tempStr[j].Contains("Latitude"))
-                //            latitude = Convert.ToInt32(tempStr[j].Split('=')[1]);
-                //}
-                #endregion
-
                 //ここからデータを読み込む
 
                 #region PFで導入された新フォーマットへの対処
@@ -711,43 +687,6 @@ public class Tiff
             br.Close();
         }
 
-
-        /// <summary>ファイルからbyteCountだけ読み込んで、数値に変換して返す。signは符号付きの場合はtrue。</summary>
-        /// <param name="br"></param>
-        /// <param name="byteCount"></param>
-        /// <param name="byteOrder"></param>
-        /// <param name="sign"></param>
-        /// <returns></returns>
-        private static double toInt(BinaryReader br, int byteCount, TiffByteOrder byteOrder, bool sign)
-        {
-            if (byteCount == 1)
-            {
-                var temp = new byte[1];
-                br.Read(temp, 0, 1);
-
-                return (double)temp[0];
-            }
-            else if (byteCount == 2)
-            {
-                var temp = new byte[2];
-                br.Read(temp, 0, 2);
-                if (byteOrder == TiffByteOrder.Intel) temp = temp.Reverse().ToArray();
-
-                return sign ? (double)BitConverter.ToInt16(temp, 0) : BitConverter.ToUInt16(temp, 0);
-            }
-            else if (byteCount == 4)
-            {
-                var temp = new byte[4];
-                br.Read(temp, 0, 4);
-                if (byteOrder == TiffByteOrder.Intel) temp = temp.Reverse().ToArray();
-
-                return sign ? (double)BitConverter.ToInt32(temp, 0) : BitConverter.ToUInt32(temp, 0);
-
-            }
-            else
-                return 0;
-
-        }
 
         private static float toFloat(BinaryReader br, int byteCount, TiffByteOrder byteOrder)
         {

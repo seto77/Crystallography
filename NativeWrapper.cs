@@ -24,8 +24,6 @@ public static partial class NativeWrapper
 
 
     public enum Library { None, Eigen, Cuda }
-    //[DllImport("msvcrt.dll", EntryPoint = "memcpy", CallingConvention = CallingConvention.Cdecl, SetLastError = false)]
-    //public static extern IntPtr Memcpy(IntPtr dest, IntPtr src, UIntPtr count);
 
     [LibraryImport("Crystallography.Native.dll")]
     private static unsafe partial void _PartialPivLuSolve(int dim, double* mat, double* vec, double* result);
@@ -114,17 +112,11 @@ public static partial class NativeWrapper
     #endregion
 
 
-    //[LibraryImport("Crystallography.Native.dll")]
-    //private static unsafe partial void _Inverse(int dim, double[] mat, double[] matInv);
-
     [LibraryImport("Crystallography.Native.dll")]
     private static unsafe partial void _Inverse(int dim, double* mat, double* matInv);
 
     [LibraryImport("Crystallography.Native.dll")]
     private static unsafe partial void _Inverse_Real(int dim, double* mat, double* matInv);
-
-    //[LibraryImport("Crystallography.Native.dll")]
-    //private static unsafe partial void _EigenSolver(int dim, in double[] mat, in double[] eigenValues, double[] eigenVectors);
 
     [LibraryImport("Crystallography.Native.dll")]
     private static unsafe partial void _EigenSolver(int dim, double* mat, double* eigenValues, double* eigenVectors);
@@ -720,12 +712,6 @@ public static partial class NativeWrapper
     }
     #endregion
 
-    #region Eigenライブラリーを利用して、非対称複素行列の乗算を求める
-
-
-
-    #endregion
-
     #region 複素共役、転置
 
     unsafe static public void Adjoint(int dim, Complex[] matrix1, Complex[] matrix2, ref Complex[] result)
@@ -857,13 +843,6 @@ public static partial class NativeWrapper
     /// <param name="val"></param>
     /// <param name="vec"></param>
     /// <param name="result"></param>
-    //unsafe static public void GenerateTC(in int dim,in double thickness, in double[] kg_z, in Complex[] val, in Complex[] vec, ref Complex[] result)
-    //{
-    //    fixed (double* _kg_z = kg_z)
-    //    fixed (Complex* _val = val, _vec = vec, _result = result)
-    //        _GenerateTC(dim, thickness, _kg_z, (double*)_val, (double*)_vec, (double*)_result);
-    //}
-
     unsafe static public void GenerateTC1(in int dim, in double thickness, double* _kg_z, Complex* _val, Complex* _vec, Complex* _tc_k)
     {
         if (Enabled)

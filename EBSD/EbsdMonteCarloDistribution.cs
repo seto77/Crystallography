@@ -56,7 +56,6 @@ public sealed class EbsdMonteCarloDistribution
             bins[bi, bj].Add((depth, energy));
         }
 
-        // BinWeights = new double[binCount, binCount][]; // (260325Ch) 旧実装
         BinWeights = new double[binCount, binCount][];
         BinAbsoluteSliceWeights = new double[binCount, binCount][]; // (260325Ch) model 2 用
         int eLen = energies.Length, dLen = depths.Length;

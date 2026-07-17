@@ -31,13 +31,6 @@ public class WaveProperty
 
     }
 
-    /// <summary></summary>
-    /// <param name="source"></param>
-    /// <param name="xrayWaveLength"></param>
-    /// <param name="xrayElementNumber"></param>
-    /// <param name="xrayLine"></param>
-    /// <param name="electronAccVoltage"></param>
-
     public WaveProperty(WaveSource source, double xrayWaveLength, int xrayElementNumber, XrayLine xrayLine, double electronAccVoltage)
     {
         Source = source;

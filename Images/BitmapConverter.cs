@@ -273,54 +273,6 @@ public static class BitmapConverter
         }
     }
 
-    /*public static void FromFFT(Bitmap bmp, Complex[][] complexR, Complex[][] complexG, Complex[][] complexB, byte[] scale)
-    {
-        if (bmp.Height != complexR.Length) return;
-
-        double[][] r = Fourier.GetModulus(complexR, true);
-        double[][] g = Fourier.GetModulus(complexG, true);
-        double[][] b = Fourier.GetModulus(complexB, true);
-        if (bmp.PixelFormat == PixelFormat.Format24bppRgb)//24bitカラーモードのときだけ
-        {
-            byte[] values = new byte[bmp.Width * bmp.Height * 3];
-            for (int y = 0; y < bmp.Height; y++)
-            {
-                int Y = y < bmp.Height / 2 ? y + bmp.Height / 2 : y - bmp.Height / 2;
-                int initX = y * bmp.Width * 3;
-                for (int x = 0; x < bmp.Width; x++)
-                {
-                    int X = x < bmp.Width / 2 ? x + bmp.Width / 2 : x - bmp.Width / 2;
-                    values[initX + x * 3 + 0] = scale[(int)(b[Y][X] * (scale.Length - 1))];
-                    values[initX + x * 3 + 1] = scale[(int)(g[Y][X] * (scale.Length - 1))];
-                    values[initX + x * 3 + 2] = scale[(int)(r[Y][X] * (scale.Length - 1))];
-                }
-            }
-            FromByte(bmp, values);
-        }
-    }*/
-
-    /*public static Bitmap FromFFT(Complex[][] complexGray, byte[] scale)
-    {
-        if (bmp.Height != complexGray.Length) return;
-
-        double[][] gray = Fourier.GetModulus(complexGray, true);
-        if (bmp.PixelFormat == PixelFormat.Format24bppRgb)//24bitカラーモードのときだけ
-        {
-            byte[] values = new byte[bmp.Width * bmp.Height * 3];
-            for (int y = 0; y < bmp.Height; y++)
-            {
-                int Y = y < bmp.Height / 2 ? y + bmp.Height / 2 : y - bmp.Height / 2;
-                int initX = y * bmp.Width * 3;
-                for (int x = 0; x < bmp.Width; x++)
-                {
-                    int X = x < bmp.Width / 2 ? x + bmp.Width / 2 : x - bmp.Width / 2;
-                    values[initX + x * 3 + 0] = values[initX + x * 3 + 1] = values[initX + x * 3 + 2] = scale[(int)(gray[Y][X] * (scale.Length - 1))];
-                }
-            }
-            FromByte(bmp , values);
-        }
-    }*/
-
     private static readonly Lock lockObject = new();
 
     public static double detectSkewAngle(Bitmap bmp)

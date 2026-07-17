@@ -9,14 +9,12 @@ public class NumericalFormula
     {
         try
         {
-            //for (int i=0; i<str.Length ; i++)
-            //スペースを削除する
-            //定数を計算する
+            //'=' で定義された定数を計算し、それ以降の式へ展開する
             for (int i = 0; i < str.Length; i++)
                 if (str[i].Contains('=')) // '=' の文字列がみつかったら
                 {
-                    string leftString = str[i].Split(["="], StringSplitOptions.RemoveEmptyEntries)[0].Replace(" ", ""); ;
-                    string rightString = str[i].Split(["="], StringSplitOptions.RemoveEmptyEntries)[1].Replace(" ", ""); ;
+                    string leftString = str[i].Split(["="], StringSplitOptions.RemoveEmptyEntries)[0].Replace(" ", "");
+                    string rightString = str[i].Split(["="], StringSplitOptions.RemoveEmptyEntries)[1].Replace(" ", "");
 
                     for (int j = i + 1; j < str.Length; j++)
                         for (int l = 0; l < str[j].Length; l++)
@@ -131,7 +129,7 @@ public class NumericalFormula
                 i = -1;//次を0に戻す
             }
         }
-        //最後にstrに余りがあればそれを数値に変換1
+        //最後にstrに余りがあればそれを数値に変換
         if (str.Length > 0)
             list.Add(Convert.ToDouble(str));
 

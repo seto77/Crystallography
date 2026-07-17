@@ -3416,6 +3416,10 @@ public static class AtomStaticSub
 
     public static PointD[][][] LinearAbsorptionCoefficient;
 
+    // FluorescentYieldK / FluorescentYieldL / FluorescentYieldM: 添字 = 原子番号 Z の蛍光収率テーブル。
+    //   有効範囲は K: Z=4..92、L: Z=20..92、M: Z=58..93 (それ未満の Z は NaN でパディング)。
+    //   要素数は K/L が 93 (index 0..92)、M のみ 94 (index 0..93) で終端が不揃い。
+    //   桁誤り修正は各配列内の 260712Cl コメント参照 (K: Ar / L: Tc / M: Po)。
     public static readonly double[] FluorescentYieldK = [
     
         #region

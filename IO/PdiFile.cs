@@ -339,7 +339,7 @@ public static class XYFile
                 i += count - 1;
             }
         }
-        if (countMax < 10) return null;//100以下だったらNullをかえす
+        if (countMax < 10) return null;//10以下だったらNullをかえす
 
         if (endColumn + 1 < doubleList.Count)
             doubleList.RemoveRange(endColumn + 1, doubleList.Count - endColumn - 1);
@@ -369,7 +369,7 @@ public static class XYFile
                 j += count;
             }
         }
-        if (countMax < 10 || xRow == -1) return null;//100以下かXを見つけられなかったらNullをかえす
+        if (countMax < 10 || xRow == -1) return null;//10以下かXを見つけられなかったらNullをかえす
 
         if (endColumn + 1 < doubleList.Count)
             doubleList.RemoveRange(endColumn + 1, doubleList.Count - endColumn - 1);
@@ -386,25 +386,7 @@ public static class XYFile
             yRow = xRow - 1;
         else
             return null;
-        //double Sum, SumSquare, Deviation, DeviationMax;
-        //DeviationMax = double.NegativeInfinity;
-        //for (int i = 0; i < doubleList[0].Length; i++)
-        //    if (i != xRow)
-        //    {
-        //        Sum = SumSquare = 0;
-        //        for (int j = 0; j < doubleList.Count; j++)
-        //        {
-        //            Sum += doubleList[j][i];
-        //            SumSquare += doubleList[j][i] * doubleList[j][i];
-        //        }
-        //        Deviation = (doubleList.Count * SumSquare - Sum * Sum) / doubleList.Count / (doubleList.Count - 1);
-        //        if (DeviationMax < Deviation)
-        //        {
-        //            DeviationMax = Deviation;
-        //            yRow = i;
-        //        }
-        //    }
-        //if (yRow == -1) return null;
+        //旧: 標準偏差が最大の列を y 軸に選ぶ方式 (上記理由で xRow±1 に変更)
 
         //最後に値を代入
         DiffractionProfile2 dif = new();

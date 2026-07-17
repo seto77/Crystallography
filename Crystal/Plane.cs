@@ -46,25 +46,6 @@ public class Plane : IComparable, IComparable<Plane>
     public double CosExpFactor;
     public double SinExpFactor;
 
-    //public int CompareTo(object obj)
-    //{
-    //    var _p = obj as Plane;
-    //    if (d != _p.d)
-    //        return -d.CompareTo(_p.d);
-    //    else
-    //    {
-    //        var _h = _p.h;
-    //        var _k = _p.k;
-    //        var _l = _p.l;
-    //
-    //        if (h > _h || h == _h && k > _k || h == _h && k == _k && l > _l)
-    //            return -1;
-    //        else if (h == _h && k == _k && l == _l)
-    //            return 0;
-    //        else
-    //            return 1;
-    //    }
-    //}
     // (260320Ch) Generic IComparable を追加し、null/型違いでも安全に比較できるようにする
     public int CompareTo(Plane obj)
     {
@@ -85,7 +66,7 @@ public class Plane : IComparable, IComparable<Plane>
     public override string ToString()
     {
         //return str.ToString();
-        string s = (strHKL + "                            ")[..13];//空白を挿入してから10文字目以降をカット
+        string s = (strHKL + "                            ")[..13];//空白を挿入して先頭13文字を残す
         if (double.IsNaN(XCalc) || XCalc == 0)
             s += " " + "##.####";
         else
