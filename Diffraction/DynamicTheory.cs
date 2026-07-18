@@ -1,5 +1,7 @@
 ﻿namespace Crystallography
 {
+    // 260718Cl: 実装が全てコメントアウトされた放棄クラス (全リポで未使用)。マクロ互換のため削除せず [Obsolete] 化。
+    [System.Obsolete("Unused abandoned class (implementation is entirely commented out); slated for removal.")]
     public class DynamicTheory
     {
         //public enum Modes { SAED, CBED }

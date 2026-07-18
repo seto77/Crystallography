@@ -2985,6 +2985,8 @@ public static class Ring
     #endregion
 
     #region バックグランド関数。 未完成
+    // 260718Cl: 未完成・全リポで未使用の public メソッド。マクロ互換のため削除せず [Obsolete] 化。
+    [System.Obsolete("Unused incomplete method; slated for removal.")]
     public static double[] GetBackground(double lower, double upper)
     {
         return [.. Intensity];

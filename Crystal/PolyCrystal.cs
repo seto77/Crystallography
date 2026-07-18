@@ -904,6 +904,8 @@ public class Crystallite
 
 /// <summary>多結晶体を取り扱う.</summary>
 [Serializable()]
+// 260718Cl: お蔵入りの静的クラス (全リポで未使用)。マクロ互換のため削除せず [Obsolete] 化。
+[System.Obsolete("Unused shelved class; slated for removal.")]
 public static class Powder
 {
     //public double GrainSize=1;

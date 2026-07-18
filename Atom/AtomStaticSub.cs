@@ -3414,7 +3414,7 @@ public static class AtomStaticSub
         return result;
     }
 
-    public static PointD[][][] LinearAbsorptionCoefficient;
+    // 260718Cl: public static PointD[][][] LinearAbsorptionCoefficient; を削除。全リポで未代入 (常に null)・唯一の読取元だった AtomStatic.LinearAbsorptionCoefficient(int) も削除済み。
 
     // FluorescentYieldK / FluorescentYieldL / FluorescentYieldM: 添字 = 原子番号 Z の蛍光収率テーブル。
     //   有効範囲は K: Z=4..92、L: Z=20..92、M: Z=58..93 (それ未満の Z は NaN でパディング)。
