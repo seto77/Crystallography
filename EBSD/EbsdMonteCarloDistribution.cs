@@ -33,6 +33,7 @@ public sealed class EbsdMonteCarloDistribution
 
         var (sinDet, cosDet) = Math.SinCos(detTilt);
         double dNumer = -(detY * sinDet + detZ * cosDet);
+        double lamDenom = detY * sinDet - detZ * cosDet; // 260718Cl 追加: py 逆写像のスケール分母 (= ±CameraLength2)。実在検出器では非ゼロ
 
         var bins = new List<(double depth, double energy)>[binCount, binCount];
         for (int i = 0; i < binCount; i++)
@@ -46,11 +47,16 @@ public sealed class EbsdMonteCarloDistribution
             double k = dNumer / dDenom;
             if (k <= 0) continue;
 
-            double localY = cosDet * (k * vec.Y + detY) - sinDet * (k * vec.Z + detZ);
-            double px = k * vec.X / detR;
-            double py = localY / detR;
+            double px = k * vec.X / detR; // X は現状維持: 試料傾斜軸 (X) に平行で foreshortening せず、MC 分布が X 対称なので不可視
+            // 260718Cl 変更: py を消費側 (FormEBSD.BuildEbsdLookupTable) の「画素→lab 方向」マップの厳密な逆写像で算出する。
+            //   旧 py=localY/detR は検出器面内 Y 接線 (cosDet,-sinDet) が消費側の (cosDet,+sinDet) と食い違い、
+            //   DetTilt≠90° で輝度ビンに foreshortening ずれ (検出器端で ~1 粗ビン) を生んでいた。
+            //   逆写像 py は消費側 detNormY に厳密一致し、DetTilt=90° では旧式と同値 (既定は完全に不変)。lambda=検出器中心線方向の射影スケール。
+            // double localY = cosDet * (k * vec.Y + detY) - sinDet * (k * vec.Z + detZ); double py = localY / detR; // 260718Cl 変更前
+            double lambda = (vec.Y * sinDet - vec.Z * cosDet) / lamDenom;
+            double py = ((vec.Y * cosDet + vec.Z * sinDet) / lambda - (detY * cosDet + detZ * sinDet)) / detR;
 
-            if (px < -1 || px > 1 || py < -1 || py > 1) continue;
+            if (!(px >= -1 && px <= 1) || !(py >= -1 && py <= 1)) continue; // 260718Cl: NaN/範囲外を棄却 (lambda≈0 → py→∞ も捕捉)
 
             int bi = Math.Clamp((int)((px + 1) * 0.5 * binCount), 0, binCount - 1);
             int bj = Math.Clamp((int)((1 - py) * 0.5 * binCount), 0, binCount - 1);
