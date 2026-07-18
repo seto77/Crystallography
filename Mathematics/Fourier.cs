@@ -296,7 +296,8 @@ public static class Fourier
 
     #region fft用サブルーチン
 
-    private static int sign = -1;
+    //private static int sign = -1;
+    [ThreadStatic] private static int sign; // 260718Cl: 全 FFT 経路が共有する static だと Forward/Inverse を並行実行するとスレッド競合で誤結果になる。各計算スレッドは fft(src,direction) 入口で自分の sign を設定してから読むため、ThreadStatic 化で競合を解消 (引き回し不要の最小修正)
 
     private static readonly double sq = Math.Sqrt(1.0 / 2.0);
 

@@ -13,30 +13,31 @@ public class NumericalFormula
             for (int i = 0; i < str.Length; i++)
                 if (str[i].Contains('=')) // '=' の文字列がみつかったら
                 {
-                    string leftString = str[i].Split(["="], StringSplitOptions.RemoveEmptyEntries)[0].Replace(" ", "");
-                    string rightString = str[i].Split(["="], StringSplitOptions.RemoveEmptyEntries)[1].Replace(" ", "");
+                    // 260718Cl: Split を1回化。
+                    var parts = str[i].Split(["="], StringSplitOptions.RemoveEmptyEntries);
+                    string leftString = parts[0].Replace(" ", "");
+                    string rightString = parts[1].Replace(" ", "");
 
                     for (int j = i + 1; j < str.Length; j++)
-                        for (int l = 0; l < str[j].Length; l++)
+                        // 260718Cl: 旧実装は k=IndexOf(leftString) を走査位置 l を無視して常に先頭から取り直すため、識別子内に埋め込まれた先頭出現が棄却されると
+                        //           以降が永久に置換されなかった。走査位置 l から検索し、置換時は挿入長ぶん、非置換時は k+1 へ進める。
+                        for (int l = 0; l < str[j].Length;)
                         {
-                            if (str[j].IndexOf(leftString, l, StringComparison.Ordinal) >= 0)//文字列が見つかったとき
+                            int k = str[j].IndexOf(leftString, l, StringComparison.Ordinal);
+                            if (k < 0) break;
+
+                            // 直前・直後が英字なら大きな識別子の一部とみなし置換しない。
+                            // 260718Cl: 旧 'A'<=c && 'z'>=c は 'Z'(90) と 'a'(97) の間の [ \ ] ^ _ ` (91-96) を英字と誤判定し、x^2 等で置換に失敗して NaN になっていた → char.IsAsciiLetter に修正。
+                            bool embedded =
+                                (k + leftString.Length < str[j].Length && char.IsAsciiLetter(str[j][k + leftString.Length])) ||
+                                (k > 0 && char.IsAsciiLetter(str[j][k - 1]));
+
+                            if (embedded)
+                                l = k + 1;
+                            else
                             {
-                                int k = str[j].IndexOf(leftString, StringComparison.Ordinal);
-                                bool flag = true;
-
-                                if (k + leftString.Length < str[j].Length)//後方に余裕のあるとき
-                                    if ('A' <= str[j][k + leftString.Length] && 'z' >= str[j][k + leftString.Length])//直後が文字列のときは
-                                        flag = false;
-
-                                if (k > 0)//前方に余裕のあるとき
-                                    if ('A' <= str[j][k - 1] && 'z' >= str[j][k - 1])//直前が文字列のときは
-                                        flag = false;
-
-                                if (flag)
-                                {
-                                    str[j] = str[j].Remove(k, leftString.Length);
-                                    str[j] = str[j].Insert(k, "(" + rightString + ")");
-                                }
+                                str[j] = str[j].Remove(k, leftString.Length).Insert(k, "(" + rightString + ")");
+                                l = k + rightString.Length + 2; // 挿入した "(rightString)" の直後へ
                             }
                         }
                 }

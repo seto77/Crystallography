@@ -304,9 +304,9 @@ namespace Crystallography
         /// <returns>The double precision result</returns>
         public static double Factorial(int n)
         {
-            // TODO: check
             int ntop = 4;
-            double[] a = new double[32];
+            //double[] a = new double[32];
+            double[] a = new double[33]; // 260718Cl: n==32 のとき while が a[32] を書き range 外例外になっていた (n>32 は GammaLn 経由なので表は 0..32 で足りる)
             a[0] = 1.0; a[1] = 1.0; a[2] = 2.0; a[3] = 6.0; a[4] = 24.0;
             int j;
             if (n < 0)

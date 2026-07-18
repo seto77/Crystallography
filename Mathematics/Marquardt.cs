@@ -209,9 +209,13 @@ public class Marquardt
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public double[] GetValues(params double[][] x)
         {
-            return FormulaEx != null ?
-                FormulaEx(x, Prms) :
-                x.AsParallel().Select(x1 => Formula(x1, Prms)).ToArray();
+            if (FormulaEx != null)
+                return FormulaEx(x, Prms);
+            // 260718Cl: x.AsParallel().Select().ToArray() は出力順が入力順と一致する保証がない (PLINQ)。
+            //           index 書き込みの Parallel.For にして順序を確定 (値は同一・並列も維持)。
+            var result = new double[x.Length];
+            System.Threading.Tasks.Parallel.For(0, x.Length, i => result[i] = Formula(x[i], Prms));
+            return result;
         }
 
         /// <summary>全パラメータを指定量だけ変化させる. 制約条件も課す。</summary>
@@ -272,7 +276,8 @@ public class Marquardt
         }
         #endregion
 
-        var obs = obsValues.AsParallel();
+        //var obs = obsValues.AsParallel();
+        var obs = obsValues.AsParallel().AsOrdered(); // 260718Cl: weight/rCur/jacob/rNew を別々の .Select().ToArray() で作るため、PLINQ の順序非保証だと配列間の行整合が崩れる。AsOrdered で入力順を確定 (並列は維持)
         int valuesLength = obs.Count(), totalPrmsLength = functions.Sum(f => f.Length), funcLength = functions.Length;
         if (valuesLength == 0) return (null, null, double.PositiveInfinity);
         var weight = new DiagonalMatrix(valuesLength, valuesLength, obs.Select(o => o.w).ToArray());
