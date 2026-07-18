@@ -635,10 +635,9 @@ namespace Crystallography
             return c * elements[index].MolarWeight * zAve * EcA * mu_rhoAAe / mu_rhoUnkAe * gammaMinusOnePerGamma * Math.Log(1 + g * U0A) / g / U0A;
         }
 
-        private static Lock lockObJforBetaArray = new Lock();
-
-        /// <summary>betaの値を保管する一時変数.</summary>
-        private static Dictionary<double, double[]>[] betaArray = new Dictionary<double, double[]>[100];
+        // 260718Cl: betaの値を保管するキャッシュ。旧実装は Dictionary[100]+手動lock で、TryGetValue と Dictionary 生成がロック外・Add のみロック内という破綻したプロトコルで、
+        //           並行呼び出し時に Dictionary 破損や重複 Add 例外が起き得た。(zB, EcA) キーの ConcurrentDictionary 1個に置換し、GetOrAdd で解決する。
+        private static readonly System.Collections.Concurrent.ConcurrentDictionary<(int zB, double EcA), double[]> betaArray = new();
 
         /// <summary>特性X線による蛍光励起補正</summary>
         /// <param name="elements"></param>
@@ -683,20 +682,14 @@ namespace Crystallography
                     double JAwithoutP = 0.5 * gammaMinusOnePerGamma * omega * AtomStatic.AtomicWeight(zA) / AtomStatic.AtomicWeight(zB);
 
                     //"Kab": beta = 1.1;  "Kb": beta = 0.1; "Lab": beta = 1.4;  "Lb": beta = 0.4;　計算効率を上げるため、一度計算したbetaは再利用する.
-                    var beta = Array.Empty<double>();
-                    if (betaArray[zB] != null && betaArray[zB].TryGetValue(EcA, out double[] value))
-                        beta = value;
-                    else
+                    var beta = betaArray.GetOrAdd((zB, EcA), _ =>
                     {
-                        if (EcA < AtomStatic.CharacteristicXrayEnergy(zB, XrayLine.La1)) beta = new[] { 1.1, 1.4 };
-                        else if (EcA < AtomStatic.CharacteristicXrayEnergy(zB, XrayLine.Lb1)) beta = new[] { 1.1, 0.4 };
-                        else if (EcA < AtomStatic.CharacteristicXrayEnergy(zB, XrayLine.Ka1)) beta = new[] { 1.1 };
-                        else if (EcA < AtomStatic.CharacteristicXrayEnergy(zB, XrayLine.Kb1)) beta = new[] { 0.1 };
-                        if (betaArray[zB] == null)
-                            betaArray[zB] = new Dictionary<double, double[]>();
-                        lock (lockObJforBetaArray)
-                            betaArray[zB].Add(EcA, beta);
-                    }
+                        if (EcA < AtomStatic.CharacteristicXrayEnergy(zB, XrayLine.La1)) return new[] { 1.1, 1.4 };
+                        else if (EcA < AtomStatic.CharacteristicXrayEnergy(zB, XrayLine.Lb1)) return new[] { 1.1, 0.4 };
+                        else if (EcA < AtomStatic.CharacteristicXrayEnergy(zB, XrayLine.Ka1)) return new[] { 1.1 };
+                        else if (EcA < AtomStatic.CharacteristicXrayEnergy(zB, XrayLine.Kb1)) return new[] { 0.1 };
+                        return Array.Empty<double>();
+                    });
 
                     for (int j = 0; j < beta.Length; j++)//j==0ならK系列, j==1ならL系列
                     {
