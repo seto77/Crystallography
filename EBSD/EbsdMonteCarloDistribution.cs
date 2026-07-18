@@ -32,12 +32,7 @@ public sealed class EbsdMonteCarloDistribution
         BinCount = binCount;
 
         var (sinDet, cosDet) = Math.SinCos(detTilt);
-        // 260718Cl: 検出器面との交差式を FormEBSD の描画式 (screen(x,y)→lab: P = R_x(-δ)·(detR·x, detR·y, 0) + (0,-detY,-detZ)) の
-        //   厳密な逆変換に修正。旧式は法線・n·C・localZ の符号が誤っており、全 detTilt で描画/EBSD ルックアップと食い違い (90° でも py が上下反転) していた。
-        //   OpenTK 規約 R_x(-δ)·ẑ = (0, -sinδ, cosδ) より、法線 n=(0,-sinδ,cosδ)、n·C = detY·sinδ - detZ·cosδ (= 符号付き CameraLength2)。
-        //   実 OpenTK による往復整合テスト (tools/EbsdDetectorGeomCheck) で全角度 1e-15 一致を確認済み。
-        //double dNumer = -(detY * sinDet + detZ * cosDet);
-        double dNumer = detY * sinDet - detZ * cosDet; // n·C
+        double dNumer = -(detY * sinDet + detZ * cosDet);
 
         var bins = new List<(double depth, double energy)>[binCount, binCount];
         for (int i = 0; i < binCount; i++)
@@ -46,14 +41,12 @@ public sealed class EbsdMonteCarloDistribution
 
         foreach (var (depth, vec, energy) in bseList)
         {
-            //double dDenom = vec.Y * sinDet + vec.Z * cosDet;
-            double dDenom = cosDet * vec.Z - sinDet * vec.Y; // n·vec = -sinδ·vec.Y + cosδ·vec.Z (260718Cl)
+            double dDenom = vec.Y * sinDet + vec.Z * cosDet;
             if (Math.Abs(dDenom) < 1e-15) continue;
             double k = dNumer / dDenom;
             if (k <= 0) continue;
 
-            //double localY = cosDet * (k * vec.Y + detY) - sinDet * (k * vec.Z + detZ);
-            double localY = cosDet * (k * vec.Y + detY) + sinDet * (k * vec.Z + detZ); // 逆回転 R_x(δ) の Y 成分 (260718Cl: 末尾の符号を + に修正)
+            double localY = cosDet * (k * vec.Y + detY) - sinDet * (k * vec.Z + detZ);
             double px = k * vec.X / detR;
             double py = localY / detR;
 
