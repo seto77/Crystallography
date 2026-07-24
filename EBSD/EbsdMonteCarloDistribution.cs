@@ -21,18 +21,21 @@ public sealed class EbsdMonteCarloDistribution
     public double[,][] BinAbsoluteSliceWeights { get; }
 
     // 260718Cl: smpTilt 引数を削除。BSE の Vec は MC 内で試料傾斜を織り込んで lab 座標系で追跡され、検出器 (detY/detZ/detTilt も lab 座標系) への投影に試料傾斜は不要 (Codex 検証済: 適用すると二重計上)。
+    // 260723Cl: 円形検出器 (半径 detR) → 矩形検出器 (半幅 halfWidth × 半高 halfHeight) + 中心 X オフセット (detX) へ変更。
+    // 旧シグネチャ: EbsdMonteCarloDistribution(bseList, beamEnergy, detTilt, detY, detZ, detR, energies, depths, binCount = 8)
     public EbsdMonteCarloDistribution(
         (double Depth, V3 Vec, double Energy)[] bseList,
         double beamEnergy,
         double detTilt,
-        double detY, double detZ, double detR,
+        double detX, double detY, double detZ,
+        double halfWidth, double halfHeight,
         double[] energies, double[] depths,
         int binCount = 8)
     {
         BinCount = binCount;
 
         var (sinDet, cosDet) = Math.SinCos(detTilt);
-        double dNumer = -(detY * sinDet + detZ * cosDet);
+        // double dNumer = -(detY * sinDet + detZ * cosDet); // 260723Cl 廃止: 旧交点係数 k=dNumer/dDenom は法線 (0,sinθ,+cosθ) の面を指し、detTilt=90° 以外で真の検出器面 (法線 n=(0,sinθ,-cosθ)) と一致しなかった
         double lamDenom = detY * sinDet - detZ * cosDet; // 260718Cl 追加: py 逆写像のスケール分母 (= ±CameraLength2)。実在検出器では非ゼロ
 
         var bins = new List<(double depth, double energy)>[binCount, binCount];
@@ -42,19 +45,30 @@ public sealed class EbsdMonteCarloDistribution
 
         foreach (var (depth, vec, energy) in bseList)
         {
-            double dDenom = vec.Y * sinDet + vec.Z * cosDet;
-            if (Math.Abs(dDenom) < 1e-15) continue;
-            double k = dNumer / dDenom;
+            // double dDenom = vec.Y * sinDet + vec.Z * cosDet;
+            // if (Math.Abs(dDenom) < 1e-15) continue;
+            // double k = dNumer / dDenom;
+            // if (k <= 0) continue; // 260723Cl 変更前: detTilt=90° でのみ正しい交点係数
+            // 260723Cl 変更: 交点係数を真の検出器面 (中心 C=(detX,-detY,-detZ)、法線 n=(0,sinθ,-cosθ): 幾何表示・Foot・CameraLength2 と同一) で計算。
+            //   k = (n・C)/(n・vec)。n・C = -lamDenom。detTilt=90° では旧式と同値
+            double nDotVec = vec.Y * sinDet - vec.Z * cosDet;
+            if (Math.Abs(nDotVec) < 1e-15) continue;
+            double k = -lamDenom / nDotVec;
             if (k <= 0) continue;
 
-            double px = k * vec.X / detR; // X は現状維持: 試料傾斜軸 (X) に平行で foreshortening せず、MC 分布が X 対称なので不可視
+            // double px = k * vec.X / detR; // 260723Cl 変更前
+            // 260723Cl 変更: px も py と同じく消費側 (FormEBSD.BuildEbsdLookupTable / detNormX = -xm·(2w+1-width)/width) の厳密な逆写像へ。
+            //   消費側の視線 X は (ピクセル項) - detX で、検出器面ヒット位置 k·vec.X との対応から px = (detX - k·vec.X)/halfWidth。
+            //   旧式 (+k·vec.X/detR) は左右逆ビンを参照していたが、MC 分布が X 対称なため従来 (detX=0) は不可視だった。
+            double px = (detX - k * vec.X) / halfWidth;
             // 260718Cl 変更: py を消費側 (FormEBSD.BuildEbsdLookupTable) の「画素→lab 方向」マップの厳密な逆写像で算出する。
             //   旧 py=localY/detR は検出器面内 Y 接線 (cosDet,-sinDet) が消費側の (cosDet,+sinDet) と食い違い、
             //   DetTilt≠90° で輝度ビンに foreshortening ずれ (検出器端で ~1 粗ビン) を生んでいた。
             //   逆写像 py は消費側 detNormY に厳密一致し、DetTilt=90° では旧式と同値 (既定は完全に不変)。lambda=検出器中心線方向の射影スケール。
             // double localY = cosDet * (k * vec.Y + detY) - sinDet * (k * vec.Z + detZ); double py = localY / detR; // 260718Cl 変更前
-            double lambda = (vec.Y * sinDet - vec.Z * cosDet) / lamDenom;
-            double py = ((vec.Y * cosDet + vec.Z * sinDet) / lambda - (detY * cosDet + detZ * sinDet)) / detR;
+            // double lambda = (vec.Y * sinDet - vec.Z * cosDet) / lamDenom; // 260723Cl 変更前 (分子は nDotVec と同値)
+            double lambda = nDotVec / lamDenom;
+            double py = ((vec.Y * cosDet + vec.Z * sinDet) / lambda - (detY * cosDet + detZ * sinDet)) / halfHeight; // 260723Cl: detR → halfHeight
 
             if (!(px >= -1 && px <= 1) || !(py >= -1 && py <= 1)) continue; // 260718Cl: NaN/範囲外を棄却 (lambda≈0 → py→∞ も捕捉)
 

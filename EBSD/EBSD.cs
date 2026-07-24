@@ -174,6 +174,9 @@ public class EBSD
     /// <summary>最後に正常終了した MasterPattern。</summary>
     public MasterPattern MasterPattern { get; private set; } = null;
 
+    /// <summary>保持している MasterPattern を破棄する。結晶変更などで無効になったときに呼ぶ。260724Cl 追加</summary>
+    public void ClearMasterPattern() => MasterPattern = null;
+
     private MasterPatternBuildRequest currentMasterPatternBuildRequest = null; // (260327Ch) build 条件はクラス内部だけで保持する
 
     /// <summary>Bethe 計算中または plane 変換中かどうかを返す。</summary>
