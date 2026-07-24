@@ -33,11 +33,21 @@ public static class EbsdDictionaryIndexer
         bool thoroughCoarse = false,
         System.Threading.CancellationToken cancel = default)
     {
-        //実測参照を 2 解像度で準備 (粗段 = 軽量前処理 48px または完全 robust 96px / 精密段 = 完全 robust 96px)
-        var (refCoarse, cw, ch) = thoroughCoarse
-            ? EbsdPatternScorer.PrepareReferenceRobust(expValues, expWidth, expHeight, 96)
-            : PrepareLight(expValues, expWidth, expHeight, 48);
-        var (refFine, fw, fh) = EbsdPatternScorer.PrepareReferenceRobust(expValues, expWidth, expHeight, 96);
+        //実測参照を 2 解像度で準備 (粗段 = 軽量前処理 48px または完全 robust 96px / 精密段 = 完全 robust 96px)。
+        //260724Cl 高速化: thorough では全段 RobustPreprocessFast (box3 近似・scratch 再利用・逐次 — 入れ子 Parallel 競合と GC 圧を解消)。
+        //両側同一の原則に従い参照側も Fast パイプで生成する
+        double[] refCoarse; int cw, ch;
+        if (thoroughCoarse)
+        {
+            var (dRef, w96, h96) = EbsdPatternScorer.Downsample(expValues, expWidth, expHeight, 96);
+            refCoarse = new double[w96 * h96]; cw = w96; ch = h96;
+            EbsdPatternScorer.RobustPreprocessFast(dRef, w96, h96, refCoarse, new double[w96 * h96], new double[w96 * h96]);
+        }
+        else
+            (refCoarse, cw, ch) = PrepareLight(expValues, expWidth, expHeight, 48);
+        double[] refFine; int fw, fh;
+        if (thoroughCoarse) { refFine = refCoarse; fw = cw; fh = ch; } //thorough は全段 96px Fast で参照共有
+        else (refFine, fw, fh) = EbsdPatternScorer.PrepareReferenceRobust(expValues, expWidth, expHeight, 96);
         var projCoarse = new EbsdPatternProjector(geometry, cw, ch);
         var projFine = new EbsdPatternProjector(geometry, fw, fh);
 
@@ -63,15 +73,18 @@ public static class EbsdDictionaryIndexer
         var survivors = new List<(double S, int Di, int Pi)>();
         var lockObj = new object();
         System.Threading.Tasks.Parallel.For(0, nSphere,
-            () => (Local: new List<(double S, int Di, int Pi)>(), Buf: new double[cw * ch]),
+            () => (Local: new List<(double S, int Di, int Pi)>(), Buf: new double[cw * ch], Dst: new double[cw * ch], T1: new double[cw * ch], T2: new double[cw * ch]),
             (di, _, state) =>
             {
                 cancel.ThrowIfCancellationRequested();
                 for (int pi = 0; pi < nPhi; pi++)
                 {
                     projCoarse.Project(mp, GridRotation(di, pi), posPlane, negPlane, state.Buf, parallel: false);
-                    if (thoroughCoarse) //260724Cl: 完全 robust 前処理の総当たり (パワープレー)
-                        state.Local.Add((EbsdPatternScorer.Zncc(refCoarse, EbsdPatternScorer.RobustPreprocess(state.Buf, cw, ch)), di, pi));
+                    if (thoroughCoarse) //260724Cl: 完全 robust 前処理の総当たり (Fast 版 = box3 近似+バッファ再利用+逐次)
+                    {
+                        EbsdPatternScorer.RobustPreprocessFast(state.Buf, cw, ch, state.Dst, state.T1, state.T2);
+                        state.Local.Add((EbsdPatternScorer.Zncc(refCoarse, state.Dst), di, pi));
+                    }
                     else
                     {
                         ApplyLight(state.Buf, cw, ch);
@@ -99,16 +112,25 @@ public static class EbsdDictionaryIndexer
         }
         #endregion
 
-        #region ②中段: 96px・完全 RobustPreprocess で再スコア
+        #region ②中段: 96px・完全 RobustPreprocess で再スコア (thorough 時は Fast 版)
+        double ScoreFine(double[] buf, double[][] sc) //260724Cl: sc = [dst, t1, t2] (thorough 用 scratch)
+        {
+            if (thoroughCoarse)
+            {
+                EbsdPatternScorer.RobustPreprocessFast(buf, fw, fh, sc[0], sc[1], sc[2]);
+                return EbsdPatternScorer.Zncc(refFine, sc[0]);
+            }
+            return EbsdPatternScorer.Zncc(refFine, EbsdPatternScorer.RobustPreprocess(buf, fw, fh));
+        }
         var rescored = new (double S, Matrix3D R)[basins.Count];
         System.Threading.Tasks.Parallel.For(0, basins.Count,
-            () => new double[fw * fh],
-            (bi, _, buf) =>
+            () => (Buf: new double[fw * fh], Sc: new[] { new double[fw * fh], new double[fw * fh], new double[fw * fh] }),
+            (bi, _, st) =>
             {
                 cancel.ThrowIfCancellationRequested();
-                projFine.Project(mp, basins[bi].R, posPlane, negPlane, buf, parallel: false);
-                rescored[bi] = (EbsdPatternScorer.Zncc(refFine, EbsdPatternScorer.RobustPreprocess(buf, fw, fh)), basins[bi].R);
-                return buf;
+                projFine.Project(mp, basins[bi].R, posPlane, negPlane, st.Buf, parallel: false);
+                rescored[bi] = (ScoreFine(st.Buf, st.Sc), basins[bi].R);
+                return st;
             },
             _ => { });
         var top = rescored.OrderByDescending(t => t.S).Take(refineKeep).ToList();
@@ -117,20 +139,20 @@ public static class EbsdDictionaryIndexer
         #region ③精段: NelderMead 精密化 → misor NMS → 候補構築
         var refined = new (double S, Matrix3D R)[top.Count];
         System.Threading.Tasks.Parallel.For(0, top.Count,
-            () => new double[fw * fh],
-            (ti, _, buf) =>
+            () => (Buf: new double[fw * fh], Sc: new[] { new double[fw * fh], new double[fw * fh], new double[fw * fh] }),
+            (ti, _, st) =>
             {
                 cancel.ThrowIfCancellationRequested();
                 var r0 = top[ti].R;
                 double Obj(double[] v)
                 {
-                    projFine.Project(mp, Perturb(r0, v[0], v[1], v[2]), posPlane, negPlane, buf, parallel: false);
-                    return -EbsdPatternScorer.Zncc(refFine, EbsdPatternScorer.RobustPreprocess(buf, fw, fh));
+                    projFine.Project(mp, Perturb(r0, v[0], v[1], v[2]), posPlane, negPlane, st.Buf, parallel: false);
+                    return -ScoreFine(st.Buf, st.Sc);
                 }
                 var (b1, _, _) = EbsdPatternScorer.NelderMead(Obj, [0, 0, 0], [coarseStepDeg * 0.5, coarseStepDeg * 0.5, coarseStepDeg * 0.5], 120);
                 var (b2, v2, _) = EbsdPatternScorer.NelderMead(Obj, b1, [0.5, 0.5, 0.5], 80);
                 refined[ti] = (-v2, Perturb(r0, b2[0], b2[1], b2[2]));
-                return buf;
+                return st;
             },
             _ => { });
 

@@ -155,6 +155,76 @@ public static class EbsdPatternScorer
         return v;
     }
 
+    /// <summary>
+    /// RobustPreprocess の高速版 (260724Cl 追加、辞書総当たりの高速化)。ガウシアンを running-box 3 連 (分散一致) で近似し、
+    /// 呼び出し側が渡す scratch (長さ w·h × 3 本) を再利用してアロケーションゼロ・完全逐次で実行する
+    /// (呼び出し側が方位単位で並列化する前提。GaussianBlurGrid 内蔵の Parallel.For との入れ子競合を解消)。
+    /// 結果は dst に書く。数値はガウシアン版と厳密一致しないが帯域特性は同等 (採否はベンチの refHit/順位一致で判定)。
+    /// </summary>
+    public static void RobustPreprocessFast(double[] src, int w, int h, double[] dst, double[] tmp1, double[] tmp2)
+    {
+        if (box3Scratch == null || box3Scratch.Length < w * h) box3Scratch = new double[w * h];
+        var tmp3 = box3Scratch;
+        //①広域背景 box3(σ=0.1×短辺): src → tmp1 (tmp2 作業)
+        Box3Seq(src, tmp1, tmp2, w, h, 0.10 * Math.Min(w, h));
+        double mean = 0;
+        foreach (var x in src) mean += x;
+        double floor = Math.Max(1E-10, mean / src.Length * 0.05);
+        //②log-ratio → dst
+        for (int i = 0; i < dst.Length; i++) dst[i] = Math.Log(Math.Max(src[i], floor * 0.01) / Math.Max(tmp1[i], floor));
+        //③DoG: g1(σ1.5) = dst→tmp1、g2(σ6) = dst→tmp2 (dst は両方の入力なので温存)
+        Box3Seq(dst, tmp1, tmp2, w, h, 1.5);
+        Box3Seq(dst, tmp2, tmp3, w, h, 6.0);
+        for (int i = 0; i < dst.Length; i++) dst[i] = tmp1[i] - tmp2[i];
+        //④標準化 → tanh(z/3) → 再標準化
+        NormalizeInPlace(dst);
+        for (int i = 0; i < dst.Length; i++) dst[i] = Math.Tanh(dst[i] / 3);
+        NormalizeInPlace(dst);
+    }
+
+    [ThreadStatic] static double[] box3Scratch; //260724Cl: RobustPreprocessFast の第 4 バッファ (スレッドローカル再利用)
+
+    /// <summary>box blur 3 連 (ガウシアン分散一致近似、完全逐次)。src → dst (src は不変)。work は作業バッファ。260724Cl 追加</summary>
+    static void Box3Seq(double[] src, double[] dst, double[] work, int w, int h, double sigma)
+    {
+        int r = Math.Max(1, (int)Math.Round((Math.Sqrt(4 * sigma * sigma + 1) - 1) / 2)); //3 連の合成分散 3(w²−1)/12 = σ² となる box 幅
+        BoxPassSeq(src, dst, w, h, r);
+        BoxPassSeq(dst, work, w, h, r);
+        BoxPassSeq(work, dst, w, h, r);
+    }
+
+    /// <summary>running box 平均 1 回分 (横+縦、境界は有効画素数で正規化、完全逐次)。src → dst (src 不変)。260724Cl 追加</summary>
+    static void BoxPassSeq(double[] src, double[] dst, int w, int h, int radius)
+    {
+        for (int y = 0; y < h; y++) //横パス: src → dst
+        {
+            int row = y * w;
+            double sum = 0; int n = 0;
+            for (int x = 0; x <= Math.Min(radius, w - 1); x++) { sum += src[row + x]; n++; }
+            for (int x = 0; x < w; x++)
+            {
+                dst[row + x] = sum / n;
+                int add = x + radius + 1, rem = x - radius;
+                if (add < w) { sum += src[row + add]; n++; }
+                if (rem >= 0) { sum -= src[row + rem]; n--; }
+            }
+        }
+        Span<double> col = h <= 2048 ? stackalloc double[2048] : new double[h]; //縦パス用の一時列
+        for (int x = 0; x < w; x++) //縦パス: dst → dst
+        {
+            double sum = 0; int n = 0;
+            for (int y = 0; y <= Math.Min(radius, h - 1); y++) { sum += dst[y * w + x]; n++; }
+            for (int y = 0; y < h; y++)
+            {
+                col[y] = sum / n;
+                int add = y + radius + 1, rem = y - radius;
+                if (add < h) { sum += dst[add * w + x]; n++; }
+                if (rem >= 0) { sum -= dst[rem * w + x]; n--; }
+            }
+            for (int y = 0; y < h; y++) dst[y * w + x] = col[y];
+        }
+    }
+
     /// <summary>zero-mean/unit-variance 化 (in place)</summary>
     public static void NormalizeInPlace(double[] data)
     {
