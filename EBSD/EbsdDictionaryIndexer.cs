@@ -23,14 +23,20 @@ public static class EbsdDictionaryIndexer
     /// 方位候補を辞書総当たりで探索する。expValues = 実測生強度 (expWidth×expHeight、前処理は内部で解像度別に整合させる)。
     /// posPlane/negPlane = MasterPattern.GetPlane の単一スライス。
     /// </summary>
+    //260724Cl シグネチャ変更 (thoroughCoarse 追加): true で粗段を 96px 完全 RobustPreprocess の総当たりにする (数倍遅いが判別力最大。
+    //48px 軽量前処理の粗段が正解盆地を落とす画像 (コントラスト弱め) への対策。作者指示「パワープレーで良い」)。
+    //旧: (..., int refineKeep = 12, CancellationToken cancel = default)
     public static List<EbsdOrientationCandidate> Index(
         MasterPattern mp, float[] posPlane, float[] negPlane, EbsdDetectorGeometry geometry,
         double[] expValues, int expWidth, int expHeight,
         double coarseStepDeg = 5, int maxCandidates = 10, int coarseKeep = 64, int refineKeep = 12,
+        bool thoroughCoarse = false,
         System.Threading.CancellationToken cancel = default)
     {
-        //実測参照を 2 解像度で準備 (粗段 = 軽量前処理 48px / 精密段 = 完全 robust 96px)
-        var (refCoarse, cw, ch) = PrepareLight(expValues, expWidth, expHeight, 48);
+        //実測参照を 2 解像度で準備 (粗段 = 軽量前処理 48px または完全 robust 96px / 精密段 = 完全 robust 96px)
+        var (refCoarse, cw, ch) = thoroughCoarse
+            ? EbsdPatternScorer.PrepareReferenceRobust(expValues, expWidth, expHeight, 96)
+            : PrepareLight(expValues, expWidth, expHeight, 48);
         var (refFine, fw, fh) = EbsdPatternScorer.PrepareReferenceRobust(expValues, expWidth, expHeight, 96);
         var projCoarse = new EbsdPatternProjector(geometry, cw, ch);
         var projFine = new EbsdPatternProjector(geometry, fw, fh);
@@ -64,8 +70,13 @@ public static class EbsdDictionaryIndexer
                 for (int pi = 0; pi < nPhi; pi++)
                 {
                     projCoarse.Project(mp, GridRotation(di, pi), posPlane, negPlane, state.Buf, parallel: false);
-                    ApplyLight(state.Buf, cw, ch);
-                    state.Local.Add((EbsdPatternScorer.Zncc(refCoarse, state.Buf), di, pi));
+                    if (thoroughCoarse) //260724Cl: 完全 robust 前処理の総当たり (パワープレー)
+                        state.Local.Add((EbsdPatternScorer.Zncc(refCoarse, EbsdPatternScorer.RobustPreprocess(state.Buf, cw, ch)), di, pi));
+                    else
+                    {
+                        ApplyLight(state.Buf, cw, ch);
+                        state.Local.Add((EbsdPatternScorer.Zncc(refCoarse, state.Buf), di, pi));
+                    }
                 }
                 if (state.Local.Count > keepPerThread * 4)
                 {
