@@ -26,11 +26,15 @@ public static class EbsdDictionaryIndexer
     //260724Cl シグネチャ変更 (thoroughCoarse 追加): true で粗段を 96px 完全 RobustPreprocess の総当たりにする (数倍遅いが判別力最大。
     //48px 軽量前処理の粗段が正解盆地を落とす画像 (コントラスト弱め) への対策。作者指示「パワープレーで良い」)。
     //旧: (..., int refineKeep = 12, CancellationToken cancel = default)
+    //260725Cl シグネチャ変更 (properSymmetries 追加): 結晶の proper 対称回転 (単位元は含めない)。指定時は R·S 同値集合の
+    //fundamental-zone 代表のみ粗段評価する (探索 ~1/(1+個数)。monoclinic C2 で総当たり半減 — Codex 裁定 260725)
+    //旧: (..., bool thoroughCoarse = false, CancellationToken cancel = default)
     public static List<EbsdOrientationCandidate> Index(
         MasterPattern mp, float[] posPlane, float[] negPlane, EbsdDetectorGeometry geometry,
         double[] expValues, int expWidth, int expHeight,
         double coarseStepDeg = 5, int maxCandidates = 10, int coarseKeep = 64, int refineKeep = 12,
         bool thoroughCoarse = false,
+        Matrix3D[] properSymmetries = null,
         System.Threading.CancellationToken cancel = default)
     {
         //実測参照を 2 解像度で準備 (粗段 = 軽量前処理 48px または完全 robust 96px / 精密段 = 完全 robust 96px)。
@@ -56,30 +60,65 @@ public static class EbsdDictionaryIndexer
         int nPhi = Math.Max(16, (int)(360 / coarseStepDeg));
         double golden = Math.PI * (3 - Math.Sqrt(5));
 
-        Matrix3D GridRotation(int di, int pi)
+        //260725Cl 変更: 旧 GridRotation(di,pi) を球点部 (SphereRotation) と面内部 (rzTable) に分離 — pi 毎の r0 再計算と
+        //Rot(z,φ) 再計算を除去 (SphereRotation(di) * rzTable[pi] は旧式と同一演算・ビット一致)。
+        //旧: Matrix3D GridRotation(int di, int pi) { ...(r0 計算)... return r0 * Matrix3D.Rot(new V3(0, 0, 1), pi * 2 * Math.PI / nPhi); }
+        var rzTable = new Matrix3D[nPhi];
+        for (int pi0 = 0; pi0 < nPhi; pi0++) rzTable[pi0] = Matrix3D.Rot(new V3(0, 0, 1), pi0 * 2 * Math.PI / nPhi);
+
+        Matrix3D SphereRotation(int di)
         {
             double z = 1 - 2.0 * (di + 0.5) / nSphere;
             double rxy = Math.Sqrt(Math.Max(0, 1 - z * z));
             double az = di * golden;
             var nHat = new V3(rxy * Math.Cos(az), rxy * Math.Sin(az), z);
             var axis = V3.Cross(V3.UnitZ, nHat);
-            var r0 = axis.Length < 1E-9
+            return axis.Length < 1E-9
                 ? (nHat.Z > 0 ? Matrix3D.IdentityMatrix : Matrix3D.Rot(new V3(1, 0, 0), Math.PI))
                 : Matrix3D.Rot(axis.Normalized(), Math.Acos(Math.Clamp(nHat.Z, -1, 1)));
-            return r0 * Matrix3D.Rot(new V3(0, 0, 1), pi * 2 * Math.PI / nPhi);
+        }
+
+        //260725Cl 追加: proper 対称回転による fundamental-zone 判定 — 同値集合 {R·S} の trace 最大代表のみ評価する
+        //(最小回転角代表。monoclinic C2b では E11+E33>=0 と等価)。trace 同値の境界では両側 true (重複評価する安全側 —
+        //Fibonacci 格子は R·S を厳密には含まないため片側破棄は被覆穴の危険。Codex 裁定 260725)
+        bool IsFundamental(Matrix3D r)
+        {
+            if (properSymmetries == null) return true;
+            double t = r.E11 + r.E22 + r.E33;
+            foreach (var s in properSymmetries)
+            {
+                var rs = r * s;
+                if (rs.E11 + rs.E22 + rs.E33 > t + 1E-12) return false;
+            }
+            return true;
         }
 
         int keepPerThread = Math.Max(64, coarseKeep * 4);
         var survivors = new List<(double S, int Di, int Pi)>();
         var lockObj = new object();
+        //260725Cl: square 格子は面内回転分解プロジェクション (球点毎に Lambert 極座標を 1 回計算、面内 120 回は sector 折り返しのみ —
+        //3×3 積・sqrt・atan 全除去。Codex 裁定 260725)。hex 格子は従来 Project へフォールバック
+        bool inPlaneFast = mp.GridType != MasterPattern.Types.Hexagonal;
         System.Threading.Tasks.Parallel.For(0, nSphere,
-            () => (Local: new List<(double S, int Di, int Pi)>(), Buf: new double[cw * ch], Dst: new double[cw * ch], T1: new double[cw * ch], T2: new double[cw * ch]),
+            () => (Local: new List<(double S, int Di, int Pi)>(), Buf: new double[cw * ch], Dst: new double[cw * ch], T1: new double[cw * ch], T2: new double[cw * ch],
+                   Th0: inPlaneFast ? new double[cw * ch] : null, Ra: inPlaneFast ? new double[cw * ch] : null, Rb: inPlaneFast ? new double[cw * ch] : null, Neg: inPlaneFast ? new bool[cw * ch] : null), //260725Cl
             (di, _, state) =>
             {
                 cancel.ThrowIfCancellationRequested();
+                var r0 = SphereRotation(di); //260725Cl: 球点回転は pi ループ外で 1 回 (旧: GridRotation が pi 毎に再計算)
+                bool prepared = false; //260725Cl: PrepareSpherePoint は FZ を通る pi が現れた時のみ (全スキップ球点では省略)
                 for (int pi = 0; pi < nPhi; pi++)
                 {
-                    projCoarse.Project(mp, GridRotation(di, pi), posPlane, negPlane, state.Buf, parallel: false);
+                    var rot = r0 * rzTable[pi];
+                    if (!IsFundamental(rot)) continue; //260725Cl: 対称同値の非代表側は Project 前にスキップ (C2 で総当たり半減)
+                    //projCoarse.Project(mp, GridRotation(di, pi), posPlane, negPlane, state.Buf, parallel: false); //260725Cl 変更前
+                    if (inPlaneFast) //260725Cl
+                    {
+                        if (!prepared) { projCoarse.PrepareSpherePoint(r0, state.Th0, state.Ra, state.Rb, state.Neg); prepared = true; }
+                        projCoarse.ProjectInPlane(mp, pi * 2 * Math.PI / nPhi, posPlane, negPlane, state.Th0, state.Ra, state.Rb, state.Neg, state.Buf);
+                    }
+                    else
+                        projCoarse.Project(mp, rot, posPlane, negPlane, state.Buf, parallel: false);
                     if (thoroughCoarse) //260724Cl: 完全 robust 前処理の総当たり (Fast 版 = box3 近似+バッファ再利用+逐次)
                     {
                         EbsdPatternScorer.RobustPreprocessFast(state.Buf, cw, ch, state.Dst, state.T1, state.T2);
@@ -105,7 +144,8 @@ public static class EbsdDictionaryIndexer
         var basins = new List<(double S, Matrix3D R)>();
         foreach (var s in survivors)
         {
-            var r = GridRotation(s.Di, s.Pi);
+            //var r = GridRotation(s.Di, s.Pi); //260725Cl 変更前
+            var r = SphereRotation(s.Di) * rzTable[s.Pi]; //260725Cl: 旧 GridRotation と同一演算 (survivors は少数なので r0 再計算で可)
             if (basins.All(b => EbsdIndexer.MisorientationDeg(b.R, r) > coarseStepDeg * 1.5))
                 basins.Add((s.S, r));
             if (basins.Count >= coarseKeep) break;

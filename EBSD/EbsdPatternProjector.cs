@@ -35,6 +35,62 @@ public sealed class EbsdPatternProjector
         });
     }
 
+    #region 面内回転分解プロジェクション (辞書総当たり用、square 格子専用) 260725Cl 追加
+    //R(di,φ)=r0·Rz(φ) の構造を利用: 結晶系視線 v = Rz(−φ)·(r0⁻¹·d) なので、u=r0⁻¹·d の Lambert ディスク極座標
+    //(方位角 θ0・半径由来の ra/rb) と半球フラグを球点毎に 1 回だけ計算し、面内 φ 毎は θ=θ0−φ の sector 折り返し+
+    //バイリニア補間のみにする (3×3 回転積・sqrt・atan を全除去。Codex 裁定 260725: Lambert 後の (a,b) 2D 回転は不可、
+    //ディスク極座標の再利用が正解)。SphereToRoscaLambertSquare の Shirley 逆変換と数学的に等価 (atan(tanθ')=局所角 t)。
+
+    /// <summary>球点回転 r0 の面内共通量を計算する。theta0/ra/rb/neg は呼び出し側が確保する長さ Width×Height のバッファ。
+    /// ra = ディスク半径×√π/2 (sector 支配軸の座標)、rb = 4·ra/π (直交軸の係数)。260725Cl 追加</summary>
+    public void PrepareSpherePoint(Matrix3D r0, double[] theta0, double[] ra, double[] rb, bool[] neg)
+    {
+        var ri = r0.Inverse();
+        double sqrtPiHalf = Math.Sqrt(Math.PI) / 2;
+        for (int i = 0; i < raysSample.Length; i++)
+        {
+            var d = raysSample[i];
+            double ux = ri.E11 * d.X + ri.E12 * d.Y + ri.E13 * d.Z;
+            double uy = ri.E21 * d.X + ri.E22 * d.Y + ri.E23 * d.Z;
+            double uz = ri.E31 * d.X + ri.E32 * d.Y + ri.E33 * d.Z;
+            double len = Math.Sqrt(ux * ux + uy * uy + uz * uz);
+            neg[i] = uz < 0;
+            double az = len < 1E-15 ? 1 : Math.Abs(uz) / len; //len=0 は中心特異点 — ra=0 で (0,0) に落ちる
+            double radialScale = Math.Sqrt(Math.Max(0, (1 + az) / 2)); //SphereToRoscaLambertSquare の z>=0 枝 (|z| を渡すため常にこちら)
+            double rxy = len < 1E-15 ? 0 : Math.Sqrt(ux * ux + uy * uy) / len;
+            double rDisk = radialScale < 1E-15 ? 0 : rxy / radialScale;
+            ra[i] = rDisk * sqrtPiHalf;
+            rb[i] = 4 * ra[i] / Math.PI;
+            theta0[i] = Math.Atan2(uy, ux);
+        }
+    }
+
+    /// <summary>PrepareSpherePoint 済みの球点について面内回転角 phi のパターンを output へ書き込む (完全逐次、square 格子専用)。260725Cl 追加</summary>
+    public void ProjectInPlane(MasterPattern mp, double phi, float[] posPlane, float[] negPlane, double[] theta0, double[] ra, double[] rb, bool[] neg, double[] output)
+    {
+        int gs = mp.GridSize;
+        bool hasPos = posPlane is { Length: > 0 }, hasNeg = negPlane is { Length: > 0 };
+        const double halfPi = Math.PI / 2, quarterPi = Math.PI / 4;
+        for (int i = 0; i < output.Length; i++)
+        {
+            bool n = neg[i];
+            if (n ? !hasNeg : !hasPos) { output[i] = 0; continue; }
+            double th = theta0[i] - phi;
+            int s = (int)Math.Floor((th + quarterPi) / halfPi); //支配軸 sector (0=+a,1=+b,2=−a,3=−b)、t = sector 内局所角 ∈ [−π/4, π/4)
+            double t = th - s * halfPi;
+            double a, b;
+            switch (((s % 4) + 4) % 4)
+            {
+                case 0: a = ra[i]; b = rb[i] * t; break;
+                case 1: b = ra[i]; a = -rb[i] * t; break;
+                case 2: a = -ra[i]; b = -rb[i] * t; break;
+                default: b = -ra[i]; a = rb[i] * t; break;
+            }
+            output[i] = MasterPattern.InterpolatePlaneSquare(n ? negPlane : posPlane, gs, a, b);
+        }
+    }
+    #endregion
+
     /// <summary>回転 rotation (crystal→sample) のパターンを output (Width×Height) へ書き込む。posPlane/negPlane = MasterPattern.GetPlane の単一スライス。
     /// parallel=false で行ループを逐次実行 (辞書総当たりのような方位単位で並列化する呼び出し向け。小ラスターでは行並列のオーバーヘッドが支配的)。260724Cl シグネチャ変更 (parallel 追加)</summary>
     //260724Cl 旧: public void Project(MasterPattern mp, Matrix3D rotation, float[] posPlane, float[] negPlane, double[] output)
@@ -105,10 +161,12 @@ public static class EbsdPatternScorer
 
     /// <summary>実測画像を box 縮小し robust 前処理 (RobustPreprocess) を掛けた参照配列を返す。
     /// 方位候補の複合ランク (Radon z + ZNCC) 用 — シミュレーション側にも同じ RobustPreprocess を掛けて比較する (Codex 裁定 260724)。260724Cl 追加</summary>
-    public static (double[] Data, int W, int H) PrepareReferenceRobust(double[] values, int width, int height, int targetLongSide = 160)
+    //260725Cl シグネチャ変更 (dogSigma1/dogSigma2 追加): フル解像度の公正比較 (σ を解像度比例スケール) 用。既定値は従来と同一
+    //旧: public static (double[] Data, int W, int H) PrepareReferenceRobust(double[] values, int width, int height, int targetLongSide = 160)
+    public static (double[] Data, int W, int H) PrepareReferenceRobust(double[] values, int width, int height, int targetLongSide = 160, double dogSigma1 = 1.5, double dogSigma2 = 6.0)
     {
         var (dst, w, h) = Downsample(values, width, height, targetLongSide);
-        return (RobustPreprocess(dst, w, h), w, h);
+        return (RobustPreprocess(dst, w, h, dogSigma1, dogSigma2), w, h);
     }
 
     /// <summary>box 縮小 (targetLongSide = 長辺の目標 px)。260724Cl 追加 (PrepareReference からの抽出。EbsdDictionaryIndexer と共用のため internal)</summary>
@@ -138,7 +196,9 @@ public static class EbsdPatternScorer
     /// 実測とシミュレーション投影の両方に同一処理を掛けることで、動力学単一スライスの heavy-tailed な生強度分布 (zone axis 明点が分散を支配し
     /// ZNCC が正解方位で偽方位に負ける) を等質化する。src は非破壊。260724Cl 追加
     /// </summary>
-    public static double[] RobustPreprocess(double[] src, int w, int h)
+    //260725Cl シグネチャ変更 (dogSigma1/dogSigma2 追加): フル解像度の公正比較 (σ を解像度比例スケール) 用。既定値は従来と同一
+    //旧: public static double[] RobustPreprocess(double[] src, int w, int h)
+    public static double[] RobustPreprocess(double[] src, int w, int h, double dogSigma1 = 1.5, double dogSigma2 = 6.0)
     {
         var validAll = new bool[w * h];
         Array.Fill(validAll, true);
@@ -146,8 +206,8 @@ public static class EbsdPatternScorer
         double floor = Math.Max(1E-10, src.Average() * 0.05);
         var v = new double[w * h];
         for (int i = 0; i < v.Length; i++) v[i] = Math.Log(Math.Max(src[i], floor * 0.01) / Math.Max(bg[i], floor));
-        var g1 = EbsdBandDetector.GaussianBlurGrid(v, validAll, w, h, 1.5);
-        var g2 = EbsdBandDetector.GaussianBlurGrid(v, validAll, w, h, 6.0);
+        var g1 = EbsdBandDetector.GaussianBlurGrid(v, validAll, w, h, dogSigma1);
+        var g2 = EbsdBandDetector.GaussianBlurGrid(v, validAll, w, h, dogSigma2);
         for (int i = 0; i < v.Length; i++) v[i] = g1[i] - g2[i];
         NormalizeInPlace(v);
         for (int i = 0; i < v.Length; i++) v[i] = Math.Tanh(v[i] / 3);
@@ -188,38 +248,47 @@ public static class EbsdPatternScorer
     static void Box3Seq(double[] src, double[] dst, double[] work, int w, int h, double sigma)
     {
         int r = Math.Max(1, (int)Math.Round((Math.Sqrt(4 * sigma * sigma + 1) - 1) / 2)); //3 連の合成分散 3(w²−1)/12 = σ² となる box 幅
-        BoxPassSeq(src, dst, w, h, r);
-        BoxPassSeq(dst, work, w, h, r);
-        BoxPassSeq(work, dst, w, h, r);
+        //260725Cl: 境界正規化 1/n を位置別に事前計算し BoxPassSeq 内の毎画素除算 (~18 回/画素) を乗算化 (prof: box が前処理の 52%)
+        Span<double> invX = w <= 2048 ? stackalloc double[w] : new double[w];
+        Span<double> invY = h <= 2048 ? stackalloc double[h] : new double[h];
+        for (int x = 0; x < w; x++) invX[x] = 1.0 / (Math.Min(x + r, w - 1) - Math.Max(x - r, 0) + 1);
+        for (int y = 0; y < h; y++) invY[y] = 1.0 / (Math.Min(y + r, h - 1) - Math.Max(y - r, 0) + 1);
+        BoxPassSeq(src, dst, w, h, r, invX, invY);
+        BoxPassSeq(dst, work, w, h, r, invX, invY);
+        BoxPassSeq(work, dst, w, h, r, invX, invY);
     }
 
     /// <summary>running box 平均 1 回分 (横+縦、境界は有効画素数で正規化、完全逐次)。src → dst (src 不変)。260724Cl 追加</summary>
-    static void BoxPassSeq(double[] src, double[] dst, int w, int h, int radius)
+    //260725Cl シグネチャ変更 (invX/invY 追加): sum/n 除算 → sum·(1/n) 乗算 (テーブルは Box3Seq が半径別に事前計算)
+    //旧: static void BoxPassSeq(double[] src, double[] dst, int w, int h, int radius)
+    static void BoxPassSeq(double[] src, double[] dst, int w, int h, int radius, ReadOnlySpan<double> invX, ReadOnlySpan<double> invY)
     {
         for (int y = 0; y < h; y++) //横パス: src → dst
         {
             int row = y * w;
-            double sum = 0; int n = 0;
-            for (int x = 0; x <= Math.Min(radius, w - 1); x++) { sum += src[row + x]; n++; }
+            double sum = 0;
+            for (int x = 0; x <= Math.Min(radius, w - 1); x++) sum += src[row + x];
             for (int x = 0; x < w; x++)
             {
-                dst[row + x] = sum / n;
+                //dst[row + x] = sum / n; //260725Cl 変更前 (n は running カウント)
+                dst[row + x] = sum * invX[x];
                 int add = x + radius + 1, rem = x - radius;
-                if (add < w) { sum += src[row + add]; n++; }
-                if (rem >= 0) { sum -= src[row + rem]; n--; }
+                if (add < w) sum += src[row + add];
+                if (rem >= 0) sum -= src[row + rem];
             }
         }
         Span<double> col = h <= 2048 ? stackalloc double[2048] : new double[h]; //縦パス用の一時列
         for (int x = 0; x < w; x++) //縦パス: dst → dst
         {
-            double sum = 0; int n = 0;
-            for (int y = 0; y <= Math.Min(radius, h - 1); y++) { sum += dst[y * w + x]; n++; }
+            double sum = 0;
+            for (int y = 0; y <= Math.Min(radius, h - 1); y++) sum += dst[y * w + x];
             for (int y = 0; y < h; y++)
             {
-                col[y] = sum / n;
+                //col[y] = sum / n; //260725Cl 変更前
+                col[y] = sum * invY[y];
                 int add = y + radius + 1, rem = y - radius;
-                if (add < h) { sum += dst[add * w + x]; n++; }
-                if (rem >= 0) { sum -= dst[rem * w + x]; n--; }
+                if (add < h) sum += dst[add * w + x];
+                if (rem >= 0) sum -= dst[rem * w + x];
             }
             for (int y = 0; y < h; y++) dst[y * w + x] = col[y];
         }
