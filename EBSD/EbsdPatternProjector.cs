@@ -35,15 +35,22 @@ public sealed class EbsdPatternProjector
         });
     }
 
-    /// <summary>回転 rotation (crystal→sample) のパターンを output (Width×Height) へ書き込む。posPlane/negPlane = MasterPattern.GetPlane の単一スライス</summary>
-    public void Project(MasterPattern mp, Matrix3D rotation, float[] posPlane, float[] negPlane, double[] output)
+    /// <summary>回転 rotation (crystal→sample) のパターンを output (Width×Height) へ書き込む。posPlane/negPlane = MasterPattern.GetPlane の単一スライス。
+    /// parallel=false で行ループを逐次実行 (辞書総当たりのような方位単位で並列化する呼び出し向け。小ラスターでは行並列のオーバーヘッドが支配的)。260724Cl シグネチャ変更 (parallel 追加)</summary>
+    //260724Cl 旧: public void Project(MasterPattern mp, Matrix3D rotation, float[] posPlane, float[] negPlane, double[] output)
+    public void Project(MasterPattern mp, Matrix3D rotation, float[] posPlane, float[] negPlane, double[] output, bool parallel = true)
     {
         var ri = rotation.Inverse();
         int gs = mp.GridSize;
         bool isHex = mp.GridType == MasterPattern.Types.Hexagonal;
         bool hasPos = posPlane is { Length: > 0 }, hasNeg = negPlane is { Length: > 0 };
 
-        Parallel.For(0, Height, r =>
+        if (parallel)
+            Parallel.For(0, Height, r => ProjectRow(r));
+        else
+            for (int r = 0; r < Height; r++) ProjectRow(r);
+
+        void ProjectRow(int r)
         {
             for (int c = 0; c < Width; c++)
             {
@@ -73,7 +80,7 @@ public sealed class EbsdPatternProjector
                     output[i] = MasterPattern.InterpolatePlaneSquare(plane, gs, a, b);
                 }
             }
-        });
+        }
     }
 }
 
@@ -104,8 +111,8 @@ public static class EbsdPatternScorer
         return (RobustPreprocess(dst, w, h), w, h);
     }
 
-    /// <summary>box 縮小 (targetLongSide = 長辺の目標 px)。260724Cl 追加 (PrepareReference からの抽出)</summary>
-    static (double[] Data, int W, int H) Downsample(double[] values, int width, int height, int targetLongSide)
+    /// <summary>box 縮小 (targetLongSide = 長辺の目標 px)。260724Cl 追加 (PrepareReference からの抽出。EbsdDictionaryIndexer と共用のため internal)</summary>
+    internal static (double[] Data, int W, int H) Downsample(double[] values, int width, int height, int targetLongSide)
     {
         double scale = Math.Min(1.0, (double)targetLongSide / Math.Max(width, height));
         int w = Math.Max(8, (int)Math.Round(width * scale)), h = Math.Max(8, (int)Math.Round(height * scale));
