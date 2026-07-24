@@ -84,6 +84,29 @@ public static class EbsdPatternScorer
     /// 260724Cl: 背景除算 (蛍光体照明の乗算勾配の除去) が無いと ZNCC が方位でなく照明勾配に引かれ、特に PC/DD 較正で致命的 (Codex 指摘)</summary>
     public static (double[] Data, int W, int H) PrepareReference(double[] values, int width, int height, int targetLongSide = 160)
     {
+        var (dst, w, h) = Downsample(values, width, height, targetLongSide); //260724Cl: 縮小部を Downsample へ抽出 (PrepareReferenceRobust と共用)
+        //広域ガウシアン (σ=0.1×短辺) 背景で除算 (EbsdBandDetector の前処理と同方式)
+        var validAll = new bool[w * h];
+        Array.Fill(validAll, true);
+        var bg = EbsdBandDetector.GaussianBlurGrid(dst, validAll, w, h, 0.10 * Math.Min(w, h));
+        double floor = Math.Max(1E-10, dst.Average() * 0.05);
+        for (int i = 0; i < dst.Length; i++)
+            dst[i] /= Math.Max(bg[i], floor);
+        NormalizeInPlace(dst);
+        return (dst, w, h);
+    }
+
+    /// <summary>実測画像を box 縮小し robust 前処理 (RobustPreprocess) を掛けた参照配列を返す。
+    /// 方位候補の複合ランク (Radon z + ZNCC) 用 — シミュレーション側にも同じ RobustPreprocess を掛けて比較する (Codex 裁定 260724)。260724Cl 追加</summary>
+    public static (double[] Data, int W, int H) PrepareReferenceRobust(double[] values, int width, int height, int targetLongSide = 160)
+    {
+        var (dst, w, h) = Downsample(values, width, height, targetLongSide);
+        return (RobustPreprocess(dst, w, h), w, h);
+    }
+
+    /// <summary>box 縮小 (targetLongSide = 長辺の目標 px)。260724Cl 追加 (PrepareReference からの抽出)</summary>
+    static (double[] Data, int W, int H) Downsample(double[] values, int width, int height, int targetLongSide)
+    {
         double scale = Math.Min(1.0, (double)targetLongSide / Math.Max(width, height));
         int w = Math.Max(8, (int)Math.Round(width * scale)), h = Math.Max(8, (int)Math.Round(height * scale));
         var dst = new double[w * h];
@@ -100,15 +123,29 @@ public static class EbsdPatternScorer
                 dst[y * w + x] = n > 0 ? sum / n : 0;
             }
         }
-        //広域ガウシアン (σ=0.1×短辺) 背景で除算 (EbsdBandDetector の前処理と同方式)
+        return (dst, w, h);
+    }
+
+    /// <summary>
+    /// robust ZNCC 前処理 (Codex 裁定 260724): 広域 bg 除算 (log-ratio, σ=0.1×短辺) → DoG σ1=1.5/σ2=6 → 標準化 → tanh(z/3) ソフトクリップ → 再標準化。
+    /// 実測とシミュレーション投影の両方に同一処理を掛けることで、動力学単一スライスの heavy-tailed な生強度分布 (zone axis 明点が分散を支配し
+    /// ZNCC が正解方位で偽方位に負ける) を等質化する。src は非破壊。260724Cl 追加
+    /// </summary>
+    public static double[] RobustPreprocess(double[] src, int w, int h)
+    {
         var validAll = new bool[w * h];
         Array.Fill(validAll, true);
-        var bg = EbsdBandDetector.GaussianBlurGrid(dst, validAll, w, h, 0.10 * Math.Min(w, h));
-        double floor = Math.Max(1E-10, dst.Average() * 0.05);
-        for (int i = 0; i < dst.Length; i++)
-            dst[i] /= Math.Max(bg[i], floor);
-        NormalizeInPlace(dst);
-        return (dst, w, h);
+        var bg = EbsdBandDetector.GaussianBlurGrid(src, validAll, w, h, 0.10 * Math.Min(w, h));
+        double floor = Math.Max(1E-10, src.Average() * 0.05);
+        var v = new double[w * h];
+        for (int i = 0; i < v.Length; i++) v[i] = Math.Log(Math.Max(src[i], floor * 0.01) / Math.Max(bg[i], floor));
+        var g1 = EbsdBandDetector.GaussianBlurGrid(v, validAll, w, h, 1.5);
+        var g2 = EbsdBandDetector.GaussianBlurGrid(v, validAll, w, h, 6.0);
+        for (int i = 0; i < v.Length; i++) v[i] = g1[i] - g2[i];
+        NormalizeInPlace(v);
+        for (int i = 0; i < v.Length; i++) v[i] = Math.Tanh(v[i] / 3);
+        NormalizeInPlace(v);
+        return v;
     }
 
     /// <summary>zero-mean/unit-variance 化 (in place)</summary>

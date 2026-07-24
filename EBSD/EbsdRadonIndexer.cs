@@ -123,8 +123,10 @@ public static class EbsdRadonIndexer
         public (int H, int K, int L) Hkl; //代表 (最強) 反射
     }
 
-    /// <summary>±g・同方向調和反射を 1 ノードに統合し、強度上位 maxNodes に制限。w=√I を median の 3 倍でクリップ (Codex 裁定 Q5)</summary>
-    static List<Node> BuildCatalog(IEnumerable<Vector3D> kikuchiReflections, int maxNodes)
+    /// <summary>±g・同方向調和反射を 1 ノードに統合し、強度上位 maxNodes に制限。
+    /// weightExponent=0.5 (既定): w=√I を median の 3 倍でクリップ (Codex 裁定 Q5)。
+    /// それ以外 (例 0.25): w=clip((I/median I)^exp, 0.5, 2) — 強度重みの弱化 (実マップ採点頑健化、Codex 裁定 260724)。260724Cl シグネチャ変更 (weightExponent 追加)</summary>
+    static List<Node> BuildCatalog(IEnumerable<Vector3D> kikuchiReflections, int maxNodes, double weightExponent = 0.5)
     {
         var nodes = new List<(V3 Dir, double I, (int, int, int) Hkl)>();
         foreach (var g in kikuchiReflections)
@@ -139,11 +141,62 @@ public static class EbsdRadonIndexer
             else if (g.RelativeIntensity > nodes[found].I) nodes[found] = (nodes[found].Dir, g.RelativeIntensity, (g.Index.h, g.Index.k, g.Index.l));
         }
         var top = nodes.OrderByDescending(n => n.I).Take(maxNodes).ToList();
+        if (Math.Abs(weightExponent - 0.5) > 1E-9) //260724Cl: 弱化重み (I/medI)^exp を [0.5, 2] クリップ
+        {
+            double medI = Math.Max(top.Select(n => n.I).OrderBy(v => v).ElementAt(top.Count / 2), 1E-12);
+            return [.. top.Select(n => new Node { Dir = n.Dir, Weight = Math.Clamp(Math.Pow(Math.Max(n.I, 0) / medI, weightExponent), 0.5, 2), Hkl = n.Hkl })];
+        }
         var ws = top.Select(n => Math.Sqrt(Math.Max(n.I, 0))).ToArray();
         double wClip = 3 * ws.OrderBy(v => v).ElementAt(ws.Length / 2);
         return [.. top.Select((n, i) => new Node { Dir = n.Dir, Weight = Math.Min(ws[i], Math.Max(wClip, 1E-12)), Hkl = n.Hkl })];
     }
     #endregion
+
+    /// <summary>単一方位の Radon 証拠 z スコア (Index の厳密スコアと同一評価)。ZNCC 精密化のガードや複合ランクの再評価用。260724Cl 追加</summary>
+    public static double ScoreOrientation(EbsdRadonMap map, EbsdDetectorGeometry geometry, IEnumerable<Vector3D> kikuchiReflections,
+        Matrix3D rotation, double saturateCap = 0, double weightExponent = 0.5, int maxNodes = 90)
+        => ScoreExactCore(map, geometry, BuildCatalog(kikuchiReflections, maxNodes, weightExponent), rotation, saturateCap);
+
+    /// <summary>厳密スコア本体 (bilinear・全ノード・非膨張マップ・近接予測線の排他込み)。
+    /// Index 内クロージャからインライン実装を抽出 (公開 ScoreOrientation と共用)。260724Cl 追加</summary>
+    static double ScoreExactCore(EbsdRadonMap map, EbsdDetectorGeometry geometry, List<Node> catalog, Matrix3D rot, double saturateCap)
+    {
+        double xm = geometry.XMirror, pix = geometry.PixelSize;
+        var ey = geometry.Ey; var center = geometry.Center;
+        double mu0 = map.Mu0, sigma0 = map.Sigma0;
+        double rhoLimit = map.RhoOffset - 2;
+        var exTh = new double[catalog.Count]; var exRho = new double[catalog.Count];
+        double num = 0, wSum = 0, w2Sum = 0;
+        int nAcc = 0;
+        foreach (var node in catalog)
+        {
+            var gs = rot * node.Dir;
+            var gl = geometry.SampleToLab(gs);
+            double aMm = xm * gl.X, bMm = gl.Y * ey.Y + gl.Z * ey.Z, cMm = gl.X * center.X + gl.Y * center.Y + gl.Z * center.Z;
+            double norm = Math.Sqrt(aMm * aMm + bMm * bMm);
+            if (norm < 1E-9) continue;
+            double rhoWork = -cMm / (pix * norm) * map.Scale;
+            if (Math.Abs(rhoWork) > rhoLimit) continue;
+            var (thF, rhoF) = FoldLine(Math.Atan2(bMm, aMm) * 180 / Math.PI, rhoWork);
+            bool dup = false;
+            for (int j = 0; j < nAcc; j++)
+                if (SameLine(thF, rhoF, exTh[j], exRho[j], 2, 5)) { dup = true; break; }
+            if (dup) continue; //二重得点防止 (強度降順 → 先着優先)
+            exTh[nAcc] = thF; exRho[nAcc] = rhoF; nAcc++;
+            double e = map.Sample(thF, rhoF) - mu0;
+            //証拠飽和 (粗探索と同一の ψ)。cap=0 で旧動作
+            if (saturateCap > 0)
+            {
+                double zk = e / sigma0;
+                num += node.Weight * (zk > 0 ? saturateCap * Math.Tanh(zk / saturateCap) : Math.Max(zk, -1));
+            }
+            else
+                num += node.Weight * Math.Max(e, -sigma0);
+            wSum += node.Weight; w2Sum += node.Weight * node.Weight;
+        }
+        if (w2Sum <= 0 || wSum * wSum / w2Sum < 4) return double.MinValue;
+        return num / (Math.Sqrt(w2Sum) * (saturateCap > 0 ? 1 : sigma0)); //飽和時は num が z 単位
+    }
 
     /// <summary>2 つの (θ[deg]∈[0,180), ρ) 線が実質同一か (θ 循環と ρ 反転を考慮)。260724Cl 追加。
     /// 同一方位評価内で近接する複数の予測線 (調和・近縁反射) が同じ観測リッジから二重に得点するのを防ぐ
@@ -219,14 +272,22 @@ public static class EbsdRadonIndexer
     /// シードは 2 系統 (①証拠マップ内部ピークの pair-angle+Kabsch = サブ度精度、②SO(3) 粗グリッド = ピーク抽出漏れの保険)、
     /// 採点は密な Radon 証拠 z 値に一本化。返り値はスコア降順。
     /// 対称等価 (カタログ方向集合を保存する回転で結ばれる方位=パターン上区別不能) は 1 代表に縮約。
+    /// saturateCap: 0 で旧動作 (floor のみ)。>0 で証拠 z の正側を ψ(z)=cap·tanh(z/cap) で飽和・負側を max(z,−1) — 少数強リッジの支配を抑える (推奨 4)。
+    /// weightExponent: 0.5 (既定) = w=√I 3median クリップ。0.25 = w=clip((I/medI)^0.25, 0.5, 2) の弱化重み。(実マップ採点頑健化、Codex 裁定 260724)
     /// </summary>
+    //260724Cl シグネチャ変更 (実験パラメータ saturateCap / weightExponent 追加)。旧:
+    //public static List<EbsdOrientationCandidate> Index(EbsdRadonMap map, EbsdDetectorGeometry geometry,
+    //    IEnumerable<Vector3D> kikuchiReflections, double waveLength = 0.00859,
+    //    int maxCandidates = 10, double coarseStepDeg = 3, int maxNodes = 90, int coarseNodes = 20,
+    //    System.Threading.CancellationToken cancel = default)
     public static List<EbsdOrientationCandidate> Index(EbsdRadonMap map, EbsdDetectorGeometry geometry,
         IEnumerable<Vector3D> kikuchiReflections, double waveLength = 0.00859,
         int maxCandidates = 10, double coarseStepDeg = 3, int maxNodes = 90, int coarseNodes = 20,
+        double saturateCap = 0, double weightExponent = 0.5,
         System.Threading.CancellationToken cancel = default)
     {
         var refl = kikuchiReflections as IReadOnlyList<Vector3D> ?? [.. kikuchiReflections]; //260724Cl: 多重列挙防止
-        var catalog = BuildCatalog(refl, maxNodes);
+        var catalog = BuildCatalog(refl, maxNodes, weightExponent);
         if (catalog.Count < 4) return [];
         var coarseCatalog = catalog.Take(coarseNodes).ToList(); //強度上位のみで粗探索 (Codex 裁定 Q6)
 
@@ -315,13 +376,20 @@ public static class EbsdRadonIndexer
                         accTh[nAcc] = thF; accRho[nAcc] = rhoF; nAcc++;
                         double e = map.SampleDilatedNearest(thF, rhoF) - mu0;
                         double w = nw[k];
-                        num += w * Math.Max(e, -sigma0); //視野隅の希薄線の過剰ペナルティを floor
+                        //260724Cl: 証拠飽和 (正側 ψ(z)=cap·tanh(z/cap)、負側 max(z,−1)) — 少数強リッジの支配抑制 (Codex 裁定 260724)。cap=0 で旧動作
+                        if (saturateCap > 0)
+                        {
+                            double zk = e / sigma0;
+                            num += w * (zk > 0 ? saturateCap * Math.Tanh(zk / saturateCap) : Math.Max(zk, -1));
+                        }
+                        else
+                            num += w * Math.Max(e, -sigma0); //視野隅の希薄線の過剰ペナルティを floor
                         wSum += w; w2Sum += w * w;
                     }
                     if (w2Sum <= 0) continue;
                     double nEff = wSum * wSum / w2Sum;
                     if (nEff < 4) continue; //有効バンド数下限 (少数バンド方位の上振れ防止、Codex 裁定 Q1)
-                    den = Math.Sqrt(w2Sum) * sigma0;
+                    den = Math.Sqrt(w2Sum) * (saturateCap > 0 ? 1 : sigma0); //260724Cl: 飽和時は num が z 単位 (σ₀ 正規化済)。旧: den = Math.Sqrt(w2Sum) * sigma0
                     double score = num / den;
                     local.Add((score, di, pi));
                 }
@@ -381,33 +449,8 @@ public static class EbsdRadonIndexer
         }
 
         //厳密スコア (bilinear・全ノード・非膨張・近接予測線の排他込み)。Parallel から呼ばれるため排他バッファはローカル確保
-        double ScoreExact(Matrix3D rot)
-        {
-            var exTh = new double[catalog.Count]; var exRho = new double[catalog.Count];
-            double num = 0, wSum = 0, w2Sum = 0;
-            int nAcc = 0;
-            foreach (var node in catalog)
-            {
-                var gs = rot * node.Dir;
-                var gl = geometry.SampleToLab(gs);
-                double aMm = xm * gl.X, bMm = gl.Y * ey.Y + gl.Z * ey.Z, cMm = gl.X * center.X + gl.Y * center.Y + gl.Z * center.Z;
-                double norm = Math.Sqrt(aMm * aMm + bMm * bMm);
-                if (norm < 1E-9) continue;
-                double rhoWork = -cMm / (pix * norm) * map.Scale;
-                if (Math.Abs(rhoWork) > rhoLimit) continue;
-                var (thF, rhoF) = FoldLine(Math.Atan2(bMm, aMm) * 180 / Math.PI, rhoWork);
-                bool dup = false;
-                for (int j = 0; j < nAcc; j++)
-                    if (SameLine(thF, rhoF, exTh[j], exRho[j], 2, 5)) { dup = true; break; }
-                if (dup) continue; //260724Cl: 二重得点防止 (強度降順 → 先着優先)
-                exTh[nAcc] = thF; exRho[nAcc] = rhoF; nAcc++;
-                double e = map.Sample(thF, rhoF) - mu0;
-                num += node.Weight * Math.Max(e, -sigma0);
-                wSum += node.Weight; w2Sum += node.Weight * node.Weight;
-            }
-            if (w2Sum <= 0 || wSum * wSum / w2Sum < 4) return double.MinValue;
-            return num / (Math.Sqrt(w2Sum) * sigma0);
-        }
+        //260724Cl: 本体を ScoreExactCore へ抽出 (公開 ScoreOrientation と共用のため。旧インライン実装は ScoreExactCore に移動)
+        double ScoreExact(Matrix3D rot) => ScoreExactCore(map, geometry, catalog, rot, saturateCap);
 
         static Matrix3D Perturb(Matrix3D r0, double wxDeg, double wyDeg, double wzDeg)
         {
