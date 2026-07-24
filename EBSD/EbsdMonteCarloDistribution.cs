@@ -20,6 +20,47 @@ public sealed class EbsdMonteCarloDistribution
     /// <summary>model 2 用。detector bin の absolute 強度を保った depth-slice 重み。260325Ch 追加</summary>
     public double[,][] BinAbsoluteSliceWeights { get; }
 
+    /// <summary>
+    /// MasterPattern の全 (energy, depth) スライスを、この MC 分布の全ビン平均重みで微分合成した 1 枚 (pos/neg 半球) を返す。260724Cl 追加。
+    /// FormEBSD の表示合成 (model 2 = absolute MC × differential master) のグローバル近似で、位置依存重みを検出器全体で平均している。
+    /// ZNCC 方位照合 (複合ランク・幾何較正) 用の実測に忠実なシミュレーションパターン。単一スライスより実測との相関が上がることをベンチで確認済み。
+    /// </summary>
+    public (float[] Pos, float[] Neg) ComposeGlobalWeightedPattern(MasterPattern mp)
+    {
+        int eLen = mp.Energies.Length, dLen = mp.Depths.Length;
+        var wG = new double[eLen * dLen];
+        for (int bi = 0; bi < BinCount; bi++)
+            for (int bj = 0; bj < BinCount; bj++)
+            {
+                var bw = BinAbsoluteSliceWeights[bi, bj];
+                if (bw == null) continue;
+                for (int k = 0; k < wG.Length && k < bw.Length; k++) wG[k] += bw[k];
+            }
+        double wSum = 0;
+        foreach (var v in wG) wSum += v;
+        if (wSum > 0) for (int k = 0; k < wG.Length; k++) wG[k] /= wSum;
+
+        int gs2 = mp.GridSize * mp.GridSize;
+        var pos = new float[gs2];
+        var neg = new float[gs2];
+        for (int ei = 0; ei < eLen; ei++)
+            for (int di = 0; di < dLen; di++)
+            {
+                double wgt = wG[ei * dLen + di];
+                if (wgt < 1E-15) continue;
+                foreach (var (dst, hemi) in new[] { (pos, MasterPattern.Hemisphere.PositiveZ), (neg, MasterPattern.Hemisphere.NegativeZ) })
+                {
+                    var p = mp.GetPlane(hemi, ei, di);
+                    if (p == null || p.Length == 0) continue;
+                    var pPrev = di > 0 ? mp.GetPlane(hemi, ei, di - 1) : null;
+                    bool hasPrev = pPrev is { Length: > 0 };
+                    for (int i = 0; i < gs2; i++)
+                        dst[i] += (float)(wgt * Math.Max(0, p[i] - (hasPrev ? pPrev[i] : 0))); //model 2 の differential 合成
+                }
+            }
+        return (pos, neg);
+    }
+
     // 260718Cl: smpTilt 引数を削除。BSE の Vec は MC 内で試料傾斜を織り込んで lab 座標系で追跡され、検出器 (detY/detZ/detTilt も lab 座標系) への投影に試料傾斜は不要 (Codex 検証済: 適用すると二重計上)。
     // 260723Cl: 円形検出器 (半径 detR) → 矩形検出器 (半幅 halfWidth × 半高 halfHeight) + 中心 X オフセット (detX) へ変更。
     // 旧シグネチャ: EbsdMonteCarloDistribution(bseList, beamEnergy, detTilt, detY, detZ, detR, energies, depths, binCount = 8)
