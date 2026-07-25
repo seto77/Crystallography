@@ -428,9 +428,25 @@ public static class EbsdBandDetector
             int x0 = (int)x, y0 = (int)y;
             if ((uint)x0 >= (uint)(w - 1) || (uint)y0 >= (uint)(h - 1)) continue;
             int i = y0 * w + x0;
-            if (!valid[i]) continue;
             double fx = x - x0, fy = y - y0;
-            sum += (img[i] * (1 - fx) + img[i + 1] * fx) * (1 - fy) + (img[i + w] * (1 - fx) + img[i + w + 1] * fx) * fy;
+            //260726Cl 変更 (正本 §6 P1-1): bilinear は 4 画素を使うのに、有効判定を左上画素だけで行っていた。
+            //無効画素はマスク済み (値 0) なので、隣が無効だと積分値が黙って目減りし、しかも左上だけを見るので
+            //マスク境界の扱いが左右上下で非対称になっていた。4 近傍それぞれの有効性で重みを取り、有効分で正規化する。
+            //旧: if (!valid[i]) continue; sum += (img[i]*(1-fx) + img[i+1]*fx)*(1-fy) + (img[i+w]*(1-fx) + img[i+w+1]*fx)*fy;
+            if (valid[i] && valid[i + 1] && valid[i + w] && valid[i + w + 1])
+                //4 近傍とも有効な通常経路は旧式そのまま (マスク無しの実測画像で数値をビット一致に保つ)
+                sum += (img[i] * (1 - fx) + img[i + 1] * fx) * (1 - fy) + (img[i + w] * (1 - fx) + img[i + w + 1] * fx) * fy;
+            else
+            {
+                double w00 = (1 - fx) * (1 - fy), w10 = fx * (1 - fy), w01 = (1 - fx) * fy, w11 = fx * fy;
+                double value = 0, weight = 0;
+                if (valid[i]) { value += w00 * img[i]; weight += w00; }
+                if (valid[i + 1]) { value += w10 * img[i + 1]; weight += w10; }
+                if (valid[i + w]) { value += w01 * img[i + w]; weight += w01; }
+                if (valid[i + w + 1]) { value += w11 * img[i + w + 1]; weight += w11; }
+                if (weight < 0.5) continue; //有効画素の被覆が半分未満の標本は使わない (境界での外挿を避ける)
+                sum += value / weight;
+            }
             n++;
         }
         //return n >= 8 ? sum / Math.Sqrt(n) : 0;
