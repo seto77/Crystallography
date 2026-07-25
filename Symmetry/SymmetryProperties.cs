@@ -127,7 +127,8 @@ public sealed class SymmetryProperties
         return true;
     }
 
-    private static int Det(int[,] m) =>
+    //260725Cl 変更: private → internal (EbsdDictionaryIndexer.GetProperRotations と共有 — int 3×3 行列式の重複実装解消)
+    internal static int Det(int[,] m) =>
         m[0, 0] * (m[1, 1] * m[2, 2] - m[1, 2] * m[2, 1])
       - m[0, 1] * (m[1, 0] * m[2, 2] - m[1, 2] * m[2, 0])
       + m[0, 2] * (m[1, 0] * m[2, 1] - m[1, 1] * m[2, 0]);

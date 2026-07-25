@@ -407,18 +407,10 @@ public static class EbsdRadonIndexer
         #endregion
 
         #region 粗 seed の重複除去 → NelderMead 局所精密化 (非膨張マップ・全ノード)
+        //260725Cl (/simplify): 球点部を EbsdIndexer.FibonacciSphereRotation へ統合 (EbsdDictionaryIndexer と重複していた。同一演算・ビット一致)
+        //旧: Matrix3D SeedRotation(int di, int pi) { ...(z/rxy/az/nHat/axis から r0 生成)... return r0 * Matrix3D.Rot(new V3(0, 0, 1), pi * 2 * Math.PI / nPhi); }
         Matrix3D SeedRotation(int di, int pi)
-        {
-            double z = 1 - 2.0 * (di + 0.5) / nSphere;
-            double rxy = Math.Sqrt(Math.Max(0, 1 - z * z));
-            double az = di * golden;
-            var nHat = new V3(rxy * Math.Cos(az), rxy * Math.Sin(az), z);
-            var axis = V3.Cross(V3.UnitZ, nHat);
-            var r0 = axis.Length < 1E-9
-                ? (nHat.Z > 0 ? Matrix3D.IdentityMatrix : Matrix3D.Rot(new V3(1, 0, 0), Math.PI))
-                : Matrix3D.Rot(axis.Normalized(), Math.Acos(Math.Clamp(nHat.Z, -1, 1)));
-            return r0 * Matrix3D.Rot(new V3(0, 0, 1), pi * 2 * Math.PI / nPhi);
-        }
+            => EbsdIndexer.FibonacciSphereRotation(di, nSphere) * Matrix3D.Rot(new V3(0, 0, 1), pi * 2 * Math.PI / nPhi);
 
         var seeds = new List<(double S, Matrix3D R)>();
 

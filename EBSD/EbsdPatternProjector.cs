@@ -42,12 +42,13 @@ public sealed class EbsdPatternProjector
     //バイリニア補間のみにする (3×3 回転積・sqrt・atan を全除去。Codex 裁定 260725: Lambert 後の (a,b) 2D 回転は不可、
     //ディスク極座標の再利用が正解)。SphereToRoscaLambertSquare の Shirley 逆変換と数学的に等価 (atan(tanθ')=局所角 t)。
 
-    /// <summary>球点回転 r0 の面内共通量を計算する。theta0/ra/rb/neg は呼び出し側が確保する長さ Width×Height のバッファ。
-    /// ra = ディスク半径×√π/2 (sector 支配軸の座標)、rb = 4·ra/π (直交軸の係数)。260725Cl 追加</summary>
-    public void PrepareSpherePoint(Matrix3D r0, double[] theta0, double[] ra, double[] rb, bool[] neg)
+    /// <summary>球点回転 r0 の面内共通量を計算する。q0/ra/rb/neg は呼び出し側が確保する長さ Width×Height のバッファ。
+    /// q0 = ディスク方位角×(2/π) (sector 判定を除算なしで行う正規化角)、ra = ディスク半径×√π/2 (sector 支配軸の座標)、rb = 4·ra/π (直交軸の係数)。260725Cl 追加</summary>
+    //260725Cl (/simplify) 変更: theta0 (方位角そのもの) → q0=theta0·2/π を保存し、ProjectInPlane の毎画素 /halfPi 除算を除去
+    public void PrepareSpherePoint(Matrix3D r0, double[] q0, double[] ra, double[] rb, bool[] neg)
     {
         var ri = r0.Inverse();
-        double sqrtPiHalf = Math.Sqrt(Math.PI) / 2;
+        double sqrtPiHalf = Math.Sqrt(Math.PI) / 2, twoOverPi = 2 / Math.PI;
         for (int i = 0; i < raysSample.Length; i++)
         {
             var d = raysSample[i];
@@ -62,32 +63,65 @@ public sealed class EbsdPatternProjector
             double rDisk = radialScale < 1E-15 ? 0 : rxy / radialScale;
             ra[i] = rDisk * sqrtPiHalf;
             rb[i] = 4 * ra[i] / Math.PI;
-            theta0[i] = Math.Atan2(uy, ux);
+            q0[i] = Math.Atan2(uy, ux) * twoOverPi;
         }
     }
 
     /// <summary>PrepareSpherePoint 済みの球点について面内回転角 phi のパターンを output へ書き込む (完全逐次、square 格子専用)。260725Cl 追加</summary>
-    public void ProjectInPlane(MasterPattern mp, double phi, float[] posPlane, float[] negPlane, double[] theta0, double[] ra, double[] rb, bool[] neg, double[] output)
+    //260725Cl (/simplify) 変更: ①sector 判定を q0−pc の正規化角で除算なし化 (s∈[−6,2] なので (s+8)&3 = 整数一致の mod4)
+    //②両半球あり (通常ケース) は半球 active チェックと InterpolatePlaneSquare のループ不変ガード・呼び出しを除去した特化ループ
+    //(バイリニアは同一演算のインライン、step 除算は invStep 乗算化)。片半球欠けのみ従来形。数値は ULP 差 (等価群 — dict 回帰で検証)
+    public void ProjectInPlane(MasterPattern mp, double phi, float[] posPlane, float[] negPlane, double[] q0, double[] ra, double[] rb, bool[] neg, double[] output)
     {
         int gs = mp.GridSize;
         bool hasPos = posPlane is { Length: > 0 }, hasNeg = negPlane is { Length: > 0 };
-        const double halfPi = Math.PI / 2, quarterPi = Math.PI / 4;
-        for (int i = 0; i < output.Length; i++)
+        const double halfPi = Math.PI / 2;
+        double pc = phi * (2 / Math.PI);
+        double lim = MasterPattern.SquareLimit, invStep = gs / (2.0 * lim);
+        if (hasPos && hasNeg) //通常ケース (実稼働合成は両半球あり)
         {
-            bool n = neg[i];
-            if (n ? !hasNeg : !hasPos) { output[i] = 0; continue; }
-            double th = theta0[i] - phi;
-            int s = (int)Math.Floor((th + quarterPi) / halfPi); //支配軸 sector (0=+a,1=+b,2=−a,3=−b)、t = sector 内局所角 ∈ [−π/4, π/4)
-            double t = th - s * halfPi;
-            double a, b;
-            switch (((s % 4) + 4) % 4)
+            for (int i = 0; i < output.Length; i++)
             {
-                case 0: a = ra[i]; b = rb[i] * t; break;
-                case 1: b = ra[i]; a = -rb[i] * t; break;
-                case 2: a = -ra[i]; b = -rb[i] * t; break;
-                default: b = -ra[i]; a = rb[i] * t; break;
+                double g = q0[i] - pc;
+                int s = (int)Math.Floor(g + 0.5); //支配軸 sector (0=+a,1=+b,2=−a,3=−b)、t = sector 内局所角 ∈ [−π/4, π/4)
+                double t = (g - s) * halfPi;
+                double a, b;
+                switch ((s + 8) & 3)
+                {
+                    case 0: a = ra[i]; b = rb[i] * t; break;
+                    case 1: b = ra[i]; a = -rb[i] * t; break;
+                    case 2: a = -ra[i]; b = -rb[i] * t; break;
+                    default: b = -ra[i]; a = rb[i] * t; break;
+                }
+                var plane = neg[i] ? negPlane : posPlane;
+                double wf = (a + lim) * invStep - 0.5, hf = (lim - b) * invStep - 0.5;
+                int w0 = (int)Math.Floor(wf), h0 = (int)Math.Floor(hf);
+                double fw = wf - w0, fh = hf - h0;
+                int w1 = Math.Clamp(w0 + 1, 0, gs - 1), h1 = Math.Clamp(h0 + 1, 0, gs - 1);
+                w0 = Math.Clamp(w0, 0, gs - 1); h0 = Math.Clamp(h0, 0, gs - 1);
+                output[i] = (float)((1 - fw) * (1 - fh) * plane[h0 * gs + w0] + fw * (1 - fh) * plane[h0 * gs + w1]
+                                  + (1 - fw) * fh * plane[h1 * gs + w0] + fw * fh * plane[h1 * gs + w1]);
             }
-            output[i] = MasterPattern.InterpolatePlaneSquare(n ? negPlane : posPlane, gs, a, b);
+        }
+        else //片半球欠け (稀ケース): active チェック付きの従来形
+        {
+            for (int i = 0; i < output.Length; i++)
+            {
+                bool n = neg[i];
+                if (n ? !hasNeg : !hasPos) { output[i] = 0; continue; }
+                double g = q0[i] - pc;
+                int s = (int)Math.Floor(g + 0.5);
+                double t = (g - s) * halfPi;
+                double a, b;
+                switch ((s + 8) & 3)
+                {
+                    case 0: a = ra[i]; b = rb[i] * t; break;
+                    case 1: b = ra[i]; a = -rb[i] * t; break;
+                    case 2: a = -ra[i]; b = -rb[i] * t; break;
+                    default: b = -ra[i]; a = rb[i] * t; break;
+                }
+                output[i] = MasterPattern.InterpolatePlaneSquare(n ? negPlane : posPlane, gs, a, b);
+            }
         }
     }
     #endregion
@@ -228,11 +262,10 @@ public static class EbsdPatternScorer
         var tmp3 = box3Scratch;
         //①広域背景 box3(σ=0.1×短辺): src → tmp1 (tmp2 作業)
         Box3Seq(src, tmp1, tmp2, w, h, 0.10 * Math.Min(w, h));
-        double mean = 0;
-        foreach (var x in src) mean += x;
-        double floor = Math.Max(1E-10, mean / src.Length * 0.05);
+        //double mean = 0; foreach (var x in src) mean += x; //260725Cl 変更前 (/simplify): SIMD 和 (SumSimd) へ
+        double floor = Math.Max(1E-10, SumSimd(src) / src.Length * 0.05);
         //②log-ratio → dst。260725Cl: Vector.Log (net10 標準 SIMD) 化 — prof で log が前処理の 27% (Math.Log と数 ULP 差、
-        //辞書ベンチの候補/refHit/misor 不変を確認して採用。combo 経路の RobustPreprocess/NormalizeInPlace は数値保存のため不変)
+        //辞書ベンチの候補/refHit/misor 不変を確認して採用)
         //旧: for (int i = 0; i < dst.Length; i++) dst[i] = Math.Log(Math.Max(src[i], floor * 0.01) / Math.Max(tmp1[i], floor));
         int n = dst.Length, vc = Vector<double>.Count, i0 = 0;
         var vF2 = new Vector<double>(floor * 0.01);
@@ -243,54 +276,52 @@ public static class EbsdPatternScorer
         //③DoG: g1(σ1.5) = dst→tmp1、g2(σ6) = dst→tmp2 (dst は両方の入力なので温存)
         Box3Seq(dst, tmp1, tmp2, w, h, 1.5);
         Box3Seq(dst, tmp2, tmp3, w, h, 6.0);
-        for (int i = 0; i < dst.Length; i++) dst[i] = tmp1[i] - tmp2[i];
-        //④標準化 → tanh(z/3) → 再標準化。260725Cl: SIMD 専用実装 (tanh は clamp ± 60 → (e^{2x/3}−1)/(e^{2x/3}+1)、Vector.Exp)
-        //旧: NormalizeInPlace(dst); for (...) dst[i] = Math.Tanh(dst[i] / 3); NormalizeInPlace(dst);
-        NormalizeSimd(dst);
-        TanhOver3Simd(dst);
-        NormalizeSimd(dst);
+        //for (int i = 0; i < dst.Length; i++) dst[i] = tmp1[i] - tmp2[i]; //260725Cl 変更前 (/simplify): SIMD 差へ
+        i0 = 0;
+        for (; i0 <= n - vc; i0 += vc) (new Vector<double>(tmp1, i0) - new Vector<double>(tmp2, i0)).CopyTo(dst, i0);
+        for (; i0 < n; i0++) dst[i0] = tmp1[i0] - tmp2[i0];
+        //④標準化+tanh(z/3) の 1 パス融合 → 再標準化 (NormalizeInPlace は SIMD 統一済み)。
+        //260725Cl (/simplify): 旧 NormalizeSimd(dst)→TanhOver3Simd(dst)→NormalizeSimd(dst) の中間 1 往復 (書いて読み直す全画素パス) を融合で削減
+        NormalizeTanhSimd(dst);
+        NormalizeInPlace(dst);
     }
 
-    /// <summary>zero-mean/unit-variance 化 (in place) の SIMD 版 — RobustPreprocessFast 専用。260725Cl 追加
-    /// (NormalizeInPlace と数 ULP 差 (加算順・逆数乗算) があるため combo 経路の共有 API とは分離)</summary>
-    static void NormalizeSimd(double[] data)
+    /// <summary>SIMD 水平和。260725Cl 追加 (/simplify: NormalizeInPlace/NormalizeTanhSimd/RobustPreprocessFast の 3 箇所で共用)</summary>
+    static double SumSimd(double[] data)
     {
         int n = data.Length, vc = Vector<double>.Count, i = 0;
         var vs = Vector<double>.Zero;
         for (; i <= n - vc; i += vc) vs += new Vector<double>(data, i);
-        double mean = Vector.Sum(vs);
-        for (; i < n; i++) mean += data[i];
-        mean /= n;
+        double sum = Vector.Sum(vs);
+        for (; i < n; i++) sum += data[i];
+        return sum;
+    }
+
+    /// <summary>標準化 → tanh(x/3) の 1 パス融合 (in place)。tanh(x/3) = (e^{2x/3}−1)/(e^{2x/3}+1)、標準化後の値は ±60 に
+    /// クランプ (tanh(20)=1−4E-18 で数値同一、Vector.Exp のオーバーフロー→NaN を防止)。260725Cl 追加</summary>
+    static void NormalizeTanhSimd(double[] data)
+    {
+        int n = data.Length, vc = Vector<double>.Count, i = 0;
+        double mean = SumSimd(data) / n;
         var vm = new Vector<double>(mean);
         var vv = Vector<double>.Zero;
-        i = 0;
         for (; i <= n - vc; i += vc) { var d = new Vector<double>(data, i) - vm; vv += d * d; }
         double var = Vector.Sum(vv);
         for (; i < n; i++) { double d = data[i] - mean; var += d * d; }
         double std = Math.Sqrt(var / n);
         if (std < 1E-12) std = 1;
-        double inv = 1 / std;
-        var vi = new Vector<double>(inv);
-        i = 0;
-        for (; i <= n - vc; i += vc) ((new Vector<double>(data, i) - vm) * vi).CopyTo(data, i);
-        for (; i < n; i++) data[i] = (data[i] - mean) * inv;
-    }
-
-    /// <summary>tanh(x/3) (in place) の SIMD 版 — tanh(x/3) = (e^{2x/3}−1)/(e^{2x/3}+1)。|x| は ±60 にクランプ
-    /// (tanh(20)=1−4E-18 で数値同一、Vector.Exp のオーバーフロー→NaN を防止)。260725Cl 追加</summary>
-    static void TanhOver3Simd(double[] data)
-    {
-        int n = data.Length, vc = Vector<double>.Count, i = 0;
+        var vi = new Vector<double>(1 / std);
         var one = Vector<double>.One;
         var c = new Vector<double>(2.0 / 3.0);
         var lim = new Vector<double>(60.0);
+        i = 0;
         for (; i <= n - vc; i += vc)
         {
-            var x = Vector.Max(Vector.Min(new Vector<double>(data, i), lim), -lim);
+            var x = Vector.Max(Vector.Min((new Vector<double>(data, i) - vm) * vi, lim), -lim);
             var e = Vector.Exp(x * c);
             ((e - one) / (e + one)).CopyTo(data, i);
         }
-        for (; i < n; i++) data[i] = Math.Tanh(data[i] / 3);
+        for (; i < n; i++) data[i] = Math.Tanh((data[i] - mean) / std / 3);
     }
 
     [ThreadStatic] static double[] box3Scratch; //260724Cl: RobustPreprocessFast の第 4 バッファ (スレッドローカル再利用)
@@ -302,8 +333,10 @@ public static class EbsdPatternScorer
         //260725Cl: 境界正規化 1/n を位置別に事前計算し BoxPassSeq 内の毎画素除算 (~18 回/画素) を乗算化 (prof: box が前処理の 52%)
         Span<double> invX = w <= 2048 ? stackalloc double[w] : new double[w];
         Span<double> invY = h <= 2048 ? stackalloc double[h] : new double[h];
-        for (int x = 0; x < w; x++) invX[x] = 1.0 / (Math.Min(x + r, w - 1) - Math.Max(x - r, 0) + 1);
-        for (int y = 0; y < h; y++) invY[y] = 1.0 / (Math.Min(y + r, h - 1) - Math.Max(y - r, 0) + 1);
+        //260725Cl (/simplify): フル窓の内部は 1/(2r+1) 定数を共有 — 除算は両端 ~2r 個のみ (旧: 全 w+h 要素で除算。値は同一 = ビット一致)
+        double invMid = 1.0 / (2 * r + 1);
+        for (int x = 0; x < w; x++) invX[x] = x >= r && x < w - r ? invMid : 1.0 / (Math.Min(x + r, w - 1) - Math.Max(x - r, 0) + 1);
+        for (int y = 0; y < h; y++) invY[y] = y >= r && y < h - r ? invMid : 1.0 / (Math.Min(y + r, h - 1) - Math.Max(y - r, 0) + 1);
         //260725Cl: 縦パスの行アキュムレータ化で横パス出力の一時バッファが必要 (in-place 縦パス廃止)
         if (box3ScratchH == null || box3ScratchH.Length < w * h) box3ScratchH = new double[w * h];
         BoxPassSeq(src, dst, box3ScratchH, w, h, r, invX, invY);
@@ -367,16 +400,28 @@ public static class EbsdPatternScorer
     }
 
     /// <summary>zero-mean/unit-variance 化 (in place)</summary>
+    //260725Cl 変更 (/simplify): スカラー実装 → SIMD 化し、旧 RobustPreprocessFast 専用 NormalizeSimd を本体へ統一 (同一カーネル 2 実装の解消)。
+    //旧スカラー版とは加算順・逆数乗算の ULP 差 — dict/combo ベンチで候補・refHit・misor 不変を確認して採用。
+    //旧: double mean = 0; foreach (var v in data) mean += v; mean /= data.Length;
+    //    double var = 0; foreach (var v in data) { double d = v - mean; var += d * d; }
+    //    double std = Math.Sqrt(var / data.Length); if (std < 1E-12) std = 1;
+    //    for (int i = 0; i < data.Length; i++) data[i] = (data[i] - mean) / std;
     public static void NormalizeInPlace(double[] data)
     {
-        double mean = 0;
-        foreach (var v in data) mean += v;
-        mean /= data.Length;
-        double var = 0;
-        foreach (var v in data) { double d = v - mean; var += d * d; }
-        double std = Math.Sqrt(var / data.Length);
+        int n = data.Length, vc = Vector<double>.Count, i = 0;
+        double mean = SumSimd(data) / n;
+        var vm = new Vector<double>(mean);
+        var vv = Vector<double>.Zero;
+        for (; i <= n - vc; i += vc) { var d = new Vector<double>(data, i) - vm; vv += d * d; }
+        double var = Vector.Sum(vv);
+        for (; i < n; i++) { double d = data[i] - mean; var += d * d; }
+        double std = Math.Sqrt(var / n);
         if (std < 1E-12) std = 1;
-        for (int i = 0; i < data.Length; i++) data[i] = (data[i] - mean) / std;
+        double inv = 1 / std;
+        var vi = new Vector<double>(inv);
+        i = 0;
+        for (; i <= n - vc; i += vc) ((new Vector<double>(data, i) - vm) * vi).CopyTo(data, i);
+        for (; i < n; i++) data[i] = (data[i] - mean) * inv;
     }
 
     /// <summary>zero-normalized cross correlation。a は正規化済み参照、b は生 (内部で正規化)</summary>

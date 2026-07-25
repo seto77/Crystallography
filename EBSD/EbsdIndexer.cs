@@ -305,6 +305,22 @@ public static class EbsdIndexer
         return Math.Acos(Math.Clamp((tr - 1) / 2, -1, 1)) * 180 / Math.PI;
     }
 
+    static readonly double GoldenAngle = Math.PI * (3 - Math.Sqrt(5)); //260725Cl 追加 (FibonacciSphereRotation 用)
+
+    /// <summary>Fibonacci 球面格子の球点回転 (+z を格子点 di の方向 nHat へ回す回転)。260725Cl 追加 (/simplify):
+    /// EbsdRadonIndexer.SeedRotation と EbsdDictionaryIndexer の重複実装を統合 (式・演算順は旧実装と同一 = ビット一致)</summary>
+    internal static Matrix3D FibonacciSphereRotation(int di, int nSphere)
+    {
+        double z = 1 - 2.0 * (di + 0.5) / nSphere;
+        double rxy = Math.Sqrt(Math.Max(0, 1 - z * z));
+        double az = di * GoldenAngle;
+        var nHat = new V3(rxy * Math.Cos(az), rxy * Math.Sin(az), z);
+        var axis = V3.Cross(V3.UnitZ, nHat);
+        return axis.Length < 1E-9
+            ? (nHat.Z > 0 ? Matrix3D.IdentityMatrix : Matrix3D.Rot(new V3(1, 0, 0), Math.PI))
+            : Matrix3D.Rot(axis.Normalized(), Math.Acos(Math.Clamp(nHat.Z, -1, 1)));
+    }
+
     static int LowerBound(double[] arr, double v)
     {
         int lo = 0, hi = arr.Length;

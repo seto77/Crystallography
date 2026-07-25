@@ -58,40 +58,12 @@ public static class EbsdDictionaryIndexer
         #region ①粗段: Fibonacci 球 × 面内回転の総当たり (方位単位並列・バッファ再利用)
         int nSphere = Math.Max(64, (int)(4 * Math.PI / (coarseStepDeg * Math.PI / 180 * (coarseStepDeg * Math.PI / 180))));
         int nPhi = Math.Max(16, (int)(360 / coarseStepDeg));
-        double golden = Math.PI * (3 - Math.Sqrt(5));
 
-        //260725Cl 変更: 旧 GridRotation(di,pi) を球点部 (SphereRotation) と面内部 (rzTable) に分離 — pi 毎の r0 再計算と
-        //Rot(z,φ) 再計算を除去 (SphereRotation(di) * rzTable[pi] は旧式と同一演算・ビット一致)。
+        //260725Cl 変更: 旧 GridRotation(di,pi) を球点部 (EbsdIndexer.FibonacciSphereRotation — Radon 側 SeedRotation と共通化) と
+        //面内部 (rzTable) に分離 — pi 毎の r0 再計算と Rot(z,φ) 再計算を除去 (積は旧式と同一演算・ビット一致)。
         //旧: Matrix3D GridRotation(int di, int pi) { ...(r0 計算)... return r0 * Matrix3D.Rot(new V3(0, 0, 1), pi * 2 * Math.PI / nPhi); }
         var rzTable = new Matrix3D[nPhi];
         for (int pi0 = 0; pi0 < nPhi; pi0++) rzTable[pi0] = Matrix3D.Rot(new V3(0, 0, 1), pi0 * 2 * Math.PI / nPhi);
-
-        Matrix3D SphereRotation(int di)
-        {
-            double z = 1 - 2.0 * (di + 0.5) / nSphere;
-            double rxy = Math.Sqrt(Math.Max(0, 1 - z * z));
-            double az = di * golden;
-            var nHat = new V3(rxy * Math.Cos(az), rxy * Math.Sin(az), z);
-            var axis = V3.Cross(V3.UnitZ, nHat);
-            return axis.Length < 1E-9
-                ? (nHat.Z > 0 ? Matrix3D.IdentityMatrix : Matrix3D.Rot(new V3(1, 0, 0), Math.PI))
-                : Matrix3D.Rot(axis.Normalized(), Math.Acos(Math.Clamp(nHat.Z, -1, 1)));
-        }
-
-        //260725Cl 追加: proper 対称回転による fundamental-zone 判定 — 同値集合 {R·S} の trace 最大代表のみ評価する
-        //(最小回転角代表。monoclinic C2b では E11+E33>=0 と等価)。trace 同値の境界では両側 true (重複評価する安全側 —
-        //Fibonacci 格子は R·S を厳密には含まないため片側破棄は被覆穴の危険。Codex 裁定 260725)
-        bool IsFundamental(Matrix3D r)
-        {
-            if (properSymmetries == null) return true;
-            double t = r.E11 + r.E22 + r.E33;
-            foreach (var s in properSymmetries)
-            {
-                var rs = r * s;
-                if (rs.E11 + rs.E22 + rs.E33 > t + 1E-12) return false;
-            }
-            return true;
-        }
 
         int keepPerThread = Math.Max(64, coarseKeep * 4);
         var survivors = new List<(double S, int Di, int Pi)>();
@@ -99,45 +71,64 @@ public static class EbsdDictionaryIndexer
         //260725Cl: square 格子は面内回転分解プロジェクション (球点毎に Lambert 極座標を 1 回計算、面内 120 回は sector 折り返しのみ —
         //3×3 積・sqrt・atan 全除去。Codex 裁定 260725)。hex 格子は従来 Project へフォールバック
         bool inPlaneFast = mp.GridType != MasterPattern.Types.Hexagonal;
+        int symCount = properSymmetries?.Length ?? 0;
         System.Threading.Tasks.Parallel.For(0, nSphere,
-            () => (Local: new List<(double S, int Di, int Pi)>(), Buf: new double[cw * ch], Dst: new double[cw * ch], T1: new double[cw * ch], T2: new double[cw * ch],
-                   Th0: inPlaneFast ? new double[cw * ch] : null, Ra: inPlaneFast ? new double[cw * ch] : null, Rb: inPlaneFast ? new double[cw * ch] : null, Neg: inPlaneFast ? new bool[cw * ch] : null), //260725Cl
-            (di, _, state) =>
+            () => new CoarseScratch(cw * ch, inPlaneFast, symCount), //260725Cl (/simplify): 旧 9 要素 ValueTuple の名前付き化
+            (di, _, st) =>
             {
                 cancel.ThrowIfCancellationRequested();
-                var r0 = SphereRotation(di); //260725Cl: 球点回転は pi ループ外で 1 回 (旧: GridRotation が pi 毎に再計算)
+                var r0 = EbsdIndexer.FibonacciSphereRotation(di, nSphere); //260725Cl: 球点回転は pi ループ外で 1 回
+                //260725Cl (/simplify): fundamental-zone 判定を trace 閉形式化 — Rz は z 回転 (E13=E23=E31=E32=0, E33=1) なので
+                //trace(Rz·M) = Rz.E11·M.E11 + Rz.E12·M.E21 + Rz.E21·M.E12 + Rz.E22·M.E22 + M.E33。R=r0·Rz の trace は循環置換で M=r0、
+                //R·S の trace は trace(Rz·S·r0) で M=S·r0 (di 毎に 1 回だけ行列積)。同値集合 {R·S} の trace 最大代表のみ評価する
+                //(最小回転角代表。monoclinic C2b では E11+E33>=0 と等価)。trace 同値の境界 (±1E-12) は両側評価の安全側 —
+                //Fibonacci 格子は R·S を厳密には含まないため片側破棄は被覆穴の危険 (Codex 裁定 260725)。
+                //旧: pi 毎に rot=r0*rzTable[pi] と IsFundamental 内の r*s を Matrix3D 生成 (~55万×2 個の Gen0 圧) → 全廃
+                double r0A = r0.E11, r0B = r0.E21, r0C = r0.E12, r0D = r0.E22, r0E = r0.E33;
+                for (int si = 0; si < symCount; si++)
+                {
+                    var m = properSymmetries[si] * r0;
+                    st.SymTr[si * 5] = m.E11; st.SymTr[si * 5 + 1] = m.E21; st.SymTr[si * 5 + 2] = m.E12; st.SymTr[si * 5 + 3] = m.E22; st.SymTr[si * 5 + 4] = m.E33;
+                }
                 bool prepared = false; //260725Cl: PrepareSpherePoint は FZ を通る pi が現れた時のみ (全スキップ球点では省略)
                 for (int pi = 0; pi < nPhi; pi++)
                 {
-                    var rot = r0 * rzTable[pi];
-                    if (!IsFundamental(rot)) continue; //260725Cl: 対称同値の非代表側は Project 前にスキップ (C2 で総当たり半減)
-                    //projCoarse.Project(mp, GridRotation(di, pi), posPlane, negPlane, state.Buf, parallel: false); //260725Cl 変更前
+                    if (symCount > 0) //260725Cl: 対称同値の非代表側は Project 前にスキップ (C2 で総当たり半減)
+                    {
+                        var rz = rzTable[pi];
+                        double tR = rz.E11 * r0A + rz.E12 * r0B + rz.E21 * r0C + rz.E22 * r0D + r0E;
+                        bool fundamental = true;
+                        for (int si = 0; si < symCount && fundamental; si++)
+                            if (rz.E11 * st.SymTr[si * 5] + rz.E12 * st.SymTr[si * 5 + 1] + rz.E21 * st.SymTr[si * 5 + 2] + rz.E22 * st.SymTr[si * 5 + 3] + st.SymTr[si * 5 + 4] > tR + 1E-12)
+                                fundamental = false;
+                        if (!fundamental) continue;
+                    }
                     if (inPlaneFast) //260725Cl
                     {
-                        if (!prepared) { projCoarse.PrepareSpherePoint(r0, state.Th0, state.Ra, state.Rb, state.Neg); prepared = true; }
-                        projCoarse.ProjectInPlane(mp, pi * 2 * Math.PI / nPhi, posPlane, negPlane, state.Th0, state.Ra, state.Rb, state.Neg, state.Buf);
+                        if (!prepared) { projCoarse.PrepareSpherePoint(r0, st.Q0, st.Ra, st.Rb, st.Neg); prepared = true; }
+                        projCoarse.ProjectInPlane(mp, pi * 2 * Math.PI / nPhi, posPlane, negPlane, st.Q0, st.Ra, st.Rb, st.Neg, st.Buf);
                     }
                     else
-                        projCoarse.Project(mp, rot, posPlane, negPlane, state.Buf, parallel: false);
+                        projCoarse.Project(mp, r0 * rzTable[pi], posPlane, negPlane, st.Buf, parallel: false);
                     if (thoroughCoarse) //260724Cl: 完全 robust 前処理の総当たり (Fast 版 = box3 近似+バッファ再利用+逐次)
                     {
-                        EbsdPatternScorer.RobustPreprocessFast(state.Buf, cw, ch, state.Dst, state.T1, state.T2);
-                        state.Local.Add((EbsdPatternScorer.Zncc(refCoarse, state.Dst), di, pi));
+                        EbsdPatternScorer.RobustPreprocessFast(st.Buf, cw, ch, st.Dst, st.T1, st.T2);
+                        st.Local.Add((EbsdPatternScorer.Zncc(refCoarse, st.Dst), di, pi));
                     }
                     else
                     {
-                        ApplyLight(state.Buf, cw, ch);
-                        state.Local.Add((EbsdPatternScorer.Zncc(refCoarse, state.Buf), di, pi));
+                        ApplyLight(st.Buf, cw, ch);
+                        st.Local.Add((EbsdPatternScorer.Zncc(refCoarse, st.Buf), di, pi));
                     }
                 }
-                if (state.Local.Count > keepPerThread * 4)
+                if (st.Local.Count > keepPerThread * 4)
                 {
-                    state.Local.Sort((a, b) => b.S.CompareTo(a.S));
-                    state.Local.RemoveRange(keepPerThread, state.Local.Count - keepPerThread);
+                    st.Local.Sort((a, b) => b.S.CompareTo(a.S));
+                    st.Local.RemoveRange(keepPerThread, st.Local.Count - keepPerThread);
                 }
-                return state;
+                return st;
             },
-            state => { lock (lockObj) survivors.AddRange(state.Local); });
+            st => { lock (lockObj) survivors.AddRange(st.Local); });
         survivors.Sort((a, b) => b.S.CompareTo(a.S));
 
         //方位距離 NMS: 上位から順に、既採用と近い (misor < 1.5×粗刻み) 方位を捨てて盆地の代表だけ残す
@@ -145,7 +136,7 @@ public static class EbsdDictionaryIndexer
         foreach (var s in survivors)
         {
             //var r = GridRotation(s.Di, s.Pi); //260725Cl 変更前
-            var r = SphereRotation(s.Di) * rzTable[s.Pi]; //260725Cl: 旧 GridRotation と同一演算 (survivors は少数なので r0 再計算で可)
+            var r = EbsdIndexer.FibonacciSphereRotation(s.Di, nSphere) * rzTable[s.Pi]; //260725Cl: 旧 GridRotation と同一演算 (survivors は少数なので r0 再計算で可)
             if (basins.All(b => EbsdIndexer.MisorientationDeg(b.R, r) > coarseStepDeg * 1.5))
                 basins.Add((s.S, r));
             if (basins.Count >= coarseKeep) break;
@@ -207,6 +198,22 @@ public static class EbsdDictionaryIndexer
         #endregion
     }
 
+    /// <summary>粗段 Parallel.For のスレッドローカル作業領域。260725Cl 追加 (/simplify: 旧 9 要素 ValueTuple の名前付き化)</summary>
+    sealed class CoarseScratch
+    {
+        public readonly List<(double S, int Di, int Pi)> Local = [];
+        public readonly double[] Buf, Dst, T1, T2;
+        public readonly double[] Q0, Ra, Rb; //面内分解プロジェクション用 (square 格子のみ、hex では null)
+        public readonly bool[] Neg;
+        public readonly double[] SymTr;      //FZ 判定の trace 係数 (対称 1 つあたり 5 値、di 毎に更新)
+        public CoarseScratch(int n, bool inPlane, int symCount)
+        {
+            Buf = new double[n]; Dst = new double[n]; T1 = new double[n]; T2 = new double[n];
+            if (inPlane) { Q0 = new double[n]; Ra = new double[n]; Rb = new double[n]; Neg = new bool[n]; }
+            SymTr = new double[symCount * 5];
+        }
+    }
+
     /// <summary>結晶の点群 proper 回転 (単位元を除く、crystal Cartesian 系) を返す。Index の properSymmetries 用。
     /// 対称操作の線形部 W (格子座標系、det=+1 のみ) を MatrixReal·W·MatrixReal⁻¹ で Cartesian 化し重複除去する。
     /// 対称が無い (P1 等) 場合は null。260725Cl 追加 (Codex 裁定 260725: 対称削減はグリッド生成後の FZ 判定で)</summary>
@@ -219,8 +226,8 @@ public static class EbsdDictionaryIndexer
         foreach (var op in ops)
         {
             var w = SeitzNotation.LinearMatrix(op);
-            int det = w[0, 0] * (w[1, 1] * w[2, 2] - w[1, 2] * w[2, 1]) - w[0, 1] * (w[1, 0] * w[2, 2] - w[1, 2] * w[2, 0]) + w[0, 2] * (w[1, 0] * w[2, 1] - w[1, 1] * w[2, 0]);
-            if (det != 1) continue; //improper (回反・鏡映) は除外 — 検出器像はキラリティを区別する
+            //int det = w[0, 0] * (w[1, 1] * w[2, 2] - ...); //260725Cl 変更前 (/simplify): SymmetryProperties.Det (既存の int 3×3 行列式) を internal 昇格して共有
+            if (SymmetryProperties.Det(w) != 1) continue; //improper (回反・鏡映) は除外 — 検出器像はキラリティを区別する
             //Matrix3D 9 引数 ctor は column-major (第 1 列, 第 2 列, 第 3 列)
             var r = a * new Matrix3D(w[0, 0], w[1, 0], w[2, 0], w[0, 1], w[1, 1], w[2, 1], w[0, 2], w[1, 2], w[2, 2]) * ai;
             if (AbsDiff(r, Matrix3D.IdentityMatrix) < 1E-9) continue; //単位元
