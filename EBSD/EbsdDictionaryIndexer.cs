@@ -207,6 +207,34 @@ public static class EbsdDictionaryIndexer
         #endregion
     }
 
+    /// <summary>結晶の点群 proper 回転 (単位元を除く、crystal Cartesian 系) を返す。Index の properSymmetries 用。
+    /// 対称操作の線形部 W (格子座標系、det=+1 のみ) を MatrixReal·W·MatrixReal⁻¹ で Cartesian 化し重複除去する。
+    /// 対称が無い (P1 等) 場合は null。260725Cl 追加 (Codex 裁定 260725: 対称削減はグリッド生成後の FZ 判定で)</summary>
+    public static Matrix3D[] GetProperRotations(Crystal crystal)
+    {
+        var ops = TSubgroupFinder.GetExpandedOps(crystal.SymmetrySeriesNumber);
+        var a = crystal.MatrixReal;
+        var ai = a.Inverse();
+        var result = new List<Matrix3D>();
+        foreach (var op in ops)
+        {
+            var w = SeitzNotation.LinearMatrix(op);
+            int det = w[0, 0] * (w[1, 1] * w[2, 2] - w[1, 2] * w[2, 1]) - w[0, 1] * (w[1, 0] * w[2, 2] - w[1, 2] * w[2, 0]) + w[0, 2] * (w[1, 0] * w[2, 1] - w[1, 1] * w[2, 0]);
+            if (det != 1) continue; //improper (回反・鏡映) は除外 — 検出器像はキラリティを区別する
+            //Matrix3D 9 引数 ctor は column-major (第 1 列, 第 2 列, 第 3 列)
+            var r = a * new Matrix3D(w[0, 0], w[1, 0], w[2, 0], w[0, 1], w[1, 1], w[2, 1], w[0, 2], w[1, 2], w[2, 2]) * ai;
+            if (AbsDiff(r, Matrix3D.IdentityMatrix) < 1E-9) continue; //単位元
+            if (result.Any(x => AbsDiff(x, r) < 1E-9)) continue;      //中心化等による重複
+            result.Add(r);
+        }
+        return result.Count == 0 ? null : [.. result];
+
+        static double AbsDiff(in Matrix3D x, in Matrix3D y)
+            => Math.Abs(x.E11 - y.E11) + Math.Abs(x.E12 - y.E12) + Math.Abs(x.E13 - y.E13)
+             + Math.Abs(x.E21 - y.E21) + Math.Abs(x.E22 - y.E22) + Math.Abs(x.E23 - y.E23)
+             + Math.Abs(x.E31 - y.E31) + Math.Abs(x.E32 - y.E32) + Math.Abs(x.E33 - y.E33);
+    }
+
     /// <summary>粗段の軽量前処理 (Codex 裁定: 背景除算を省き log → box DoG (5×5−21×21) → tanh(z/3) → 正規化)。in place。
     /// log は平均で正規化した log-ratio (floor も平均比例) — 実測 (輝度 0-255) とシミュレーション (強度 ~1E-3) のレンジ差で
     /// 前処理が非対称にならないようにする (絶対値 floor は不可)。260724Cl</summary>

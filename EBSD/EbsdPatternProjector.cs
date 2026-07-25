@@ -1,6 +1,7 @@
 #region using
 using System;
 using System.Linq;
+using System.Numerics; //260725Cl: Vector<double> SIMD (RobustPreprocessFast の log/tanh/正規化)
 using System.Threading.Tasks;
 using V3 = OpenTK.Mathematics.Vector3d;
 #endregion
@@ -230,16 +231,66 @@ public static class EbsdPatternScorer
         double mean = 0;
         foreach (var x in src) mean += x;
         double floor = Math.Max(1E-10, mean / src.Length * 0.05);
-        //②log-ratio → dst
-        for (int i = 0; i < dst.Length; i++) dst[i] = Math.Log(Math.Max(src[i], floor * 0.01) / Math.Max(tmp1[i], floor));
+        //②log-ratio → dst。260725Cl: Vector.Log (net10 標準 SIMD) 化 — prof で log が前処理の 27% (Math.Log と数 ULP 差、
+        //辞書ベンチの候補/refHit/misor 不変を確認して採用。combo 経路の RobustPreprocess/NormalizeInPlace は数値保存のため不変)
+        //旧: for (int i = 0; i < dst.Length; i++) dst[i] = Math.Log(Math.Max(src[i], floor * 0.01) / Math.Max(tmp1[i], floor));
+        int n = dst.Length, vc = Vector<double>.Count, i0 = 0;
+        var vF2 = new Vector<double>(floor * 0.01);
+        var vF = new Vector<double>(floor);
+        for (; i0 <= n - vc; i0 += vc)
+            Vector.Log(Vector.Max(new Vector<double>(src, i0), vF2) / Vector.Max(new Vector<double>(tmp1, i0), vF)).CopyTo(dst, i0);
+        for (; i0 < n; i0++) dst[i0] = Math.Log(Math.Max(src[i0], floor * 0.01) / Math.Max(tmp1[i0], floor));
         //③DoG: g1(σ1.5) = dst→tmp1、g2(σ6) = dst→tmp2 (dst は両方の入力なので温存)
         Box3Seq(dst, tmp1, tmp2, w, h, 1.5);
         Box3Seq(dst, tmp2, tmp3, w, h, 6.0);
         for (int i = 0; i < dst.Length; i++) dst[i] = tmp1[i] - tmp2[i];
-        //④標準化 → tanh(z/3) → 再標準化
-        NormalizeInPlace(dst);
-        for (int i = 0; i < dst.Length; i++) dst[i] = Math.Tanh(dst[i] / 3);
-        NormalizeInPlace(dst);
+        //④標準化 → tanh(z/3) → 再標準化。260725Cl: SIMD 専用実装 (tanh は clamp ± 60 → (e^{2x/3}−1)/(e^{2x/3}+1)、Vector.Exp)
+        //旧: NormalizeInPlace(dst); for (...) dst[i] = Math.Tanh(dst[i] / 3); NormalizeInPlace(dst);
+        NormalizeSimd(dst);
+        TanhOver3Simd(dst);
+        NormalizeSimd(dst);
+    }
+
+    /// <summary>zero-mean/unit-variance 化 (in place) の SIMD 版 — RobustPreprocessFast 専用。260725Cl 追加
+    /// (NormalizeInPlace と数 ULP 差 (加算順・逆数乗算) があるため combo 経路の共有 API とは分離)</summary>
+    static void NormalizeSimd(double[] data)
+    {
+        int n = data.Length, vc = Vector<double>.Count, i = 0;
+        var vs = Vector<double>.Zero;
+        for (; i <= n - vc; i += vc) vs += new Vector<double>(data, i);
+        double mean = Vector.Sum(vs);
+        for (; i < n; i++) mean += data[i];
+        mean /= n;
+        var vm = new Vector<double>(mean);
+        var vv = Vector<double>.Zero;
+        i = 0;
+        for (; i <= n - vc; i += vc) { var d = new Vector<double>(data, i) - vm; vv += d * d; }
+        double var = Vector.Sum(vv);
+        for (; i < n; i++) { double d = data[i] - mean; var += d * d; }
+        double std = Math.Sqrt(var / n);
+        if (std < 1E-12) std = 1;
+        double inv = 1 / std;
+        var vi = new Vector<double>(inv);
+        i = 0;
+        for (; i <= n - vc; i += vc) ((new Vector<double>(data, i) - vm) * vi).CopyTo(data, i);
+        for (; i < n; i++) data[i] = (data[i] - mean) * inv;
+    }
+
+    /// <summary>tanh(x/3) (in place) の SIMD 版 — tanh(x/3) = (e^{2x/3}−1)/(e^{2x/3}+1)。|x| は ±60 にクランプ
+    /// (tanh(20)=1−4E-18 で数値同一、Vector.Exp のオーバーフロー→NaN を防止)。260725Cl 追加</summary>
+    static void TanhOver3Simd(double[] data)
+    {
+        int n = data.Length, vc = Vector<double>.Count, i = 0;
+        var one = Vector<double>.One;
+        var c = new Vector<double>(2.0 / 3.0);
+        var lim = new Vector<double>(60.0);
+        for (; i <= n - vc; i += vc)
+        {
+            var x = Vector.Max(Vector.Min(new Vector<double>(data, i), lim), -lim);
+            var e = Vector.Exp(x * c);
+            ((e - one) / (e + one)).CopyTo(data, i);
+        }
+        for (; i < n; i++) data[i] = Math.Tanh(data[i] / 3);
     }
 
     [ThreadStatic] static double[] box3Scratch; //260724Cl: RobustPreprocessFast の第 4 バッファ (スレッドローカル再利用)
@@ -253,44 +304,65 @@ public static class EbsdPatternScorer
         Span<double> invY = h <= 2048 ? stackalloc double[h] : new double[h];
         for (int x = 0; x < w; x++) invX[x] = 1.0 / (Math.Min(x + r, w - 1) - Math.Max(x - r, 0) + 1);
         for (int y = 0; y < h; y++) invY[y] = 1.0 / (Math.Min(y + r, h - 1) - Math.Max(y - r, 0) + 1);
-        BoxPassSeq(src, dst, w, h, r, invX, invY);
-        BoxPassSeq(dst, work, w, h, r, invX, invY);
-        BoxPassSeq(work, dst, w, h, r, invX, invY);
+        //260725Cl: 縦パスの行アキュムレータ化で横パス出力の一時バッファが必要 (in-place 縦パス廃止)
+        if (box3ScratchH == null || box3ScratchH.Length < w * h) box3ScratchH = new double[w * h];
+        BoxPassSeq(src, dst, box3ScratchH, w, h, r, invX, invY);
+        BoxPassSeq(dst, work, box3ScratchH, w, h, r, invX, invY);
+        BoxPassSeq(work, dst, box3ScratchH, w, h, r, invX, invY);
     }
 
+    [ThreadStatic] static double[] box3ScratchH; //260725Cl: BoxPassSeq 横パス出力の一時 (スレッドローカル再利用)
+
     /// <summary>running box 平均 1 回分 (横+縦、境界は有効画素数で正規化、完全逐次)。src → dst (src 不変)。260724Cl 追加</summary>
-    //260725Cl シグネチャ変更 (invX/invY 追加): sum/n 除算 → sum·(1/n) 乗算 (テーブルは Box3Seq が半径別に事前計算)
+    //260725Cl シグネチャ変更 (invX/invY/tmpH 追加): ①sum/n 除算 → sum·(1/n) 乗算 (テーブルは Box3Seq が事前計算)
+    //②縦パスを列毎 running sum (stride アクセス) から行アキュムレータ+Vector<double> 融合 (行順アクセス) へ変更
     //旧: static void BoxPassSeq(double[] src, double[] dst, int w, int h, int radius)
-    static void BoxPassSeq(double[] src, double[] dst, int w, int h, int radius, ReadOnlySpan<double> invX, ReadOnlySpan<double> invY)
+    static void BoxPassSeq(double[] src, double[] dst, double[] tmpH, int w, int h, int radius, ReadOnlySpan<double> invX, ReadOnlySpan<double> invY)
     {
-        for (int y = 0; y < h; y++) //横パス: src → dst
+        for (int y = 0; y < h; y++) //横パス: src → tmpH (行内 running sum)
         {
             int row = y * w;
             double sum = 0;
             for (int x = 0; x <= Math.Min(radius, w - 1); x++) sum += src[row + x];
             for (int x = 0; x < w; x++)
             {
-                //dst[row + x] = sum / n; //260725Cl 変更前 (n は running カウント)
-                dst[row + x] = sum * invX[x];
+                tmpH[row + x] = sum * invX[x];
                 int add = x + radius + 1, rem = x - radius;
                 if (add < w) sum += src[row + add];
                 if (rem >= 0) sum -= src[row + rem];
             }
         }
-        Span<double> col = h <= 2048 ? stackalloc double[2048] : new double[h]; //縦パス用の一時列
-        for (int x = 0; x < w; x++) //縦パス: dst → dst
+        //縦パス: tmpH → dst。行アキュムレータ acc[w] を上から走査 (dst 書き込み・acc 更新とも行順、SIMD 融合)
+        Span<double> acc = w <= 2048 ? stackalloc double[w] : new double[w];
+        acc.Clear();
+        for (int y = 0; y <= Math.Min(radius, h - 1); y++)
         {
-            double sum = 0;
-            for (int y = 0; y <= Math.Min(radius, h - 1); y++) sum += dst[y * w + x];
-            for (int y = 0; y < h; y++)
+            int row = y * w;
+            for (int x = 0; x < w; x++) acc[x] += tmpH[row + x];
+        }
+        int vc = Vector<double>.Count;
+        for (int y = 0; y < h; y++)
+        {
+            int row = y * w;
+            int addRow = (y + radius + 1) < h ? (y + radius + 1) * w : -1, remRow = (y - radius) >= 0 ? (y - radius) * w : -1;
+            var vIv = new Vector<double>(invY[y]);
+            int x = 0;
+            for (; x <= w - vc; x += vc) //融合: dst 行 = acc·(1/n) → acc += 次行 → acc −= 抜け行
             {
-                //col[y] = sum / n; //260725Cl 変更前
-                col[y] = sum * invY[y];
-                int add = y + radius + 1, rem = y - radius;
-                if (add < h) sum += dst[add * w + x];
-                if (rem >= 0) sum -= dst[rem * w + x];
+                var a = new Vector<double>(acc.Slice(x, vc));
+                (a * vIv).CopyTo(dst, row + x);
+                if (addRow >= 0) a += new Vector<double>(tmpH, addRow + x);
+                if (remRow >= 0) a -= new Vector<double>(tmpH, remRow + x);
+                a.CopyTo(acc.Slice(x, vc));
             }
-            for (int y = 0; y < h; y++) dst[y * w + x] = col[y];
+            for (; x < w; x++)
+            {
+                double a = acc[x];
+                dst[row + x] = a * invY[y];
+                if (addRow >= 0) a += tmpH[addRow + x];
+                if (remRow >= 0) a -= tmpH[remRow + x];
+                acc[x] = a;
+            }
         }
     }
 
