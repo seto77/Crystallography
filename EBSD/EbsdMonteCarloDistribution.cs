@@ -74,11 +74,16 @@ public sealed class EbsdMonteCarloDistribution
         //各画素内のスライス加算順と float 丸めは旧実装と同じなので結果はビット一致する。
         var posSlices = new List<(float[] Plane, float[] Previous, double Weight)>();
         var negSlices = new List<(float[] Plane, float[] Previous, double Weight)>();
+        //260726Cl 追加 (正本 §1.4): plane は厚さ t までの累積 M(t) なので、隣接差は区間積分。
+        //区間平均 R̄ = ΔM/Δt にするため区間幅で割る。MC 側の重みは区間の「質量」なので割らない (質量 × 平均応答が正しい寄与)。
+        //等間隔グリッドでは全体が定数倍になるだけだが、不等間隔では区間ごとの重み比が変わる
+        var depthWidths = mp.DepthIntervals;
         for (int ei = 0; ei < eLen; ei++)
             for (int di = 0; di < dLen; di++)
             {
                 double wgt = wG[ei * dLen + di];
                 if (wgt < 1E-15) continue;
+                wgt /= depthWidths[di]; //260726Cl
                 var p = mp.GetPlane(MasterPattern.Hemisphere.PositiveZ, ei, di);
                 //if (p is { Length: > 0 }) //260725Ch 変更前: 短い非空 plane は並列画素ループ内で範囲外になった
                 if (p != null && p.Length >= gs2) //260725Ch

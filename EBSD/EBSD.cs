@@ -462,6 +462,27 @@ public sealed class MasterPattern
     /// <summary> plane 数を返す。 </summary>
     public int PlaneCount => Energies.Length * Depths.Length;
 
+    /// <summary>
+    /// 深さスライスの区間幅 [nm]。Depths[j] は厚さ t_j までの累積 M(t_j)=∫[0,t_j]R dz を表すので、
+    /// 区間 j の平均応答は (M(t_j) − M(t_{j-1})) / (t_j − t_{j-1})、j=0 は (M(t_0) − 0) / t_0 になる。
+    /// model 2 の合成はこの区間幅で割る必要がある (正本 §1.4)。260726Cl 追加。
+    /// 等間隔グリッドでは全体が定数倍になるだけだが、不等間隔・絶対単位ではスライス間の重み比が変わる。
+    /// 幅が 0 以下になる異常な深さ列では 1 を返し、従来どおり割らない動作にする。
+    /// </summary>
+    public double[] DepthIntervals
+    {
+        get
+        {
+            var widths = new double[Depths.Length];
+            for (int j = 0; j < Depths.Length; j++)
+            {
+                double width = j == 0 ? Depths[0] : Depths[j] - Depths[j - 1];
+                widths[j] = width > 0 && double.IsFinite(width) ? width : 1;
+            }
+            return widths;
+        }
+    }
+
     /// <summary> MasterPattern 本体を初期化する。 </summary>
     public MasterPattern(int gridSize, double[] energies, double[] depths, float[][] positivePlanes, float[][] negativePlanes,
         Types gridType = Types.Square) // 260331Cl gridType 追加
