@@ -23,10 +23,13 @@ public sealed class EbsdRadonMap
     /// <summary>Abs の robust null 統計 (median と 1.4826×MAD)。スコアの SNR 正規化に使う</summary>
     public double Mu0, Sigma0;
 
-    double[] dilated; //粗探索用の異方膨張マップ (遅延構築)
+    //260725Cl 削除: double[] dilated (粗探索用の異方膨張マップ) — BuildDilated が返す EbsdDilatedRadonMap へ移した。
+    //同一マップを異なる膨張設定で同時に Index すると、後から Build した設定で他方が採点される公開 API 上の race だった
+    //(GUI は逐次実行なので実害はなかった。正本 §6 P1-1)。
 
     /// <summary>θ を [0,180) に折り返す (θ+180 は ρ 反転)。戻り値 = (θdeg∈[0,180), ρ)</summary>
-    static (double thetaDeg, double rho) Fold(double thetaDeg, double rho)
+    //260725Cl: 膨張マップ側 (EbsdDilatedRadonMap) からも使うため internal 化。旧: static (double, double) Fold(...)
+    internal static (double thetaDeg, double rho) Fold(double thetaDeg, double rho)
     {
         thetaDeg %= 360;
         if (thetaDeg < 0) thetaDeg += 360;
@@ -65,7 +68,8 @@ public sealed class EbsdRadonMap
     /// 粗探索用の異方膨張マップを構築する (θ±thetaBins 行 × ρ±rhoPx 列の窓 max)。
     /// 粗方位グリッドの離散化誤差で予測線が真のピークから外れても盆地を取りこぼさないため (Codex 裁定: θ 方向の膨張も必須)
     /// </summary>
-    public void BuildDilated(int thetaBins, int rhoPx)
+    //260725Cl シグネチャ変更: 結果を可変フィールドへ書かず不変ビューとして返す。旧: public void BuildDilated(int thetaBins, int rhoPx)
+    public EbsdDilatedRadonMap BuildDilated(int thetaBins, int rhoPx)
     {
         //① ρ 方向の窓 max (行内)
         var tmp = new double[Abs.Length];
@@ -96,21 +100,41 @@ public sealed class EbsdRadonMap
                 dst[t * NRho + r] = m;
             }
         });
-        dilated = dst;
+        //dilated = dst; //260725Cl 変更前: 呼び出し側で共有される可変フィールドへ格納 (異なる膨張設定の同時 Index で相互に上書き)
+        return new EbsdDilatedRadonMap(dst, this);
+    }
+
+    //260725Cl 移動: public double SampleDilatedNearest(double, double) → EbsdDilatedRadonMap.SampleNearest (本体は同一)
+}
+
+/// <summary>
+/// 粗探索用の異方膨張マップ (θ±thetaBins 行 × ρ±rhoPx 列の窓 max) の不変ビュー。260725Cl 追加 (正本 §6 P1-1)。
+/// 生成元 EbsdRadonMap の格子定義をスナップショットするので、同じマップから異なる膨張設定を同時に作っても互いに干渉しない。
+/// </summary>
+public sealed class EbsdDilatedRadonMap
+{
+    readonly double[] values;
+    readonly int nTheta, nRho, rhoOffset;
+    readonly double thetaStepDeg;
+
+    internal EbsdDilatedRadonMap(double[] values, EbsdRadonMap source)
+    {
+        this.values = values;
+        nTheta = source.NTheta; nRho = source.NRho; rhoOffset = source.RhoOffset; thetaStepDeg = source.ThetaStepDeg;
     }
 
     /// <summary>膨張マップの最近傍値 (粗探索用。bilinear 不要)</summary>
-    public double SampleDilatedNearest(double thetaDeg, double rhoWork)
+    public double SampleNearest(double thetaDeg, double rhoWork)
     {
-        (thetaDeg, rhoWork) = Fold(thetaDeg, rhoWork);
-        int t = (int)Math.Round(thetaDeg / ThetaStepDeg);
-        int r = (int)Math.Round(rhoWork) + RhoOffset;
+        (thetaDeg, rhoWork) = EbsdRadonMap.Fold(thetaDeg, rhoWork);
+        int t = (int)Math.Round(thetaDeg / thetaStepDeg);
+        int r = (int)Math.Round(rhoWork) + rhoOffset;
         // 260725Cl 修正: θ=180° の継ぎ目で ρ 反転が抜けていた (Fold 後の θ∈[179.75,180) が t=NTheta へ丸め上がり、
         // 行 0 を ρ 反転なしで読んでいた = 無関係なセルを参照して予測線が「証拠なし」に過小評価される)。
-        // Sample (l.46-57) と BuildDilated (l.89-90) は同じ継ぎ目で NRho-1-r と正しく反転しており、本メソッドだけが規約から外れていた。
+        // EbsdRadonMap.Sample と BuildDilated は同じ継ぎ目で NRho-1-r と正しく反転しており、本メソッドだけが規約から外れていた。
         // 旧: if (t >= NTheta) t = 0;  (ρ 反転なし)
-        if (t >= NTheta) { t -= NTheta; r = NRho - 1 - r; } // NRho = 2·RhoOffset+1 なので NRho-1-r が ρ→−ρ に対応
-        return (uint)r < (uint)NRho ? dilated[t * NRho + r] : 0;
+        if (t >= nTheta) { t -= nTheta; r = nRho - 1 - r; } // nRho = 2·rhoOffset+1 なので nRho-1-r が ρ→−ρ に対応
+        return (uint)r < (uint)nRho ? values[t * nRho + r] : 0;
     }
 }
 
@@ -337,7 +361,7 @@ public static class EbsdRadonIndexer
         double halfStepRad = coarseStepDeg / 2 * Math.PI / 180;
         int dilRho = Math.Max(3, (int)Math.Ceiling(Math.Sqrt(map.WorkW * map.WorkW + map.WorkH * map.WorkH) * 0.7 * halfStepRad));
         int dilTheta = Math.Max(2, (int)Math.Ceiling(coarseStepDeg / 2 / map.ThetaStepDeg));
-        map.BuildDilated(dilTheta, dilRho);
+        var dilatedMap = map.BuildDilated(dilTheta, dilRho); //260725Cl: 可変フィールド共有をやめ、この Index 呼び出し専用の不変ビューを受け取る
 
         #region 粗探索: Fibonacci 球面 × 面内回転のグリッドを膨張マップで採点
         int nSphere = Math.Max(64, (int)(4 * Math.PI / (coarseStepDeg * Math.PI / 180 * (coarseStepDeg * Math.PI / 180))));
@@ -425,7 +449,7 @@ public static class EbsdRadonIndexer
                         double w = nw[k];
                         //260724Cl: 証拠飽和 (正側 ψ(z)=cap·tanh(z/cap)、負側 max(z,−1)) — 少数強リッジの支配抑制 (Codex 裁定 260724)。cap=0 で旧動作
                         //(視野隅の希薄線の過剰ペナルティを floor) //260725Cl (/simplify): 手書き分岐 → Saturate へ一元化 (厳密段と同一式)
-                        num += w * Saturate(map.SampleDilatedNearest(thF, rhoF) - mu0, sigma0, saturateCap);
+                        num += w * Saturate(dilatedMap.SampleNearest(thF, rhoF) - mu0, sigma0, saturateCap); //260725Cl: map.SampleDilatedNearest → 不変ビュー
                         wSum += w; w2Sum += w * w;
                     }
                     if (w2Sum <= 0) continue;
