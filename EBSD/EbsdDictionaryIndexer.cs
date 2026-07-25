@@ -40,7 +40,9 @@ public static class EbsdDictionaryIndexer
         double coarseStepDeg = 5, int maxCandidates = 10, int coarseKeep = 64, int refineKeep = 12,
         bool thoroughCoarse = false,
         Matrix3D[] properSymmetries = null,
-        System.Threading.CancellationToken cancel = default)
+        System.Threading.CancellationToken cancel = default,
+        //260725Cl 追加: 粗段の進捗 (0-1) を通知する。null で従来どおり無通知。ワーカースレッドから呼ばれるので受け手側でマーシャリングすること
+        Action<double> progress = null)
     {
         //260725Ch: ホットループへ入る前に公開APIの寸法・plane境界・探索個数を一度だけ検証
         ArgumentNullException.ThrowIfNull(mp);
@@ -92,6 +94,7 @@ public static class EbsdDictionaryIndexer
         int keepPerThread = Math.Max(64, coarseKeep * 4);
         var survivors = new List<(double S, int Di, int Pi)>();
         var lockObj = new object();
+        int coarseDone = 0; //260725Cl: 進捗通知用 (粗段が総時間の大半)
         var parallelOptions = new System.Threading.Tasks.ParallelOptions { CancellationToken = cancel }; //260725Ch: OCEをAggregateException化せず、TPL全ワーカーへ中止を伝播
         //260725Cl: square 格子は面内回転分解プロジェクション (球点毎に Lambert 極座標を 1 回計算、面内 120 回は sector 折り返しのみ —
         //3×3 積・sqrt・atan 全除去。Codex 裁定 260725)。hex 格子は従来 Project へフォールバック
@@ -158,6 +161,9 @@ public static class EbsdDictionaryIndexer
                     st.Local.Sort((a, b) => b.S.CompareTo(a.S));
                     st.Local.RemoveRange(keepPerThread, st.Local.Count - keepPerThread);
                 }
+                //260725Cl 追加: 進捗通知 (64 球点ごと。粗段が総時間の大半なので 0-0.9 を割り当て、残りは再スコア+NM)
+                if (progress != null && (System.Threading.Interlocked.Increment(ref coarseDone) & 63) == 0)
+                    progress(0.9 * coarseDone / nSphere);
                 return st;
             },
             st => { lock (lockObj) survivors.AddRange(st.Local); });
@@ -198,6 +204,7 @@ public static class EbsdDictionaryIndexer
             },
             _ => { });
         var top = rescored.OrderByDescending(t => t.S).Take(refineKeep).ToList();
+        progress?.Invoke(0.95); //260725Cl: 粗段 0.9 → 盆地再スコア完了
         #endregion
 
         #region ③精段: NelderMead 精密化 → misor NMS → 候補構築
@@ -221,6 +228,7 @@ public static class EbsdDictionaryIndexer
             },
             _ => { });
 
+        progress?.Invoke(1.0); //260725Cl: NM 精密化まで完了 (以降の候補構築は瞬時)
         var result = new List<EbsdOrientationCandidate>();
         foreach (var (s, r) in refined.OrderByDescending(t => t.S))
         {

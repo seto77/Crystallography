@@ -337,7 +337,9 @@ public static class EbsdRadonIndexer
         IEnumerable<Vector3D> kikuchiReflections, double waveLength = 0.00859,
         int maxCandidates = 10, double coarseStepDeg = 3, int maxNodes = DefaultMaxNodes, int coarseNodes = 20, //260725Cl: 90 → DefaultMaxNodes (ScoreOrientation と共有)
         double saturateCap = 0, double weightExponent = 0.5,
-        System.Threading.CancellationToken cancel = default)
+        System.Threading.CancellationToken cancel = default,
+        //260725Cl 追加: 粗探索の進捗 (0-1) を通知する。null で従来どおり無通知。ワーカースレッドから呼ばれるので受け手側でマーシャリングすること
+        Action<double> progress = null)
     {
         //260725Ch: 0候補指定が1候補を返す等の不明瞭な挙動と、除算・配列長の不正前提を入口で拒否
         ArgumentNullException.ThrowIfNull(map);
@@ -385,6 +387,7 @@ public static class EbsdRadonIndexer
 
         var survivors = new List<(double S, int Di, int Pi)>();
         var lockObj = new object();
+        int coarseDone = 0; //260725Cl: 進捗通知用 (粗探索が総時間の大半)
         const int keepPerMerge = 600;
         var parallelOptions = new System.Threading.Tasks.ParallelOptions { CancellationToken = cancel }; //260725Ch: 無効化された探索を全ワーカーで停止し、OCEをそのまま呼び出し側へ返す
 
@@ -464,6 +467,9 @@ public static class EbsdRadonIndexer
                     local.Sort((a, b) => b.S.CompareTo(a.S));
                     local.RemoveRange(keepPerMerge, local.Count - keepPerMerge);
                 }
+                //260725Cl 追加: 進捗通知 (64 球点ごと。粗探索を 0-0.9 に割り当て、残りは精密化)
+                if (progress != null && (System.Threading.Interlocked.Increment(ref coarseDone) & 63) == 0)
+                    progress(0.9 * coarseDone / nSphere);
                 return local;
             },
             local => { lock (lockObj) survivors.AddRange(local); });
