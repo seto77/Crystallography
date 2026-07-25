@@ -118,7 +118,10 @@ public static class EbsdIndexer
 
     /// <summary>
     /// バンド群から方位候補を探索する。
-    /// kikuchiReflections = Crystal.VectorOfG_KikuchiLine、waveLength = 電子波長 (Å)。
+    /// kikuchiReflections = Crystal.VectorOfG_KikuchiLine、waveLength = 電子波長 (**nm**)。
+    /// 260725Cl 訂正: doc が (Å) となっていたが実装は nm。根拠 = 既定値 0.00859 が 20 kV の λ[nm] であること、
+    /// 消費式 waveLength/(2·DValues[m]) の DValues が Vector3D.d (nm) であること、呼び出し側 (EbsdRadonIndexer.Index /
+    /// FormEBSD.Indexing) も nm を渡していること。Å を渡すと幅尤度 widthFactor が全バンドで頭打ちになり静かに劣化する。
     /// 返り値はスコア降順 (misorientation 3° 以内の重複は除去済み。対称等価は含まれ得る)。
     /// </summary>
     public static List<EbsdOrientationCandidate> Index(IReadOnlyList<EbsdBand> bands, EbsdDetectorGeometry geometry,
@@ -319,6 +322,15 @@ public static class EbsdIndexer
         return axis.Length < 1E-9
             ? (nHat.Z > 0 ? Matrix3D.IdentityMatrix : Matrix3D.Rot(new V3(1, 0, 0), Math.PI))
             : Matrix3D.Rot(axis.Normalized(), Math.Acos(Math.Clamp(nHat.Z, -1, 1)));
+    }
+
+    /// <summary>方位摂動 R' = Rot(ω̂,|ω|)·R0 (試料系左摂動、単位 deg)。260725Cl 追加 (/simplify):
+    /// EbsdDictionaryIndexer.Perturb / EbsdRadonIndexer.Perturb / FormEBSD.Indexing.PerturbRotation の 3 重複を統合 (式・演算順は旧実装と同一)</summary>
+    public static Matrix3D PerturbRotation(Matrix3D r0, double wxDeg, double wyDeg, double wzDeg)
+    {
+        double wx = wxDeg * Math.PI / 180, wy = wyDeg * Math.PI / 180, wz = wzDeg * Math.PI / 180;
+        double len = Math.Sqrt(wx * wx + wy * wy + wz * wz);
+        return len < 1E-12 ? r0 : Matrix3D.Rot(new V3(wx / len, wy / len, wz / len), len) * r0;
     }
 
     static int LowerBound(double[] arr, double v)

@@ -43,20 +43,27 @@ public sealed class EbsdMonteCarloDistribution
         int gs2 = mp.GridSize * mp.GridSize;
         var pos = new float[gs2];
         var neg = new float[gs2];
+        //260725Cl (/simplify): 画素ループを並列化 (UI スレッド上で走るため。grid 512×320 スライスで 5000 万反復あり体感フリーズになる)。
+        //並列軸は画素 i のみ — スライス順の加算順序は不変なので結果はビット一致。旧: 逐次 for + 半球 2 要素の配列を毎スライス確保
+        void Accumulate(float[] dst, MasterPattern.Hemisphere hemi, int ei, int di, double wgt)
+        {
+            var p = mp.GetPlane(hemi, ei, di);
+            if (p == null || p.Length == 0) return;
+            var pPrev = di > 0 ? mp.GetPlane(hemi, ei, di - 1) : null;
+            bool hasPrev = pPrev is { Length: > 0 };
+            System.Threading.Tasks.Parallel.ForEach(System.Collections.Concurrent.Partitioner.Create(0, gs2), range =>
+            {
+                for (int i = range.Item1; i < range.Item2; i++)
+                    dst[i] += (float)(wgt * Math.Max(0, p[i] - (hasPrev ? pPrev[i] : 0))); //model 2 の differential 合成
+            });
+        }
         for (int ei = 0; ei < eLen; ei++)
             for (int di = 0; di < dLen; di++)
             {
                 double wgt = wG[ei * dLen + di];
                 if (wgt < 1E-15) continue;
-                foreach (var (dst, hemi) in new[] { (pos, MasterPattern.Hemisphere.PositiveZ), (neg, MasterPattern.Hemisphere.NegativeZ) })
-                {
-                    var p = mp.GetPlane(hemi, ei, di);
-                    if (p == null || p.Length == 0) continue;
-                    var pPrev = di > 0 ? mp.GetPlane(hemi, ei, di - 1) : null;
-                    bool hasPrev = pPrev is { Length: > 0 };
-                    for (int i = 0; i < gs2; i++)
-                        dst[i] += (float)(wgt * Math.Max(0, p[i] - (hasPrev ? pPrev[i] : 0))); //model 2 の differential 合成
-                }
+                Accumulate(pos, MasterPattern.Hemisphere.PositiveZ, ei, di, wgt);
+                Accumulate(neg, MasterPattern.Hemisphere.NegativeZ, ei, di, wgt);
             }
         return (pos, neg);
     }

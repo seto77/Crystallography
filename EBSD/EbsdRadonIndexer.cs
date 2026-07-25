@@ -1,4 +1,4 @@
-#region using
+﻿#region using
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -41,7 +41,10 @@ public sealed class EbsdRadonMap
         double tb = thetaDeg / ThetaStepDeg, rb = rhoWork + RhoOffset;
         int t0 = (int)Math.Floor(tb);
         double ft = tb - t0;
-        if (t0 >= NTheta) { t0 = 0; } //数値誤差ガード (θ≈180)
+        // 数値誤差ガード (θ≈180)。⚠260725Cl 注記: ここは ρ 反転をしていないので、到達すると継ぎ目の規約を破る。
+        // 現状 Fold 後は thetaDeg < 180 が厳密に成り立ち ThetaStepDeg=0.5 (2 の冪) で除算も厳密なため tb < NTheta = 到達不能。
+        // θ 刻みを 0.5 以外 (例 0.3) に変える場合は SampleDilatedNearest と同じ「t -= NTheta; r = NRho-1-r」を入れること。
+        if (t0 >= NTheta) { t0 = 0; }
         int t1 = t0 + 1;
         bool wrap = t1 >= NTheta; //θ=180 の継ぎ目: 行 0 を ρ 反転で参照
         if (wrap) t1 = 0;
@@ -101,8 +104,12 @@ public sealed class EbsdRadonMap
     {
         (thetaDeg, rhoWork) = Fold(thetaDeg, rhoWork);
         int t = (int)Math.Round(thetaDeg / ThetaStepDeg);
-        if (t >= NTheta) t = 0;
         int r = (int)Math.Round(rhoWork) + RhoOffset;
+        // 260725Cl 修正: θ=180° の継ぎ目で ρ 反転が抜けていた (Fold 後の θ∈[179.75,180) が t=NTheta へ丸め上がり、
+        // 行 0 を ρ 反転なしで読んでいた = 無関係なセルを参照して予測線が「証拠なし」に過小評価される)。
+        // Sample (l.46-57) と BuildDilated (l.89-90) は同じ継ぎ目で NRho-1-r と正しく反転しており、本メソッドだけが規約から外れていた。
+        // 旧: if (t >= NTheta) t = 0;  (ρ 反転なし)
+        if (t >= NTheta) { t -= NTheta; r = NRho - 1 - r; } // NRho = 2·RhoOffset+1 なので NRho-1-r が ρ→−ρ に対応
         return (uint)r < (uint)NRho ? dilated[t * NRho + r] : 0;
     }
 }
@@ -152,10 +159,36 @@ public static class EbsdRadonIndexer
     }
     #endregion
 
+    /// <summary>反射カタログの既定サイズ。260725Cl 追加 (/simplify): Index と ScoreOrientation で別々のリテラル 90 だったため、
+    /// 片方だけ変えると探索とガードが別カタログで採点する脆さがあった</summary>
+    public const int DefaultMaxNodes = 90;
+
     /// <summary>単一方位の Radon 証拠 z スコア (Index の厳密スコアと同一評価)。ZNCC 精密化のガードや複合ランクの再評価用。260724Cl 追加</summary>
     public static double ScoreOrientation(EbsdRadonMap map, EbsdDetectorGeometry geometry, IEnumerable<Vector3D> kikuchiReflections,
-        Matrix3D rotation, double saturateCap = 0, double weightExponent = 0.5, int maxNodes = 90)
+        Matrix3D rotation, double saturateCap = 0, double weightExponent = 0.5, int maxNodes = DefaultMaxNodes)
         => ScoreExactCore(map, geometry, BuildCatalog(kikuchiReflections, maxNodes, weightExponent), rotation, saturateCap);
+
+    /// <summary>複数方位をまとめて採点する (カタログ構築が 1 回で済む)。単発 ScoreOrientation と同一のスコア。260725Cl 追加 (/simplify):
+    /// 辞書経路は候補 10 件+精密化ガード 2 回で同じカタログを 12 回組み直していた (BuildCatalog は全反射 × 線形探索の O(N·K))</summary>
+    public static double[] ScoreOrientations(EbsdRadonMap map, EbsdDetectorGeometry geometry, IEnumerable<Vector3D> kikuchiReflections,
+        IReadOnlyList<Matrix3D> rotations, double saturateCap = 0, double weightExponent = 0.5, int maxNodes = DefaultMaxNodes)
+    {
+        var catalog = BuildCatalog(kikuchiReflections, maxNodes, weightExponent);
+        var scores = new double[rotations.Count];
+        for (int i = 0; i < rotations.Count; i++)
+            scores[i] = ScoreExactCore(map, geometry, catalog, rotations[i], saturateCap);
+        return scores;
+    }
+
+    /// <summary>証拠飽和 ψ: 正側は cap·tanh(z/cap) で飽和 (少数強リッジの支配を抑制)、負側は max(z,−1) で floor。
+    /// cap=0 のときは旧動作 (飽和なし・max(e,−σ₀))。260725Cl 追加 (/simplify): 粗段と厳密段に同一式が手書きで 2 つあり、
+    /// 片方だけ調整すると探索とガードのスコア定義がずれる構造だった</summary>
+    static double Saturate(double e, double sigma0, double saturateCap)
+    {
+        if (saturateCap <= 0) return Math.Max(e, -sigma0);
+        double zk = e / sigma0;
+        return zk > 0 ? saturateCap * Math.Tanh(zk / saturateCap) : Math.Max(zk, -1);
+    }
 
     /// <summary>厳密スコア本体 (bilinear・全ノード・非膨張マップ・近接予測線の排他込み)。
     /// Index 内クロージャからインライン実装を抽出 (公開 ScoreOrientation と共用)。260724Cl 追加</summary>
@@ -183,15 +216,8 @@ public static class EbsdRadonIndexer
                 if (SameLine(thF, rhoF, exTh[j], exRho[j], 2, 5)) { dup = true; break; }
             if (dup) continue; //二重得点防止 (強度降順 → 先着優先)
             exTh[nAcc] = thF; exRho[nAcc] = rhoF; nAcc++;
-            double e = map.Sample(thF, rhoF) - mu0;
-            //証拠飽和 (粗探索と同一の ψ)。cap=0 で旧動作
-            if (saturateCap > 0)
-            {
-                double zk = e / sigma0;
-                num += node.Weight * (zk > 0 ? saturateCap * Math.Tanh(zk / saturateCap) : Math.Max(zk, -1));
-            }
-            else
-                num += node.Weight * Math.Max(e, -sigma0);
+            //証拠飽和 (粗探索と同一の ψ)。cap=0 で旧動作 //260725Cl (/simplify): 手書き分岐 → Saturate へ一元化
+            num += node.Weight * Saturate(map.Sample(thF, rhoF) - mu0, sigma0, saturateCap);
             wSum += node.Weight; w2Sum += node.Weight * node.Weight;
         }
         if (w2Sum <= 0 || wSum * wSum / w2Sum < 4) return double.MinValue;
@@ -219,7 +245,7 @@ public static class EbsdRadonIndexer
 
     /// <summary>回転 rot の下で検出器と交差する予測バンド中心線 (native px 係数 A·col+B·row+C=0、正規化済) を返す。検証・診断用。260724Cl 追加</summary>
     public static List<(double A, double B, double C, (int H, int K, int L) Hkl, double Weight)> PredictLines(
-        Matrix3D rot, EbsdDetectorGeometry geometry, IEnumerable<Vector3D> kikuchiReflections, int maxNodes = 90)
+        Matrix3D rot, EbsdDetectorGeometry geometry, IEnumerable<Vector3D> kikuchiReflections, int maxNodes = DefaultMaxNodes)
     {
         var lines = new List<(double, double, double, (int, int, int), double)>();
         foreach (var node in BuildCatalog(kikuchiReflections, maxNodes))
@@ -282,7 +308,7 @@ public static class EbsdRadonIndexer
     //    System.Threading.CancellationToken cancel = default)
     public static List<EbsdOrientationCandidate> Index(EbsdRadonMap map, EbsdDetectorGeometry geometry,
         IEnumerable<Vector3D> kikuchiReflections, double waveLength = 0.00859,
-        int maxCandidates = 10, double coarseStepDeg = 3, int maxNodes = 90, int coarseNodes = 20,
+        int maxCandidates = 10, double coarseStepDeg = 3, int maxNodes = DefaultMaxNodes, int coarseNodes = 20, //260725Cl: 90 → DefaultMaxNodes (ScoreOrientation と共有)
         double saturateCap = 0, double weightExponent = 0.5,
         System.Threading.CancellationToken cancel = default)
     {
@@ -374,16 +400,10 @@ public static class EbsdRadonIndexer
                             if (SameLine(thF, rhoF, accTh[j], accRho[j], 2, 5)) { dup = true; break; }
                         if (dup) continue;
                         accTh[nAcc] = thF; accRho[nAcc] = rhoF; nAcc++;
-                        double e = map.SampleDilatedNearest(thF, rhoF) - mu0;
                         double w = nw[k];
                         //260724Cl: 証拠飽和 (正側 ψ(z)=cap·tanh(z/cap)、負側 max(z,−1)) — 少数強リッジの支配抑制 (Codex 裁定 260724)。cap=0 で旧動作
-                        if (saturateCap > 0)
-                        {
-                            double zk = e / sigma0;
-                            num += w * (zk > 0 ? saturateCap * Math.Tanh(zk / saturateCap) : Math.Max(zk, -1));
-                        }
-                        else
-                            num += w * Math.Max(e, -sigma0); //視野隅の希薄線の過剰ペナルティを floor
+                        //(視野隅の希薄線の過剰ペナルティを floor) //260725Cl (/simplify): 手書き分岐 → Saturate へ一元化 (厳密段と同一式)
+                        num += w * Saturate(map.SampleDilatedNearest(thF, rhoF) - mu0, sigma0, saturateCap);
                         wSum += w; w2Sum += w * w;
                     }
                     if (w2Sum <= 0) continue;
@@ -444,22 +464,18 @@ public static class EbsdRadonIndexer
         //260724Cl: 本体を ScoreExactCore へ抽出 (公開 ScoreOrientation と共用のため。旧インライン実装は ScoreExactCore に移動)
         double ScoreExact(Matrix3D rot) => ScoreExactCore(map, geometry, catalog, rot, saturateCap);
 
-        static Matrix3D Perturb(Matrix3D r0, double wxDeg, double wyDeg, double wzDeg)
-        {
-            double wx = wxDeg * Math.PI / 180, wy = wyDeg * Math.PI / 180, wz = wzDeg * Math.PI / 180;
-            double len = Math.Sqrt(wx * wx + wy * wy + wz * wz);
-            return len < 1E-12 ? r0 : Matrix3D.Rot(new V3(wx / len, wy / len, wz / len), len) * r0;
-        }
+        //260725Cl (/simplify): ローカル Perturb は EbsdIndexer.PerturbRotation へ統合 (EbsdDictionaryIndexer・FormEBSD.Indexing と 3 重複していた。式・演算順は同一)
+        //旧: static Matrix3D Perturb(Matrix3D r0, double wxDeg, double wyDeg, double wzDeg) { ...(ω を rad 化し Rot(ω̂,|ω|)·r0)... }
 
         var refined = new (double S, Matrix3D R)[seeds.Count];
         System.Threading.Tasks.Parallel.For(0, seeds.Count, si =>
         {
             cancel.ThrowIfCancellationRequested();
             var r0 = seeds[si].R;
-            double Obj(double[] v) => -ScoreExact(Perturb(r0, v[0], v[1], v[2]));
+            double Obj(double[] v) => -ScoreExact(EbsdIndexer.PerturbRotation(r0, v[0], v[1], v[2]));
             var (b1, _, _) = EbsdPatternScorer.NelderMead(Obj, [0, 0, 0], [coarseStepDeg * 0.5, coarseStepDeg * 0.5, coarseStepDeg * 0.5], 120);
             var (b2, v2, _) = EbsdPatternScorer.NelderMead(Obj, b1, [0.4, 0.4, 0.4], 80);
-            refined[si] = (-v2, Perturb(r0, b2[0], b2[1], b2[2]));
+            refined[si] = (-v2, EbsdIndexer.PerturbRotation(r0, b2[0], b2[1], b2[2]));
         });
         #endregion
 

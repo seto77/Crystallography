@@ -1,4 +1,4 @@
-#region using
+﻿#region using
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -10,10 +10,15 @@ namespace Crystallography;
 /// <summary>
 /// Primary indexing: MasterPattern から方位空間を網羅する辞書パターンを on-the-fly 生成し、実測との ZNCC 総当たりで方位候補を得る。260724Cl 追加。
 /// 3 段構成 (Codex 裁定 260724):
-///   ①粗段 = coarseStepDeg (既定 5°) の Fibonacci 球 × 面内回転を 48px・軽量前処理 (log → box DoG 5/21 → tanh → 正規化、両側同一) で総当たり
-///     → 方位距離 NMS で上位 coarseKeep 盆地を抽出
+///   ①粗段 = coarseStepDeg の Fibonacci 球 × 面内回転を総当たり → 方位距離 NMS で上位 coarseKeep 盆地を抽出
 ///   ②中段 = 上位を 96px・完全 RobustPreprocess で再スコア → 上位 refineKeep
 ///   ③精段 = NelderMead 精密化 (±coarseStep/2 → 0.5°) → misor NMS → 上位 maxCandidates
+/// 粗段の前処理は thoroughCoarse で切り替わる。**GUI は常に thoroughCoarse=true (96px 完全 RobustPreprocessFast、刻み 3°)** —
+/// 既定の false (48px・軽量前処理 log → box DoG 5/21 → tanh → 正規化) はコントラストの弱い画像で正解盆地を落とすため実運用では使わず、
+/// 検証ハーネスの対照条件としてのみ残している (260725Cl 追記: 出荷経路と既定値が食い違う点を明示)。
+/// ⚠thoroughCoarse=true では refFine/fw/fh/projFine が①粗段と同一 (下の参照共有・projector 共有) なので、
+/// ②中段は「別解像度での再スコア」ではなく **同一パイプでの再採点** になる (実質は面内分解 ProjectInPlane と
+/// 通常 Project の投影経路差の再確認)。①②を別段の解像度として読むと誤解するので注記する。260725Cl
 /// 辞書は検出器幾何 (PC/DD) に依存するため事前保存せず毎回生成する (実行 ~数秒)。
 /// 返り値の Score は NaN — Radon z の付与と複合ランクへの接続は呼び出し側の統合層 (FormEBSD.Indexing) が行う。
 /// </summary>
@@ -53,7 +58,9 @@ public static class EbsdDictionaryIndexer
         if (thoroughCoarse) { refFine = refCoarse; fw = cw; fh = ch; } //thorough は全段 96px Fast で参照共有
         else (refFine, fw, fh) = EbsdPatternScorer.PrepareReferenceRobust(expValues, expWidth, expHeight, 96);
         var projCoarse = new EbsdPatternProjector(geometry, cw, ch);
-        var projFine = new EbsdPatternProjector(geometry, fw, fh);
+        //260725Cl (/simplify): thorough では粗段と精密段が同一寸法 (上の refFine 共有と同条件) なので projector も共有する
+        //(旧: 常に new。96px の ray キャッシュ (Vector3d × w·h) を二重に構築・保持していた)
+        var projFine = (fw == cw && fh == ch) ? projCoarse : new EbsdPatternProjector(geometry, fw, fh);
 
         #region ①粗段: Fibonacci 球 × 面内回転の総当たり (方位単位並列・バッファ再利用)
         int nSphere = Math.Max(64, (int)(4 * Math.PI / (coarseStepDeg * Math.PI / 180 * (coarseStepDeg * Math.PI / 180))));
@@ -81,8 +88,14 @@ public static class EbsdDictionaryIndexer
                 //260725Cl (/simplify): fundamental-zone 判定を trace 閉形式化 — Rz は z 回転 (E13=E23=E31=E32=0, E33=1) なので
                 //trace(Rz·M) = Rz.E11·M.E11 + Rz.E12·M.E21 + Rz.E21·M.E12 + Rz.E22·M.E22 + M.E33。R=r0·Rz の trace は循環置換で M=r0、
                 //R·S の trace は trace(Rz·S·r0) で M=S·r0 (di 毎に 1 回だけ行列積)。同値集合 {R·S} の trace 最大代表のみ評価する
-                //(最小回転角代表。monoclinic C2b では E11+E33>=0 と等価)。trace 同値の境界 (±1E-12) は両側評価の安全側 —
-                //Fibonacci 格子は R·S を厳密には含まないため片側破棄は被覆穴の危険 (Codex 裁定 260725)。
+                //(最小回転角代表。monoclinic C2b では E11+E33>=0 と等価)。
+                //⚠260725Cl 訂正: 旧コメントは「±1E-12 の tie 帯が被覆穴の保険」としていたが、これは実態と合わない。
+                //trace = 1+2cos θ なので粗刻み 3° の半刻みで trace は最大 2·sin θ·0.026 ≈ 0.05 動く = 境界のどちら側かは
+                //1E-12 より 10 桁大きい誤差で決まる。1E-12 は厳密な対称不変点しか救わない。実際に被覆を保っているのは
+                //「軌道の相手 R·S の近傍にも別の格子点があり、そちらが代表として残る」機構で、粗段の方位誤差が最悪 1 刻み分
+                //余分に乗り得る (NM の初期シンプレックス ±1.5° が通常は吸収)。これが FormEBSD.Indexing で FZ 除外を
+                //proper 回転 1 個 (C2) に限定している理由の数値的裏付け。恒久対策は tie 帯を格子由来の変動幅へ広げること (未実施 —
+                //C2 は現行 1E-12 で候補一致を A/B 検証済みなので、検証済み構成を崩さない)。
                 //旧: pi 毎に rot=r0*rzTable[pi] と IsFundamental 内の r*s を Matrix3D 生成 (~55万×2 個の Gen0 圧) → 全廃
                 double r0A = r0.E11, r0B = r0.E21, r0C = r0.E12, r0D = r0.E22, r0E = r0.E33;
                 for (int si = 0; si < symCount; si++)
@@ -177,12 +190,12 @@ public static class EbsdDictionaryIndexer
                 var r0 = top[ti].R;
                 double Obj(double[] v)
                 {
-                    projFine.Project(mp, Perturb(r0, v[0], v[1], v[2]), posPlane, negPlane, st.Buf, parallel: false);
+                    projFine.Project(mp, EbsdIndexer.PerturbRotation(r0, v[0], v[1], v[2]), posPlane, negPlane, st.Buf, parallel: false);
                     return -ScoreFine(st.Buf, st.Sc);
                 }
                 var (b1, _, _) = EbsdPatternScorer.NelderMead(Obj, [0, 0, 0], [coarseStepDeg * 0.5, coarseStepDeg * 0.5, coarseStepDeg * 0.5], 120);
                 var (b2, v2, _) = EbsdPatternScorer.NelderMead(Obj, b1, [0.5, 0.5, 0.5], 80);
-                refined[ti] = (-v2, Perturb(r0, b2[0], b2[1], b2[2]));
+                refined[ti] = (-v2, EbsdIndexer.PerturbRotation(r0, b2[0], b2[1], b2[2]));
                 return st;
             },
             _ => { });
@@ -221,7 +234,8 @@ public static class EbsdDictionaryIndexer
     {
         var ops = TSubgroupFinder.GetExpandedOps(crystal.SymmetrySeriesNumber);
         var a = crystal.MatrixReal;
-        var ai = a.Inverse();
+        // var ai = a.Inverse(); //260725Cl 変更前: 同一値の再計算
+        var ai = crystal.MatrixInverse; //260725Cl 変更 (/simplify): SetAxis がキャッシュ済みの実格子逆行列を使う
         var result = new List<Matrix3D>();
         foreach (var op in ops)
         {
@@ -301,11 +315,6 @@ public static class EbsdDictionaryIndexer
         return dst;
     }
 
-    /// <summary>方位摂動 R'=Rot(ω̂,|ω|)·R0 (deg)。EbsdRadonIndexer.Perturb と同一規約</summary>
-    static Matrix3D Perturb(Matrix3D r0, double wxDeg, double wyDeg, double wzDeg)
-    {
-        double wx = wxDeg * Math.PI / 180, wy = wyDeg * Math.PI / 180, wz = wzDeg * Math.PI / 180;
-        double len = Math.Sqrt(wx * wx + wy * wy + wz * wz);
-        return len < 1E-12 ? r0 : Matrix3D.Rot(new V3(wx / len, wy / len, wz / len), len) * r0;
-    }
+    //260725Cl (/simplify): Perturb は EbsdIndexer.PerturbRotation へ統合 (EbsdRadonIndexer・FormEBSD.Indexing と 3 重複していた。式・演算順は同一)
+    //旧: static Matrix3D Perturb(Matrix3D r0, double wxDeg, double wyDeg, double wzDeg) { ...(ω を rad 化し Rot(ω̂,|ω|)·r0)... }
 }
