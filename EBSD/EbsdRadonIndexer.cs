@@ -148,6 +148,7 @@ public static class EbsdRadonIndexer
             else if (g.RelativeIntensity > nodes[found].I) nodes[found] = (nodes[found].Dir, g.RelativeIntensity, (g.Index.h, g.Index.k, g.Index.l));
         }
         var top = nodes.OrderByDescending(n => n.I).Take(maxNodes).ToList();
+        if (top.Count == 0) return []; //260725Ch: 空の反射列を ScoreOrientation/Index に渡しても median の ElementAt で落とさない
         if (Math.Abs(weightExponent - 0.5) > 1E-9) //260724Cl: 弱化重み (I/medI)^exp を [0.5, 2] クリップ
         {
             double medI = Math.Max(top.Select(n => n.I).OrderBy(v => v).ElementAt(top.Count / 2), 1E-12);
@@ -198,7 +199,9 @@ public static class EbsdRadonIndexer
         var ey = geometry.Ey; var center = geometry.Center;
         double mu0 = map.Mu0, sigma0 = map.Sigma0;
         double rhoLimit = map.RhoOffset - 2;
-        var exTh = new double[catalog.Count]; var exRho = new double[catalog.Count];
+        //var exTh = new double[catalog.Count]; var exRho = new double[catalog.Count]; //260725Ch 変更前: NM の全評価で小配列 2 本を確保
+        Span<double> exTh = catalog.Count <= 256 ? stackalloc double[catalog.Count] : new double[catalog.Count]; //260725Ch
+        Span<double> exRho = catalog.Count <= 256 ? stackalloc double[catalog.Count] : new double[catalog.Count];
         double num = 0, wSum = 0, w2Sum = 0;
         int nAcc = 0;
         foreach (var node in catalog)
@@ -312,6 +315,18 @@ public static class EbsdRadonIndexer
         double saturateCap = 0, double weightExponent = 0.5,
         System.Threading.CancellationToken cancel = default)
     {
+        //260725Ch: 0候補指定が1候補を返す等の不明瞭な挙動と、除算・配列長の不正前提を入口で拒否
+        ArgumentNullException.ThrowIfNull(map);
+        ArgumentNullException.ThrowIfNull(geometry);
+        ArgumentNullException.ThrowIfNull(kikuchiReflections);
+        if (!(waveLength > 0) || !double.IsFinite(waveLength)) throw new ArgumentOutOfRangeException(nameof(waveLength));
+        if (maxCandidates <= 0) throw new ArgumentOutOfRangeException(nameof(maxCandidates));
+        if (!(coarseStepDeg > 0) || !double.IsFinite(coarseStepDeg)) throw new ArgumentOutOfRangeException(nameof(coarseStepDeg));
+        if (maxNodes < 4) throw new ArgumentOutOfRangeException(nameof(maxNodes));
+        if (coarseNodes <= 0) throw new ArgumentOutOfRangeException(nameof(coarseNodes));
+        if (!(saturateCap >= 0) || !double.IsFinite(saturateCap)) throw new ArgumentOutOfRangeException(nameof(saturateCap));
+        if (!(weightExponent > 0) || !double.IsFinite(weightExponent)) throw new ArgumentOutOfRangeException(nameof(weightExponent));
+
         var refl = kikuchiReflections as IReadOnlyList<Vector3D> ?? [.. kikuchiReflections]; //260724Cl: 多重列挙防止
         var catalog = BuildCatalog(refl, maxNodes, weightExponent);
         if (catalog.Count < 4) return [];
@@ -328,6 +343,10 @@ public static class EbsdRadonIndexer
         int nSphere = Math.Max(64, (int)(4 * Math.PI / (coarseStepDeg * Math.PI / 180 * (coarseStepDeg * Math.PI / 180))));
         int nPhi = Math.Max(16, (int)(360 / coarseStepDeg));
         double golden = Math.PI * (3 - Math.Sqrt(5));
+        //260725Ch: 同じ面内角の SinCos を全 Fibonacci 球点で再計算しない (3° 刻みでは約 55 万回→120 回)
+        var sinPhi = new double[nPhi];
+        var cosPhi = new double[nPhi];
+        for (int pi = 0; pi < nPhi; pi++) (sinPhi[pi], cosPhi[pi]) = Math.SinCos(pi * 2 * Math.PI / nPhi);
 
         //ノード方向を配列化 (SoA)
         int nc = coarseCatalog.Count;
@@ -343,8 +362,10 @@ public static class EbsdRadonIndexer
         var survivors = new List<(double S, int Di, int Pi)>();
         var lockObj = new object();
         const int keepPerMerge = 600;
+        var parallelOptions = new System.Threading.Tasks.ParallelOptions { CancellationToken = cancel }; //260725Ch: 無効化された探索を全ワーカーで停止し、OCEをそのまま呼び出し側へ返す
 
-        System.Threading.Tasks.Parallel.For(0, nSphere,
+        //System.Threading.Tasks.Parallel.For(0, nSphere, //260725Ch 変更前
+        System.Threading.Tasks.Parallel.For(0, nSphere, parallelOptions, //260725Ch
             () => new List<(double S, int Di, int Pi)>(),
             (di, _, local) =>
             {
@@ -375,7 +396,8 @@ public static class EbsdRadonIndexer
                 var accTh = new double[nc]; var accRho = new double[nc]; //260724Cl: 同一評価内の予測線排他バッファ (強度降順に採用)
                 for (int pi = 0; pi < nPhi; pi++)
                 {
-                    var (sinP, cosP) = Math.SinCos(pi * 2 * Math.PI / nPhi);
+                    //var (sinP, cosP) = Math.SinCos(pi * 2 * Math.PI / nPhi); //260725Ch 変更前
+                    double sinP = sinPhi[pi], cosP = cosPhi[pi]; //260725Ch
                     double num = 0, den = 0, wSum = 0, w2Sum = 0;
                     int nAcc = 0;
                     for (int k = 0; k < nc; k++)
@@ -468,7 +490,8 @@ public static class EbsdRadonIndexer
         //旧: static Matrix3D Perturb(Matrix3D r0, double wxDeg, double wyDeg, double wzDeg) { ...(ω を rad 化し Rot(ω̂,|ω|)·r0)... }
 
         var refined = new (double S, Matrix3D R)[seeds.Count];
-        System.Threading.Tasks.Parallel.For(0, seeds.Count, si =>
+        //System.Threading.Tasks.Parallel.For(0, seeds.Count, si => //260725Ch 変更前
+        System.Threading.Tasks.Parallel.For(0, seeds.Count, parallelOptions, si => //260725Ch
         {
             cancel.ThrowIfCancellationRequested();
             var r0 = seeds[si].R;

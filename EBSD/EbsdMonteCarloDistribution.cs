@@ -27,6 +27,8 @@ public sealed class EbsdMonteCarloDistribution
     /// </summary>
     public (float[] Pos, float[] Neg) ComposeGlobalWeightedPattern(MasterPattern mp)
     {
+        ArgumentNullException.ThrowIfNull(mp); //260725Ch: null を後段の不明瞭な参照例外にしない
+        if (mp.GridSize < 2) throw new ArgumentException("MasterPattern.GridSize must be at least 2.", nameof(mp)); //260725Ch
         int eLen = mp.Energies.Length, dLen = mp.Depths.Length;
         var wG = new double[eLen * dLen];
         for (int bi = 0; bi < BinCount; bi++)
@@ -40,9 +42,11 @@ public sealed class EbsdMonteCarloDistribution
         foreach (var v in wG) wSum += v;
         if (wSum > 0) for (int k = 0; k < wG.Length; k++) wG[k] /= wSum;
 
-        int gs2 = mp.GridSize * mp.GridSize;
+        //int gs2 = mp.GridSize * mp.GridSize; //260725Ch 変更前
+        int gs2 = checked(mp.GridSize * mp.GridSize); //260725Ch
         var pos = new float[gs2];
         var neg = new float[gs2];
+        /*260725Ch 変更前: energy×depth×hemisphere の各スライスで Parallel.ForEach を起動して同期していた
         //260725Cl (/simplify): 画素ループを並列化 (UI スレッド上で走るため。grid 512×320 スライスで 5000 万反復あり体感フリーズになる)。
         //並列軸は画素 i のみ — スライス順の加算順序は不変なので結果はビット一致。旧: 逐次 for + 半球 2 要素の配列を毎スライス確保
         void Accumulate(float[] dst, MasterPattern.Hemisphere hemi, int ei, int di, double wgt)
@@ -65,7 +69,53 @@ public sealed class EbsdMonteCarloDistribution
                 Accumulate(pos, MasterPattern.Hemisphere.PositiveZ, ei, di, wgt);
                 Accumulate(neg, MasterPattern.Hemisphere.NegativeZ, ei, di, wgt);
             }
+        */
+        //260725Ch: 有効スライス参照を先に集め、半球ごとに Parallel.ForEach を 1 回だけ起動する。
+        //各画素内のスライス加算順と float 丸めは旧実装と同じなので結果はビット一致する。
+        var posSlices = new List<(float[] Plane, float[] Previous, double Weight)>();
+        var negSlices = new List<(float[] Plane, float[] Previous, double Weight)>();
+        for (int ei = 0; ei < eLen; ei++)
+            for (int di = 0; di < dLen; di++)
+            {
+                double wgt = wG[ei * dLen + di];
+                if (wgt < 1E-15) continue;
+                var p = mp.GetPlane(MasterPattern.Hemisphere.PositiveZ, ei, di);
+                //if (p is { Length: > 0 }) //260725Ch 変更前: 短い非空 plane は並列画素ループ内で範囲外になった
+                if (p != null && p.Length >= gs2) //260725Ch
+                {
+                    var previous = di > 0 ? mp.GetPlane(MasterPattern.Hemisphere.PositiveZ, ei, di - 1) : null;
+                    posSlices.Add((p, previous != null && previous.Length >= gs2 ? previous : null, wgt));
+                }
+                p = mp.GetPlane(MasterPattern.Hemisphere.NegativeZ, ei, di);
+                if (p != null && p.Length >= gs2) //260725Ch
+                {
+                    var previous = di > 0 ? mp.GetPlane(MasterPattern.Hemisphere.NegativeZ, ei, di - 1) : null;
+                    negSlices.Add((p, previous != null && previous.Length >= gs2 ? previous : null, wgt));
+                }
+            }
+
+        Accumulate(pos, posSlices);
+        Accumulate(neg, negSlices);
         return (pos, neg);
+
+        static void Accumulate(float[] destination, List<(float[] Plane, float[] Previous, double Weight)> sliceList)
+        {
+            if (sliceList.Count == 0) return;
+            var slices = sliceList.ToArray();
+            System.Threading.Tasks.Parallel.ForEach(System.Collections.Concurrent.Partitioner.Create(0, destination.Length), range =>
+            {
+                for (int i = range.Item1; i < range.Item2; i++)
+                {
+                    float value = destination[i];
+                    for (int si = 0; si < slices.Length; si++)
+                    {
+                        var (plane, previous, weight) = slices[si];
+                        value += (float)(weight * Math.Max(0, plane[i] - (previous == null ? 0 : previous[i])));
+                    }
+                    destination[i] = value;
+                }
+            });
+        }
     }
 
     // 260718Cl: smpTilt 引数を削除。BSE の Vec は MC 内で試料傾斜を織り込んで lab 座標系で追跡され、検出器 (detY/detZ/detTilt も lab 座標系) への投影に試料傾斜は不要 (Codex 検証済: 適用すると二重計上)。
@@ -80,6 +130,16 @@ public sealed class EbsdMonteCarloDistribution
         double[] energies, double[] depths,
         int binCount = 8)
     {
+        //260725Ch: 下流の bilinear bin 補間は常に隣接 2×2 ビンと非空の energy/depth 軸を前提とする
+        ArgumentNullException.ThrowIfNull(bseList);
+        ArgumentNullException.ThrowIfNull(energies);
+        ArgumentNullException.ThrowIfNull(depths);
+        if (binCount < 2) throw new ArgumentOutOfRangeException(nameof(binCount), "binCount must be at least 2.");
+        if (energies.Length == 0) throw new ArgumentException("At least one energy is required.", nameof(energies));
+        if (depths.Length == 0) throw new ArgumentException("At least one depth is required.", nameof(depths));
+        if (!(halfWidth > 0) || !double.IsFinite(halfWidth)) throw new ArgumentOutOfRangeException(nameof(halfWidth));
+        if (!(halfHeight > 0) || !double.IsFinite(halfHeight)) throw new ArgumentOutOfRangeException(nameof(halfHeight));
+
         BinCount = binCount;
 
         var (sinDet, cosDet) = Math.SinCos(detTilt);

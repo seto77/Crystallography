@@ -42,6 +42,23 @@ public static class EbsdDictionaryIndexer
         Matrix3D[] properSymmetries = null,
         System.Threading.CancellationToken cancel = default)
     {
+        //260725Ch: ホットループへ入る前に公開APIの寸法・plane境界・探索個数を一度だけ検証
+        ArgumentNullException.ThrowIfNull(mp);
+        ArgumentNullException.ThrowIfNull(geometry);
+        ArgumentNullException.ThrowIfNull(expValues);
+        if (expWidth <= 0) throw new ArgumentOutOfRangeException(nameof(expWidth));
+        if (expHeight <= 0) throw new ArgumentOutOfRangeException(nameof(expHeight));
+        if (expValues.Length != checked(expWidth * expHeight)) throw new ArgumentException("expValues.Length must equal expWidth * expHeight.", nameof(expValues));
+        if (!(coarseStepDeg > 0) || !double.IsFinite(coarseStepDeg)) throw new ArgumentOutOfRangeException(nameof(coarseStepDeg));
+        if (maxCandidates <= 0) throw new ArgumentOutOfRangeException(nameof(maxCandidates));
+        if (coarseKeep <= 0) throw new ArgumentOutOfRangeException(nameof(coarseKeep));
+        if (refineKeep <= 0) throw new ArgumentOutOfRangeException(nameof(refineKeep));
+        if (mp.GridSize < 2) throw new ArgumentException("MasterPattern.GridSize must be at least 2.", nameof(mp));
+        int requiredPlaneLength = checked(mp.GridSize * mp.GridSize);
+        if (posPlane == null && negPlane == null) throw new ArgumentException("At least one master-pattern hemisphere is required.");
+        if (posPlane != null && posPlane.Length < requiredPlaneLength) throw new ArgumentException("The positive master-pattern plane is too short.", nameof(posPlane));
+        if (negPlane != null && negPlane.Length < requiredPlaneLength) throw new ArgumentException("The negative master-pattern plane is too short.", nameof(negPlane));
+
         //実測参照を 2 解像度で準備 (粗段 = 軽量前処理 48px または完全 robust 96px / 精密段 = 完全 robust 96px)。
         //260724Cl 高速化: thorough では全段 RobustPreprocessFast (box3 近似・scratch 再利用・逐次 — 入れ子 Parallel 競合と GC 圧を解消)。
         //両側同一の原則に従い参照側も Fast パイプで生成する
@@ -75,11 +92,13 @@ public static class EbsdDictionaryIndexer
         int keepPerThread = Math.Max(64, coarseKeep * 4);
         var survivors = new List<(double S, int Di, int Pi)>();
         var lockObj = new object();
+        var parallelOptions = new System.Threading.Tasks.ParallelOptions { CancellationToken = cancel }; //260725Ch: OCEをAggregateException化せず、TPL全ワーカーへ中止を伝播
         //260725Cl: square 格子は面内回転分解プロジェクション (球点毎に Lambert 極座標を 1 回計算、面内 120 回は sector 折り返しのみ —
         //3×3 積・sqrt・atan 全除去。Codex 裁定 260725)。hex 格子は従来 Project へフォールバック
         bool inPlaneFast = mp.GridType != MasterPattern.Types.Hexagonal;
         int symCount = properSymmetries?.Length ?? 0;
-        System.Threading.Tasks.Parallel.For(0, nSphere,
+        //System.Threading.Tasks.Parallel.For(0, nSphere, //260725Ch 変更前
+        System.Threading.Tasks.Parallel.For(0, nSphere, parallelOptions, //260725Ch
             () => new CoarseScratch(cw * ch, inPlaneFast, symCount), //260725Cl (/simplify): 旧 9 要素 ValueTuple の名前付き化
             (di, _, st) =>
             {
@@ -167,7 +186,8 @@ public static class EbsdDictionaryIndexer
             return EbsdPatternScorer.Zncc(refFine, EbsdPatternScorer.RobustPreprocess(buf, fw, fh));
         }
         var rescored = new (double S, Matrix3D R)[basins.Count];
-        System.Threading.Tasks.Parallel.For(0, basins.Count,
+        //System.Threading.Tasks.Parallel.For(0, basins.Count, //260725Ch 変更前
+        System.Threading.Tasks.Parallel.For(0, basins.Count, parallelOptions, //260725Ch
             () => (Buf: new double[fw * fh], Sc: new[] { new double[fw * fh], new double[fw * fh], new double[fw * fh] }),
             (bi, _, st) =>
             {
@@ -182,7 +202,8 @@ public static class EbsdDictionaryIndexer
 
         #region ③精段: NelderMead 精密化 → misor NMS → 候補構築
         var refined = new (double S, Matrix3D R)[top.Count];
-        System.Threading.Tasks.Parallel.For(0, top.Count,
+        //System.Threading.Tasks.Parallel.For(0, top.Count, //260725Ch 変更前
+        System.Threading.Tasks.Parallel.For(0, top.Count, parallelOptions, //260725Ch
             () => (Buf: new double[fw * fh], Sc: new[] { new double[fw * fh], new double[fw * fh], new double[fw * fh] }),
             (ti, _, st) =>
             {

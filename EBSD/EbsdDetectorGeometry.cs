@@ -43,6 +43,17 @@ public sealed class EbsdDetectorGeometry
 
     public EbsdDetectorGeometry(double detTilt, double detX, double detY, double detZ, double pixelSize, int widthPx, int heightPx, double xMirror, double sampleTilt)
     {
+        //260725Ch: 公開スナップショットの除算・正規化前提を入口で保証し、後段のNaN連鎖を明瞭な引数例外にする
+        if (!double.IsFinite(detTilt)) throw new ArgumentOutOfRangeException(nameof(detTilt));
+        if (!double.IsFinite(detX)) throw new ArgumentOutOfRangeException(nameof(detX));
+        if (!double.IsFinite(detY)) throw new ArgumentOutOfRangeException(nameof(detY));
+        if (!double.IsFinite(detZ)) throw new ArgumentOutOfRangeException(nameof(detZ));
+        if (!(pixelSize > 0) || !double.IsFinite(pixelSize)) throw new ArgumentOutOfRangeException(nameof(pixelSize));
+        if (widthPx <= 0) throw new ArgumentOutOfRangeException(nameof(widthPx));
+        if (heightPx <= 0) throw new ArgumentOutOfRangeException(nameof(heightPx));
+        if (xMirror is not (1.0 or -1.0)) throw new ArgumentOutOfRangeException(nameof(xMirror), "xMirror must be +1 or -1.");
+        if (!double.IsFinite(sampleTilt)) throw new ArgumentOutOfRangeException(nameof(sampleTilt));
+
         DetTilt = detTilt; DetX = detX; DetY = detY; DetZ = detZ;
         PixelSize = pixelSize; WidthPx = widthPx; HeightPx = heightPx;
         XMirror = xMirror; SampleTilt = sampleTilt;
@@ -53,6 +64,7 @@ public sealed class EbsdDetectorGeometry
         Ey = new V3(0, -cosDet, -sinDet);
         Normal = new V3(0, sinDet, -cosDet);
         CameraLength = Math.Abs(V3.Dot(Normal, Center));
+        if (CameraLength < 1E-12) throw new ArgumentException("The detector plane must not pass through the sample origin."); //260725Ch: LineToLabNormal等の0除算を防ぐ
         (sinSmp, cosSmp) = Math.SinCos(sampleTilt);
     }
 

@@ -22,8 +22,12 @@ public sealed class EbsdPatternProjector
     /// <summary>geometry のピクセルグリッドを rasterW×rasterH に縮小したグリッドで視線をキャッシュする</summary>
     public EbsdPatternProjector(EbsdDetectorGeometry geometry, int rasterW, int rasterH)
     {
+        ArgumentNullException.ThrowIfNull(geometry); //260725Ch: 負寸法・積overflowを配列確保より前に明瞭化
+        if (rasterW <= 0) throw new ArgumentOutOfRangeException(nameof(rasterW));
+        if (rasterH <= 0) throw new ArgumentOutOfRangeException(nameof(rasterH));
         Width = rasterW; Height = rasterH;
-        raysSample = new V3[rasterW * rasterH];
+        //raysSample = new V3[rasterW * rasterH]; //260725Ch 変更前
+        raysSample = new V3[checked(rasterW * rasterH)]; //260725Ch
         //260724Cl (/simplify): 各ピクセル独立なので並列化 (幾何較正では評価毎に本コンストラクタが再構築されるため、逐次だと 1 Project 相当の逐次コストが毎評価に乗っていた)
         Parallel.For(0, rasterH, r =>
         {
@@ -34,6 +38,19 @@ public sealed class EbsdPatternProjector
                 raysSample[r * rasterW + c] = geometry.PixelToSampleDirection(col, row);
             }
         });
+    }
+
+    /// <summary>公開投影APIの共通バッファ前提をホット画素ループの外で一度だけ検証する。260725Ch 追加</summary>
+    int ValidateProjectionBuffers(MasterPattern mp, float[] posPlane, float[] negPlane, double[] output)
+    {
+        ArgumentNullException.ThrowIfNull(mp);
+        ArgumentNullException.ThrowIfNull(output);
+        if (output.Length != raysSample.Length) throw new ArgumentException("output.Length must equal Width * Height.", nameof(output));
+        if (mp.GridSize < 2) throw new ArgumentException("MasterPattern.GridSize must be at least 2.", nameof(mp));
+        int requiredPlaneLength = checked(mp.GridSize * mp.GridSize);
+        if (posPlane != null && posPlane.Length < requiredPlaneLength) throw new ArgumentException("The positive master-pattern plane is too short.", nameof(posPlane));
+        if (negPlane != null && negPlane.Length < requiredPlaneLength) throw new ArgumentException("The negative master-pattern plane is too short.", nameof(negPlane));
+        return mp.GridSize;
     }
 
     #region 面内回転分解プロジェクション (辞書総当たり用、square 格子専用) 260725Cl 追加
@@ -47,6 +64,11 @@ public sealed class EbsdPatternProjector
     //260725Cl (/simplify) 変更: theta0 (方位角そのもの) → q0=theta0·2/π を保存し、ProjectInPlane の毎画素 /halfPi 除算を除去
     public void PrepareSpherePoint(Matrix3D r0, double[] q0, double[] ra, double[] rb, bool[] neg)
     {
+        ArgumentNullException.ThrowIfNull(q0); ArgumentNullException.ThrowIfNull(ra); //260725Ch: 公開作業バッファの短配列を画素ループ前に拒否
+        ArgumentNullException.ThrowIfNull(rb); ArgumentNullException.ThrowIfNull(neg);
+        int requiredLength = raysSample.Length;
+        if (q0.Length < requiredLength || ra.Length < requiredLength || rb.Length < requiredLength || neg.Length < requiredLength)
+            throw new ArgumentException("Projection scratch buffers must be at least Width * Height elements long.");
         var ri = r0.Inverse();
         double sqrtPiHalf = Math.Sqrt(Math.PI) / 2, twoOverPi = 2 / Math.PI;
         for (int i = 0; i < raysSample.Length; i++)
@@ -73,7 +95,11 @@ public sealed class EbsdPatternProjector
     //(バイリニアは同一演算のインライン、step 除算は invStep 乗算化)。片半球欠けのみ従来形。数値は ULP 差 (等価群 — dict 回帰で検証)
     public void ProjectInPlane(MasterPattern mp, double phi, float[] posPlane, float[] negPlane, double[] q0, double[] ra, double[] rb, bool[] neg, double[] output)
     {
-        int gs = mp.GridSize;
+        int gs = ValidateProjectionBuffers(mp, posPlane, negPlane, output); //260725Ch
+        ArgumentNullException.ThrowIfNull(q0); ArgumentNullException.ThrowIfNull(ra); //260725Ch
+        ArgumentNullException.ThrowIfNull(rb); ArgumentNullException.ThrowIfNull(neg);
+        if (q0.Length < output.Length || ra.Length < output.Length || rb.Length < output.Length || neg.Length < output.Length)
+            throw new ArgumentException("Projection scratch buffers must be at least Width * Height elements long.");
         bool hasPos = posPlane is { Length: > 0 }, hasNeg = negPlane is { Length: > 0 };
         const double halfPi = Math.PI / 2;
         double pc = phi * (2 / Math.PI);
@@ -131,8 +157,9 @@ public sealed class EbsdPatternProjector
     //260724Cl 旧: public void Project(MasterPattern mp, Matrix3D rotation, float[] posPlane, float[] negPlane, double[] output)
     public void Project(MasterPattern mp, Matrix3D rotation, float[] posPlane, float[] negPlane, double[] output, bool parallel = true)
     {
+        //int gs = mp.GridSize; //260725Ch 変更前
+        int gs = ValidateProjectionBuffers(mp, posPlane, negPlane, output); //260725Ch
         var ri = rotation.Inverse();
-        int gs = mp.GridSize;
         bool isHex = mp.GridType == MasterPattern.Types.Hexagonal;
         bool hasPos = posPlane is { Length: > 0 }, hasNeg = negPlane is { Length: > 0 };
 
@@ -455,7 +482,9 @@ public static class EbsdPatternScorer
         {
             simplex[i] = (double[])start.Clone();
             if (i > 0) simplex[i][i - 1] += step[i - 1];
-            values[i] = objective(simplex[i]); eval++;
+            //values[i] = objective(simplex[i]); eval++; //260725Ch 変更前: 初期 simplex だけ NaN を +∞ へ正規化していなかった
+            double initialValue = objective(simplex[i]); eval++; //260725Ch
+            values[i] = double.IsNaN(initialValue) ? double.PositiveInfinity : initialValue;
         }
         while (eval < maxEval)
         {

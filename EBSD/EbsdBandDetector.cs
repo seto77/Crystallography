@@ -1,5 +1,6 @@
 #region using
 using System;
+using System.Buffers; //260725Ch: GaussianBlur の大きな一時配列を例外安全に再利用
 using System.Collections.Generic;
 using System.Linq;
 #endregion
@@ -76,6 +77,15 @@ public static class EbsdBandDetector
     /// <summary>前処理 (縮小→背景除算→正規化) → Radon → butterfly バンク → θ 平滑までを計算する。260724Cl 追加 (Detect 前段の切り出し)</summary>
     static RadonCore ComputeCore(double[] values, int width, int height, bool[] valid, EbsdBandDetectionTiming timing)
     {
+        //260725Ch: 公開 Detect/ComputeRadonMap から不正な寸法が入ったとき、並列ループ内の分かりにくい範囲外例外や NaN 連鎖にしない
+        ArgumentNullException.ThrowIfNull(values);
+        if (width <= 0) throw new ArgumentOutOfRangeException(nameof(width));
+        if (height <= 0) throw new ArgumentOutOfRangeException(nameof(height));
+        if (values.Length != checked(width * height))
+            throw new ArgumentException("values.Length must equal width * height.", nameof(values));
+        if (valid != null && valid.Length != values.Length)
+            throw new ArgumentException("valid.Length must equal values.Length.", nameof(valid));
+
         var sw = System.Diagnostics.Stopwatch.StartNew();
 
         #region 前処理: 縮小 → 背景除算 → 正規化
@@ -124,13 +134,20 @@ public static class EbsdBandDetector
         sw.Restart();
         var response = new double[nTheta * nRho];
         var bestWidth = new double[nTheta * nRho];
+        //260725Ch: ButterflyKernel のキャッシュ lock を θ 行×幅バンク回数だけ踏まないよう、並列領域の前で一度だけ解決する
+        //var kernels = new double[WidthBank.Length][]; //260725Ch 変更前: ComputeCoreごとに参照配列を再確保
+        //for (int wi = 0; wi < WidthBank.Length; wi++) kernels[wi] = ButterflyKernel(WidthBank[wi]);
+        var kernels = WidthKernels; //260725Ch: 固定WidthBankのカーネル参照も型初期化時に一度だけ構築
         System.Threading.Tasks.Parallel.For(0, nTheta, it =>
         {
-            var row = new double[nRho];
-            Array.Copy(radon, it * nRho, row, 0, nRho);
-            foreach (var bw in WidthBank)
+            //var row = new double[nRho]; //260725Ch 変更前: θ 行ごとに配列を確保して radon から全コピー
+            //Array.Copy(radon, it * nRho, row, 0, nRho);
+            int rowOffset = it * nRho; //260725Ch: 元配列の行を直接参照して 360 回の確保・コピーを除去
+            //foreach (var bw in WidthBank) //260725Ch 変更前: 各反復で ButterflyKernel の lock 付きキャッシュ検索
+            for (int wi = 0; wi < WidthBank.Length; wi++)
             {
-                var kernel = ButterflyKernel(bw);
+                double bw = WidthBank[wi];
+                var kernel = kernels[wi]; //260725Ch
                 int half = kernel.Length / 2;
                 for (int ir = 0; ir < nRho; ir++)
                 {
@@ -138,12 +155,14 @@ public static class EbsdBandDetector
                     for (int k = -half; k <= half; k++)
                     {
                         int j = ir + k;
-                        if ((uint)j < (uint)nRho) s += row[j] * kernel[k + half];
+                        //if ((uint)j < (uint)nRho) s += row[j] * kernel[k + half]; //260725Ch 変更前
+                        if ((uint)j < (uint)nRho) s += radon[rowOffset + j] * kernel[k + half]; //260725Ch
                     }
                     //260724Cl: |s| 最大の応答を「符号付き」で保持。明バンド=正応答、暗バンド (deficiency) =負応答。
                     //符号を捨てる (旧 |s| 化) と、zero-mean カーネルが明バンド両脇に作る負のサイドローブ (振幅~50%) が
                     //独立ピークに昇格し「1 バンドに 2-3 本」の偽線が出る。符号はサイドローブ抑制 NMS (異符号判定) に使う。
-                    if (Math.Abs(s) > Math.Abs(response[it * nRho + ir])) { response[it * nRho + ir] = s; bestWidth[it * nRho + ir] = bw; }
+                    //if (Math.Abs(s) > Math.Abs(response[it * nRho + ir])) { response[it * nRho + ir] = s; bestWidth[it * nRho + ir] = bw; } //260725Ch 変更前
+                    if (Math.Abs(s) > Math.Abs(response[rowOffset + ir])) { response[rowOffset + ir] = s; bestWidth[rowOffset + ir] = bw; } //260725Ch
                 }
             }
         });
@@ -193,10 +212,9 @@ public static class EbsdBandDetector
         var core = ComputeCore(values, width, height, valid, timing);
         var abs = new double[core.Smoothed.Length];
         for (int i = 0; i < abs.Length; i++) abs[i] = Math.Abs(core.Smoothed[i]);
-        var sorted = (double[])abs.Clone();
-        Array.Sort(sorted);
-        double median = sorted[sorted.Length / 2];
-        double mad = sorted.Select(v => Math.Abs(v - median)).OrderBy(v => v).ElementAt(sorted.Length / 2);
+        //var sorted = (double[])abs.Clone(); Array.Sort(sorted); double median = sorted[sorted.Length / 2]; //260725Ch 変更前
+        //double mad = sorted.Select(v => Math.Abs(v - median)).OrderBy(v => v).ElementAt(sorted.Length / 2);
+        var (median, mad) = MedianAndMad(abs); //260725Ch: 同じ scratch を median と MAD の2回のソートに再利用
         return new EbsdRadonMap
         {
             Abs = abs, NTheta = core.NTheta, NRho = core.NRho, RhoOffset = core.RhoOffset,
@@ -224,10 +242,9 @@ public static class EbsdBandDetector
         //260724Cl: 閾値・極大判定は |smoothed| で行い (明暗両極性)、符号はピーク属性として保持する
         var absSmoothed = new double[smoothed.Length];
         for (int i = 0; i < smoothed.Length; i++) absSmoothed[i] = Math.Abs(smoothed[i]);
-        var sorted = (double[])absSmoothed.Clone();
-        Array.Sort(sorted);
-        double median = sorted[sorted.Length / 2];
-        double mad = sorted.Select(v => Math.Abs(v - median)).OrderBy(v => v).ElementAt(sorted.Length / 2);
+        //var sorted = (double[])absSmoothed.Clone(); Array.Sort(sorted); double median = sorted[sorted.Length / 2]; //260725Ch 変更前
+        //double mad = sorted.Select(v => Math.Abs(v - median)).OrderBy(v => v).ElementAt(sorted.Length / 2);
+        var (median, mad) = MedianAndMad(absSmoothed); //260725Ch
         if (mad < 1E-12) mad = 1E-12;
         double threshold = median + 4.5 * mad;
 
@@ -385,6 +402,17 @@ public static class EbsdBandDetector
         return (uint)ir < (uint)nRho ? map[it * nRho + ir] : 0;
     }
 
+    /// <summary>値の median と MAD を、1 本の scratch 配列を再利用して求める。260725Ch 追加</summary>
+    static (double Median, double Mad) MedianAndMad(double[] values)
+    {
+        var scratch = (double[])values.Clone();
+        Array.Sort(scratch);
+        double median = scratch[scratch.Length / 2];
+        for (int i = 0; i < scratch.Length; i++) scratch[i] = Math.Abs(values[i] - median);
+        Array.Sort(scratch);
+        return (median, scratch[scratch.Length / 2]);
+    }
+
     /// <summary>直線 (法線角 θ、距離 ρ、画像中心基準) に沿った線積分 sum/√N (bilinear、1px ステップ)</summary>
     static double LineIntegral(double[] img, bool[] valid, int w, int h, double cx, double cy, double cosT, double sinT, double rho)
     {
@@ -413,6 +441,7 @@ public static class EbsdBandDetector
     {
         t0 = double.MinValue; t1 = double.MaxValue;
         //Liang-Barsky (境界 0..w-1, 0..h-1)
+        /*260725Ch 変更前: LineIntegral ごと (通常 13 万回以上) に 4 要素タプル配列を確保していた
         foreach (var (p, q) in new[] { (-dx, px - 0.0), (dx, w - 1.0 - px), (-dy, py - 0.0), (dy, h - 1.0 - py) })
         {
             if (Math.Abs(p) < 1E-12) { if (q < 0) return false; }
@@ -423,11 +452,36 @@ public static class EbsdBandDetector
                 else { if (r < t0) return false; if (r < t1) t1 = r; }
             }
         }
+        */
+        //260725Ch: 4 境界を直接評価し、ホットループのヒープ確保をゼロにする
+        if (!ClipBoundary(-dx, px, ref t0, ref t1)
+            || !ClipBoundary(dx, w - 1.0 - px, ref t0, ref t1)
+            || !ClipBoundary(-dy, py, ref t0, ref t1)
+            || !ClipBoundary(dy, h - 1.0 - py, ref t0, ref t1))
+            return false;
         return t1 > t0;
+
+        static bool ClipBoundary(double p, double q, ref double lower, ref double upper)
+        {
+            if (Math.Abs(p) < 1E-12) return q >= 0;
+            double r = q / p;
+            if (p < 0)
+            {
+                if (r > upper) return false;
+                if (r > lower) lower = r;
+            }
+            else
+            {
+                if (r < lower) return false;
+                if (r < upper) upper = r;
+            }
+            return true;
+        }
     }
 
     /// <summary>butterfly 1D カーネル K_w(t)=G_σ(t) − ½G_σ(t−w/2) − ½G_σ(t+w/2)、σ=max(0.75, 0.12w)。平均0・L2=1 に正規化</summary>
     static readonly Dictionary<double, double[]> kernelCache = [];
+    static readonly double[][] WidthKernels = [.. WidthBank.Select(ButterflyKernel)]; //260725Ch: kernelCache初期化後に固定バンクを一括解決
     static double[] ButterflyKernel(double w)
     {
         lock (kernelCache)
@@ -821,39 +875,52 @@ public static class EbsdBandDetector
         var kernel = new double[2 * half + 1];
         for (int i = -half; i <= half; i++) kernel[i + half] = Gauss(i, sigma);
 
-        var tmp = new double[w * h]; var tmpW = new double[w * h];
-        System.Threading.Tasks.Parallel.For(0, h, y =>
+        //var tmp = new double[w * h]; var tmpW = new double[w * h]; //260725Ch 変更前: 呼び出しごとに大配列 2 本を確保
+        int length = checked(w * h);
+        var tmp = ArrayPool<double>.Shared.Rent(length); //260725Ch
+        double[] tmpW = null; //260725Ch: 2本目のRent自体が失敗しても1本目をfinallyで返す
+        try
         {
-            for (int x = 0; x < w; x++)
+            tmpW = ArrayPool<double>.Shared.Rent(length); //260725Ch
+            System.Threading.Tasks.Parallel.For(0, h, y =>
             {
-                double s = 0, wsum = 0;
-                for (int k = -half; k <= half; k++)
+                for (int x = 0; x < w; x++)
                 {
-                    int xx = x + k;
-                    if ((uint)xx >= (uint)w) continue;
-                    int i = y * w + xx;
-                    if (!valid[i]) continue;
-                    s += src[i] * kernel[k + half]; wsum += kernel[k + half];
+                    double s = 0, wsum = 0;
+                    for (int k = -half; k <= half; k++)
+                    {
+                        int xx = x + k;
+                        if ((uint)xx >= (uint)w) continue;
+                        int i = y * w + xx;
+                        if (!valid[i]) continue;
+                        s += src[i] * kernel[k + half]; wsum += kernel[k + half];
+                    }
+                    tmp[y * w + x] = s; tmpW[y * w + x] = wsum;
                 }
-                tmp[y * w + x] = s; tmpW[y * w + x] = wsum;
-            }
-        });
-        var dst = new double[w * h];
-        System.Threading.Tasks.Parallel.For(0, h, y =>
+            });
+            var dst = new double[length];
+            System.Threading.Tasks.Parallel.For(0, h, y =>
+            {
+                for (int x = 0; x < w; x++)
+                {
+                    double s = 0, wsum = 0;
+                    for (int k = -half; k <= half; k++)
+                    {
+                        int yy = y + k;
+                        if ((uint)yy >= (uint)h) continue;
+                        s += tmp[yy * w + x] * kernel[k + half]; wsum += tmpW[yy * w + x] * kernel[k + half];
+                    }
+                    dst[y * w + x] = wsum > 1E-12 ? s / wsum : 0;
+                }
+            });
+            return dst;
+        }
+        finally
         {
-            for (int x = 0; x < w; x++)
-            {
-                double s = 0, wsum = 0;
-                for (int k = -half; k <= half; k++)
-                {
-                    int yy = y + k;
-                    if ((uint)yy >= (uint)h) continue;
-                    s += tmp[yy * w + x] * kernel[k + half]; wsum += tmpW[yy * w + x] * kernel[k + half];
-                }
-                dst[y * w + x] = wsum > 1E-12 ? s / wsum : 0;
-            }
-        });
-        return dst;
+            //260725Ch: Parallel.For が例外終了しても、全ワーカー停止後に必ずプールへ返す
+            ArrayPool<double>.Shared.Return(tmp);
+            if (tmpW != null) ArrayPool<double>.Shared.Return(tmpW); //260725Ch: 2本目のRent失敗時はnull
+        }
     }
 
     static void Normalize(double[] img, bool[] valid, double clipSigma)

@@ -129,6 +129,16 @@ public static class EbsdIndexer
         int maxCandidates = 10, int maxCatalogNodes = 120, double pairTolDeg = 1.5, double assignTolDeg = 2.5,
         System.Threading.CancellationToken cancel = default)
     {
+        //260725Ch: 公開探索入口の物理量・個数前提を、配列確保や三角関数計算より前に検証
+        ArgumentNullException.ThrowIfNull(bands);
+        ArgumentNullException.ThrowIfNull(geometry);
+        ArgumentNullException.ThrowIfNull(kikuchiReflections);
+        if (!(waveLength > 0) || !double.IsFinite(waveLength)) throw new ArgumentOutOfRangeException(nameof(waveLength));
+        if (maxCandidates <= 0) throw new ArgumentOutOfRangeException(nameof(maxCandidates));
+        if (maxCatalogNodes < 2) throw new ArgumentOutOfRangeException(nameof(maxCatalogNodes));
+        if (!(pairTolDeg > 0) || !double.IsFinite(pairTolDeg)) throw new ArgumentOutOfRangeException(nameof(pairTolDeg));
+        if (!(assignTolDeg > 0) || !double.IsFinite(assignTolDeg)) throw new ArgumentOutOfRangeException(nameof(assignTolDeg));
+
         var catalog = BuildCatalog(kikuchiReflections, maxCatalogNodes);
         var obs = BuildObservations(bands, geometry);
         if (catalog.Count < 2 || obs.Count < 2) return [];
@@ -137,6 +147,7 @@ public static class EbsdIndexer
         var predictedBuf = new V3[catalog.Count];
         var usedObsBuf = new bool[obs.Count];
         var usedNodeBuf = new bool[catalog.Count];
+        var assignPairBuf = new List<(int ObsIdx, int NodeIdx, double Ang)>(); //260725Ch: seed ごとの候補ペア List 確保を再利用
 
         #region 理論 pair-angle テーブル (角度昇順ソート)
         var pairs = new List<(int P, int Q, double Angle)>();
@@ -170,6 +181,7 @@ public static class EbsdIndexer
                 {
                     var (p, q, _) = pairAngles[k];
                     //(i→p, j→q) と (i→q, j→p) の両対応 × ± 符号 4 通り
+                    /*260725Ch 変更前: マッチした理論ペアごとに 2/2/2 要素の配列を三重に確保していた
                     foreach (var (np, nq) in new[] { (p, q), (q, p) })
                         foreach (var si in new[] { 1.0, -1.0 })
                             foreach (var sj in new[] { 1.0, -1.0 })
@@ -180,6 +192,22 @@ public static class EbsdIndexer
                                 if (cand != null && cand.AssignedBands >= 3)
                                     candidates.Add(cand);
                             }
+                    */
+                    //260725Ch: 列挙順 (+/+, +/-, -/+, -/-) は維持したまま固定長配列を整数ループへ置換
+                    for (int swap = 0; swap < 2; swap++)
+                    {
+                        int np = swap == 0 ? p : q, nq = swap == 0 ? q : p;
+                        for (int signMask = 0; signMask < 4; signMask++)
+                        {
+                            double si = (signMask & 2) == 0 ? 1.0 : -1.0;
+                            double sj = (signMask & 1) == 0 ? 1.0 : -1.0;
+                            var r = SolveWahba([(si * oi.NormalSample, catalog[np].Direction, oi.Weight), (sj * oj.NormalSample, catalog[nq].Direction, oj.Weight)]);
+                            if (r == null) continue;
+                            var cand = ScoreAndAssign(r, obs, catalog, waveLength, assignTol, predictedBuf, usedObsBuf, usedNodeBuf, assignPairBuf);
+                            if (cand != null && cand.AssignedBands >= 3)
+                                candidates.Add(cand);
+                        }
+                    }
                 }
             }
         #endregion
@@ -205,7 +233,8 @@ public static class EbsdIndexer
                 if (eqs.Count < 2) break;
                 var r = SolveWahba([.. eqs]);
                 if (r == null) break;
-                var next = ScoreAndAssign(r, obs, catalog, waveLength, assignTol, predictedBuf, usedObsBuf, usedNodeBuf);
+                //var next = ScoreAndAssign(r, obs, catalog, waveLength, assignTol, predictedBuf, usedObsBuf, usedNodeBuf); //260725Ch 変更前
+                var next = ScoreAndAssign(r, obs, catalog, waveLength, assignTol, predictedBuf, usedObsBuf, usedNodeBuf, assignPairBuf); //260725Ch
                 if (next == null || next.Score <= current.Score) break;
                 current = next;
             }
@@ -220,14 +249,16 @@ public static class EbsdIndexer
     /// <summary>回転 R (crystal→sample) の下で全バンドをカタログ方向へ一対一割当し、スコアを付ける。
     /// 260724Cl: 残差昇順の greedy 一対一 (複数バンドが同一理論面へ重複割当されて AssignedBands が水増しされるのを防ぐ。Codex 指摘)
     /// 260724Cl (/simplify) シグネチャ変更: predicted/usedObs/usedNode を呼び出し元バッファ受け取りに (旧: 呼び出し毎に new。数千回×catalog 長の GC churn)</summary>
+    //260725Ch シグネチャ変更: pairs を呼び出し元で再利用する。旧: (..., V3[] predicted, bool[] usedObs, bool[] usedNode)
     static EbsdOrientationCandidate ScoreAndAssign(Matrix3D rot, List<BandObservation> obs, List<PlaneNode> catalog, double waveLength, double assignTol,
-        V3[] predicted, bool[] usedObs, bool[] usedNode)
+        V3[] predicted, bool[] usedObs, bool[] usedNode, List<(int ObsIdx, int NodeIdx, double Ang)> pairs)
     {
         //角度残差 < assignTol の全 (バンド, ノード) ペアを列挙
         //260724Cl (/simplify): cos は単調なので dot 比較でゲートし、Acos は通過ペア (通常数個) のみに遅延 (旧: obs×catalog 全ペアで Acos → 指数付け時間の主因)
         double cosAssignTol = Math.Cos(assignTol);
         for (int ni = 0; ni < catalog.Count; ni++) predicted[ni] = rot * catalog[ni].Direction; //既存の Matrix3D×Vector3d 演算子
-        var pairs = new List<(int ObsIdx, int NodeIdx, double Ang)>();
+        //var pairs = new List<(int ObsIdx, int NodeIdx, double Ang)>(); //260725Ch 変更前: 数千 seed ごとに確保
+        pairs.Clear(); //260725Ch
         for (int oi = 0; oi < obs.Count; oi++)
             for (int ni = 0; ni < catalog.Count; ni++)
             {
