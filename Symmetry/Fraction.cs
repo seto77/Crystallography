@@ -2,7 +2,7 @@
 //
 // t-エンジン (TSubgroupFinder) は double + 1/24 格子スナップで足りたが、k- は指数 2/3/4 の分数
 // (1/2,1/3,1/4 等の組み合わせ) がスナップ許容に乗りにくく、HNF・格子一致検証・q_parent 判定を
-// 有理数で厳密に行う必要がある (計画書 §3.2「有理数演算」、.project-guidance/ReciPro_FormGroupRelations改修計画.md §4.2)。
+// 有理数で厳密に行う必要がある (計画書 §3.2「有理数演算」、.project-guidance/ReciPro/ReciPro_対称性機能.md §4.2)。
 //
 // 既約分数は BigInteger 分子分母 (long は HNF/Smith 標準形・isomorphic 系列展開で溢れ得るとの codex 指摘)。
 // 3×3 行列・3 ベクトルは既存 TSubgroupFinder の int[9]/double[9] 配列スタイルに合わせ、Fraction[9]/Fraction[3]

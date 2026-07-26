@@ -2,7 +2,7 @@
 // 目的: isomorphic (IIc) 部分群の「ITA A1 流の系列表示」に向けた基盤 — 現在の G-共役類別では P1 の
 // index≤8 で 108 行に爆発する (codex R7 で保留)。N_Aff(G) の軌道で束ねるための normalizer データ
 // (離散線形部の生成集合 + 純並進核) を、既存の型同定機構と同じ「self-identification」方式で計算する。
-// 設計は codex 相談 R9 で確定 (.project-guidance/ReciPro_FormGroupRelations改修計画.md):
+// 設計は codex 相談 R9 で確定 (.project-guidance/ReciPro/ReciPro_対称性機能.md):
 //   - n=(U,a) ∈ N_Aff(G) ⟺ U·A_i·U⁻¹ = A_{π(i)} (置換 π) かつ (I−A_{π(i)})·a ≡ t_{π(i)} − U·t_i (mod Z³) ∀i。
 //     この rectangular な連立合同式を Smith 標準形 (SNF) で解くのが中核 (可解性・particular 解・解核が同時に出る)。
 //   - 純並進核 K = {a | (I−A_i)a ∈ Z³ ∀i} ≅ (R/Z)^{3−r} × Π Z/d_i は同じソルバの斉次版。

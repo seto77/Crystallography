@@ -6,7 +6,7 @@
 // Step 4 (極大性判定 + GroupRelation(Kind=K) への配線、GetMaximalKSubgroups) まで実装済み。
 // 未対応: k- 専用の軌道分裂・New reflections (親胞 mod1 前提の t- 用ロジックは流用不可、
 // FormGroupRelations 側でガード済み)、isomorphic 系列の UI 分離表示 (Phase 2d)。
-// 詳細ロードマップ: .project-guidance/ReciPro_FormGroupRelations改修計画.md §4。
+// 詳細ロードマップ: .project-guidance/ReciPro/ReciPro_対称性機能.md §4。
 using System;
 using System.Collections.Concurrent; // 260708Cl 追加: 並列化に伴うキャッシュのスレッド安全化
 using System.Collections.Generic;
@@ -174,7 +174,7 @@ public static class KSubgroupFinder
 
     #region complement 列挙 (Step 2, Q=G/T′ 内の section)
     // 260705Cl 追加 (Phase 2c Step2)。設計は codex との3回目の相談で確定
-    // (.project-guidance/ReciPro_FormGroupRelations改修計画.md §4.1 item2)。
+    // (.project-guidance/ReciPro/ReciPro_対称性機能.md §4.1 item2)。
     //
     // 数学的な骨格: T′ (index n) を法とした有限商 Q=G/T′ (|Q|=m·n、m=|P_G|) の中で、
     // 並進部分群 T/T′ と交わらず点群へ全射する complement (H の実体、位数 m) を全数列挙する。
@@ -500,7 +500,7 @@ public static class KSubgroupFinder
 
     #region 型同定 (Step 3, IdentifyK)
     // 260705Cl 追加 (Phase 2c Step3)。設計は codex との4回目の相談で確定
-    // (.project-guidance/ReciPro_FormGroupRelations改修計画.md §4.1 item3)。
+    // (.project-guidance/ReciPro/ReciPro_対称性機能.md §4.1 item3)。
     //
     // P = S·U·C⁻¹ (x_parent = P·x_child + p の規約、既存 TSubgroupFinder と同じ)。
     //   S = B·H   … T′ の primitive 基底 (親慣用胞座標)
@@ -896,7 +896,7 @@ public static class KSubgroupFinder
 
     #region 極大 k-部分群 (Step 4, GroupRelation(Kind=K) への配線)
     // 260705Cl 追加 (Phase 2c Step4)。設計は codex との5回目の相談で確定
-    // (.project-guidance/ReciPro_FormGroupRelations改修計画.md §4.1 item5)。
+    // (.project-guidance/ReciPro/ReciPro_対称性機能.md §4.1 item5)。
     //
     // 極大性判定: index n の complement H (T′=hnf) が非極大なのは、T′⊊T″⊊T な point-group-invariant
     // 中間格子 T″ (index n の真の約数、index2 のみ既存 index=2/3/4 列挙内で該当し得る) が存在し、

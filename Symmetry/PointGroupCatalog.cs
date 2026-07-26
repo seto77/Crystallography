@@ -1,5 +1,5 @@
 // 260712Cl 新規: 32 の幾何結晶類 (結晶学的点群型) の包含 poset — FormGroupRelations の点群 Hasse 図タブの
-// データ層。設計は codex R12 で確定 (.project-guidance/ReciPro_FormGroupRelations改修計画.md):
+// データ層。設計は codex R12 で確定 (.project-guidance/ReciPro/ReciPro_対称性機能.md):
 //   - 型 B ≤ A ⟺ 「A 型のある代表点群が B 型に共役な部分群を含む」(型レベル包含は代表の取り方に依存しない)。
 //   - 32 ノード全体は束 (lattice) ではなく poset — 互いに比較不能な最大元が 2 つある (m-3m と 6/mmm)。
 //   - 被覆辺 (Hasse 辺) は 80 本。「具体的極大部分群を型へ畳んだ辺」と「全包含関係の transitive reduction」が

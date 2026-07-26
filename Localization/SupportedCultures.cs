@@ -5,7 +5,7 @@ using System.Threading;
 namespace Crystallography;
 
 // 260617Cl 追加: UI がサポートする言語 (カルチャ) の中央 allow-list。
-// 多言語化方針 (.project-guidance/ReciPro_多言語化方針.md, Phase 0) に基づき、
+// 多言語化方針 (.project-guidance/ReciPro/ReciPro_多言語UI保守.md, Phase 0) に基づき、
 // 従来 ja/en の二値前提で各所に散っていた判定
 //   - Reg.cs のカルチャ復元 (ja で始まれば ja / それ以外 en に潰していた)
 //   - FontHelper の UI フォント選択

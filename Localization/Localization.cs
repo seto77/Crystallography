@@ -4,7 +4,7 @@ namespace Crystallography;
 // VS Designer で Localizable=false のままハードコードされたラベル (resx の ApplyResources に乗らない文字列) を、
 // 実行時に現在の UI カルチャの訳へ差し替えるための N 言語版 Loc()。
 // 既存の FormBeamInteraction.cs の private Loc(en, ja) を 11 言語へ一般化したもの。
-// 用途・適用方針は .project-guidance/ReciPro_多言語化方針.md §3-B(方式②) を参照。
+// 用途・適用方針は .project-guidance/ReciPro/ReciPro_多言語UI保守.md §3-B(方式②) を参照。
 /// <summary>コード側に直書きした UI 文字列を、現在の UI カルチャの訳へ解決する localization ヘルパー。</summary>
 // 260624Cl リネーム: L10n → Localization (周辺の綴り命名 CodeLocalizer / SupportedCultures に統一)
 public static class Localization

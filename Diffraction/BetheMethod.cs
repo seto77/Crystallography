@@ -26,7 +26,7 @@ namespace Crystallography;
 
 /// <summary>
 /// 弾性電子散乱因子におけるイオンの扱い (260613Cl 追加)。
-/// 物理・文献的根拠は .project-guidance/ReciPro_イオン散乱因子設計.md を参照。
+/// 物理・文献的根拠は .project-guidance/ReciPro/ReciPro_イオン電子散乱因子.md を参照。
 /// </summary>
 public enum ElasticIonModel
 {
