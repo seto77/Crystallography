@@ -14,8 +14,8 @@ internal static class LocalizationData
             new("label1", "Text", "Target Atom", "対象原子", "Zielatom", "Atome cible", "Átomo objetivo", "Átomo-alvo", "Atomo bersaglio", "Целевой атом", "目标原子", "目標原子", "대상 원자"),
             new("atomLabelDataGridViewTextBoxColumn", "HeaderText", "Atom Label", "原子ラベル", "Atombezeichnung", "Étiquette de l'atome", "Etiqueta del átomo", "Rótulo do átomo", "Etichetta atomo", "Метка атома", "原子标签", "原子標籤", "원자 라벨"),
             new("lengthÅDataGridViewTextBoxColumn", "HeaderText", "Length (Å)", "長さ (Å)", "Länge (Å)", "Longueur (Å)", "Longitud (Å)", "Comprimento (Å)", "Lunghezza (Å)", "Длина (Å)", "长度 (Å)", "長度 (Å)", "길이 (Å)"),
-            new("label2", "Text", "Bar Wdth", "バー幅", "Balkenbr.", "Largeur barre", "Anch. barra", "Larg. da barra", "Largh. barra", "Ширина штриха", "条宽", "長條寬度", "막대 폭"),
-            new("label3", "Text", "Max. distance", "最大距離", "Max. Abstand", "Distance max.", "Distancia máx.", "Distância máx.", "Distanza max.", "Макс. расстояние", "最大距离", "最大距離", "최대 거리"),
+            new("numericUpDownWidth", "HeaderText", "Bar Width", "バー幅", "Balkenbr.", "Largeur barre", "Anch. barra", "Larg. da barra", "Largh. barra", "Ширина штриха", "条宽", "長條寬度", "막대 폭"),
+            new("numericUpDownMaxLength", "HeaderText", "Max. distance", "最大距離", "Max. Abstand", "Distance max.", "Distancia máx.", "Distância máx.", "Distanza max.", "Макс. расстояние", "最大距离", "最大距離", "최대 거리"),
         };
         reg["ChemicalFormulaInputControl"] = new Localization.Entry[]
         {
