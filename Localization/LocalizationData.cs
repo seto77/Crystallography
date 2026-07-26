@@ -177,8 +177,8 @@ internal static class LocalizationData
             new("label8", "Text", "File name: ", "ファイル名: ", "Dateiname: ", "Nom du fichier : ", "Nombre de archivo: ", "Nome do arquivo: ", "Nome file: ", "Имя файла: ", "文件名： ", "檔名: ", "파일 이름: "),
             new("groupBoxOutputParameters", "Text", "Output parameters", "出力パラメータ", "Ausgabeparameter", "Paramètres de sortie", "Parámetros de salida", "Parâmetros de saída", "Parametri di output", "Выходные параметры", "输出参数", "輸出參數", "출력 매개변수"),
             new("checkBoxOmegaStep", "Text", "Increment Ω", "増分 Ω", "Schrittweite Ω", "Incrément Ω", "Incremento Ω", "Incremento Ω", "Incremento Ω", "Шаг Ω", "增量 Ω", "增量 Ω", "증분 Ω"),
-            new("numericBoxDivisionOfRotationAngle", "HeaderText", "rotation speed", "回転速度", "Rotationsgeschwindigkeit", "vitesse de rotation", "velocidad de rotación", "velocidade de rotação", "velocità di rotazione", "скорость вращения", "转速", "旋轉速度", "회전 속도"),
-            new("numericBoxDivisionOfRotationAxis", "HeaderText", "Division of rotation axis", "回転軸の分割数", "Unterteilung der Rotationsachse", "Division de l'axe de rotation", "División del eje de rotación", "Divisão do eixo de rotação", "Divisione dell'asse di rotazione", "Деление оси вращения", "旋转轴分割数", "旋轉軸分割數", "회전축 분할"),
+            new("numericBoxDivisionOfRotationAngle", "HeaderText", "rotation speed", "回転速度", "Rotationsgeschw.", "vitesse de rotation", "vel. de rotación", "vel. de rotação", "velocità di rotazione", "скор. вращения", "转速", "旋轉速度", "회전 속도"),
+            new("numericBoxDivisionOfRotationAxis", "HeaderText", "Division of rotation axis", "回転軸の分割数", "Unterteil. Rotationsachse", "Division de l'axe de rotation", "División del eje de rotación", "Divisão do eixo de rotação", "Divisione asse rotazione", "Деление оси вращения", "旋转轴分割数", "旋轉軸分割數", "회전축 분할"),
             new("trackBarAdvancedTime", "HeaderText", "Time", "時間", "Zeit", "Temps", "Tiempo", "Tempo", "Tempo", "Время", "时间", "時間", "시간"),
             new("groupBoxCompressionModel", "Text", "Compression && rotation model", "圧縮・回転モデル", "Kompressions- && Rotationsmodell", "Modèle de compression && rotation", "Modelo de compresión y rotación", "Modelo de compressão && rotação", "Modello di compressione e rotazione", "Модель сжатия и поворота", "压缩与旋转模型", "壓縮與旋轉模型", "압축 && 회전 모델"),
             new("groupBoxSlipPlane", "Text", "Slip plane", "すべり面", "Gleitebene", "Plan de glissement", "Plano deslizam.", "Plano deslizam.", "Piano scorrim.", "Пл. скольжения", "滑移面", "滑移面", "슬립면"),
@@ -196,7 +196,7 @@ internal static class LocalizationData
             new("label23", "Text", "Scale 1", "スケール 1", "Maßstab 1", "Échelle 1", "Escala 1", "Escala 1", "Scala 1", "Масштаб 1", "比例 1", "比例尺 1", "배율 1"),
             new("label24", "Text", "Gradient", "スケール", "Gradient", "Dégradé", "Gradiente", "Gradiente", "Gradiente", "Градиент", "渐变", "漸層", "그라데이션"),
             new("sizeControl1", "HeaderText", "Detector", "検出器", "Detektor", "Détecteur", "Detector", "Detector", "Rivelatore", "Детектор", "探测器", "偵測器", "검출기"),
-            new("numericBoxFootX", "HeaderText", "Foot:  fx", "裾:  fx", "Fuß:  fx", "Pied :  fx", "Pie:  fx", "Pé:  fx", "Piede:  fx", "Подножие:  fx", "脚点:  fx", "落點:  fx", "푸트:  fx"),
+            new("numericBoxFootX", "HeaderText", "Foot:  fx", "裾:  fx", "Fuß:  fx", "Pied :  fx", "Pie:  fx", "Pé:  fx", "Piede:  fx", "Подн.:  fx", "脚点:  fx", "落點:  fx", "푸트:  fx"),
             new("numericBoxPixelSize", "HeaderText", "pix. size", "画素サイズ", "Pix.-Größe", "taille pix.", "tam. píx.", "tam. pix.", "dim. pixel", "разм. пикс.", "像素大小", "像素大小", "픽셀 크기"),
             new("checkBoxDetectorSizePosition", "Text", "Set detector area && overlapped image.", "検出器領域と重畳画像を設定", "Detektorbereich && überlagertes Bild festlegen.", "Définir la zone du détecteur && l'image superposée.", "Definir área del detector && imagen superpuesta.", "Definir área do detector && imagem sobreposta.", "Imposta area del rivelatore && immagine sovrapposta.", "Задать область детектора && наложенное изображение.", "设置探测器区域 && 叠加图像。", "設定偵測器區域與重疊影像。", "검출기 영역 && 중첩 이미지 설정."),
             new("numericBoxCameraLength2", "HeaderText", "Camera length 2", "カメラ長 2", "Kameralänge 2", "Longueur de caméra 2", "Longitud de cámara 2", "Comprimento da câmera 2", "Lunghezza camera 2", "Длина камеры 2", "相机长度 2", "相機長度 2", "카메라 길이 2"),
@@ -265,7 +265,7 @@ internal static class LocalizationData
             new("numericBoxInheritabiliry", "HeaderText", "Inheritability", "継承性", "Vererbbarkeit", "Héritabilité", "Heredabilidad", "Herdabilidade", "Ereditabilità", "Наследуемость", "可继承性", "可繼承性", "상속성"),
             new("checkBoxInheritabiliryThreshold", "Text", "Threshold", "閾値", "Schwellenwert", "Seuil", "Umbral", "Limiar", "Soglia", "Порог", "阈值", "閾值", "임계값"),
             new("checkBoxDirectionalDensityThreshold", "Text", "Threshold", "閾値", "Schwellenwert", "Seuil", "Umbral", "Limiar", "Soglia", "Порог", "阈值", "閾值", "임계값"),
-            new("numericBoxDirectionalDensity", "HeaderText", "Directional density", "方向密度", "Richtungsdichte", "Densité directionnelle", "Densidad direccional", "Densidade direcional", "Densità direzionale", "Плотность по направлениям", "方向密度", "方向密度", "방향 밀도"),
+            new("numericBoxDirectionalDensity", "HeaderText", "Directional density", "方向密度", "Richtungsdichte", "Densité directionnelle", "Densidad direccional", "Densidade direcional", "Densità direzionale", "Плотн. по направл.", "方向密度", "方向密度", "방향 밀도"),
             new("groupBoxFittingOptions", "Text", "Fitting option", "フィット設定", "Fit-Option", "Option d'ajust.", "Opc. de ajuste", "Opção de ajuste", "Opzioni di fitting", "Подгонка", "拟合选项", "擬合選項", "피팅 옵션"),
             new("checkBoxRefineConvergence", "Text", "Beam\r\n convergence", "ビームの\r\n収束角", "Strahl-\r\n konvergenz", "Convergence\r\n du faisceau", "Convergencia\r\n del haz", "Convergência\r\n do feixe", "Convergenza\r\n del fascio", "Сходимость\r\n пучка", "束\r\n 会聚", "電子束\r\n會聚", "빔\r\n 수렴"),
             new("checkBoxRefineStress", "Text", "Stress", "応力", "Spannung", "Contrainte", "Tensión", "Tensão", "Sforzo", "Напряжение", "应力", "應力", "응력"),
@@ -367,7 +367,7 @@ internal static class LocalizationData
             new("numericBoxPixelHeight", "HeaderText", "Height", "高さ", "Höhe", "Hauteur", "Altura", "Altura", "Altezza", "Высота", "高度", "高度", "높이"),
             new("numericBoxPixelSize", "HeaderText", "Pix. size", "画素サイズ", "Pix.-Größe", "Taille pix.", "Tam. píx.", "Tam. pix.", "Dim. pixel", "Разм. пикс.", "像素大小", "像素大小", "픽셀 크기"),
             new("groupBoxOpticalProperty", "Text", "Optical property", "光学的性質", "Optische Eigenschaft", "Propriété optique", "Propiedad óptica", "Propriedade óptica", "Proprietà ottica", "Оптические свойства", "光学性质", "光學性質", "광학적 성질"),
-            new("numericBoxDistance", "HeaderText", "Cameralength 2", "カメラ長 2", "Kameralänge 2", "Longueur de caméra 2", "Longitud de cámara 2", "Comprimento da câmera 2", "Lunghezza camera 2", "Длина камеры 2", "相机长度 2", "相機長度 2", "카메라 길이 2"),
+            new("numericBoxDistance", "HeaderText", "Camera length 2", "カメラ長 2", "Kameralänge 2", "Longueur de caméra 2", "Longitud de cámara 2", "Comprimento da câmera 2", "Lunghezza camera 2", "Длина камеры 2", "相机长度 2", "相機長度 2", "카메라 길이 2"),
         };
     }
 }
