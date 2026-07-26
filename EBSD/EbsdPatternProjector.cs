@@ -11,7 +11,7 @@ namespace Crystallography;
 /// <summary>
 /// MasterPattern から指定方位のシミュレーション EBSD パターンを検出器 native グリッド (縮小可) に投影する純関数プロジェクター。260724Cl 追加。
 /// 2 段構成: コンストラクタで検出器グリッドの視線 (試料系、方位非依存) をキャッシュし、Project で回転適用+Rosca-Lambert+補間のみ行う。
-/// 座標規約 (視線 = -P 方向) は EbsdDetectorGeometry.PixelToSampleDirection = FormEBSD.BuildEbsdLookupTable と同一。single slice 専用 (速度優先、§6.15)。
+/// 座標規約 (視線 = -P 方向) は EbsdDetectorGeometry.PixelToSampleDirection = EbsdPatternComposer.BuildLookupTable と同一。single slice 専用 (速度優先、§6.15)。
 /// </summary>
 public sealed class EbsdPatternProjector
 {
@@ -183,7 +183,7 @@ public sealed class EbsdPatternProjector
                 float[] plane = posZ ? posPlane : negPlane;
                 if (posZ ? !hasPos : !hasNeg) { output[i] = 0; continue; }
 
-                if (isHex) //六方格子 (FormEBSD.BuildEbsdLookupTable と同式)
+                if (isHex) //六方格子 (EbsdPatternComposer.BuildLookupTable と同式)
                 {
                     double invLen = 1.0 / Math.Sqrt(dx * dx + dy * dy + dz * dz);
                     var (hx, hy) = MasterPattern.SphereToRoscaLambertHex(dx * invLen, dy * invLen, Math.Abs(dz) * invLen);

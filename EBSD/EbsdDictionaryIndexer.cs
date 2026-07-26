@@ -20,7 +20,7 @@ namespace Crystallography;
 /// ②中段は「別解像度での再スコア」ではなく **同一パイプでの再採点** になる (実質は面内分解 ProjectInPlane と
 /// 通常 Project の投影経路差の再確認)。①②を別段の解像度として読むと誤解するので注記する。260725Cl
 /// 辞書は検出器幾何 (PC/DD) に依存するため事前保存せず毎回生成する (実行 ~数秒)。
-/// 返り値の Score は NaN — Radon z の付与と複合ランクへの接続は呼び出し側の統合層 (FormEBSD.Indexing) が行う。
+/// 返り値の Score は NaN — Radon z の付与と複合ランクへの接続は呼び出し側の統合層 (EbsdOrientationSearch) が行う。
 /// </summary>
 public static class EbsdDictionaryIndexer
 {
@@ -115,7 +115,7 @@ public static class EbsdDictionaryIndexer
                 //trace = 1+2cos θ なので粗刻み 3° の半刻みで trace は最大 2·sin θ·0.026 ≈ 0.05 動く = 境界のどちら側かは
                 //1E-12 より 10 桁大きい誤差で決まる。1E-12 は厳密な対称不変点しか救わない。実際に被覆を保っているのは
                 //「軌道の相手 R·S の近傍にも別の格子点があり、そちらが代表として残る」機構で、粗段の方位誤差が最悪 1 刻み分
-                //余分に乗り得る (NM の初期シンプレックス ±1.5° が通常は吸収)。これが FormEBSD.Indexing で FZ 除外を
+                //余分に乗り得る (NM の初期シンプレックス ±1.5° が通常は吸収)。これが EbsdOrientationSearch で FZ 除外を
                 //proper 回転 1 個 (C2) に限定している理由の数値的裏付け。恒久対策は tie 帯を格子由来の変動幅へ広げること (未実施 —
                 //C2 は現行 1E-12 で候補一致を A/B 検証済みなので、検証済み構成を崩さない)。
                 //旧: pi 毎に rot=r0*rzTable[pi] と IsFundamental 内の r*s を Matrix3D 生成 (~55万×2 個の Gen0 圧) → 全廃
@@ -344,6 +344,6 @@ public static class EbsdDictionaryIndexer
         return dst;
     }
 
-    //260725Cl (/simplify): Perturb は EbsdIndexer.PerturbRotation へ統合 (EbsdRadonIndexer・FormEBSD.Indexing と 3 重複していた。式・演算順は同一)
+    //260725Cl (/simplify): Perturb は EbsdIndexer.PerturbRotation へ統合 (EbsdRadonIndexer・FormEBSD 側と 3 重複していた。式・演算順は同一)
     //旧: static Matrix3D Perturb(Matrix3D r0, double wxDeg, double wyDeg, double wzDeg) { ...(ω を rad 化し Rot(ω̂,|ω|)·r0)... }
 }

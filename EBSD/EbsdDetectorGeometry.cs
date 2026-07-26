@@ -7,11 +7,11 @@ namespace Crystallography;
 
 /// <summary>
 /// EBSD 検出器幾何の不変スナップショット。260724Cl 追加 (実測パターン指数付け・幾何較正の共有幾何モデル)。
-/// 規約は FormEBSD (フォワードモデル) と厳密に一致させる:
+/// 規約は表示フォワードモデル (EbsdPatternComposer) と厳密に一致させる:
 ///   検出器中心 C=(DetX,-DetY,-DetZ)、面内基底 ex=(1,0,0)・ey=(0,-cosδ,-sinδ)、法線 n=(0,sinδ,-cosδ) (δ=DetTilt)。
 ///   画像ピクセル (col,row) はコーナー原点・ピクセル中心 (col+0.5,row+0.5)。画像中心からの表示 mm 座標 (u,v) に対し
 ///   検出器面上の点 P = C + xm·u·ex + v·ey (xm=左右反転 ±1)。視線 (lab) = -P/|P|、試料系 = Rx(SmpTilt)·(lab)。
-///   (FormEBSD.BuildEbsdLookupTable の labDir と数式一致することを EbsdIndexCheck ハーネスで検証)
+///   (EbsdPatternComposer.BuildLookupTable の labDir と数式一致することを EbsdIndexCheck ハーネスで検証)
 /// </summary>
 public sealed class EbsdDetectorGeometry
 {
@@ -83,7 +83,7 @@ public sealed class EbsdDetectorGeometry
     public V3 LabToSample(in V3 lab)
         => new(lab.X, cosSmp * lab.Y + sinSmp * lab.Z, -sinSmp * lab.Y + cosSmp * lab.Z);
 
-    /// <summary>ピクセル中心 → 視線方向 (試料系、正規化)。FormEBSD の labDir=-P 規約と同一</summary>
+    /// <summary>ピクセル中心 → 視線方向 (試料系、正規化)。EbsdPatternComposer.BuildLookupTable の視線 (旧 labDir) = -P 規約と同一</summary> //260727Cl: 冒頭 doc と参照先を揃えた (旧「FormEBSD の labDir=-P 規約」)
     public V3 PixelToSampleDirection(double col, double row)
     {
         var p = PixelToLabPoint(col, row);

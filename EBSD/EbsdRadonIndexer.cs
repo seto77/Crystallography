@@ -516,7 +516,7 @@ public static class EbsdRadonIndexer
         //260724Cl: 本体を ScoreExactCore へ抽出 (公開 ScoreOrientation と共用のため。旧インライン実装は ScoreExactCore に移動)
         double ScoreExact(Matrix3D rot) => ScoreExactCore(map, geometry, catalog, rot, saturateCap);
 
-        //260725Cl (/simplify): ローカル Perturb は EbsdIndexer.PerturbRotation へ統合 (EbsdDictionaryIndexer・FormEBSD.Indexing と 3 重複していた。式・演算順は同一)
+        //260725Cl (/simplify): ローカル Perturb は EbsdIndexer.PerturbRotation へ統合 (EbsdDictionaryIndexer・FormEBSD 側と 3 重複していた。式・演算順は同一)
         //旧: static Matrix3D Perturb(Matrix3D r0, double wxDeg, double wyDeg, double wzDeg) { ...(ω を rad 化し Rot(ω̂,|ω|)·r0)... }
 
         var refined = new (double S, Matrix3D R)[seeds.Count];

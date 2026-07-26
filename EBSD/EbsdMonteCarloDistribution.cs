@@ -22,7 +22,7 @@ public sealed class EbsdMonteCarloDistribution
 
     /// <summary>
     /// MasterPattern の全 (energy, depth) スライスを、この MC 分布の全ビン平均重みで微分合成した 1 枚 (pos/neg 半球) を返す。260724Cl 追加。
-    /// FormEBSD の表示合成 (model 2 = absolute MC × differential master) のグローバル近似で、位置依存重みを検出器全体で平均している。
+    /// EbsdPatternComposer の表示合成 (ApplyWeightedModel2 = absolute MC × differential master) のグローバル近似で、位置依存重みを検出器全体で平均している。 //260727Cl: 移設に伴い参照先を訂正
     /// ZNCC 方位照合 (複合ランク・幾何較正) 用の実測に忠実なシミュレーションパターン。単一スライスより実測との相関が上がることをベンチで確認済み。
     /// </summary>
     public (float[] Pos, float[] Neg) ComposeGlobalWeightedPattern(MasterPattern mp)
@@ -170,11 +170,11 @@ public sealed class EbsdMonteCarloDistribution
             if (k <= 0) continue;
 
             // double px = k * vec.X / detR; // 260723Cl 変更前
-            // 260723Cl 変更: px も py と同じく消費側 (FormEBSD.BuildEbsdLookupTable / detNormX = -xm·(2w+1-width)/width) の厳密な逆写像へ。
+            // 260723Cl 変更: px も py と同じく消費側 (EbsdPatternComposer.BuildLookupTable / detNormX = -xm·(2w+1-width)/width) の厳密な逆写像へ。
             //   消費側の視線 X は (ピクセル項) - detX で、検出器面ヒット位置 k·vec.X との対応から px = (detX - k·vec.X)/halfWidth。
             //   旧式 (+k·vec.X/detR) は左右逆ビンを参照していたが、MC 分布が X 対称なため従来 (detX=0) は不可視だった。
             double px = (detX - k * vec.X) / halfWidth;
-            // 260718Cl 変更: py を消費側 (FormEBSD.BuildEbsdLookupTable) の「画素→lab 方向」マップの厳密な逆写像で算出する。
+            // 260718Cl 変更: py を消費側 (EbsdPatternComposer.BuildLookupTable) の「画素→lab 方向」マップの厳密な逆写像で算出する。
             //   旧 py=localY/detR は検出器面内 Y 接線 (cosDet,-sinDet) が消費側の (cosDet,+sinDet) と食い違い、
             //   DetTilt≠90° で輝度ビンに foreshortening ずれ (検出器端で ~1 粗ビン) を生んでいた。
             //   逆写像 py は消費側 detNormY に厳密一致し、DetTilt=90° では旧式と同値 (既定は完全に不変)。lambda=検出器中心線方向の射影スケール。
