@@ -63,8 +63,17 @@ public static class EbsdGeometryCalibrator
     /// <summary>多点開始の振れ幅。PC は検出器幅・高さに対する割合、DD は lnDD の絶対値 (0.08 ≈ 8%)。260726Cl 追加。
     /// 当初の PC ±1%・lnDD ±0.02 では実機で 200 点すべてが同じ谷に落ち (best #0、200 within 1E-3、spread 0.0007)、
     /// 多点開始が機能していなかった。作者が観測した別の谷はもっと離れているので広げる。
-    /// 較正のソフト境界 (初期値から W/H の 25%、lnDD 0.35) の内側に収めること</summary>
+    /// 較正のソフト境界 (<see cref="SoftBoundPcFraction"/> / <see cref="SoftBoundLnDd"/>) の内側に収めること</summary>
     const double StartSpreadPc = 0.08, StartSpreadLnDd = 0.08;
+
+    /// <summary>較正のソフト境界。較正開始位置からの PC のずれ上限 (検出器 W/H に対する割合) と lnDD のずれ上限
+    /// (0.35 ≈ DD ±40%)。単一パターンでは PC・DD・方位が縮退するため、これを超える解は非物理として
+    /// <see cref="SoftBoundPenaltyBase"/> 起点の罰則値を返し、Nelder-Mead に採らせない。
+    /// 260727Cl 追加: 交互法②と 6 変数同時仕上げに裸のリテラルで 2 重に書かれていたので命名した</summary>
+    const double SoftBoundPcFraction = 0.25, SoftBoundLnDd = 0.35;
+
+    /// <summary>ソフト境界の外で返す罰則値の下駄。目的関数は -ZNCC (= 高々 1 程度) なので、10 なら確実に棄却される。260727Cl 追加</summary>
+    const double SoftBoundPenaltyBase = 10;
 
     /// <summary>較正の最後に行う 6 変数 (PC_u, PC_v, lnDD, 方位 3) 同時最適化の評価上限。260726Cl 追加。
     /// 6 次元なので交互法の 3 変数段 (120-150) より多く要る。1 評価ごとに projector を作り直す重い段だが、
@@ -132,11 +141,24 @@ public static class EbsdGeometryCalibrator
         }
         //260727Cl (/simplify): soft bounds の判定とペナルティ式が交互法② と 6 変数同時仕上げの 2 箇所に同じ形で書かれ、
         //  閾値 (W/H の 25%・lnDD 0.35) とペナルティ基底 10 も 2 重にハードコードされていたので 1 本にまとめた。
-        //  ペナルティ値は常に計算するが副作用が無いので、境界内で使われないだけ (式・戻り値は旧実装と同一)。
-        bool OutOfSoftBounds(double du, double dv, double dlnDd, out double penalty)
+        //260727Cl 変更: **入力の較正開始位置 (footU0, footV0, ln dd0) からの累積ずれ**で判定する。
+        //  旧実装は各段の増分 v[] をそのまま渡しており、交互法が毎ラウンド fu/fv/lnDd を更新するぶん
+        //  「1 ラウンドあたりの増分」しか縛れていなかった (MaxRounds=20 なので原理的には PC が physW の 5 倍、
+        //  lnDD が ±7 = DD 約 1100 倍まで流れ得た)。ソフト境界の目的は「単一パターンの PC-DD-方位縮退で
+        //  非物理領域へ流れないようにする」ことなので、doc どおり開始位置基準に直す。
+        //  多点開始のオフセットは physW の 8% (StartSpreadPc) なので、どの開始点も境界の十分内側から始まる。
+        //  旧: bool OutOfSoftBounds(double du, double dv, double dlnDd, out double penalty)  // du/dv/dlnDd はその段の増分
+        //  1 ラウンド目は fu==footU0 なので判定は旧実装と完全に一致する。2 ラウンド目以降だけが変わるが、
+        //  交互法②の初期シンプレックスは physW の 1% (同時仕上げは 0.5%) で、収束も実測 1-2 ラウンドなので、
+        //  正常な較正では累積ずれが上限 25% に達しない = 結果は変わらない。効くのは ZNCC 面が平坦で
+        //  微小改善が 20 ラウンド続く病的なケースだけで、そこを止めるのがこの境界の目的。
+        double lnDd0 = Math.Log(dd0);
+        bool OutOfSoftBounds(double u, double v, double lnDd, out double penalty)
         {
-            penalty = 10 + Math.Abs(du) / physW + Math.Abs(dv) / physH + Math.Abs(dlnDd);
-            return Math.Abs(du) > physW * 0.25 || Math.Abs(dv) > physH * 0.25 || Math.Abs(dlnDd) > 0.35;
+            double du = u - footU0, dv = v - footV0, dlnDd = lnDd - lnDd0;
+            penalty = SoftBoundPenaltyBase + Math.Abs(du) / physW + Math.Abs(dv) / physH + Math.Abs(dlnDd);
+            return Math.Abs(du) > physW * SoftBoundPcFraction || Math.Abs(dv) > physH * SoftBoundPcFraction
+                || Math.Abs(dlnDd) > SoftBoundLnDd;
         }
         double ScoreWith(EbsdPatternProjector proj, Matrix3D rot)
         {
@@ -171,7 +193,7 @@ public static class EbsdGeometryCalibrator
                 //260724Cl: 単一パターンの PC-DD-方位縮退で非物理領域へ流れないよう soft bounds (初期値から W/H の 25%・DD ±40% でペナルティ)
                 var rFixed = r0;
                 var (bg, vg, eg) = EbsdPatternScorer.NelderMead(
-                    v => OutOfSoftBounds(v[0], v[1], v[2], out var pen) ? pen //260727Cl: 判定+罰則式を OutOfSoftBounds へ集約
+                    v => OutOfSoftBounds(fu + v[0], fv + v[1], lnDd + v[2], out var pen) ? pen //260727Cl: 判定+罰則式を OutOfSoftBounds へ集約し、増分でなく開始位置からの累積で判定する
                         : ScoreWith(new EbsdPatternProjector(MakeGeom(fu + v[0], fv + v[1], lnDd + v[2]), context.RasterWidth, context.RasterHeight), rFixed),
                     [0, 0, 0], [physW * 0.01, physH * 0.01, 0.02], 120);
                 fu += bg[0]; fv += bg[1]; lnDd += bg[2]; evalTotal += eg;
@@ -198,7 +220,7 @@ public static class EbsdGeometryCalibrator
             double fuBase = fu, fvBase = fv, lnDdBase = lnDd;
             double ScoreJoint(double[] v)
             {
-                if (OutOfSoftBounds(v[0], v[1], v[2], out var pen)) return pen; //260727Cl: 交互法②と同じ判定を共通関数へ
+                if (OutOfSoftBounds(fuBase + v[0], fvBase + v[1], lnDdBase + v[2], out var pen)) return pen; //260727Cl: 交互法②と同じ判定を共通関数へ (開始位置からの累積で判定)
                 return ScoreWith(new EbsdPatternProjector(MakeGeom(fuBase + v[0], fvBase + v[1], lnDdBase + v[2]), context.RasterWidth, context.RasterHeight),
                     EbsdIndexer.PerturbRotation(rBase, v[3], v[4], v[5]));
             }

@@ -20,6 +20,19 @@ public sealed class EbsdMonteCarloDistribution
     /// <summary>model 2 用。detector bin の absolute 強度を保った depth-slice 重み。260325Ch 追加</summary>
     public double[,][] BinAbsoluteSliceWeights { get; }
 
+    /// <summary>この分布を作った MasterPattern の energy 数。260727Cl 追加</summary>
+    public int EnergyCount { get; }
+
+    /// <summary>この分布を作った MasterPattern の depth 数。260727Cl 追加:
+    /// 重み配列の添字は wIdx = ei * DepthCount + di なので、消費側の MasterPattern が別の格子だと
+    /// 例外を出さずに別スライスの重みを引く。消費側はこの 2 値で格子一致を検査すること
+    /// (<see cref="MatchesGridOf"/>)。</summary>
+    public int DepthCount { get; }
+
+    /// <summary>重み配列の (energy × depth) 格子が <paramref name="mp"/> と一致するか。260727Cl 追加</summary>
+    public bool MatchesGridOf(MasterPattern mp)
+        => mp != null && mp.Energies.Length == EnergyCount && mp.Depths.Length == DepthCount;
+
     /// <summary>
     /// MasterPattern の全 (energy, depth) スライスを、この MC 分布の全ビン平均重みで微分合成した 1 枚 (pos/neg 半球) を返す。260724Cl 追加。
     /// EbsdPatternComposer の表示合成 (ApplyWeightedModel2 = absolute MC × differential master) のグローバル近似で、位置依存重みを検出器全体で平均している。 //260727Cl: 移設に伴い参照先を訂正
@@ -29,6 +42,12 @@ public sealed class EbsdMonteCarloDistribution
     {
         ArgumentNullException.ThrowIfNull(mp); //260725Ch: null を後段の不明瞭な参照例外にしない
         if (mp.GridSize < 2) throw new ArgumentException("MasterPattern.GridSize must be at least 2.", nameof(mp)); //260725Ch
+        //260727Cl 追加: 重み配列は (EnergyCount × DepthCount) 格子で添字 wIdx = ei*DepthCount + di を前提にしている。
+        //  別格子の mp を渡されたとき、下の `k < bw.Length` クランプは範囲外アクセスこそ防ぐが、ei/di の対応が
+        //  ずれた重みを黙って積むだけだった (ZNCC 照合・幾何較正が静かに劣化する)。入口で弾く。
+        if (!MatchesGridOf(mp))
+            throw new ArgumentException(
+                $"The MC distribution grid ({EnergyCount} energies x {DepthCount} depths) does not match the MasterPattern ({mp.Energies.Length} x {mp.Depths.Length}).", nameof(mp));
         int eLen = mp.Energies.Length, dLen = mp.Depths.Length;
         var wG = new double[eLen * dLen];
         for (int bi = 0; bi < BinCount; bi++)
@@ -193,6 +212,7 @@ public sealed class EbsdMonteCarloDistribution
         BinWeights = new double[binCount, binCount][];
         BinAbsoluteSliceWeights = new double[binCount, binCount][]; // (260325Ch) model 2 用
         int eLen = energies.Length, dLen = depths.Length;
+        EnergyCount = eLen; DepthCount = dLen; // 260727Cl 追加: 消費側が格子一致を検査できるようにする
 
         // 260602Cl 変更: 64 ビンは互いに独立 (distinct な BinWeights[bi,bj]/BinAbsoluteSliceWeights[bi,bj] へ書く) なので
         //   Parallel.For 化。bins への集約 (上の foreach) は逐次のまま、ここはフィット段だけ並列化する。

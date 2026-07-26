@@ -208,6 +208,21 @@ public sealed class EbsdPatternComposer
     public unsafe void ApplySingleSliceModel0(double[] values, int totalPixels, float[] posPlane, float[] negPlane) // 260325Cl: unsafe 化
         => ApplySingleSliceModel1(values, totalPixels, posPlane, negPlane);
 
+    /// <summary>260727Cl 追加: weighted 合成の前提 — 分布の重み配列が mp と同じ (energy × depth) 格子であること — を検査する。
+    /// 重み参照は wIdx = ei * dLen + di (dLen は mp 由来) を dist の配列へ素通しするので、格子がずれると
+    /// dLen が減る方向では**例外も警告も出さずに別スライスの重み**を引き、増える方向では IndexOutOfRange になる。
+    /// MC は MasterPattern の構築とは別のタイミングでも走る (Calc BSE・検出器幾何変更時の再ビニング) ので、
+    /// 呼び出し側の規律だけに任せず入口で弾く。</summary>
+    static void EnsureGridMatches(MasterPattern mp, EbsdMonteCarloDistribution dist)
+    {
+        ArgumentNullException.ThrowIfNull(mp);
+        ArgumentNullException.ThrowIfNull(dist);
+        if (!dist.MatchesGridOf(mp))
+            throw new ArgumentException(
+                $"The MC distribution grid ({dist.EnergyCount} energies x {dist.DepthCount} depths) does not match the MasterPattern ({mp.Energies.Length} x {mp.Depths.Length}).",
+                nameof(dist));
+    }
+
     /// <summary>260718Cl 追加: 全 energy×depth の plane 参照をピクセルループ外で一括取得する (Weighted 3 モデル共通)。
     /// 旧実装はピクセル×energy×depth 回 GetPlane を呼んでいた。</summary>
     static (float[][] pos, float[][] neg) GetAllPlanes(MasterPattern mp, int eLen, int dLen)
@@ -235,6 +250,7 @@ public sealed class EbsdPatternComposer
     /// </summary>
     public unsafe void ApplyWeightedModel0(double[] values, int width, int height, MasterPattern mp, EbsdMonteCarloDistribution dist, in EbsdRasterView view)
     {
+        EnsureGridMatches(mp, dist); //260727Cl
         double xm = view.XMirror; // 260718Cl: 左右反転。Parallel.For 前に UI スレッドで捕捉 (ワーカーから checkbox 直読は不可)
         int eLen = mp.Energies.Length, dLen = mp.Depths.Length;
         int binCount = dist.BinCount, gs = lookupGridSize;
@@ -435,6 +451,7 @@ public sealed class EbsdPatternComposer
     /// <summary>model 1: 各 energy/depth slice の全球積算強度を 1 にそろえてから weighted 合成する。260325Ch 追加</summary>
     public unsafe void ApplyWeightedModel1(double[] values, int width, int height, MasterPattern mp, EbsdMonteCarloDistribution dist, in EbsdRasterView view)
     {
+        EnsureGridMatches(mp, dist); //260727Cl
         double xm = view.XMirror; // 260718Cl: 左右反転 (UI スレッドで捕捉)
         int eLen = mp.Energies.Length, dLen = mp.Depths.Length;
         int binCount = dist.BinCount;
@@ -601,6 +618,7 @@ public sealed class EbsdPatternComposer
     /// <summary>model 2: absolute MC 重みと differential MasterPattern を掛け合わせて weighted 合成する。260325Ch 追加</summary>
     public unsafe void ApplyWeightedModel2(double[] values, int width, int height, MasterPattern mp, EbsdMonteCarloDistribution dist, in EbsdRasterView view)
     {
+        EnsureGridMatches(mp, dist); //260727Cl
         double xm = view.XMirror; // 260718Cl: 左右反転 (UI スレッドで捕捉)
         int eLen = mp.Energies.Length, dLen = mp.Depths.Length;
         int binCount = dist.BinCount;
