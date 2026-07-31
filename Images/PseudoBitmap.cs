@@ -613,7 +613,8 @@ public class PseudoBitmap : IDisposable
     /// <returns></returns>
     public unsafe Bitmap GetImage(RectangleD srcRect, Size destSize)
     {
-        if (Height == 0 || Width == 0 || srcRect.Width == 0 || srcRect.Height == 0 || destSize.Width == 0 || destSize.Height == 0) return null;
+        //if (Height == 0 || Width == 0 || srcRect.Width == 0 || srcRect.Height == 0 || destSize.Width == 0 || destSize.Height == 0) return null; //260731Cl 変更前
+        if (Height <= 0 || Width <= 0 || srcRect.Width <= 0 || srcRect.Height <= 0 || destSize.Width <= 0 || destSize.Height <= 0) return null; //260731Cl 変更: レイアウト過渡で ClientSize 由来の destSize が負になり得る (new Bitmap の ArgumentException 防止)
 
         int width = destSize.Width, height = destSize.Height;
 
