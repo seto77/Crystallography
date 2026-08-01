@@ -21,7 +21,8 @@
 
 `IonizationFsE0.bin` の method フィールド: 1 = F を float32 可逆格納 (683KB) /
 2 = 1e-6 量子化 + s方向delta + byte-plane shuffle (309KB、最大誤差 5.0e-7)。
-現在の同梱は **method 2** (暫定。最終確定は golden-vector 実測に基づく作者判断 = 指示書 §2-2)。
+同梱は **method 2 で確定** (golden-vector 実測 → codex 17巡同意 → 作者確定 2026-08-01。
+根拠と既知の符号消失 1 節点は tools/IonizationGen/prod/MANIFEST.md「同梱リソース方式」)。
 
 ## 再生成手順
 
