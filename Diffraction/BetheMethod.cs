@@ -2264,6 +2264,13 @@ public class BetheMethod
         else if (solver == Solver.MtxExp_MKL) solver = Solver.Eigen_MKL;
 
         var reportString = $"{SolverLabel(solver)}{thread}"; //260611Cl 旧: $"{solver}{thread}" (MKL 不在時の managed 実行を可視化)
+
+        //260802Cl 追加: 進捗通知を 1 か所へ集約 (設計書 §5.9-8。旧: 各所で bwSTEM.ReportProgress(percent, "Calculating ...") と
+        //文字列を直接渡し、GUI が前方一致とチャネル番号のパースで復元していた)。ProgressPercentage と Fraction を
+        //同じ値から作るので両者が食い違わない。ChannelCount は全ステージで載せる = GUI が Stage4 の配分を先に決められる
+        void report(StemStage stage, double fraction, int chIndex = -1, IonizationChannelSpec ch = null)
+            => bwSTEM.ReportProgress((int)(1E6 * fraction),
+                new StemProgressInfo(stage, fraction, stage == StemStage.EigenSolve ? reportString : null, chIndex, requests.Length, ch));
         #endregion
 
         #region 260711Cl 追加 (全-slice tc 物化): slice 分割の前倒しと経路選択
@@ -2330,7 +2337,7 @@ public class BetheMethod
             var vecK0 = getVecK0(kvac, u0, beamDirection);
             k_vec[i] = vecK0;
 
-            if (Interlocked.Increment(ref count) % 10 == 0) bwSTEM.ReportProgress((int)(1E6 * count / BeamDirections.Length), reportString);//進捗状況を報告
+            if (Interlocked.Increment(ref count) % 10 == 0) report(StemStage.EigenSolve, (double)count / BeamDirections.Length);//進捗状況を報告 //260802Cl 型付き進捗へ
             if (bwSTEM.CancellationPending) { e.Cancel = true; return null; }
 
             if (!inside(i)) return null;
@@ -2515,7 +2522,7 @@ public class BetheMethod
         #endregion
 
         #region 弾性散乱 の計算
-        bwSTEM.ReportProgress(0, "Calculating I_elastic(Q)");//状況を報告
+        report(StemStage.ElasticQ, 0);//状況を報告 //260802Cl 型付き進捗へ
         Complex[,,] I_Elas = new Complex[qList.Count, tLen, dLen];
         count = 0;
         var threadLocalIElas = new ThreadLocal<Complex[]>(() => null, true); // (260403Ch) 弾性項の一時配列はスレッドごとに使い回す
@@ -2550,7 +2557,7 @@ public class BetheMethod
                                 I_Elas[qIndex, t, d] += iElas[t] * lenz[d];
                 }
                 if (bwSTEM.CancellationPending) return;
-                if (Interlocked.Increment(ref count) % 10 == 0) bwSTEM.ReportProgress((int)(1E6 * count / tcPArray.Length), "Calculating I_elastic(Q)");//状況を報告
+                if (Interlocked.Increment(ref count) % 10 == 0) report(StemStage.ElasticQ, (double)count / tcPArray.Length);//状況を報告 //260802Cl 型付き進捗へ
             });
         }
         finally
@@ -2564,7 +2571,7 @@ public class BetheMethod
         #region 非弾性散乱を計算する場合
         var I_Inel = new Complex[qList.Count, tLen, dLen];
 
-        if (!useUStream) bwSTEM.ReportProgress(0, "Calculating U matrix");//状況を報告 //260711Cl 変更: q-major streaming 時は一括構築フェーズが無い (Uq は非弾性フェーズ内で生成)
+        if (!useUStream) report(StemStage.PotentialMatrix, 0);//状況を報告 //260802Cl 型付き進捗へ //260711Cl 変更: q-major streaming 時は一括構築フェーズが無い (Uq は非弾性フェーズ内で生成)
         var bLen2 = bLen * bLen;
         #region U行列の計算
         count = 0;
@@ -2600,7 +2607,7 @@ public class BetheMethod
         Parallel.For(0, qList.Count, qIndex =>
         {
             fillUq(qIndex, U, qIndex * bLen2);//260711Cl 変更: ループ本体を fillUq へ抽出 (処理は同一)
-            if (Interlocked.Increment(ref count) % 10 == 0) bwSTEM.ReportProgress((int)(1E6 * count / qList.Count), "Calculating U matrix");//260711Cl 変更: 通知を q 単位へ集約 (数値影響なし)
+            if (Interlocked.Increment(ref count) % 10 == 0) report(StemStage.PotentialMatrix, (double)count / qList.Count);//260711Cl 変更: 通知を q 単位へ集約 (数値影響なし) //260802Cl 型付き進捗へ
         });
         #endregion
 
@@ -2649,7 +2656,7 @@ public class BetheMethod
         if (PiecewiseQuadrature)
         #region 区分求積法アルゴリズム
         {
-            bwSTEM.ReportProgress(0, "Calculating I_inelastic(Q)");
+            report(StemStage.InelasticQ, 0);//260802Cl 型付き進捗へ
 
             // 各厚みを、指定された厚み程度で切り分ける 260711Cl: EVD 前へ移動 (_thick/tStep/sliceOffset/sliceTotal は上で構築済み)
 
@@ -2708,7 +2715,7 @@ public class BetheMethod
                                     I_Inel[qIndex, t, dIndex] += I_Inel[qIndex, t - 1, dIndex];
                             }
                         }
-                        if (Interlocked.Increment(ref count) % 4 == 0) bwSTEM.ReportProgress((int)(1E6 * count / activeQCount), "Calculating I_inelastic(Q)");//状況を報告
+                        if (Interlocked.Increment(ref count) % 4 == 0) report(StemStage.InelasticQ, (double)count / activeQCount);//状況を報告 //260802Cl 型付き進捗へ
                     });
                 }
                 else
@@ -2776,7 +2783,7 @@ public class BetheMethod
                                     fixed (int* _k = qEntryK[qIndex], _n4 = qEntryN4[qIndex])
                                     fixed (double* _r4 = qEntryR4[qIndex])
                                         NativeWrapper.STEM_InelasticQ(bLen, dLen, entryCount, _U + qIndex * bLen2, _tc_k, _k, _n4, _r4, _lenz, _sum + qIndex * dLen);
-                                    if (Interlocked.Increment(ref count) % 100 == 0) bwSTEM.ReportProgress((int)(1E6 / total * count), "Calculating I_inelastic(Q)");//状況を報告
+                                    if (Interlocked.Increment(ref count) % 100 == 0) report(StemStage.InelasticQ, (double)count / total);//状況を報告 //260802Cl 型付き進捗へ
                                 });
                             }
                             else // 260610Cl: 非 Eigen (managed fallback) は従来経路のまま (内側の if (EigenEnabled) 分岐は到達しない)
@@ -2834,7 +2841,7 @@ public class BetheMethod
                                 //         for (int d = 0; d < dLen; d++)
                                 //             sum[list[kIndex][i].qIndex * dLen + d] += sumTmp[i * dLen + d];
 
-                                if (Interlocked.Increment(ref count) % 1000 == 0) bwSTEM.ReportProgress((int)(1E6 / total * count), "Calculating I_inelastic(Q)");//状況を報告
+                                if (Interlocked.Increment(ref count) % 1000 == 0) report(StemStage.InelasticQ, (double)count / total);//状況を報告 //260802Cl 型付き進捗へ
                             });
 
                         }
@@ -2972,8 +2979,8 @@ public class BetheMethod
         {
             var ionization = requests[chIndex];
             var chData = ionData[chIndex];
-            var edxStage = $"Calculating I_EDX(Q) (ch {chIndex + 1}/{requests.Length})";//前方一致 "Calculating I_EDX(Q)" を厳密維持 (GUI 移行までの暫定文字列プロトコル)
-            bwSTEM.ReportProgress(0, edxStage);
+            //260802Cl 変更: 暫定の文字列プロトコル (旧: var edxStage = $"Calculating I_EDX(Q) (ch {chIndex + 1}/{requests.Length})") を廃し型付き通知へ
+            report(StemStage.IonizationQ, 0, chIndex, ionization.Channel);
             var I_Edx = new Complex[qList.Count, tLen, dLen];
             var uIonCache = new ConcurrentDictionary<(int H, int K, int L), Complex>();//uDictionary とは完全分離 (指示書 §2-3)。channel-scoped (チャネル間持ち越し禁止)
             count = 0;
@@ -3001,7 +3008,7 @@ public class BetheMethod
                                 I_Edx[qIndex, t, dIndex] += I_Edx[qIndex, t - 1, dIndex];
                         }
                     }
-                    if (Interlocked.Increment(ref count) % 4 == 0) bwSTEM.ReportProgress((int)(1E6 * count / activeQCount), edxStage);
+                    if (Interlocked.Increment(ref count) % 4 == 0) report(StemStage.IonizationQ, (double)count / activeQCount, chIndex, ionization.Channel);//260802Cl 型付き進捗へ
                 });
             if (bwSTEM.CancellationPending) { e.Cancel = true; return; }
 

@@ -18,8 +18,11 @@ namespace Crystallography;
 
 #region 公開 enum / record (設計書 §5.1)
 
-/// <summary>260801Cl 追加: イオン化殻。v1 のプロバイダが返すのは K / LTotal のみ (L1/L2/L3 は v2 で分離)。</summary>
-public enum IonizationShell { K, LTotal, L1, L2, L3 }
+/// <summary>260801Cl 追加: イオン化殻。v1 のプロバイダが返すのは K / LTotal のみ (L1/L2/L3 は v2 で分離)。
+/// 260802Cl 変更: **値を明示** (旧: 暗黙の 0,1,2,3,4)。ReciPro のプリセットが (Z, Shell) の組を
+/// この基底値のまま永続化する (ImageSimulatorSetting.EdxChannels、設計書 §5.9.1-6) ので、
+/// 既存の値は変更・並べ替え禁止。新しい殻は末尾に追加すること。</summary>
+public enum IonizationShell { K = 0, LTotal = 1, L1 = 2, L2 = 3, L3 = 4 }
 
 /// <summary>260801Cl 追加: 元素×殻のチャネル指定。</summary>
 public record IonizationChannelSpec(int Z, IonizationShell Shell)
@@ -139,6 +142,23 @@ public sealed class StemSimulationResult
     /// <summary>各 q のエントリ数 (aperture 重なりで有効だった方向数。0 = 未計算。EDX off では空配列)</summary>
     public int[] QEntryCounts { get; init; }
 }
+
+/// <summary>260802Cl 追加: STEM run の進捗ステージ (設計書 §5.9-8)。値は GUI の "Stage n" 表示と一致させてある。</summary>
+public enum StemStage { EigenSolve = 1, ElasticQ = 2, PotentialMatrix = 3, InelasticQ = 4, IonizationQ = 5 }
+
+/// <summary>260802Cl 追加: STEM の進捗通知 (<see cref="System.ComponentModel.ProgressChangedEventArgs.UserState"/> に載せる。設計書 §5.9-8)。
+/// v0b までは "Calculating I_EDX(Q) (ch 2/3)" のような文字列前方一致プロトコルだったが、ステージが増えるたびに
+/// 前方一致の分岐が増え、チャネル番号を文字列からパースする必要もあった (負長 Substring でクラッシュし得た) ので型に置き換えた。
+/// 表示文言は GUI 側で組む — backend は表示都合の文字列を持たない。</summary>
+/// <param name="Stage">ステージ</param>
+/// <param name="Fraction">当該ステージ内の進捗 0–1。<c>ProgressPercentage</c> は同じ値の 1E6 倍なので両者は必ず一致する</param>
+/// <param name="SolverLabel">Stage1 のみ: 実際に使った solver とスレッド数 (例 "Eigen8")。それ以外は null</param>
+/// <param name="ChannelIndex">Stage5 のみ: 計算中の EDX チャネル (0 始まり)。それ以外は -1</param>
+/// <param name="ChannelCount">この run が要求された EDX チャネル数 (EDX なしは 0)。**全ステージで有効** = GUI は Stage4 の
+/// 進捗配分を Stage5 に入る前から決められる (旧実装が GUI 側のチェック状態を見に行かずに済む)</param>
+/// <param name="Channel">Stage5 のみ: 計算中のチャネル指定。それ以外は null</param>
+public sealed record StemProgressInfo(StemStage Stage, double Fraction, string SolverLabel = null,
+    int ChannelIndex = -1, int ChannelCount = 0, IonizationChannelSpec Channel = null);
 
 /// <summary>260801Cl 追加: チャネル利用可否 (GUI は本 enum を 11 言語の表示文へ変換する。例外文字列を UI に直接出さない。設計書 §5.9-3)</summary>
 public enum IonizationAvailability { Available, BelowEdge, UnsupportedShell, UnsupportedElement, E0OutOfRange }
