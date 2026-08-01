@@ -202,6 +202,13 @@ public class BetheMethod
     /// <summary>Result_STEM_Ela[thickness][defocus]</summary>
     public (Size Size, double Resolution, double[] Thicknesses, double[] Defocusses, Matrix3D rot, double[][][] ImageBoth, double[][][] ImageEla, double[][][] ImageTDS) ResultSTEM;
 
+    /// <summary>260801Cl 追加: STEM-EDX 結果 (v0a 内部形、設計書 §5.5/§5.7-9)。ResultSTEM と同一 run の worker 終端で同時公開され、
+    /// EDX 無しの run では null に戻る (旧 run の EDX + 新 run の TDS が混在する瞬間を作らない)。</summary>
+    public StemEdxResult ResultEDX;
+    /// <summary>260801Cl 追加: 直近完了 STEM run の ID (ResultEDX.RunId と照合して鮮度検証可)</summary>
+    public long StemLastRunId;
+    private long _stemRunCounter;
+
     /// <summary>Result_STEM_TDS[thickness][defocus]</summary>
     public (Size Size, double Resolution, double[] Thicknesses, double[] Defocusses, Matrix3D rot, double[][][] Image) ResultHRTEM;
 
@@ -2166,26 +2173,34 @@ public class BetheMethod
         if (bwSTEM.IsBusy)
             bwSTEM.CancelAsync();
     }
+    //260801Cl 旧シグネチャ: public void RunSTEM(..., Solver solver = Solver.Auto, int thread = 1)
     public void RunSTEM(int maxNumOfBloch, double voltage, double cs, double delta, double sliceThickness, Size imageSize, double resolution, double sourceSize,
         Matrix3D baseRotation, double[] thicknesses, double[] defocusses,
         Vector3DBase[] beamDirections, double convergenceAngle, double detAngleInner, double detAngleOuter,
-        Solver solver = Solver.Auto, int thread = 1)
+        Solver solver = Solver.Auto, int thread = 1, StemIonizationRequest ionization = null)//260801Cl ionization 追加 (オーバーロードでなくデフォルト引数の規約)
     {
         if (bwSTEM.IsBusy) return;//260711Cl 追加: busy 時は instance state を変更せず抜ける (旧: 判定前に Thicknesses 等を代入しており、実行中 worker が参照する state を二重呼び出しが書き換え得た。codex 指摘)
+        //260801Cl 追加: EDX チャネルは run 開始前に immutable IonizationData へ解決する (設計書 §5.4。E0 範囲外・未収録 Z は
+        //ここで同期的に throw し、worker を起動しない)。v0a は 1 チャネルのみ明示受理 (§5.7-12)
+        var ionData = ionization is null ? null : IonizationDataProvider.Resolve(ionization.Channel, voltage);
+        var runId = Interlocked.Increment(ref _stemRunCounter);
         MaxNumOfBloch = maxNumOfBloch;
 
         AccVoltage = voltage;
         BaseRotation = new Matrix3D(baseRotation);
         BeamDirections = beamDirections;
         Thicknesses = thicknesses;
-        bwSTEM.RunWorkerAsync((solver, thread, cs, delta, sliceThickness, convergenceAngle, detAngleInner, detAngleOuter, thicknesses, defocusses, imageSize, resolution, sourceSize));
+        //bwSTEM.RunWorkerAsync((solver, thread, cs, delta, sliceThickness, convergenceAngle, detAngleInner, detAngleOuter, thicknesses, defocusses, imageSize, resolution, sourceSize));//260801Cl 変更前
+        bwSTEM.RunWorkerAsync((solver, thread, cs, delta, sliceThickness, convergenceAngle, detAngleInner, detAngleOuter, thicknesses, defocusses, imageSize, resolution, sourceSize, ionization, ionData, runId));
     }
     public unsafe void StemDoWork(object sender, DoWorkEventArgs e)
     {
         //MathNetの行列の内部は、1列目の要素、2列目の要素、という順番で格納されている
 
-        var (solver, thread, cs, delta, sliceThickness, convergenceAngle, detAngleInner, detAngleOuter, thicknesses, defocusses, imageSize, resolution, sourceSize)
-            = ((Solver, int, double, double, double, double, double, double, double[], double[], Size, double, double))e.Argument;
+        //var (solver, thread, cs, delta, sliceThickness, convergenceAngle, detAngleInner, detAngleOuter, thicknesses, defocusses, imageSize, resolution, sourceSize)
+        //    = ((Solver, int, double, double, double, double, double, double, double[], double[], Size, double, double))e.Argument;//260801Cl 変更前
+        var (solver, thread, cs, delta, sliceThickness, convergenceAngle, detAngleInner, detAngleOuter, thicknesses, defocusses, imageSize, resolution, sourceSize, ionization, ionData, runId)
+            = ((Solver, int, double, double, double, double, double, double, double[], double[], Size, double, double, StemIonizationRequest, IonizationData, long))e.Argument;//260801Cl EDX 引数追加
 
         var diameterPix = (int)Math.Sqrt(BeamDirections.Length);
         var radiusPix = diameterPix / 2.0;
@@ -2263,6 +2278,12 @@ public class BetheMethod
         //全 segment×slice を処理してから返す (保持量 Q×N² → 同時 worker 数×N²)。全-slice 物化 (tcSlice) が前提。
         //slice の加算順・segment 累積順は旧経路と同一なので q ごとに数値等価。RECIPRO_STEM_USTREAM=0 で旧経路 (一括 U 構築) へ強制
         var useUStream = useAllSliceTc && Environment.GetEnvironmentVariable("RECIPRO_STEM_USTREAM") != "0";
+        //260801Cl 追加: STEM-EDX (v0a) は全-slice 物化 + q-major streaming 経路限定 (設計書 §5.7-5)。
+        //EVD より前に hard error で拒否する (Stage4 後の警告スキップは計算時間を浪費するため禁止。codex 16巡)。
+        //旧経路 (MKL bLen≥500 / managed) fallback は v1 出荷ゲート。
+        if (ionData is not null && !useUStream)
+            throw new NotSupportedException(
+                "STEM-EDX (v0a) requires the native all-slice streaming path: Eigen native must be present, bLen must stay below the MKL threshold, and RECIPRO_STEM_ALLSLICE / RECIPRO_STEM_USTREAM must not be 0.");
         double[] allThick = null;   //ユーザー厚み (先頭 tLen 列, 弾性用) + 全 slice 厚み (非弾性用)
         Complex[][] tcSlice = null; //tcSlice[s][kIndex*bLen+g]: slice s における全方向の透過係数 (column-major N×K_all, 有効列のみ書き込み)
         if (useAllSliceTc)
@@ -2563,6 +2584,47 @@ public class BetheMethod
         });
         #endregion
 
+        #region 260610Cl 追加 (Phase2 候補A): list (k 単位) を q 単位に反転 — 260801Cl 区分求積ブロック内から hoist (EDX 別qパスと共用、設計書 §5.7-1)
+        // _STEM_InelasticQ は q 単位で W_q = U_q×TC_sub を GEMM 計算するため、
+        // 「この q を持つ全エントリ (kIndex, 近傍4点 n, 比率 r, レンズ関数)」を q ごとの平坦配列にまとめておく。
+        // tcPArray の順に詰めるので順序は決定的。
+        var qEntryK = new int[qList.Count][];
+        var qEntryN4 = new int[qList.Count][];
+        var qEntryR4 = new double[qList.Count][];
+        var qEntryLenz = new Complex[qList.Count][];
+        //if (EigenEnabled) //260711Cl 変更前: mutable static の再読 (codex 指摘)
+        if (nativeHelpersEnabled)
+        {
+            var qCounts = new int[qList.Count];
+            foreach (var kIndex in tcPArray)
+                foreach (var (qIndex, _, _, _) in CollectionsMarshal.AsSpan(list[kIndex]))
+                    qCounts[qIndex]++;
+            for (int q = 0; q < qList.Count; q++)
+                if (qCounts[q] > 0)
+                {
+                    qEntryK[q] = new int[qCounts[q]];
+                    qEntryN4[q] = new int[qCounts[q] * 4];
+                    qEntryR4[q] = new double[qCounts[q] * 4];
+                    qEntryLenz[q] = new Complex[qCounts[q] * dLen];
+                    qCounts[q] = 0;//以降は書き込み位置として再利用
+                }
+            foreach (var kIndex in tcPArray)
+                foreach (var (qIndex, n, r, lenz) in CollectionsMarshal.AsSpan(list[kIndex]))
+                {
+                    var pos = qCounts[qIndex]++;
+                    qEntryK[qIndex][pos] = kIndex;
+                    for (int m = 0; m < 4; m++)
+                    {
+                        qEntryN4[qIndex][pos * 4 + m] = n[m];
+                        qEntryR4[qIndex][pos * 4 + m] = r[m];
+                    }
+                    lenz.CopyTo(qEntryLenz[qIndex], pos * dLen);
+                }
+        }
+        var activeQCount = qEntryK.Count(e => e is not null);
+        var total = _thick.Sum(e => e.Length) * (nativeHelpersEnabled ? activeQCount : tcPArray.Length); // 260610Cl: 新経路は q 単位の進捗 //260711Cl EigenEnabled→snapshot
+        #endregion
+
         var PiecewiseQuadrature = true;
         if (PiecewiseQuadrature)
         #region 区分求積法アルゴリズム
@@ -2581,47 +2643,8 @@ public class BetheMethod
             // var total = _thick.Sum(e => e.Length) * tcPArray.Length; // 260610Cl 変更前: k 単位の進捗だった
             #endregion
 
-            #region 260610Cl 追加 (Phase2 候補A): list (k 単位) を q 単位に反転
-            // _STEM_InelasticQ は q 単位で W_q = U_q×TC_sub を GEMM 計算するため、
-            // 「この q を持つ全エントリ (kIndex, 近傍4点 n, 比率 r, レンズ関数)」を q ごとの平坦配列にまとめておく。
-            // tcPArray の順に詰めるので順序は決定的。
-            var qEntryK = new int[qList.Count][];
-            var qEntryN4 = new int[qList.Count][];
-            var qEntryR4 = new double[qList.Count][];
-            var qEntryLenz = new Complex[qList.Count][];
-            //if (EigenEnabled) //260711Cl 変更前: mutable static の再読 (codex 指摘)
-            if (nativeHelpersEnabled)
-            {
-                var qCounts = new int[qList.Count];
-                foreach (var kIndex in tcPArray)
-                    foreach (var (qIndex, _, _, _) in CollectionsMarshal.AsSpan(list[kIndex]))
-                        qCounts[qIndex]++;
-                for (int q = 0; q < qList.Count; q++)
-                    if (qCounts[q] > 0)
-                    {
-                        qEntryK[q] = new int[qCounts[q]];
-                        qEntryN4[q] = new int[qCounts[q] * 4];
-                        qEntryR4[q] = new double[qCounts[q] * 4];
-                        qEntryLenz[q] = new Complex[qCounts[q] * dLen];
-                        qCounts[q] = 0;//以降は書き込み位置として再利用
-                    }
-                foreach (var kIndex in tcPArray)
-                    foreach (var (qIndex, n, r, lenz) in CollectionsMarshal.AsSpan(list[kIndex]))
-                    {
-                        var pos = qCounts[qIndex]++;
-                        qEntryK[qIndex][pos] = kIndex;
-                        for (int m = 0; m < 4; m++)
-                        {
-                            qEntryN4[qIndex][pos * 4 + m] = n[m];
-                            qEntryR4[qIndex][pos * 4 + m] = r[m];
-                        }
-                        lenz.CopyTo(qEntryLenz[qIndex], pos * dLen);
-                    }
-            }
-            var activeQCount = qEntryK.Count(e => e is not null);
-            var total = _thick.Sum(e => e.Length) * (nativeHelpersEnabled ? activeQCount : tcPArray.Length); // 260610Cl: 新経路は q 単位の進捗 //260711Cl EigenEnabled→snapshot
+            //260801Cl: qEntry 構築 (旧 ここ) は EDX 別qパスからも参照するため区分求積ブロックの外 (PiecewiseQuadrature 宣言の直前) へ hoist した (設計書 §5.7-1。構築内容・順序は不変)
             count = 0;
-            #endregion
 
             #region メインのループ
             var sumLen = qList.Count * dLen; // 260402Cl ArrayPool 化
@@ -2910,9 +2933,194 @@ public class BetheMethod
                 for (int i = 0; i < width * height; i++)
                     image_both[t][d][i] = image_ela[t][d][i] + image_tds[t][d][i];
 
-        ResultSTEM = (new Size(width, height), resolution, thicknesses.ToArray(), defocusses.ToArray(), BaseRotation, image_both, image_ela, image_tds);
-
         #endregion
+
+        #region STEM-EDX 別qパス (260801Cl 追加)
+        //設計書 §3.4/§5.3/§5.7: 既存 STEM (Stage1-4 + 画像合成) 完了後の別 q パス。tcSlice / qEntry / Lenz を共有するが、
+        //既存 ela/tds/both の数値経路・バッファ・加算順には一切触れない (EDX on でも byte-exact が回帰ゲート)。
+        StemEdxResult edxResult = null;
+        if (ionData is not null)
+        {
+            bwSTEM.ReportProgress(0, "Calculating I_EDX(Q)");
+            var I_Edx = new Complex[qList.Count, tLen, dLen];
+            var uIonCache = new ConcurrentDictionary<(int H, int K, int L), Complex>();//uDictionary とは完全分離 (指示書 §2-3)。run-scoped
+            count = 0;
+            using (var threadLocalUq = new ThreadLocal<Complex[]>(() => GC.AllocateUninitializedArray<Complex>(bLen2), false))
+                Parallel.For(0, qList.Count, qIndex =>
+                {
+                    var entryCount = qEntryK[qIndex]?.Length ?? 0;
+                    if (entryCount == 0 || bwSTEM.CancellationPending) return;
+                    var Uq = threadLocalUq.Value;
+                    var sumD = new Complex[dLen];
+                    FillIonizationUq(Beams, qList[qIndex].Index, mat, ionData, kvac, Uq, 0, uIonCache);
+                    if (bwSTEM.CancellationPending) return;
+                    for (int t = 0; t < Thicknesses.Length; t++)
+                    {
+                        Array.Clear(sumD, 0, dLen);
+                        for (int si = 0; si < _thick[t].Length; si++)
+                            fixed (Complex* _tc = tcSlice[sliceOffset[t] + si], _Uq = Uq, _sumD = sumD, _lenz = qEntryLenz[qIndex])
+                            fixed (int* _k = qEntryK[qIndex], _n4 = qEntryN4[qIndex])
+                            fixed (double* _r4 = qEntryR4[qIndex])
+                                NativeWrapper.STEM_InelasticQ(bLen, dLen, entryCount, _Uq, _tc, _k, _n4, _r4, _lenz, _sumD);
+                        var coeff = 2 * Math.PI / kvac * tStep[t];
+                        for (int dIndex = 0; dIndex < dLen; dIndex++)
+                        {
+                            I_Edx[qIndex, t, dIndex] = sumD[dIndex] * coeff;
+                            if (t > 0)
+                                I_Edx[qIndex, t, dIndex] += I_Edx[qIndex, t - 1, dIndex];
+                        }
+                    }
+                    if (Interlocked.Increment(ref count) % 4 == 0) bwSTEM.ReportProgress((int)(1E6 * count / activeQCount), "Calculating I_EDX(Q)");
+                });
+            if (bwSTEM.CancellationPending) { e.Cancel = true; return; }
+
+            //±q 対称化 (§3.4 の順序厳守: 独立計算 → 残差記録 → 許容超過は補正せず fail → 合格時のみ対称化 → q=0 実部固定)
+            var qIndexOf = new Dictionary<(int, int, int), int>(qList.Count);//−q 対応付けは hkl 辞書 (qList 順序非依存、§5.7-6)
+            for (int i = 0; i < qList.Count; i++) qIndexOf.Add(qList[i].Index, i);
+            double iScale = 0;
+            for (int qIndex = 0; qIndex < qList.Count; qIndex++)
+                for (int t = 0; t < tLen; t++)
+                    for (int d = 0; d < dLen; d++)
+                        iScale = Math.Max(iScale, I_Edx[qIndex, t, d].Magnitude);
+            double hermMax = 0, q0ImagMax = 0;
+            if (iScale > 0)
+            {
+                //pass1: 残差計測のみ (書き換えない)
+                for (int qIndex = 0; qIndex < qList.Count; qIndex++)
+                {
+                    var (qh, qk, ql) = qList[qIndex].Index;
+                    if ((qh, qk, ql) == (0, 0, 0))
+                    {
+                        for (int t = 0; t < tLen; t++)
+                            for (int d = 0; d < dLen; d++)
+                                q0ImagMax = Math.Max(q0ImagMax, Math.Abs(I_Edx[qIndex, t, d].Imaginary) / iScale);
+                        continue;
+                    }
+                    if (!qIndexOf.TryGetValue((-qh, -qk, -ql), out var neg))
+                        throw new InvalidOperationException($"STEM-EDX: qList lacks the -q partner of ({qh},{qk},{ql}) — cannot symmetrize (hard fail)");
+                    for (int t = 0; t < tLen; t++)
+                        for (int d = 0; d < dLen; d++)
+                            hermMax = Math.Max(hermMax, (I_Edx[qIndex, t, d] - Conjugate(I_Edx[neg, t, d])).Magnitude / iScale);
+                }
+                //260801Cl codex 17巡: 許容値は 0.01 を上限に「厳しくする方向のみ」許可 (緩和で §3.4 の fail 原則を骨抜きにしない)。
+                //実測: 残差は方向グリッド div に対しほぼ O(h²) (div=10: 0.107 / 20: 0.018 / 32: 0.0093、bilinear 補間誤差由来) → v1 GUI は EDX 時 div≥48 を既定に
+                var hermTol = Math.Min(ionization.HermitianTolerance, 0.01);
+                if (hermMax > hermTol || q0ImagMax > hermTol)
+                    throw new InvalidOperationException($"STEM-EDX: non-Hermitian residual {hermMax:e3} (q=0 imag {q0ImagMax:e3}) exceeds tolerance {hermTol:e3} — refusing to symmetrize over a defect (設計書 §3.4). Increase the probe sampling (division) to reduce the bilinear-interpolation asymmetry.");
+                //pass2: 対称化 Ī(q)=(I(q)+I(−q)*)/2、q=0 は実部固定
+                var done = new bool[qList.Count];
+                for (int qIndex = 0; qIndex < qList.Count; qIndex++)
+                {
+                    if (done[qIndex]) continue;
+                    var (qh, qk, ql) = qList[qIndex].Index;
+                    if ((qh, qk, ql) == (0, 0, 0))
+                    {
+                        for (int t = 0; t < tLen; t++)
+                            for (int d = 0; d < dLen; d++)
+                                I_Edx[qIndex, t, d] = I_Edx[qIndex, t, d].Real;
+                        done[qIndex] = true;
+                        continue;
+                    }
+                    var neg = qIndexOf[(-qh, -qk, -ql)];
+                    for (int t = 0; t < tLen; t++)
+                        for (int d = 0; d < dLen; d++)
+                        {
+                            var avg = (I_Edx[qIndex, t, d] + Conjugate(I_Edx[neg, t, d])) / 2;
+                            I_Edx[qIndex, t, d] = avg;
+                            I_Edx[neg, t, d] = Conjugate(avg);
+                        }
+                    done[qIndex] = done[neg] = true;
+                }
+                //総発生量 (q=0 成分) の有意な負値は hard fail (§5.7-12)
+                if (qIndexOf.TryGetValue((0, 0, 0), out var q0Index))
+                    for (int t = 0; t < tLen; t++)
+                        for (int d = 0; d < dLen; d++)
+                            if (I_Edx[q0Index, t, d].Real < -1e-9 * iScale)
+                                throw new InvalidOperationException($"STEM-EDX: total vacancy generation is significantly negative (t={t}, d={d}: {I_Edx[q0Index, t, d].Real:e3})");
+            }
+
+            //実空間合成 (既存パターンの複製。§3.4: 実部採用 — .Magnitude は絶対規格化と線形性を壊すため使わない)
+            var image_edx = Thicknesses.Select(e1 => defocusses.Select(e2 => GC.AllocateUninitializedArray<double>(width * height)).ToArray()).ToArray();
+            var minPix = double.PositiveInfinity;
+            var minPixLock = new Lock();
+            Parallel.For(0, height, y =>
+            {
+                Complex[] phasor = Shared.Rent(qLen), acc = Shared.Rent(tdLen);
+                var localMin = double.PositiveInfinity;
+                try
+                {
+                    for (int x = 0; x < width; x++)
+                    {
+                        if (x % PhaseReanchor == 0)//行頭と PhaseReanchor 画素ごとに位相再アンカー (既存と同一)
+                        {
+                            var rVec = new PointD(resolution * (x - cX), -resolution * (y - cY)) + shift;
+                            for (int qIndex = 0; qIndex < qLen; qIndex++)
+                                phasor[qIndex] = Exp(qVecXY[qIndex] * rVec * TwoPiI);
+                        }
+                        acc.AsSpan(0, tdLen).Clear();
+                        for (int qIndex = 0; qIndex < qLen; qIndex++)
+                        {
+                            var tmp = phasor[qIndex];
+                            int i = 0;
+                            for (int t = 0; t < Thicknesses.Length; t++)
+                                for (int d = 0; d < dLen; d++, i++)
+                                    acc[i] += I_Edx[qIndex, t, d] * tmp;
+                            phasor[qIndex] *= stepPhasor[qIndex];
+                        }
+                        int j = 0;
+                        for (int t = 0; t < Thicknesses.Length; t++)
+                            for (int d = 0; d < dLen; d++, j++)
+                            {
+                                var v = acc[j].Real / radiusPix2;
+                                if (v < localMin) localMin = v;
+                                image_edx[t][d][x + y * width] = v;
+                            }
+                    }
+                }
+                finally
+                {
+                    Shared.Return(phasor); Shared.Return(acc);
+                    lock (minPixLock) { if (localMin < minPix) minPix = localMin; }
+                }
+            });
+
+            if (sourceSize > 0)
+                for (int t = 0; t < Thicknesses.Length; t++)
+                    for (int d = 0; d < dLen; d++)
+                        ImageProcess.GaussianBlurFast(ref image_edx[t][d], width, sourceSize / resolution);
+
+            //丸め/有限 q 打切り由来の小負値のみ clamp (量は MinPixelBeforeClamp で診断可視化)
+            for (int t = 0; t < Thicknesses.Length; t++)
+                for (int d = 0; d < dLen; d++)
+                    for (int i = 0; i < width * height; i++)
+                        if (image_edx[t][d][i] < 0) image_edx[t][d][i] = 0;
+
+            edxResult = new StemEdxResult
+            {
+                RunId = runId,
+                Channel = ionization.Channel,
+                Data = ionData,
+                Image = image_edx,
+                HermitianResidualMax = hermMax,
+                QZeroImagMax = q0ImagMax,
+                MinPixelBeforeClamp = double.IsPositiveInfinity(minPix) ? 0 : minPix,
+                UsedTailExtrapolation = ionData.Shape switch
+                {
+                    IonizationTableShape ts => ts.UsedTailExtrapolation,
+                    IonizationLTotalShape ls => ls.UsedTailExtrapolation,
+                    _ => false,
+                },
+                Iq = I_Edx,//対称化後の生値 (検証・回帰用、§6.2)
+                QIndices = [.. qList.Select(e1 => e1.Index)],
+                QEntryCounts = [.. qEntryK.Select(e1 => e1?.Length ?? 0)],
+            };
+        }
+        #endregion
+
+        //ResultSTEM = (new Size(width, height), resolution, thicknesses.ToArray(), defocusses.ToArray(), BaseRotation, image_both, image_ela, image_tds);//260801Cl 変更前 (内容不変、EDX と同時公開へ)
+        ResultEDX = edxResult;//260801Cl 追加: EDX 無し run では null に戻す (旧 run の EDX 残留禁止、§5.7-9)。ResultSTEM と隣接代入 = 同時公開
+        StemLastRunId = runId;
+        ResultSTEM = (new Size(width, height), resolution, thicknesses.ToArray(), defocusses.ToArray(), BaseRotation, image_both, image_ela, image_tds);
 
         return;
     }
@@ -3254,6 +3462,78 @@ public class BetheMethod
     }
 
     private readonly ConcurrentDictionary<(int Key1, int Key2), (Complex Real, Complex Imag)> uDictionary = [];
+
+    #region STEM-EDX U_ion (260801Cl 追加)
+
+    /// <summary>260801Cl 追加: STEM-EDX U_ion 行列要素 (設計書 §3.3 の確定式)。getU / uDictionary から完全独立。
+    /// U(G) = k_vac/(2πV_cell) Σ_a Occ_a e^{−M_a(G)} σ F(s) e^{−2πiG·r_a}、G = q+g_i−g_j、s = |G|/2。
+    /// 負位相 e^{−2πiG·r_a} を直接生成 (既存 getU の「正位相を作って共役」という経験的規約を持ち込まない)。
+    /// γ 補正は掛けない (σ/F の E0 依存に相対論効果込み、§3.3)。G は combined hkl から正準再構築する
+    /// (vq+vi−vj の浮動小数和はスレッド到達順で最下位ビットが揺れるため使わない、§5.7-4)。</summary>
+    public Complex ComputeIonizationU(in (int h, int k, int l) index, in Matrix3D mat, IonizationData data, in double kvac)//260801Cl internal→public (EdxCheck harness から検証するため)
+    {
+        var vec = mat * index;      //正準 G ベクトル (qList 構築と同じ mat = BaseRotation * MatrixInverseTransposed)
+        var s2 = vec.Length2 / 4;   //(|G|/2)² [nm⁻²] (getU:3143 と同一定義)
+        Span<double> sv = stackalloc double[1], fv = stackalloc double[1];
+        sv[0] = Math.Sqrt(s2);      //s = |G|/2 [nm⁻¹]
+        data.Shape.Evaluate(sv, fv);
+        Complex structureSum = 0;
+        foreach (var atoms in Crystal.Atoms)
+        {
+            if (atoms.AtomicNumber != data.Target.Z) continue;//元素フィルタ付き独立実装 (設計書 §2)
+            //DWF exp(−M_a(G)) は getU:3167-3186 と同一の m 算出 (等方 Biso / 非等方 B11..B31)。
+            //TDS の (1−exp) 構造や m==0 → imag=0 の分岐は持ち込まない (§3.2: G=0 で 1、総断面積は熱振動で消えない)
+            var dsf = atoms.Dsf;
+            var zero = dsf.IsZero;
+            double m = zero ? 0 : double.NaN;
+            foreach (var atom in atoms.Atom)
+            {
+                if (!zero && ((!dsf.UseIso && index != (0, 0, 0)) || double.IsNaN(m)))//非等方でg≠0の時、あるいは初めての時
+                {
+                    if (dsf.UseIso)
+                        m = dsf.Biso;
+                    else if (index == (0, 0, 0))
+                        m = double.IsNaN(dsf.Biso) ? dsf.Biso000 : dsf.Biso;
+                    else
+                    {
+                        var (H, K, L) = atom.Operation.ConvertPlaneIndex(index);
+                        m = (dsf.B11 * H * H + dsf.B22 * K * K + dsf.B33 * L * L + 2 * dsf.B12 * H * K + 2 * dsf.B23 * K * L + 2 * dsf.B31 * L * H) / s2;
+                    }
+                    if (double.IsNaN(m))
+                        m = 0;
+                }
+                structureSum += Exp(-m * s2 - TwoPiI * (atom * index)) * atoms.Occ;//負位相直生成
+            }
+        }
+        return kvac / (2 * Math.PI * Crystal.Volume) * data.TotalCrossSectionNm2 * fv[0] * structureSum;
+    }
+
+    /// <summary>260801Cl 追加: 1 つの q に対する EDX U_ion 行列 (bLen×bLen) を dest[destOffset..] へ column-major で生成する
+    /// (dest[destOffset + j*bLen + i] = U(i,j)、fillUq / native _STEM_InelasticQ と同じレイアウト契約)。
+    /// cache は run-scoped の combined-hkl キャッシュ (uDictionary と完全分離)。値は正準再構築 G から決定的に計算されるため、
+    /// ConcurrentDictionary の勝者スレッドに依らず同一値になる。</summary>
+    public void FillIonizationUq(Beam[] beams, in (int h, int k, int l) qIndex, in Matrix3D mat, IonizationData data, in double kvac,
+        Complex[] dest, int destOffset, ConcurrentDictionary<(int H, int K, int L), Complex> cache)//260801Cl internal→public (EdxCheck harness から検証するため)
+    {
+        var bLen = beams.Length;
+        for (int j = 0; j < bLen; j++)
+        {
+            var (jh, jk, jl) = beams[j].Index;
+            for (int i = 0; i < bLen; i++)
+            {
+                var (ih, ik, il) = beams[i].Index;
+                var hkl = (qIndex.h + ih - jh, qIndex.k + ik - jk, qIndex.l + il - jl);
+                if (!cache.TryGetValue(hkl, out var u))
+                {
+                    u = ComputeIonizationU(hkl, mat, data, kvac);
+                    cache.TryAdd(hkl, u);
+                }
+                dest[destOffset + j * bLen + i] = u;
+            }
+        }
+    }
+
+    #endregion
     #endregion
 
     #region ポテンシャルのマトリックス
