@@ -199,14 +199,23 @@ public class BetheMethod
     public event ProgressChangedEventHandler StemProgressChanged;
     public event RunWorkerCompletedEventHandler StemCompleted;
 
-    /// <summary>Result_STEM_Ela[thickness][defocus]</summary>
-    public (Size Size, double Resolution, double[] Thicknesses, double[] Defocusses, Matrix3D rot, double[][][] ImageBoth, double[][][] ImageEla, double[][][] ImageTDS) ResultSTEM;
+    //260801Cl 変更前: public (...) ResultSTEM; (public field) + public StemEdxResult ResultEDX + public long StemLastRunId (v0a の隣接 3 代入は CLR 的に原子的でなかった)
+    //260801Cl 変更 (codex 20巡、設計書 §5.5): primary は StemSimulationResult の単一参照を Volatile.Write で一度だけ公開。
+    //失敗・cancel した run は公開されない (以前の成功結果が残る)。StemEdxResult/ResultEDX/StemLastRunId は廃止 (EdxSignals/RunId へ)。
+    private StemSimulationResult _resultStem;
 
-    /// <summary>260801Cl 追加: STEM-EDX 結果 (v0a 内部形、設計書 §5.5/§5.7-9)。ResultSTEM と同一 run の worker 終端で同時公開され、
-    /// EDX 無しの run では null に戻る (旧 run の EDX + 新 run の TDS が混在する瞬間を作らない)。</summary>
-    public StemEdxResult ResultEDX;
-    /// <summary>260801Cl 追加: 直近完了 STEM run の ID (ResultEDX.RunId と照合して鮮度検証可)</summary>
-    public long StemLastRunId;
+    /// <summary>260801Cl 追加: STEM run の primary 結果 (設計書 §5.5)。worker 終端で一度だけ公開。EDX off の run では EdxSignals が空配列</summary>
+    public StemSimulationResult ResultStem => Volatile.Read(ref _resultStem);
+
+    /// <summary>legacy 互換 view (Result_STEM_Ela[thickness][defocus])。ResultStem から導出 (未実行時は default = ImageBoth null)</summary>
+    public (Size Size, double Resolution, double[] Thicknesses, double[] Defocusses, Matrix3D rot, double[][][] ImageBoth, double[][][] ImageEla, double[][][] ImageTDS) ResultSTEM
+    {
+        get
+        {
+            var r = Volatile.Read(ref _resultStem);
+            return r is null ? default : (r.Size, r.Resolution, r.Thicknesses, r.Defocusses, r.Rotation, r.ImageBoth.Backing, r.ImageEla.Backing, r.ImageTDS.Backing);
+        }
+    }
     private long _stemRunCounter;
 
     /// <summary>Result_STEM_TDS[thickness][defocus]</summary>
@@ -2174,33 +2183,44 @@ public class BetheMethod
             bwSTEM.CancelAsync();
     }
     //260801Cl 旧シグネチャ: public void RunSTEM(..., Solver solver = Solver.Auto, int thread = 1)
+    //260801Cl 旧シグネチャ2 (v0a): public void RunSTEM(..., Solver solver = Solver.Auto, int thread = 1, StemIonizationRequest ionization = null) — 1 チャネルのみ
     public void RunSTEM(int maxNumOfBloch, double voltage, double cs, double delta, double sliceThickness, Size imageSize, double resolution, double sourceSize,
         Matrix3D baseRotation, double[] thicknesses, double[] defocusses,
         Vector3DBase[] beamDirections, double convergenceAngle, double detAngleInner, double detAngleOuter,
-        Solver solver = Solver.Auto, int thread = 1, StemIonizationRequest ionization = null)//260801Cl ionization 追加 (オーバーロードでなくデフォルト引数の規約)
+        Solver solver = Solver.Auto, int thread = 1, StemIonizationRequest[] ionizations = null)//260801Cl 多チャネル配列受理へ変更 (§5.9-1、codex 20巡。オーバーロードでなくデフォルト引数の規約)
     {
         if (bwSTEM.IsBusy) return;//260711Cl 追加: busy 時は instance state を変更せず抜ける (旧: 判定前に Thicknesses 等を代入しており、実行中 worker が参照する state を二重呼び出しが書き換え得た。codex 指摘)
-        //260801Cl 追加: EDX チャネルは run 開始前に immutable IonizationData へ解決する (設計書 §5.4。E0 範囲外・未収録 Z は
-        //ここで同期的に throw し、worker を起動しない)。v0a は 1 チャネルのみ明示受理 (§5.7-12)
-        var ionData = ionization is null ? null : IonizationDataProvider.Resolve(ionization.Channel, voltage);
+        //260801Cl 多チャネル検査 (codex 20巡): defensive copy → null 要素 / 非有限・負 tolerance / 重複 (Z,Shell) を hard error → 全チャネル同期 Resolve (fail-fast、worker を起動しない)
+        var requests = ionizations is null || ionizations.Length == 0 ? [] : (StemIonizationRequest[])ionizations.Clone();
+        foreach (var r in requests)
+        {
+            if (r is null) throw new ArgumentException("STEM-EDX: ionizations contains a null request", nameof(ionizations));
+            if (!double.IsFinite(r.HermitianTolerance) || r.HermitianTolerance < 0)//NaN は残差比較 (hermMax > tol) をすり抜けるため run 前に拒否
+                throw new ArgumentException($"STEM-EDX: HermitianTolerance must be finite and >= 0 (got {r.HermitianTolerance})", nameof(ionizations));
+        }
+        if (requests.Select(r => r.Channel).Distinct().Count() != requests.Length)
+            throw new ArgumentException("STEM-EDX: duplicate (Z, Shell) channels are not allowed — pass each channel once", nameof(ionizations));
+        var ionData = new IonizationData[requests.Length];
+        for (int i = 0; i < requests.Length; i++)
+            ionData[i] = IonizationDataProvider.Resolve(requests[i].Channel, voltage);
         var runId = Interlocked.Increment(ref _stemRunCounter);
         MaxNumOfBloch = maxNumOfBloch;
 
         AccVoltage = voltage;
         BaseRotation = new Matrix3D(baseRotation);
-        BeamDirections = beamDirections;
-        Thicknesses = thicknesses;
-        //bwSTEM.RunWorkerAsync((solver, thread, cs, delta, sliceThickness, convergenceAngle, detAngleInner, detAngleOuter, thicknesses, defocusses, imageSize, resolution, sourceSize));//260801Cl 変更前
-        bwSTEM.RunWorkerAsync((solver, thread, cs, delta, sliceThickness, convergenceAngle, detAngleInner, detAngleOuter, thicknesses, defocusses, imageSize, resolution, sourceSize, ionization, ionData, runId));
+        BeamDirections = (Vector3DBase[])beamDirections.Clone();//260801Cl 呼び出し元配列の参照を worker に渡さない (§5.4。旧: 参照代入)
+        Thicknesses = (double[])thicknesses.Clone();//260801Cl 同上
+        //bwSTEM.RunWorkerAsync((solver, thread, cs, delta, sliceThickness, convergenceAngle, detAngleInner, detAngleOuter, thicknesses, defocusses, imageSize, resolution, sourceSize, ionization, ionData, runId));//260801Cl 変更前 (1 チャネル)
+        bwSTEM.RunWorkerAsync((solver, thread, cs, delta, sliceThickness, convergenceAngle, detAngleInner, detAngleOuter, Thicknesses, (double[])defocusses.Clone(), imageSize, resolution, sourceSize, requests, ionData, runId));
     }
     public unsafe void StemDoWork(object sender, DoWorkEventArgs e)
     {
         //MathNetの行列の内部は、1列目の要素、2列目の要素、という順番で格納されている
 
-        //var (solver, thread, cs, delta, sliceThickness, convergenceAngle, detAngleInner, detAngleOuter, thicknesses, defocusses, imageSize, resolution, sourceSize)
-        //    = ((Solver, int, double, double, double, double, double, double, double[], double[], Size, double, double))e.Argument;//260801Cl 変更前
-        var (solver, thread, cs, delta, sliceThickness, convergenceAngle, detAngleInner, detAngleOuter, thicknesses, defocusses, imageSize, resolution, sourceSize, ionization, ionData, runId)
-            = ((Solver, int, double, double, double, double, double, double, double[], double[], Size, double, double, StemIonizationRequest, IonizationData, long))e.Argument;//260801Cl EDX 引数追加
+        //var (solver, thread, cs, delta, sliceThickness, convergenceAngle, detAngleInner, detAngleOuter, thicknesses, defocusses, imageSize, resolution, sourceSize, ionization, ionData, runId)
+        //    = ((Solver, int, double, double, double, double, double, double, double[], double[], Size, double, double, StemIonizationRequest, IonizationData, long))e.Argument;//260801Cl 変更前 (1 チャネル)
+        var (solver, thread, cs, delta, sliceThickness, convergenceAngle, detAngleInner, detAngleOuter, thicknesses, defocusses, imageSize, resolution, sourceSize, requests, ionData, runId)
+            = ((Solver, int, double, double, double, double, double, double, double[], double[], Size, double, double, StemIonizationRequest[], IonizationData[], long))e.Argument;//260801Cl 多チャネル化 (codex 20巡)
 
         var diameterPix = (int)Math.Sqrt(BeamDirections.Length);
         var radiusPix = diameterPix / 2.0;
@@ -2935,24 +2955,37 @@ public class BetheMethod
 
         #endregion
 
-        #region STEM-EDX 別qパス (260801Cl 追加)
+        #region STEM-EDX 別qパス (260801Cl 追加、260801Cl 多チャネル化 = codex 20巡)
         //設計書 §3.4/§5.3/§5.7: 既存 STEM (Stage1-4 + 画像合成) 完了後の別 q パス。tcSlice / qEntry / Lenz を共有するが、
         //既存 ela/tds/both の数値経路・バッファ・加算順には一切触れない (EDX on でも byte-exact が回帰ゲート)。
-        StemEdxResult edxResult = null;
-        if (ionData is not null)
+        //多チャネル: チャネル外側ループ・q 内側 (§5.3 worker-local Uq バッファ 1 本を殻ごと順次再利用)。
+        //uIonCache はチャネルごとに新規 (持ち越し禁止)。1 チャネルでも失敗すれば throw → aggregate 未公開 = 全結果非公開。
+        var edxSignals = new StemSignalMap[requests.Length];
+        (int H, int K, int L)[] edxQIndices = [];
+        int[] edxQEntryCounts = [];
+        if (requests.Length > 0)
         {
-            bwSTEM.ReportProgress(0, "Calculating I_EDX(Q)");
+            edxQIndices = [.. qList.Select(e1 => e1.Index)];
+            edxQEntryCounts = [.. qEntryK.Select(e1 => e1?.Length ?? 0)];
+        }
+        using (var threadLocalUqShared = new ThreadLocal<Complex[]>(() => GC.AllocateUninitializedArray<Complex>(bLen2), false))
+        for (int chIndex = 0; chIndex < requests.Length; chIndex++)
+        {
+            var ionization = requests[chIndex];
+            var chData = ionData[chIndex];
+            var edxStage = $"Calculating I_EDX(Q) (ch {chIndex + 1}/{requests.Length})";//前方一致 "Calculating I_EDX(Q)" を厳密維持 (GUI 移行までの暫定文字列プロトコル)
+            bwSTEM.ReportProgress(0, edxStage);
             var I_Edx = new Complex[qList.Count, tLen, dLen];
-            var uIonCache = new ConcurrentDictionary<(int H, int K, int L), Complex>();//uDictionary とは完全分離 (指示書 §2-3)。run-scoped
+            var uIonCache = new ConcurrentDictionary<(int H, int K, int L), Complex>();//uDictionary とは完全分離 (指示書 §2-3)。channel-scoped (チャネル間持ち越し禁止)
             count = 0;
-            using (var threadLocalUq = new ThreadLocal<Complex[]>(() => GC.AllocateUninitializedArray<Complex>(bLen2), false))
+            var threadLocalUq = threadLocalUqShared;//260801Cl 変更: チャネル間で worker バッファ再利用 (旧: チャネルごとに using で生成)
                 Parallel.For(0, qList.Count, qIndex =>
                 {
                     var entryCount = qEntryK[qIndex]?.Length ?? 0;
                     if (entryCount == 0 || bwSTEM.CancellationPending) return;
                     var Uq = threadLocalUq.Value;
                     var sumD = new Complex[dLen];
-                    FillIonizationUq(Beams, qList[qIndex].Index, mat, ionData, kvac, Uq, 0, uIonCache);
+                    FillIonizationUq(Beams, qList[qIndex].Index, mat, chData, kvac, Uq, 0, uIonCache);
                     if (bwSTEM.CancellationPending) return;
                     for (int t = 0; t < Thicknesses.Length; t++)
                     {
@@ -2970,12 +3003,14 @@ public class BetheMethod
                                 I_Edx[qIndex, t, dIndex] += I_Edx[qIndex, t - 1, dIndex];
                         }
                     }
-                    if (Interlocked.Increment(ref count) % 4 == 0) bwSTEM.ReportProgress((int)(1E6 * count / activeQCount), "Calculating I_EDX(Q)");
+                    if (Interlocked.Increment(ref count) % 4 == 0) bwSTEM.ReportProgress((int)(1E6 * count / activeQCount), edxStage);
                 });
             if (bwSTEM.CancellationPending) { e.Cancel = true; return; }
 
             //260801Cl 追加: 対称化前スナップショット (fixture 凍結用、設計書 §6.3。対称化が共役・符号バグを隠すのを防ぐ。通常 run は null)
             var iqRaw = ionization.CaptureRawIq ? (Complex[,,])I_Edx.Clone() : null;
+            //260801Cl codex 17巡: 許容値は 0.01 を上限に「厳しくする方向のみ」許可 (緩和で §3.4 の fail 原則を骨抜きにしない)。StemSignalMap へ記録するため iScale 判定の外へ hoist
+            var hermTol = Math.Min(ionization.HermitianTolerance, 0.01);
 
             //±q 対称化 (§3.4 の順序厳守: 独立計算 → 残差記録 → 許容超過は補正せず fail → 合格時のみ対称化 → q=0 実部固定)
             var qIndexOf = new Dictionary<(int, int, int), int>(qList.Count);//−q 対応付けは hkl 辞書 (qList 順序非依存、§5.7-6)
@@ -3005,9 +3040,7 @@ public class BetheMethod
                         for (int d = 0; d < dLen; d++)
                             hermMax = Math.Max(hermMax, (I_Edx[qIndex, t, d] - Conjugate(I_Edx[neg, t, d])).Magnitude / iScale);
                 }
-                //260801Cl codex 17巡: 許容値は 0.01 を上限に「厳しくする方向のみ」許可 (緩和で §3.4 の fail 原則を骨抜きにしない)。
-                //実測: 残差は方向グリッド div に対しほぼ O(h²) (div=10: 0.107 / 20: 0.018 / 32: 0.0093、bilinear 補間誤差由来) → v1 GUI は EDX 時 div≥48 を既定に
-                var hermTol = Math.Min(ionization.HermitianTolerance, 0.01);
+                //実測: 残差は方向グリッド div に対しほぼ O(h²) (div=10: 0.107 / 20: 0.018 / 32: 0.0093 / 48: 0.0017、bilinear 補間誤差由来) → GUI は EDX 時 div≥48 を既定に
                 if (hermMax > hermTol || q0ImagMax > hermTol)
                     throw new InvalidOperationException($"STEM-EDX: non-Hermitian residual {hermMax:e3} (q=0 imag {q0ImagMax:e3}) exceeds tolerance {hermTol:e3} — refusing to symmetrize over a defect (設計書 §3.4). Increase the probe sampling (division) to reduce the bilinear-interpolation asymmetry.");
                 //pass2: 対称化 Ī(q)=(I(q)+I(−q)*)/2、q=0 は実部固定
@@ -3098,33 +3131,48 @@ public class BetheMethod
                     for (int i = 0; i < width * height; i++)
                         if (image_edx[t][d][i] < 0) image_edx[t][d][i] = 0;
 
-            edxResult = new StemEdxResult
+            //edxResult = new StemEdxResult {...};//260801Cl 変更前 (v0a の 1 チャネル内部形。git 履歴 4e0f39e 参照)
+            edxSignals[chIndex] = new StemSignalMap
             {
-                RunId = runId,
-                Channel = ionization.Channel,
-                Data = ionData,
-                Image = image_edx,
+                Data = chData,
+                Quantity = SignalQuantity.IonizationVacanciesGenerated,
+                Normalization = SignalNormalization.ModelAbsoluteNotAudited,
+                Image = new StemImageStack(new Size(width, height), image_edx),
                 HermitianResidualMax = hermMax,
+                HermitianToleranceApplied = hermTol,
                 QZeroImagMax = q0ImagMax,
                 MinPixelBeforeClamp = double.IsPositiveInfinity(minPix) ? 0 : minPix,
-                UsedTailExtrapolation = ionData.Shape switch
+                UsedTailExtrapolation = chData.Shape switch
                 {
                     IonizationTableShape ts => ts.UsedTailExtrapolation,
                     IonizationLTotalShape ls => ls.UsedTailExtrapolation,
                     _ => false,
                 },
                 Iq = I_Edx,//対称化後の生値 (検証・回帰用、§6.2)
-                IqBeforeSymmetrization = iqRaw,//260801Cl 追加 (fixture 用、通常 null)
-                QIndices = [.. qList.Select(e1 => e1.Index)],
-                QEntryCounts = [.. qEntryK.Select(e1 => e1?.Length ?? 0)],
+                IqBeforeSymmetrization = iqRaw,//fixture 用 (通常 null)
             };
         }
         #endregion
 
-        //ResultSTEM = (new Size(width, height), resolution, thicknesses.ToArray(), defocusses.ToArray(), BaseRotation, image_both, image_ela, image_tds);//260801Cl 変更前 (内容不変、EDX と同時公開へ)
-        ResultEDX = edxResult;//260801Cl 追加: EDX 無し run では null に戻す (旧 run の EDX 残留禁止、§5.7-9)。ResultSTEM と隣接代入 = 同時公開
-        StemLastRunId = runId;
-        ResultSTEM = (new Size(width, height), resolution, thicknesses.ToArray(), defocusses.ToArray(), BaseRotation, image_both, image_ela, image_tds);
+        //ResultEDX = edxResult; StemLastRunId = runId; ResultSTEM = (...);//260801Cl 変更前 (隣接 3 代入は CLR 的に原子的でない)
+        //260801Cl 変更 (codex 20巡): publish 直前の最終 cancel 確認 → 完全構築済み aggregate を単一 Volatile.Write で一度だけ公開 (§5.5)。
+        //失敗・cancel 時はここに到達しない = 以前の成功結果が残る (部分公開・混在公開の瞬間を作らない)
+        if (bwSTEM.CancellationPending) { e.Cancel = true; return; }
+        Volatile.Write(ref _resultStem, new StemSimulationResult
+        {
+            RunId = runId,
+            Size = new Size(width, height),
+            Resolution = resolution,
+            Thicknesses = [.. thicknesses],
+            Defocusses = [.. defocusses],
+            Rotation = new Matrix3D(BaseRotation),
+            ImageEla = new StemImageStack(new Size(width, height), image_ela),
+            ImageTDS = new StemImageStack(new Size(width, height), image_tds),
+            ImageBoth = new StemImageStack(new Size(width, height), image_both),
+            EdxSignals = edxSignals,
+            QIndices = edxQIndices,
+            QEntryCounts = edxQEntryCounts,
+        });
 
         return;
     }

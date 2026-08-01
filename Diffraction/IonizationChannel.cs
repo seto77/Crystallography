@@ -51,41 +51,97 @@ public enum SignalNormalization { ModelAbsoluteNotAudited, PerIncidentElectron }
 /// <summary>260801Cl 追加: 表示正規化 (GUI 専用)。</summary>
 public enum DisplayNormalization { PerMaximum, Absolute }
 
-/// <summary>260801Cl 追加: RunSTEM への EDX 要求。v0a は 1 チャネルのみ明示受理 (codex 16巡)。
+/// <summary>260801Cl 追加: RunSTEM への EDX 要求 (多チャネルは配列で渡す。同一 (Z,Shell) の重複は hard error、codex 20巡)。
 /// HermitianTolerance は ±q 非 Hermitian 残差 (相対) の許容値。超過時は対称化せず hard fail (設計書 §3.4)。
-/// 0.01 を上限として「厳しくする方向のみ」有効 (それ以上は 0.01 に clamp、codex 17巡)。
-/// 残差は方向グリッド div に対しほぼ O(h²) (bilinear 補間誤差由来): div=10 で ~0.11 / 32 で ~0.009 実測。
-/// CaptureRawIq=true で ±q 対称化前の I(q,t,d) を StemEdxResult.IqBeforeSymmetrization に保持 (fixture 凍結用、設計書 §6.3。通常 run は false)。</summary>
+/// 0.01 を上限として「厳しくする方向のみ」有効 (それ以上は 0.01 に clamp、codex 17巡)。非有限・負値は run 前に hard error。
+/// 残差は方向グリッド div に対しほぼ O(h²) (bilinear 補間誤差由来): div=10 で ~0.11 / 32 で ~0.009 / 48 で ~0.0017 実測。
+/// CaptureRawIq=true で ±q 対称化前の I(q,t,d) を StemSignalMap.IqBeforeSymmetrization に保持 (fixture 凍結用、設計書 §6.3。通常 run は false)。</summary>
 public sealed record StemIonizationRequest(IonizationChannelSpec Channel, double HermitianTolerance = 0.01, bool CaptureRawIq = false);//260801Cl CaptureRawIq 追加 (旧: (Channel, HermitianTolerance) の 2 引数)
 
-/// <summary>260801Cl 追加: STEM-EDX 結果 (v0a 内部形。v1 で StemSimulationResult へ統合予定)。
-/// ResultSTEM と同一 run の worker 終端で同時公開される (RunId で対応検証可)。</summary>
-public sealed class StemEdxResult
+//260801Cl 削除: StemEdxResult (v0a の 1 チャネル内部形) は StemSimulationResult/StemSignalMap (§5.5、codex 20巡) に置換。旧定義は git 履歴 (Crystallography 4e0f39e) 参照。
+
+/// <summary>260801Cl 追加: STEM 画像スタック (storage-neutral な公開型、codex 20巡)。
+/// v0b の backing は既存 jagged [t][d][pix] (byte-exact 接続コスト優先)。将来連続 double[] へ変えても公開 API は不変。</summary>
+public sealed class StemImageStack
 {
-    public long RunId;
-    public IonizationChannelSpec Channel;
-    public IonizationData Data;
-    public SignalQuantity Quantity = SignalQuantity.IonizationVacanciesGenerated;
-    public SignalNormalization Normalization = SignalNormalization.ModelAbsoluteNotAudited;
-    /// <summary>Image[thickness][defocus][pixel]</summary>
-    public double[][][] Image;
+    private readonly double[][][] _planes; // [thickness][defocus][pixel]
+    public System.Drawing.Size Size { get; }
+    public int ThicknessCount => _planes.Length;
+    public int DefocusCount => _planes.Length > 0 ? _planes[0].Length : 0;
+
+    internal StemImageStack(System.Drawing.Size size, double[][][] planes) { Size = size; _planes = planes; }
+
+    public ReadOnlyMemory<double> GetPlane(int thicknessIndex, int defocusIndex) => _planes[thicknessIndex][defocusIndex];
+
+    /// <summary>legacy ResultSTEM view 用の内部 backing (公開後は変更禁止)</summary>
+    internal double[][][] Backing => _planes;
+}
+
+/// <summary>260801Cl 追加: 1 チャネル分の STEM-EDX 信号マップ (設計書 §5.5)。公開後は不変。</summary>
+public sealed class StemSignalMap
+{
+    public IonizationData Data { get; init; }
+    /// <summary>チャネル指定 (Data.Target から導出、二重保存を避ける)</summary>
+    public IonizationChannelSpec Channel => Data.Target;
+    public SignalQuantity Quantity { get; init; }
+    public SignalNormalization Normalization { get; init; }
+    /// <summary>実空間マップ (±q 対称化・実部合成・負値 clamp 済み)</summary>
+    public StemImageStack Image { get; init; }
     /// <summary>±q 対称化前の非 Hermitian 残差最大値 (相対)</summary>
-    public double HermitianResidualMax;
+    public double HermitianResidualMax { get; init; }
+    /// <summary>この run に適用された許容値 (clamp 後)</summary>
+    public double HermitianToleranceApplied { get; init; }
     /// <summary>q=0 の虚部残差最大値 (相対)</summary>
-    public double QZeroImagMax;
+    public double QZeroImagMax { get; init; }
     /// <summary>clamp 前の最小画素値 (負値診断)</summary>
-    public double MinPixelBeforeClamp;
+    public double MinPixelBeforeClamp { get; init; }
     /// <summary>形状評価が s>4 Å⁻¹ の tail 外挿を使ったか (診断フラグ、silent extrapolation 禁止の契約)</summary>
-    public bool UsedTailExtrapolation;
+    public bool UsedTailExtrapolation { get; init; }
     /// <summary>対称化後の I(q,t,d) (検証・回帰用の生値。設計書 §6.2「保存対象は最終画像だけでなく」)</summary>
-    public Complex[,,] Iq;
-    /// <summary>260801Cl 追加: ±q 対称化前の I(q,t,d) (StemIonizationRequest.CaptureRawIq=true の run のみ、通常 run は null。
-    /// fixture 凍結用 §6.3 — 対称化後だけでは位相符号・共役ミスが隠れるため)</summary>
-    public Complex[,,] IqBeforeSymmetrization;
-    /// <summary>Iq の q 次元に対応する combined hkl</summary>
-    public (int H, int K, int L)[] QIndices;
-    /// <summary>各 q のエントリ数 (aperture 重なりで有効だった方向数。0 = 未計算)</summary>
-    public int[] QEntryCounts;
+    public Complex[,,] Iq { get; init; }
+    /// <summary>±q 対称化前の I(q,t,d) (CaptureRawIq=true の run のみ、通常 run は null。fixture 用 §6.3 — 対称化後だけでは位相符号・共役ミスが隠れるため)</summary>
+    public Complex[,,] IqBeforeSymmetrization { get; init; }
+}
+
+/// <summary>260801Cl 追加: STEM run の primary 結果 (設計書 §5.5、codex 20巡)。worker 終端で一度だけ Volatile.Write で公開され、以後不変。
+/// 失敗・cancel した run は公開されない (以前の成功結果が残る)。legacy ResultSTEM タプルはこの型からの互換 view。</summary>
+public sealed class StemSimulationResult
+{
+    public long RunId { get; init; }
+    public System.Drawing.Size Size { get; init; }
+    public double Resolution { get; init; }
+    public double[] Thicknesses { get; init; }
+    public double[] Defocusses { get; init; }
+    public Matrix3D Rotation { get; init; }
+    public StemImageStack ImageEla { get; init; }
+    public StemImageStack ImageTDS { get; init; }
+    public StemImageStack ImageBoth { get; init; }
+    /// <summary>EDX 信号 (要求順を保持。EDX off の run では空配列、null にはならない)</summary>
+    public StemSignalMap[] EdxSignals { get; init; }
+    /// <summary>EDX の q 次元に対応する combined hkl (全チャネル共通。EDX off では空配列)</summary>
+    public (int H, int K, int L)[] QIndices { get; init; }
+    /// <summary>各 q のエントリ数 (aperture 重なりで有効だった方向数。0 = 未計算。EDX off では空配列)</summary>
+    public int[] QEntryCounts { get; init; }
+}
+
+/// <summary>260801Cl 追加: チャネル利用可否 (GUI は本 enum を 11 言語の表示文へ変換する。例外文字列を UI に直接出さない。設計書 §5.9-3)</summary>
+public enum IonizationAvailability { Available, BelowEdge, UnsupportedShell, UnsupportedElement, E0OutOfRange }
+
+/// <summary>260801Cl 追加: GUI 向けチャネル照会結果 (設計書 §5.9-3。GUI 側に Z 範囲をハードコードしない)。
+/// Status==Available は「同じ引数で Resolve が成功する」と同値 (codex 20巡の契約)。未定義値は NaN。</summary>
+public sealed record IonizationChannelInfo
+{
+    public IonizationAvailability Status { get; init; }
+    /// <summary>吸収端 [keV] (テーブル収録があれば E0 範囲外でも返す。UnsupportedElement/UnsupportedShell では NaN)</summary>
+    public double EdgeEnergyKeV { get; init; } = double.NaN;
+    /// <summary>過電圧 U = E0/E_edge (edge が取れれば返す)</summary>
+    public double Overvoltage { get; init; } = double.NaN;
+    /// <summary>総イオン化断面積 [nm²] (Available のみ。それ以外は NaN)</summary>
+    public double SigmaNm2 { get; init; } = double.NaN;
+    /// <summary>σ の出所 (provider 品質タグ、§5.6)</summary>
+    public IonizationDataProvenance CrossSectionSource { get; init; }
+    /// <summary>形状の出所 (provider 品質タグ、§5.6)</summary>
+    public IonizationDataProvenance ShapeSource { get; init; }
 }
 
 #endregion
@@ -671,6 +727,10 @@ public static class IonizationDataProvider
                 {
                     var ch = table.GetChannel(IonizationFsTable.ShellCodeK, spec.Z);
                     var sigma = BoteSalvat.SigmaNm2(spec.Z, 1, eV);
+                    //260801Cl 追加 (codex 20巡): below-edge は hard error (σ=0 の無意味な解決を許すと Inspect==Available ⇔ Resolve 成功 の同値性が崩れる。
+                    //現行 dataset では全収録チャネルが 30 keV で励起可能なため実データでは到達しない)
+                    if (sigma <= 0)
+                        throw new NotSupportedException($"Z={spec.Z} K: below edge at E0={e0KeV} keV (σ=0)");
                     return new IonizationData(spec, ch.EthKeV, sigma, ch.BuildShape(e0KeV), sigmaProvenance, shapeProvenance);
                 }
             case IonizationShell.LTotal:
@@ -682,13 +742,62 @@ public static class IonizationDataProvider
                     var total = s1 + s2 + s3;
                     if (total <= 0)
                         throw new NotSupportedException($"Z={spec.Z} LTotal: all L subshells closed at E0={e0KeV} keV");
-                    var shape = new IonizationLTotalShape(chL1.BuildShape(e0KeV), s1, chL23.BuildShape(e0KeV), s2 + s3);
+                    //var shape = new IonizationLTotalShape(chL1.BuildShape(e0KeV), s1, chL23.BuildShape(e0KeV), s2 + s3);//260801Cl 変更前: σ=0 の閉じた成分も無条件に BuildShape していた
+                    //260801Cl 変更 (codex 20巡): σ>0 の成分だけ shape を構築する (σ=0 成分は null + 重み 0 として合成。Evaluate は w>0 の成分しか触らない契約)
+                    var shape = new IonizationLTotalShape(s1 > 0 ? chL1.BuildShape(e0KeV) : null, s1, s2 + s3 > 0 ? chL23.BuildShape(e0KeV) : null, s2 + s3);
                     var edge = Math.Min(chL1.EthKeV, chL23.EthKeV);
                     return new IonizationData(spec, edge, total, shape, sigmaProvenance, shapeProvenance);
                 }
             default:
                 throw new NotSupportedException($"IonizationShell.{spec.Shell} is not available in v1 (use K or LTotal)");
         }
+    }
+
+    /// <summary>260801Cl 追加: GUI 向け照会 (設計書 §5.9-3、codex 20巡)。throw せず状態 enum を返す。
+    /// Status==Available ⇔ 同じ引数で Resolve が成功する (両者が別ロジックで漂流しない契約 — Inspect の判定変更時は同値性テストを更新)。
+    /// 判定順: UnsupportedShell → UnsupportedElement → E0OutOfRange (edge/U は返す) → BelowEdge (edge/U は返す) → Available。</summary>
+    public static IonizationChannelInfo Inspect(IonizationChannelSpec spec, double e0KeV, IonizationFsTable table = null)
+    {
+        ArgumentNullException.ThrowIfNull(spec);
+        table ??= IonizationFsTable.Default;
+        var shapeProvenance = new IonizationDataProvenance(table.ModelId, table.DatasetVersion, "self-generated DHFS tables (tools/IonizationGen prod)");
+        var sigmaProvenance = new IonizationDataProvenance("Bote-Salvat-2008", "xion.f/ADNDT95", table.BoteRef);
+
+        if (spec.Shell is not (IonizationShell.K or IonizationShell.LTotal))
+            return new IonizationChannelInfo { Status = IonizationAvailability.UnsupportedShell };
+
+        double edge;
+        if (spec.Shell == IonizationShell.K)
+        {
+            if (!table.Contains(IonizationFsTable.ShellCodeK, spec.Z))
+                return new IonizationChannelInfo { Status = IonizationAvailability.UnsupportedElement };
+            edge = table.GetChannel(IonizationFsTable.ShellCodeK, spec.Z).EthKeV;
+        }
+        else
+        {
+            if (!table.Contains(IonizationFsTable.ShellCodeL1, spec.Z) || !table.Contains(IonizationFsTable.ShellCodeL23, spec.Z))
+                return new IonizationChannelInfo { Status = IonizationAvailability.UnsupportedElement };
+            edge = Math.Min(table.GetChannel(IonizationFsTable.ShellCodeL1, spec.Z).EthKeV, table.GetChannel(IonizationFsTable.ShellCodeL23, spec.Z).EthKeV);
+        }
+        var overvoltage = e0KeV / edge;
+        var partial = new IonizationChannelInfo
+        {
+            EdgeEnergyKeV = edge,
+            Overvoltage = overvoltage,
+            CrossSectionSource = sigmaProvenance,
+            ShapeSource = shapeProvenance,
+        };
+        if (!(e0KeV >= 30.0 && e0KeV <= 400.0))
+            return partial with { Status = IonizationAvailability.E0OutOfRange };
+        var eV = e0KeV * 1e3;
+        var sigma = spec.Shell == IonizationShell.K
+            ? BoteSalvat.SigmaNm2(spec.Z, 1, eV)
+            : BoteSalvat.SigmaNm2(spec.Z, 2, eV) + BoteSalvat.SigmaNm2(spec.Z, 3, eV) + BoteSalvat.SigmaNm2(spec.Z, 4, eV);
+        //現行 dataset (K: Z=6-50 / L: Z=20-60、E0≥30 keV) では全収録チャネルが励起可能なため BelowEdge は実データでは到達しない
+        //(全収録 edge < 30 keV)。synthetic table でのみテスト可能 (codex 20巡)
+        if (sigma <= 0)
+            return partial with { Status = IonizationAvailability.BelowEdge };
+        return partial with { Status = IonizationAvailability.Available, SigmaNm2 = sigma };
     }
 }
 
