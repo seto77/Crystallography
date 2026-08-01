@@ -213,7 +213,7 @@ public class BetheMethod
         get
         {
             var r = Volatile.Read(ref _resultStem);
-            return r is null ? default : (r.Size, r.Resolution, r.Thicknesses, r.Defocusses, r.Rotation, r.ImageBoth.Backing, r.ImageEla.Backing, r.ImageTDS.Backing);
+            return r is null ? default : (r.Size, r.Resolution, r.Thicknesses, r.Defocusses, r.Rotation, r.ImageBoth.Planes, r.ImageEla.Planes, r.ImageTDS.Planes);
         }
     }
     private long _stemRunCounter;
@@ -2961,14 +2961,13 @@ public class BetheMethod
         //多チャネル: チャネル外側ループ・q 内側 (§5.3 worker-local Uq バッファ 1 本を殻ごと順次再利用)。
         //uIonCache はチャネルごとに新規 (持ち越し禁止)。1 チャネルでも失敗すれば throw → aggregate 未公開 = 全結果非公開。
         var edxSignals = new StemSignalMap[requests.Length];
-        (int H, int K, int L)[] edxQIndices = [];
-        int[] edxQEntryCounts = [];
-        if (requests.Length > 0)
-        {
-            edxQIndices = [.. qList.Select(e1 => e1.Index)];
-            edxQEntryCounts = [.. qEntryK.Select(e1 => e1?.Length ?? 0)];
-        }
-        using (var threadLocalUqShared = new ThreadLocal<Complex[]>(() => GC.AllocateUninitializedArray<Complex>(bLen2), false))
+        var edxQIndices = requests.Length == 0 ? [] : qList.Select(e1 => e1.Index).ToArray();
+        var edxQEntryCounts = requests.Length == 0 ? [] : qEntryK.Select(e1 => e1?.Length ?? 0).ToArray();
+        //−q 対応付けの hkl 辞書は qList にしか依存しないのでチャネルループの外で 1 度だけ作る (§5.7-6。純粋な hkl→index で浮動小数は通らない)
+        var qIndexOf = new Dictionary<(int, int, int), int>(qList.Count);
+        for (int i = 0; i < qList.Count; i++) qIndexOf.Add(qList[i].Index, i);
+        //worker-local Uq バッファはチャネル間で再利用する (§5.3。TDS パスの同名バッファとは別物なので名前を分ける)
+        using var threadLocalUqEdx = new ThreadLocal<Complex[]>(() => GC.AllocateUninitializedArray<Complex>(bLen2), false);
         for (int chIndex = 0; chIndex < requests.Length; chIndex++)
         {
             var ionization = requests[chIndex];
@@ -2978,12 +2977,11 @@ public class BetheMethod
             var I_Edx = new Complex[qList.Count, tLen, dLen];
             var uIonCache = new ConcurrentDictionary<(int H, int K, int L), Complex>();//uDictionary とは完全分離 (指示書 §2-3)。channel-scoped (チャネル間持ち越し禁止)
             count = 0;
-            var threadLocalUq = threadLocalUqShared;//260801Cl 変更: チャネル間で worker バッファ再利用 (旧: チャネルごとに using で生成)
-                Parallel.For(0, qList.Count, qIndex =>
+            Parallel.For(0, qList.Count, qIndex =>
                 {
                     var entryCount = qEntryK[qIndex]?.Length ?? 0;
                     if (entryCount == 0 || bwSTEM.CancellationPending) return;
-                    var Uq = threadLocalUq.Value;
+                    var Uq = threadLocalUqEdx.Value;
                     var sumD = new Complex[dLen];
                     FillIonizationUq(Beams, qList[qIndex].Index, mat, chData, kvac, Uq, 0, uIonCache);
                     if (bwSTEM.CancellationPending) return;
@@ -3013,8 +3011,6 @@ public class BetheMethod
             var hermTol = Math.Min(ionization.HermitianTolerance, 0.01);
 
             //±q 対称化 (§3.4 の順序厳守: 独立計算 → 残差記録 → 許容超過は補正せず fail → 合格時のみ対称化 → q=0 実部固定)
-            var qIndexOf = new Dictionary<(int, int, int), int>(qList.Count);//−q 対応付けは hkl 辞書 (qList 順序非依存、§5.7-6)
-            for (int i = 0; i < qList.Count; i++) qIndexOf.Add(qList[i].Index, i);
             double iScale = 0;
             for (int qIndex = 0; qIndex < qList.Count; qIndex++)
                 for (int t = 0; t < tLen; t++)

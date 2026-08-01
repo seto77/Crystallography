@@ -22,7 +22,15 @@ namespace Crystallography;
 public enum IonizationShell { K, LTotal, L1, L2, L3 }
 
 /// <summary>260801Cl 追加: 元素×殻のチャネル指定。</summary>
-public record IonizationChannelSpec(int Z, IonizationShell Shell);
+public record IonizationChannelSpec(int Z, IonizationShell Shell)
+{
+    /// <summary>260801Cl 追加: 短い表示名 (例 "Fe-K" / "Sr-L")。要約・凡例・チャネル選択 UI で共通に使う
+    /// (呼び出し側で殻の三項演算子を書き散らさない)。</summary>
+    public string ShortLabel => $"{AtomStatic.AtomicName(Z)}-{(Shell == IonizationShell.LTotal ? "L" : Shell.ToString())}";
+
+    /// <summary>260801Cl 追加: 原子番号と殻を明示した表示名 (例 "Fe (26) K" / "Sr (38) L (total)")。</summary>
+    public string Label => $"{AtomStatic.AtomicName(Z)} ({Z}) {(Shell == IonizationShell.LTotal ? "L (total)" : Shell.ToString())}";
+}
 
 /// <summary>260801Cl 追加: データ出所 (σ と形状で分離して保持する)。</summary>
 public sealed record IonizationDataProvenance(string ModelId, string DatasetVersion, string Detail);
@@ -56,7 +64,13 @@ public enum DisplayNormalization { PerMaximum, Absolute }
 /// 0.01 を上限として「厳しくする方向のみ」有効 (それ以上は 0.01 に clamp、codex 17巡)。非有限・負値は run 前に hard error。
 /// 残差は方向グリッド div に対しほぼ O(h²) (bilinear 補間誤差由来): div=10 で ~0.11 / 32 で ~0.009 / 48 で ~0.0017 実測。
 /// CaptureRawIq=true で ±q 対称化前の I(q,t,d) を StemSignalMap.IqBeforeSymmetrization に保持 (fixture 凍結用、設計書 §6.3。通常 run は false)。</summary>
-public sealed record StemIonizationRequest(IonizationChannelSpec Channel, double HermitianTolerance = 0.01, bool CaptureRawIq = false);//260801Cl CaptureRawIq 追加 (旧: (Channel, HermitianTolerance) の 2 引数)
+public sealed record StemIonizationRequest(IonizationChannelSpec Channel, double HermitianTolerance = 0.01, bool CaptureRawIq = false)//260801Cl CaptureRawIq 追加 (旧: (Channel, HermitianTolerance) の 2 引数)
+{
+    /// <summary>260801Cl 追加: ±q Hermitian 残差が許容 0.01 に十分収まる方向グリッド分割数の推奨下限。
+    /// 残差は div に対しほぼ O(h²) で、実測 div=32 → 0.0093 (許容ぎりぎり) / 48 → 0.0017。
+    /// GUI の事前警告もこの値を参照する (数値の根拠がドメイン側にあるため、しきい値も UI に置かない)。</summary>
+    public const int RecommendedProbeDivision = 48;
+}
 
 //260801Cl 削除: StemEdxResult (v0a の 1 チャネル内部形) は StemSimulationResult/StemSignalMap (§5.5、codex 20巡) に置換。旧定義は git 履歴 (Crystallography 4e0f39e) 参照。
 
@@ -73,8 +87,10 @@ public sealed class StemImageStack
 
     public ReadOnlyMemory<double> GetPlane(int thicknessIndex, int defocusIndex) => _planes[thicknessIndex][defocusIndex];
 
-    /// <summary>legacy ResultSTEM view 用の内部 backing (公開後は変更禁止)</summary>
-    internal double[][][] Backing => _planes;
+    /// <summary>260801Cl 変更: 内部 backing を公開 (旧: internal Backing)。legacy ResultSTEM タプルが同じ配列を
+    /// 既に GUI へ渡しているので新たな露出は無く、これが internal だと消費側が全員 GetPlane→ToArray の
+    /// 全画素コピーを書く羽目になっていた (GUI は再描画ごと)。**公開後は変更禁止**の契約は ResultSTEM と同じ。</summary>
+    public double[][][] Planes => _planes;
 }
 
 /// <summary>260801Cl 追加: 1 チャネル分の STEM-EDX 信号マップ (設計書 §5.5)。公開後は不変。</summary>
@@ -131,6 +147,8 @@ public enum IonizationAvailability { Available, BelowEdge, UnsupportedShell, Uns
 /// Status==Available は「同じ引数で Resolve が成功する」と同値 (codex 20巡の契約)。未定義値は NaN。</summary>
 public sealed record IonizationChannelInfo
 {
+    /// <summary>260801Cl 追加: 照会したチャネル (呼び出し側が spec と info を対で持ち回らなくて済む)</summary>
+    public IonizationChannelSpec Channel { get; init; }
     public IonizationAvailability Status { get; init; }
     /// <summary>吸収端 [keV] (テーブル収録があれば E0 範囲外でも返す。UnsupportedElement/UnsupportedShell では NaN)</summary>
     public double EdgeEnergyKeV { get; init; } = double.NaN;
@@ -142,6 +160,85 @@ public sealed record IonizationChannelInfo
     public IonizationDataProvenance CrossSectionSource { get; init; }
     /// <summary>形状の出所 (provider 品質タグ、§5.6)</summary>
     public IonizationDataProvenance ShapeSource { get; init; }
+
+    /// <summary>260801Cl 追加: 過電圧 U がこの値を下回ると断面積の信頼度が落ちる (選択は可能だが警告する)。</summary>
+    public const double LowOvervoltage = 1.2;
+
+    /// <summary>選択に注意が要るか (Available だが U が低い、または選択不可)。</summary>
+    public bool HasCaution => Status != IonizationAvailability.Available || Overvoltage < LowOvervoltage;
+
+    //260801Cl 追加 (作者指示 2026-08-01: GUI 側に置いていた 11 言語の状態文を、状態 enum と同じ場所へ移す)。
+    //§5.6 の「変換が物理的に許されるかの判定・provenance・単位は Crystallography.dll が持つ」に沿う。
+    //短文 (一覧の末尾に括弧書き) と長文 (ToolTip) を 1 つの switch で対にし、しきい値も 1 か所しか書かない。
+    private (string Short, string Long) StatusText() => Status switch
+    {
+        IonizationAvailability.Available when Overvoltage < LowOvervoltage => (
+            Localization.Loc(en: "low U", ja: "U 小", de: "U klein", fr: "U faible", es: "U baja", pt: "U baixa",
+                it: "U bassa", ru: "малое U", zhHans: "U 偏低", zhHant: "U 偏低", ko: "U 낮음"),
+            Localization.Loc(
+                en: "Available, but the overvoltage U = E0/E_edge is below 1.2 — the cross section is less reliable there.",
+                ja: "利用可能ですが過電圧 U = E0/E_edge が 1.2 未満です。この領域は断面積の信頼度が下がります。",
+                de: "Verfügbar, aber die Überspannung U = E0/E_Kante liegt unter 1,2 — der Wirkungsquerschnitt ist dort weniger zuverlässig.",
+                fr: "Disponible, mais le survoltage U = E0/E_seuil est inférieur à 1,2 : la section efficace y est moins fiable.",
+                es: "Disponible, pero la sobretensión U = E0/E_borde es menor que 1,2: la sección eficaz es menos fiable ahí.",
+                pt: "Disponível, mas a sobretensão U = E0/E_borda é inferior a 1,2: a secção eficaz é menos fiável aí.",
+                it: "Disponibile, ma la sovratensione U = E0/E_soglia è inferiore a 1,2: la sezione d'urto è meno affidabile.",
+                ru: "Доступно, но перенапряжение U = E0/E_края меньше 1,2 — сечение там менее надёжно.",
+                zhHans: "可用，但过电压 U = E0/E_边 低于 1.2，该区域的截面可靠性较低。",
+                zhHant: "可用，但過電壓 U = E0/E_邊 低於 1.2，該區域的截面可靠性較低。",
+                ko: "사용 가능하지만 과전압 U = E0/E_단 이 1.2 미만입니다. 이 영역은 단면적 신뢰도가 낮습니다.")),
+        IonizationAvailability.Available => ("",
+            Localization.Loc(en: "Available.", ja: "利用可能です。", de: "Verfügbar.", fr: "Disponible.", es: "Disponible.",
+                pt: "Disponível.", it: "Disponibile.", ru: "Доступно.", zhHans: "可用。", zhHant: "可用。", ko: "사용 가능합니다.")),
+        IonizationAvailability.BelowEdge => (
+            Localization.Loc(en: "below edge", ja: "端以下", de: "unter Kante", fr: "sous seuil", es: "bajo borde",
+                pt: "sob borda", it: "sotto soglia", ru: "ниже края", zhHans: "低于边", zhHant: "低於邊", ko: "단 이하"),
+            Localization.Loc(
+                en: "The incident energy is below the absorption edge, so this shell cannot be ionized.",
+                ja: "入射エネルギーが吸収端より低いため、この殻はイオン化されません。",
+                de: "Die Primärenergie liegt unter der Absorptionskante, diese Schale kann nicht ionisiert werden.",
+                fr: "L'énergie incidente est inférieure au seuil d'absorption : cette couche ne peut pas être ionisée.",
+                es: "La energía incidente está por debajo del borde de absorción: esta capa no puede ionizarse.",
+                pt: "A energia incidente está abaixo da borda de absorção: esta camada não pode ser ionizada.",
+                it: "L'energia incidente è sotto la soglia di assorbimento: questo guscio non può essere ionizzato.",
+                ru: "Энергия пучка ниже края поглощения, поэтому эта оболочка не ионизируется.",
+                zhHans: "入射能量低于吸收边，该壳层无法被电离。",
+                zhHant: "入射能量低於吸收邊，該殼層無法被游離。",
+                ko: "입사 에너지가 흡수단보다 낮아 이 껍질은 이온화되지 않습니다.")),
+        IonizationAvailability.E0OutOfRange => (
+            Localization.Loc(en: "E0 range", ja: "E0 範囲外", de: "E0-Bereich", fr: "plage E0", es: "rango E0", pt: "faixa E0",
+                it: "intervallo E0", ru: "диапазон E0", zhHans: "E0 范围", zhHant: "E0 範圍", ko: "E0 범위"),
+            Localization.Loc(
+                en: "STEM-EDX supports 30-400 kV only (the ionization form-factor table is not extrapolated).",
+                ja: "STEM-EDX は 30-400 kV のみ対応です (イオン化形状因子テーブルを外挿しないため)。",
+                de: "STEM-EDX unterstützt nur 30-400 kV (die Tabelle der Ionisationsformfaktoren wird nicht extrapoliert).",
+                fr: "STEM-EDX ne prend en charge que 30-400 kV (la table des facteurs de forme d'ionisation n'est pas extrapolée).",
+                es: "STEM-EDX solo admite 30-400 kV (la tabla de factores de forma de ionización no se extrapola).",
+                pt: "O STEM-EDX suporta apenas 30-400 kV (a tabela de fatores de forma de ionização não é extrapolada).",
+                it: "STEM-EDX supporta solo 30-400 kV (la tabella dei fattori di forma di ionizzazione non viene estrapolata).",
+                ru: "STEM-EDX поддерживает только 30-400 кВ (таблица форм-факторов ионизации не экстраполируется).",
+                zhHans: "STEM-EDX 仅支持 30-400 kV（电离形状因子表不做外推）。",
+                zhHant: "STEM-EDX 僅支援 30-400 kV（游離形狀因子表不做外推）。",
+                ko: "STEM-EDX 는 30-400 kV 만 지원합니다 (이온화 형상 인자 표를 외삽하지 않음).")),
+        _ => ("", "")
+    };
+
+    /// <summary>一覧の 1 行分の表示文 (例 <c>O (8) K   0.537 keV   U = 372</c>)。注意が要る状態は末尾に括弧書き。</summary>
+    public string ToListItemText()
+    {
+        var text = Channel.Label;
+        if (!double.IsNaN(EdgeEnergyKeV)) text += $"   {EdgeEnergyKeV:f3} keV";
+        if (!double.IsNaN(Overvoltage)) text += $"   U = {Overvoltage.ToString(Overvoltage < 100 ? "f2" : "f0")}";
+        var status = StatusText().Short;
+        return status.Length == 0 ? text : $"{text}   ({status})";
+    }
+
+    /// <summary>状態の完全な説明 + provider 品質タグ (ToolTip 用)。</summary>
+    public string ToDescription()
+    {
+        var head = StatusText().Long;
+        return ShapeSource is null ? head : $"{head}\r\nσ: {CrossSectionSource.ModelId} / F(s): {ShapeSource.ModelId} {ShapeSource.DatasetVersion}";
+    }
 }
 
 #endregion
@@ -710,94 +807,113 @@ public sealed class IonizationLTotalShape : INormalizedIonizationShape
 /// <summary>260801Cl 追加: チャネル指定 → 解決済み IonizationData。run 開始時に 1 回だけ呼び、実行中は immutable を使う (設計書 §5.1)。</summary>
 public static class IonizationDataProvider
 {
-    /// <summary>解決。E0 範囲外 (30–400 keV 以外) は ArgumentOutOfRangeException、
-    /// 未収録 Z/殻は NotSupportedException。v1 で解決可能な殻は K / LTotal のみ。</summary>
-    public static IonizationData Resolve(IonizationChannelSpec spec, double e0KeV, IonizationFsTable table = null)
-    {
-        ArgumentNullException.ThrowIfNull(spec);
-        if (!(e0KeV >= 30.0 && e0KeV <= 400.0))
-            throw new ArgumentOutOfRangeException(nameof(e0KeV), e0KeV, "STEM-EDX supports E0 = 30–400 keV only (F table range, no extrapolation)");
-        table ??= IonizationFsTable.Default;
-        var shapeProvenance = new IonizationDataProvenance(table.ModelId, table.DatasetVersion, "self-generated DHFS tables (tools/IonizationGen prod)");
-        var sigmaProvenance = new IonizationDataProvenance("Bote-Salvat-2008", "xion.f/ADNDT95", table.BoteRef);
-        var eV = e0KeV * 1e3;
-        switch (spec.Shell)
-        {
-            case IonizationShell.K:
-                {
-                    var ch = table.GetChannel(IonizationFsTable.ShellCodeK, spec.Z);
-                    var sigma = BoteSalvat.SigmaNm2(spec.Z, 1, eV);
-                    //260801Cl 追加 (codex 20巡): below-edge は hard error (σ=0 の無意味な解決を許すと Inspect==Available ⇔ Resolve 成功 の同値性が崩れる。
-                    //現行 dataset では全収録チャネルが 30 keV で励起可能なため実データでは到達しない)
-                    if (sigma <= 0)
-                        throw new NotSupportedException($"Z={spec.Z} K: below edge at E0={e0KeV} keV (σ=0)");
-                    return new IonizationData(spec, ch.EthKeV, sigma, ch.BuildShape(e0KeV), sigmaProvenance, shapeProvenance);
-                }
-            case IonizationShell.LTotal:
-                {
-                    var chL1 = table.GetChannel(IonizationFsTable.ShellCodeL1, spec.Z);
-                    var chL23 = table.GetChannel(IonizationFsTable.ShellCodeL23, spec.Z);
-                    // σ は各サブシェル自身の edge で計算 (MANIFEST 契約)。閉じている subshell は 0 で自然に落ちる
-                    double s1 = BoteSalvat.SigmaNm2(spec.Z, 2, eV), s2 = BoteSalvat.SigmaNm2(spec.Z, 3, eV), s3 = BoteSalvat.SigmaNm2(spec.Z, 4, eV);
-                    var total = s1 + s2 + s3;
-                    if (total <= 0)
-                        throw new NotSupportedException($"Z={spec.Z} LTotal: all L subshells closed at E0={e0KeV} keV");
-                    //var shape = new IonizationLTotalShape(chL1.BuildShape(e0KeV), s1, chL23.BuildShape(e0KeV), s2 + s3);//260801Cl 変更前: σ=0 の閉じた成分も無条件に BuildShape していた
-                    //260801Cl 変更 (codex 20巡): σ>0 の成分だけ shape を構築する (σ=0 成分は null + 重み 0 として合成。Evaluate は w>0 の成分しか触らない契約)
-                    var shape = new IonizationLTotalShape(s1 > 0 ? chL1.BuildShape(e0KeV) : null, s1, s2 + s3 > 0 ? chL23.BuildShape(e0KeV) : null, s2 + s3);
-                    var edge = Math.Min(chL1.EthKeV, chL23.EthKeV);
-                    return new IonizationData(spec, edge, total, shape, sigmaProvenance, shapeProvenance);
-                }
-            default:
-                throw new NotSupportedException($"IonizationShell.{spec.Shell} is not available in v1 (use K or LTotal)");
-        }
-    }
+    /// <summary>サポート対象の E0 範囲 [keV] (F テーブルの収録域。外挿・clamp はしない)。</summary>
+    public const double MinE0KeV = 30.0, MaxE0KeV = 400.0;
 
-    /// <summary>260801Cl 追加: GUI 向け照会 (設計書 §5.9-3、codex 20巡)。throw せず状態 enum を返す。
-    /// Status==Available ⇔ 同じ引数で Resolve が成功する (両者が別ロジックで漂流しない契約 — Inspect の判定変更時は同値性テストを更新)。
-    /// 判定順: UnsupportedShell → UnsupportedElement → E0OutOfRange (edge/U は返す) → BelowEdge (edge/U は返す) → Available。</summary>
-    public static IonizationChannelInfo Inspect(IonizationChannelSpec spec, double e0KeV, IonizationFsTable table = null)
+    //260801Cl 変更 (codex 21巡): Resolve と Inspect が E0 範囲・対応殻・edge 規則・σ 規則・provenance を
+    //それぞれ独立に書いていた (同値性はハーネスのテストだけが担保。tools はリモート無しのローカルリポで CI にも乗らない)。
+    //判定を Describe() 1 か所へ集約し、Resolve = Describe + 例外化 + shape 構築、Inspect = Describe そのもの、とする。
+    //これで「Available ⇔ Resolve 成功」がテストではなく構造で保証される。
+    /// <summary>チャネルの状態・edge・過電圧・σ・provenance を算出する共通コア (shape は作らない = Inspect が安く済む)。</summary>
+    private static IonizationChannelInfo Describe(IonizationChannelSpec spec, double e0KeV, IonizationFsTable table)
     {
-        ArgumentNullException.ThrowIfNull(spec);
-        table ??= IonizationFsTable.Default;
-        var shapeProvenance = new IonizationDataProvenance(table.ModelId, table.DatasetVersion, "self-generated DHFS tables (tools/IonizationGen prod)");
-        var sigmaProvenance = new IonizationDataProvenance("Bote-Salvat-2008", "xion.f/ADNDT95", table.BoteRef);
-
+        //対応殻・収録有無の判定は provenance を作る前に済ませる (早期 return パスで捨てる record を作らない)
         if (spec.Shell is not (IonizationShell.K or IonizationShell.LTotal))
-            return new IonizationChannelInfo { Status = IonizationAvailability.UnsupportedShell };
+            return new IonizationChannelInfo { Channel = spec, Status = IonizationAvailability.UnsupportedShell };
 
         double edge;
         if (spec.Shell == IonizationShell.K)
         {
             if (!table.Contains(IonizationFsTable.ShellCodeK, spec.Z))
-                return new IonizationChannelInfo { Status = IonizationAvailability.UnsupportedElement };
+                return new IonizationChannelInfo { Channel = spec, Status = IonizationAvailability.UnsupportedElement };
             edge = table.GetChannel(IonizationFsTable.ShellCodeK, spec.Z).EthKeV;
         }
         else
         {
             if (!table.Contains(IonizationFsTable.ShellCodeL1, spec.Z) || !table.Contains(IonizationFsTable.ShellCodeL23, spec.Z))
-                return new IonizationChannelInfo { Status = IonizationAvailability.UnsupportedElement };
+                return new IonizationChannelInfo { Channel = spec, Status = IonizationAvailability.UnsupportedElement };
             edge = Math.Min(table.GetChannel(IonizationFsTable.ShellCodeL1, spec.Z).EthKeV, table.GetChannel(IonizationFsTable.ShellCodeL23, spec.Z).EthKeV);
         }
-        var overvoltage = e0KeV / edge;
         var partial = new IonizationChannelInfo
         {
+            Channel = spec,
             EdgeEnergyKeV = edge,
-            Overvoltage = overvoltage,
-            CrossSectionSource = sigmaProvenance,
-            ShapeSource = shapeProvenance,
+            Overvoltage = e0KeV / edge,
+            CrossSectionSource = new IonizationDataProvenance("Bote-Salvat-2008", "xion.f/ADNDT95", table.BoteRef),
+            ShapeSource = new IonizationDataProvenance(table.ModelId, table.DatasetVersion, "self-generated DHFS tables (tools/IonizationGen prod)")
         };
-        if (!(e0KeV >= 30.0 && e0KeV <= 400.0))
+        if (!(e0KeV >= MinE0KeV && e0KeV <= MaxE0KeV))
             return partial with { Status = IonizationAvailability.E0OutOfRange };
+
+        // σ は各サブシェル自身の edge で計算 (MANIFEST 契約)。閉じている subshell は 0 で自然に落ちる
         var eV = e0KeV * 1e3;
         var sigma = spec.Shell == IonizationShell.K
             ? BoteSalvat.SigmaNm2(spec.Z, 1, eV)
             : BoteSalvat.SigmaNm2(spec.Z, 2, eV) + BoteSalvat.SigmaNm2(spec.Z, 3, eV) + BoteSalvat.SigmaNm2(spec.Z, 4, eV);
         //現行 dataset (K: Z=6-50 / L: Z=20-60、E0≥30 keV) では全収録チャネルが励起可能なため BelowEdge は実データでは到達しない
         //(全収録 edge < 30 keV)。synthetic table でのみテスト可能 (codex 20巡)
-        if (sigma <= 0)
-            return partial with { Status = IonizationAvailability.BelowEdge };
-        return partial with { Status = IonizationAvailability.Available, SigmaNm2 = sigma };
+        return sigma <= 0
+            ? partial with { Status = IonizationAvailability.BelowEdge }
+            : partial with { Status = IonizationAvailability.Available, SigmaNm2 = sigma };
+    }
+
+    /// <summary>解決。E0 範囲外 (30–400 keV 以外) は ArgumentOutOfRangeException、
+    /// 未収録 Z/殻・below-edge は NotSupportedException。v1 で解決可能な殻は K / LTotal のみ。</summary>
+    public static IonizationData Resolve(IonizationChannelSpec spec, double e0KeV, IonizationFsTable table = null)
+    {
+        ArgumentNullException.ThrowIfNull(spec);
+        table ??= IonizationFsTable.Default;
+        var info = Describe(spec, e0KeV, table);
+        switch (info.Status)
+        {
+            case IonizationAvailability.E0OutOfRange:
+                throw new ArgumentOutOfRangeException(nameof(e0KeV), e0KeV, $"STEM-EDX supports E0 = {MinE0KeV}–{MaxE0KeV} keV only (F table range, no extrapolation)");
+            case IonizationAvailability.UnsupportedShell:
+                throw new NotSupportedException($"IonizationShell.{spec.Shell} is not available in v1 (use K or LTotal)");
+            case IonizationAvailability.UnsupportedElement:
+                throw new NotSupportedException($"Ionization table has no channel for Z={spec.Z} {spec.Shell} (K: Z=6–50, L: Z=20–60)");
+            case IonizationAvailability.BelowEdge:
+                throw new NotSupportedException($"Z={spec.Z} {spec.Shell}: below edge at E0={e0KeV} keV (σ=0)");
+        }
+        //ここから先は Available 確定。shape は σ>0 の成分だけ構築する (σ=0 成分は null + 重み 0 で合成。Evaluate は w>0 の成分しか触らない契約)
+        if (spec.Shell == IonizationShell.K)
+        {
+            var ch = table.GetChannel(IonizationFsTable.ShellCodeK, spec.Z);
+            return new IonizationData(spec, info.EdgeEnergyKeV, info.SigmaNm2, ch.BuildShape(e0KeV), info.CrossSectionSource, info.ShapeSource);
+        }
+        var eV = e0KeV * 1e3;
+        double s1 = BoteSalvat.SigmaNm2(spec.Z, 2, eV), s23 = BoteSalvat.SigmaNm2(spec.Z, 3, eV) + BoteSalvat.SigmaNm2(spec.Z, 4, eV);
+        var shape = new IonizationLTotalShape(
+            s1 > 0 ? table.GetChannel(IonizationFsTable.ShellCodeL1, spec.Z).BuildShape(e0KeV) : null, s1,
+            s23 > 0 ? table.GetChannel(IonizationFsTable.ShellCodeL23, spec.Z).BuildShape(e0KeV) : null, s23);
+        return new IonizationData(spec, info.EdgeEnergyKeV, info.SigmaNm2, shape, info.CrossSectionSource, info.ShapeSource);
+    }
+
+    /// <summary>260801Cl 追加: GUI 向け照会 (設計書 §5.9-3)。throw せず状態 enum を返す。
+    /// Resolve と同じ <see cref="Describe"/> を使うので <c>Status==Available ⇔ 同じ引数で Resolve が成功する</c> は構造的に保証される。
+    /// 判定順: UnsupportedShell → UnsupportedElement → E0OutOfRange (edge/U は返す) → BelowEdge (edge/U は返す) → Available。</summary>
+    public static IonizationChannelInfo Inspect(IonizationChannelSpec spec, double e0KeV, IonizationFsTable table = null)
+    {
+        ArgumentNullException.ThrowIfNull(spec);
+        return Describe(spec, e0KeV, table ?? IonizationFsTable.Default);
+    }
+
+    /// <summary>260801Cl 追加: 結晶の構成元素から STEM-EDX 候補チャネルを列挙する (設計書 §5.9-3)。
+    /// 収録外の元素・殻は返さない。below-edge / E0 範囲外は「理由付きで選べない候補」として返す
+    /// (GUI 側にデータ収録範囲 (K: Z=6–50 等) をハードコードさせないための入口)。</summary>
+    public static IonizationChannelInfo[] EnumerateChannels(Crystal crystal, double e0KeV, IonizationFsTable table = null)
+    {
+        if (crystal?.Atoms is null || crystal.Atoms.Length == 0) return [];
+        table ??= IonizationFsTable.Default;
+        var list = new List<IonizationChannelInfo>();
+        foreach (var z in crystal.Atoms.Select(a => a.AtomicNumber).Distinct().OrderBy(z => z))
+            foreach (var shell in new[] { IonizationShell.K, IonizationShell.LTotal })
+            {
+                var info = Describe(new IonizationChannelSpec(z, shell), e0KeV, table);
+                if (info.Status is not (IonizationAvailability.UnsupportedElement or IonizationAvailability.UnsupportedShell))
+                    list.Add(info);
+            }
+        return [.. list];
     }
 }
 
