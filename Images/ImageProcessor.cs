@@ -257,7 +257,12 @@ public static class ImageProcess
                          mList.Add((x, y, v));
              }
          });
-        mList.Sort((a, b) => (a.dev - b.dev > 0) ? 1 : (a.dev - b.dev < 0) ? -1 : 0);
+        // 260801Cl 変更: dev が等しいときに 0 を返す比較子だったため、並列追加 (上の lock) でばらついた mList の順序が
+        // そのまま残り (List.Sort は不安定ソート)、下の貪欲選出 (最近接距離で間引き) の結果が実行ごとに変わっていた。
+        // 同値の極小点は合成パターンや量子化された画像では珍しくなく、Spot ID の検出スポットが再現しない原因になる。
+        // (y, x) を最終タイブレークにして全順序にし、スレッドの実行順によらず同じ結果を返すようにする。
+        //旧: mList.Sort((a, b) => (a.dev - b.dev > 0) ? 1 : (a.dev - b.dev < 0) ? -1 : 0);
+        mList.Sort((a, b) => a.dev != b.dev ? a.dev.CompareTo(b.dev) : a.y != b.y ? a.y.CompareTo(b.y) : a.x.CompareTo(b.x));
 
         //minimumListの中から候補ピクセルを選出
         var list = new List<(int x, int y)>();
