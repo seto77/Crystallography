@@ -54,8 +54,9 @@ public enum DisplayNormalization { PerMaximum, Absolute }
 /// <summary>260801Cl 追加: RunSTEM への EDX 要求。v0a は 1 チャネルのみ明示受理 (codex 16巡)。
 /// HermitianTolerance は ±q 非 Hermitian 残差 (相対) の許容値。超過時は対称化せず hard fail (設計書 §3.4)。
 /// 0.01 を上限として「厳しくする方向のみ」有効 (それ以上は 0.01 に clamp、codex 17巡)。
-/// 残差は方向グリッド div に対しほぼ O(h²) (bilinear 補間誤差由来): div=10 で ~0.11 / 32 で ~0.009 実測。</summary>
-public sealed record StemIonizationRequest(IonizationChannelSpec Channel, double HermitianTolerance = 0.01);
+/// 残差は方向グリッド div に対しほぼ O(h²) (bilinear 補間誤差由来): div=10 で ~0.11 / 32 で ~0.009 実測。
+/// CaptureRawIq=true で ±q 対称化前の I(q,t,d) を StemEdxResult.IqBeforeSymmetrization に保持 (fixture 凍結用、設計書 §6.3。通常 run は false)。</summary>
+public sealed record StemIonizationRequest(IonizationChannelSpec Channel, double HermitianTolerance = 0.01, bool CaptureRawIq = false);//260801Cl CaptureRawIq 追加 (旧: (Channel, HermitianTolerance) の 2 引数)
 
 /// <summary>260801Cl 追加: STEM-EDX 結果 (v0a 内部形。v1 で StemSimulationResult へ統合予定)。
 /// ResultSTEM と同一 run の worker 終端で同時公開される (RunId で対応検証可)。</summary>
@@ -78,6 +79,9 @@ public sealed class StemEdxResult
     public bool UsedTailExtrapolation;
     /// <summary>対称化後の I(q,t,d) (検証・回帰用の生値。設計書 §6.2「保存対象は最終画像だけでなく」)</summary>
     public Complex[,,] Iq;
+    /// <summary>260801Cl 追加: ±q 対称化前の I(q,t,d) (StemIonizationRequest.CaptureRawIq=true の run のみ、通常 run は null。
+    /// fixture 凍結用 §6.3 — 対称化後だけでは位相符号・共役ミスが隠れるため)</summary>
+    public Complex[,,] IqBeforeSymmetrization;
     /// <summary>Iq の q 次元に対応する combined hkl</summary>
     public (int H, int K, int L)[] QIndices;
     /// <summary>各 q のエントリ数 (aperture 重なりで有効だった方向数。0 = 未計算)</summary>

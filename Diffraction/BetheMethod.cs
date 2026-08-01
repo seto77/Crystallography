@@ -2974,6 +2974,9 @@ public class BetheMethod
                 });
             if (bwSTEM.CancellationPending) { e.Cancel = true; return; }
 
+            //260801Cl 追加: 対称化前スナップショット (fixture 凍結用、設計書 §6.3。対称化が共役・符号バグを隠すのを防ぐ。通常 run は null)
+            var iqRaw = ionization.CaptureRawIq ? (Complex[,,])I_Edx.Clone() : null;
+
             //±q 対称化 (§3.4 の順序厳守: 独立計算 → 残差記録 → 許容超過は補正せず fail → 合格時のみ対称化 → q=0 実部固定)
             var qIndexOf = new Dictionary<(int, int, int), int>(qList.Count);//−q 対応付けは hkl 辞書 (qList 順序非依存、§5.7-6)
             for (int i = 0; i < qList.Count; i++) qIndexOf.Add(qList[i].Index, i);
@@ -3111,6 +3114,7 @@ public class BetheMethod
                     _ => false,
                 },
                 Iq = I_Edx,//対称化後の生値 (検証・回帰用、§6.2)
+                IqBeforeSymmetrization = iqRaw,//260801Cl 追加 (fixture 用、通常 null)
                 QIndices = [.. qList.Select(e1 => e1.Index)],
                 QEntryCounts = [.. qEntryK.Select(e1 => e1?.Length ?? 0)],
             };
