@@ -50,6 +50,18 @@
     </EmbeddedResource>
   </ItemGroup>
 
+  <!-- 260801Cl: STEM-EDX イオン化データ。F(s,E0) 本番テーブル (dataset 1.0.0, 127ch, 完全自前 DHFS 計算) と
+       Bote-Salvat 断面積係数 (Z=1-99, NIST public domain 系)。生成は tools/IonizationGen/pack_resource.py、
+       契約は同 prod/MANIFEST.md。実行時は IonizationFsTable / BoteSalvat がチャネル/一括 lazy 展開。 -->
+  <ItemGroup>
+    <EmbeddedResource Include="Diffraction\Ionization\IonizationFsE0.bin">
+      <LogicalName>Crystallography.IonizationFsE0.bin</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="Diffraction\Ionization\BoteSalvat.bin">
+      <LogicalName>Crystallography.BoteSalvat.bin</LogicalName>
+    </EmbeddedResource>
+  </ItemGroup>
+
   <!-- 260604Cl: SymmetryStatic の大きなテーブル(整数ジャグ配列 + StrArray 文字列表)を可読 .csv へ移し EmbeddedResource 化
        (旧: C# コレクション式リテラル)。ソースは人間可読・Excel で開ける・編集可・git diff 容易。
        実行時は SymmetryStatic の Load*Jagged2/3 が同一の公開型へ構築 (RFC4180 CSV パーサ)。 -->
