@@ -624,8 +624,14 @@ public class PseudoBitmap : IDisposable
         if (destBmp == null || destBmp.Width != width || destBmp.Height != height || destBmp.PixelFormat != pixelFormat) // (260715Ch) サイズまたは形式が変わった場合だけ再生成
         {
             //destBmp = new Bitmap(width, height, AlphaEnabled ? PixelFormat.Format32bppPArgb : PixelFormat.Format24bppRgb); // 旧: 置換前の Bitmap が未解放
-            destBmp?.Dispose(); // (260715Ch) GDI ハンドルを失わないよう、キャッシュ差し替え前に解放
+            //destBmp?.Dispose(); // (260715Ch) GDI ハンドルを失わないよう、キャッシュ差し替え前に解放 //260802Cl 変更前
+            //destBmp = new Bitmap(width, height, pixelFormat); // (260715Ch) //260802Cl 変更前
+            //260802Cl 変更: 新しいキャッシュを先に作ってから古い方を解放する。旧順序では「破棄済みなのに
+            //まだ呼び出し側 (PictureBox.Image) から参照されている」区間が長く、new Bitmap が失敗した場合も
+            //destBmp が破棄済みのまま残ってしまう
+            var previous = destBmp;
             destBmp = new Bitmap(width, height, pixelFormat); // (260715Ch)
+            previous?.Dispose();
         }
         //bmpをロック
         BitmapData bmpData;
