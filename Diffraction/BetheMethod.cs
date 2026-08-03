@@ -2308,7 +2308,11 @@ public class BetheMethod
         //260801Cl 追加: STEM-EDX (v0a) は全-slice 物化 + q-major streaming 経路限定 (設計書 §5.7-5)。
         //EVD より前に hard error で拒否する (Stage4 後の警告スキップは計算時間を浪費するため禁止。codex 16巡)。
         //旧経路 (MKL bLen≥500 / managed) fallback は v1 出荷ゲート。
-        if (ionData is not null && !useUStream)
+        //if (ionData is not null && !useUStream)//260803Cl 変更前
+        //260803Cl 修正: ionData は EDX 無しでも空配列 (RunSTEM が requests=[] から作る) なので `is not null` だと
+        //EDX と無関係な通常 STEM まで巻き添えで落ちていた。実際に踏める: 回折波 500 以上で Auto が MKL へ切替 /
+        //全スライス物化の見送り (厚み合計がスライス厚に対して大きい場合) / Eigen native 非搭載 (arm64)。
+        if (ionData is { Length: > 0 } && !useUStream)
             throw new NotSupportedException(
                 "STEM-EDX (v0a) requires the native all-slice streaming path: Eigen native must be present, bLen must stay below the MKL threshold, and RECIPRO_STEM_ALLSLICE / RECIPRO_STEM_USTREAM must not be 0.");
         double[] allThick = null;   //ユーザー厚み (先頭 tLen 列, 弾性用) + 全 slice 厚み (非弾性用)
