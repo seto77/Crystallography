@@ -1,4 +1,4 @@
-#region using
+﻿#region using
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -493,7 +493,12 @@ public sealed class IonizationFsTable
     //260802Cl: L2=3 / L3=4 を追加。**L23=2 は欠番として予約**し番号を再利用しない
     //(v1 の .bin を読んだときに意味が入れ替わらないようにするため)。
     public const int ShellCodeK = 0, ShellCodeL1 = 1, ShellCodeL23 = 2, ShellCodeL2 = 3, ShellCodeL3 = 4;
-    public const double SMaxAngstromInv = 4.0;
+    //260805Cl 変更: 4.0 → 8.0 (dataset v3.0.0 で s グリッドを 81 → 161 点へ延長)。
+    //正典の SrTiO₃ 条件 (a=0.3905nm, 125 beams, 200kV) が実際に要求する s は
+    //max|q+g_i−g_j|/2 = 5.56 Å⁻¹ で、s≤4 では全行列要素の 5.5 % が tail 外挿頼みだった。
+    //v1/v2 の .bin (SCount=81) はこのリーダーでは読めない (下の s グリッド検査で拒否)。
+    public const double SMaxAngstromInv = 8.0;
+    //public const double SMaxAngstromInv = 4.0;   //260804Cl まで (dataset v1/v2)
 
     /// <summary>260802Cl 追加: 2p が j 分離された dataset か (L2/L3 が索引にある = v2)。
     /// LTotal の合成を「L1+L2+L3」にするか「L1+L23」にするかの分岐に使う。</summary>
@@ -555,7 +560,9 @@ public sealed class IonizationFsTable
         if (Method is not (1 or 2)) throw new InvalidDataException($"IonizationFsE0.bin: unknown method {Method}");
         SCount = reader.ReadInt32();
         SStep = reader.ReadDouble();
-        if (SCount != 81 || SStep != 0.05) throw new InvalidDataException("IonizationFsE0.bin: unexpected s grid");
+        //260805Cl 変更: 81 → 161 (s≤4 → s≤8)。SMaxAngstromInv と整合を取る
+        if (SCount != 161 || SStep != 0.05) throw new InvalidDataException("IonizationFsE0.bin: unexpected s grid");
+        //if (SCount != 81 || SStep != 0.05) throw ... //260804Cl まで (dataset v1/v2)
         reader.ReadInt32(); // schemaVersion
         DatasetVersion = BoteSalvat.ReadString(reader);
         ModelId = BoteSalvat.ReadString(reader);
@@ -671,8 +678,9 @@ public sealed class IonizationFsTable
         for (int i = 0; i < rowCount; i++)
         {
             if (Math.Abs(f[i][0] - 1.0) > 1e-12) throw new InvalidDataException($"IonizationFsE0.bin: F(0)≠1 (Z={z}, row {i})");
-            if (tailFlag[i] != 0 && Math.Abs(tailA[i] * Math.Exp(-4.0 * tailB[i]) - f[i][SCount - 1]) > aTol)
-                throw new InvalidDataException($"IonizationFsE0.bin: tail/F(4) inconsistent (Z={z}, row {i})");
+            //260805Cl 変更: 4.0 決め打ち → SMaxAngstromInv (s グリッド上限の延長に追随)
+            if (tailFlag[i] != 0 && Math.Abs(tailA[i] * Math.Exp(-SMaxAngstromInv * tailB[i]) - f[i][SCount - 1]) > aTol)
+                throw new InvalidDataException($"IonizationFsE0.bin: tail/F(s_max) inconsistent (Z={z}, row {i})");
         }
         return new IonizationChannelTable(this, z, shellCode, eth, e0, u, tailFlag, tailA, tailB, f);
     }
@@ -779,11 +787,12 @@ public sealed class IonizationChannelTable
 }
 
 /// <summary>260801Cl 追加: E0 解決済みの単一殻形状。s 方向は符号付き F 直接 PCHIP、
-/// s>4 Å⁻¹ は連続性アンカー tail F(4)e^{−b̂(s−4)} (b̂ 不能なら hard fail)。入力 s の単位は nm⁻¹。</summary>
+/// s>s_max (=8 Å⁻¹, 260805Cl に 4→8 へ延長) は連続性アンカー tail F(s_max)e^{−b̂(s−s_max)}
+/// (b̂ 不能なら hard fail)。入力 s の単位は nm⁻¹。</summary>
 public sealed class IonizationTableShape : INormalizedIonizationShape
 {
     private readonly double[] _sGrid, _grid, _deriv;
-    private readonly double _f4, _bHat;
+    private readonly double _f4, _bHat;   //_f4 = F(s_max)。名前は s_max=4 時代の名残
     private readonly bool _tailAvailable;
     private readonly int _z, _shellCode;
     private bool _usedTail;
@@ -811,7 +820,8 @@ public sealed class IonizationTableShape : INormalizedIonizationShape
                 values[k] = Pchip.Evaluate(_sGrid, _grid, _deriv, sA);
             else if (_tailAvailable)
             {
-                values[k] = _f4 * Math.Exp(-_bHat * (sA - 4.0));
+                //260805Cl 変更: 4.0 決め打ち → SMaxAngstromInv (s グリッド上限の延長に追随)
+                values[k] = _f4 * Math.Exp(-_bHat * (sA - IonizationFsTable.SMaxAngstromInv));
                 _usedTail = true;
             }
             else
