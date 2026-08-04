@@ -2308,13 +2308,14 @@ public class BetheMethod
         //260801Cl 追加: STEM-EDX (v0a) は全-slice 物化 + q-major streaming 経路限定 (設計書 §5.7-5)。
         //EVD より前に hard error で拒否する (Stage4 後の警告スキップは計算時間を浪費するため禁止。codex 16巡)。
         //旧経路 (MKL bLen≥500 / managed) fallback は v1 出荷ゲート。
-        //if (ionData is not null && !useUStream)//260803Cl 変更前
-        //260803Cl 修正: ionData は EDX 無しでも空配列 (RunSTEM が requests=[] から作る) なので `is not null` だと
-        //EDX と無関係な通常 STEM まで巻き添えで落ちていた。実際に踏める: 回折波 500 以上で Auto が MKL へ切替 /
-        //全スライス物化の見送り (厚み合計がスライス厚に対して大きい場合) / Eigen native 非搭載 (arm64)。
-        if (ionData is { Length: > 0 } && !useUStream)
+        //260802Cl 修正: ionData は EDX 無しでも空配列 (RunSTEM が requests=[] から作る) なので
+        //`is not null` だと EDX と無関係な通常 STEM まで巻き添えで落ちていた。
+        //実際に踏める: 回折波 500 以上で Auto が MKL へ切替 / 全スライス物化の見送り / Eigen native 非搭載。
+        //260802Cl 変更: slice-major 経路にも EDX を載せたので、残る制約は「native ヘルパが無い managed 経路」だけ。
+        //if (ionData is not null && !useUStream)//260802Cl 変更前
+        if (ionData is { Length: > 0 } && !nativeHelpersEnabled)
             throw new NotSupportedException(
-                "STEM-EDX (v0a) requires the native all-slice streaming path: Eigen native must be present, bLen must stay below the MKL threshold, and RECIPRO_STEM_ALLSLICE / RECIPRO_STEM_USTREAM must not be 0.");
+                "STEM-EDX requires the native helpers (Crystallography.Native). The managed fallback path does not implement the ionization channel.");
         double[] allThick = null;   //ユーザー厚み (先頭 tLen 列, 弾性用) + 全 slice 厚み (非弾性用)
         Complex[][] tcSlice = null; //tcSlice[s][kIndex*bLen+g]: slice s における全方向の透過係数 (column-major N×K_all, 有効列のみ書き込み)
         if (useAllSliceTc)
@@ -2613,6 +2614,26 @@ public class BetheMethod
             fillUq(qIndex, U, qIndex * bLen2);//260711Cl 変更: ループ本体を fillUq へ抽出 (処理は同一)
             if (Interlocked.Increment(ref count) % 10 == 0) report(StemStage.PotentialMatrix, (double)count / qList.Count);//260711Cl 変更: 通知を q 単位へ集約 (数値影響なし) //260802Cl 型付き進捗へ
         });
+        //260802Cl 追加: slice-major 経路でも EDX を回すため、TDS の U とまったく同じレイアウトで
+        //U_ion をチャネルぶん構築する。q-major 経路では q ごとに都度作る (AccumulateInelasticQ の fillU) ので
+        //ここは !useUStream のときだけ。メモリは (1 + チャネル数) × Q × N² になる (作者了承済み)。
+        Complex[][] U_ion = null;
+        var I_EdxAll = new Complex[ionData.Length][,,];
+        if (!useUStream && ionData is { Length: > 0 })
+        {
+            U_ion = new Complex[ionData.Length][];
+            for (int ch = 0; ch < ionData.Length; ch++)
+            {
+                var dstU = GC.AllocateUninitializedArray<Complex>(qList.Count * bLen2);
+                var chDataLocal = ionData[ch];
+                var cache = new ConcurrentDictionary<(int H, int K, int L), Complex>();//チャネル内限定 (指示書 §2-3)
+                Parallel.For(0, qList.Count, qIndex =>
+                    FillIonizationUq(Beams, qList[qIndex].Index, mat, chDataLocal, kvac, dstU, qIndex * bLen2, cache));
+                U_ion[ch] = dstU;
+                I_EdxAll[ch] = new Complex[qList.Count, tLen, dLen];
+                if (bwSTEM.CancellationPending) { e.Cancel = true; return; }
+            }
+        }
         #endregion
 
         #region 260610Cl 追加 (Phase2 候補A): list (k 単位) を q 単位に反転 — 260801Cl 区分求積ブロック内から hoist (EDX 別qパスと共用、設計書 §5.7-1)
@@ -2656,6 +2677,44 @@ public class BetheMethod
         var total = _thick.Sum(e => e.Length) * (nativeHelpersEnabled ? activeQCount : tcPArray.Length); // 260610Cl: 新経路は q 単位の進捗 //260711Cl EigenEnabled→snapshot
         #endregion
 
+        //260802Cl 追加: TDS と EDX の q-major 累積は「どの U を作るか」と「どこへ書くか」以外まったく同じだった
+        //(entry ガード・バッファ確保・slice ループ・native 呼び出し・係数・厚み方向の累積まで逐語一致)。
+        //差分だけを引数にして 1 か所へ集約する。数値順序は一切変えていないので結果は bit 一致する。
+        void AccumulateInelasticQ(Action<int, Complex[]> fillU, Complex[,,] dst, StemStage stage,
+            int chIndex = -1, IonizationChannelSpec channel = null)
+        {
+            //worker ごとの正確長バッファ (ArrayPool.Rent は 2 の冪へ切り上げるため使わない。260712Cl codex 指摘)。
+            //fillU は全 bLen² 要素を上書きするので q 間の再利用に初期化は要らない
+            using var localUq = new ThreadLocal<Complex[]>(() => GC.AllocateUninitializedArray<Complex>(bLen2), false);
+            count = 0;
+            Parallel.For(0, qList.Count, qIndex =>
+            {
+                var entryCount = qEntryK[qIndex]?.Length ?? 0;
+                if (entryCount == 0 || bwSTEM.CancellationPending) return;
+                var Uq = localUq.Value;
+                var sumD = new Complex[dLen];
+                fillU(qIndex, Uq);
+                if (bwSTEM.CancellationPending) return;
+                for (int t = 0; t < Thicknesses.Length; t++)
+                {
+                    Array.Clear(sumD, 0, dLen);
+                    for (int si = 0; si < _thick[t].Length; si++)
+                        fixed (Complex* _tc = tcSlice[sliceOffset[t] + si], _Uq = Uq, _sumD = sumD, _lenz = qEntryLenz[qIndex])
+                        fixed (int* _k = qEntryK[qIndex], _n4 = qEntryN4[qIndex])
+                        fixed (double* _r4 = qEntryR4[qIndex])
+                            NativeWrapper.STEM_InelasticQ(bLen, dLen, entryCount, _Uq, _tc, _k, _n4, _r4, _lenz, _sumD);
+                    var coeff = 2 * Math.PI / kvac * tStep[t];
+                    for (int dIndex = 0; dIndex < dLen; dIndex++)
+                    {
+                        dst[qIndex, t, dIndex] = sumD[dIndex] * coeff;
+                        if (t > 0)
+                            dst[qIndex, t, dIndex] += dst[qIndex, t - 1, dIndex];
+                    }
+                }
+                if (Interlocked.Increment(ref count) % 4 == 0) report(stage, (double)count / activeQCount, chIndex, channel);
+            });
+        }
+
         var PiecewiseQuadrature = true;
         if (PiecewiseQuadrature)
         #region 区分求積法アルゴリズム
@@ -2677,6 +2736,7 @@ public class BetheMethod
             //260801Cl: qEntry 構築 (旧 ここ) は EDX 別qパスからも参照するため区分求積ブロックの外 (PiecewiseQuadrature 宣言の直前) へ hoist した (設計書 §5.7-1。構築内容・順序は不変)
             count = 0;
 
+
             #region メインのループ
             var sumLen = qList.Count * dLen; // 260402Cl ArrayPool 化
             var threadLocalExpKgz = new ThreadLocal<Complex[]>(() => null, true); // (260402Ch) 非 Eigen 経路の指数配列はスレッド単位で再利用する
@@ -2690,44 +2750,17 @@ public class BetheMethod
                 //sumD の slice 加算順・segment 累積順 (I_Inel[t] = sumD*coeff + I_Inel[t-1]) は旧経路と同一なので q ごとに数値等価。
                 //active q (qEntryK 非 null) のみ処理するため、旧経路で発生していた inactive q の U 生成も消える
                 if (useUStream)
-                {
-                    //260712Cl 変更 (codex 指摘): ArrayPool.Rent は 2 の冪 bucket へ切り上げる (N=553 なら 306k→524k 要素 = worker あたり +3.5MB)
-                    //ため、worker ごとの正確長バッファへ変更。fillUq は全 bLen² 要素を上書きするので q 間の再利用は初期化不要で安全
-                    using var threadLocalUq = new ThreadLocal<Complex[]>(() => GC.AllocateUninitializedArray<Complex>(bLen2), false);
-                    Parallel.For(0, qList.Count, qIndex =>
-                    {
-                        var entryCount = qEntryK[qIndex]?.Length ?? 0;
-                        if (entryCount == 0 || bwSTEM.CancellationPending) return;
-                        //var Uq = Shared.Rent(bLen2);//260712Cl 変更前 (finally での Shared.Return と対)
-                        var Uq = threadLocalUq.Value;
-                        var sumD = new Complex[dLen];
-                        fillUq(qIndex, Uq, 0);
-                        if (bwSTEM.CancellationPending) return;
-                        for (int t = 0; t < Thicknesses.Length; t++)
-                        {
-                            Array.Clear(sumD, 0, dLen);
-                            for (int si = 0; si < _thick[t].Length; si++)
-                                fixed (Complex* _tc = tcSlice[sliceOffset[t] + si], _Uq = Uq, _sumD = sumD, _lenz = qEntryLenz[qIndex])
-                                fixed (int* _k = qEntryK[qIndex], _n4 = qEntryN4[qIndex])
-                                fixed (double* _r4 = qEntryR4[qIndex])
-                                    NativeWrapper.STEM_InelasticQ(bLen, dLen, entryCount, _Uq, _tc, _k, _n4, _r4, _lenz, _sumD);
-                            var coeff = 2 * Math.PI / kvac * tStep[t];
-                            for (int dIndex = 0; dIndex < dLen; dIndex++)
-                            {
-                                I_Inel[qIndex, t, dIndex] = sumD[dIndex] * coeff;
-                                if (t > 0)
-                                    I_Inel[qIndex, t, dIndex] += I_Inel[qIndex, t - 1, dIndex];
-                            }
-                        }
-                        if (Interlocked.Increment(ref count) % 4 == 0) report(StemStage.InelasticQ, (double)count / activeQCount);//状況を報告 //260802Cl 型付き進捗へ
-                    });
-                }
+                    //260802Cl 変更: 中身は AccumulateInelasticQ へ移した (EDX 側と逐語一致していたため)
+                    AccumulateInelasticQ((qIndex, Uq) => fillUq(qIndex, Uq, 0), I_Inel, StemStage.InelasticQ);
                 else
                 for (int t = 0; t < Thicknesses.Length; t++)
                 {
                     //var sum = new Complex[qList.Count * dLen];//ゼロ初期化が必要 // 260402Cl 変更前
                     var sum = Shared.Rent(sumLen); // 260402Cl ArrayPool 化
                     Array.Clear(sum, 0, sumLen); // ゼロ初期化が必要 (+=で累積)
+                    //260802Cl 追加: EDX も同じ slice ループで積む (TDS と同じ形・同じ native 呼び出し)
+                    var sumEdx = U_ion?.Select(_ => Shared.Rent(sumLen)).ToArray();
+                    if (sumEdx is not null) foreach (var se in sumEdx) Array.Clear(se, 0, sumLen);
                     try
                     {
                         //foreach (var thickness in _thick[t]) //260711Cl 変更前: 全-slice 物化で global slice index が要るため索引ループ化
@@ -2787,6 +2820,14 @@ public class BetheMethod
                                     fixed (int* _k = qEntryK[qIndex], _n4 = qEntryN4[qIndex])
                                     fixed (double* _r4 = qEntryR4[qIndex])
                                         NativeWrapper.STEM_InelasticQ(bLen, dLen, entryCount, _U + qIndex * bLen2, _tc_k, _k, _n4, _r4, _lenz, _sum + qIndex * dLen);
+                                    //260802Cl 追加: 同じ slice・同じ透過係数で EDX チャネルも積む。native 呼び出しは TDS と同一で、
+                                    //違うのは U (U_ion[ch]) と出力先 (sumEdx[ch]) だけ
+                                    if (U_ion is not null)
+                                        for (int ch = 0; ch < U_ion.Length; ch++)
+                                            fixed (Complex* _tcE = sliceTc, _Ui = U_ion[ch], _sumE = sumEdx[ch], _lenzE = qEntryLenz[qIndex])
+                                            fixed (int* _kE = qEntryK[qIndex], _n4E = qEntryN4[qIndex])
+                                            fixed (double* _r4E = qEntryR4[qIndex])
+                                                NativeWrapper.STEM_InelasticQ(bLen, dLen, entryCount, _Ui + qIndex * bLen2, _tcE, _kE, _n4E, _r4E, _lenzE, _sumE + qIndex * dLen);
                                     if (Interlocked.Increment(ref count) % 100 == 0) report(StemStage.InelasticQ, (double)count / total);//状況を報告 //260802Cl 型付き進捗へ
                                 });
                             }
@@ -2859,11 +2900,21 @@ public class BetheMethod
                                 if (t > 0)
                                     I_Inel[qIndex, t, dIndex] += I_Inel[qIndex, t - 1, dIndex];
                             }
+                            //260802Cl 追加: EDX も TDS と同じ式で厚み方向へ累積する
+                            if (U_ion is not null)
+                                for (int ch = 0; ch < U_ion.Length; ch++)
+                                    for (int dIndex = 0; dIndex < dLen; dIndex++)
+                                    {
+                                        I_EdxAll[ch][qIndex, t, dIndex] = sumEdx[ch][qIndex * dLen + dIndex] * coeff;
+                                        if (t > 0)
+                                            I_EdxAll[ch][qIndex, t, dIndex] += I_EdxAll[ch][qIndex, t - 1, dIndex];
+                                    }
                         });
                     }
                     finally
                     {
                         Shared.Return(sum); // (260402Ch) cancel / 例外時も返却する
+                        if (sumEdx is not null) foreach (var se in sumEdx) Shared.Return(se);//260802Cl 追加
                     }
                 }
             }
@@ -2890,6 +2941,45 @@ public class BetheMethod
         if (bwSTEM.CancellationPending) { e.Cancel = true; return; }
         #endregion
 
+        //260802Cl 追加 (作者指示: 物理としての正しさを優先): 弾性・TDS にも設計書 §3.4 の規律を適用する。
+        //像 I(r) は実数の強度なので、そのフーリエ係数は I(−q)=I(q)* を**厳密に**満たさなければならない。
+        //破れるのは k+q の振幅を有限方向格子から 4 点 bilinear 補間で得ているからで、非対称は O(h²) の純粋な数値誤差。
+        //従って Σ_q I(q)e^{2πiq·r} の虚部には物理的内容が無い。ここでは残差を実測して記録するだけで、値は変えない
+        //(合成側で .Real を取るのが直交射影であり、q 集合が ±完備なら「対称化してから合成」と数学的に同一なので、
+        //  配列そのものを書き換える必要はない)。EDX と違い hard fail はしない: 残差が大きいのは欠陥ではなく
+        //  ユーザーが選んだ角度分解能が粗いという意味なので、報告してユーザーの判断に委ねる。
+        var qIndexOfAll = new Dictionary<(int, int, int), int>(qList.Count);
+        for (int i = 0; i < qList.Count; i++) qIndexOfAll[qList[i].Index] = i;
+        static (double Herm, double Q0Imag) MeasureHermitian(Complex[,,] iq, List<Beam> qs,
+            Dictionary<(int, int, int), int> indexOf, int tLen2, int dLen2)
+        {
+            double scale = 0;
+            for (int q = 0; q < qs.Count; q++)
+                for (int t = 0; t < tLen2; t++)
+                    for (int d = 0; d < dLen2; d++)
+                        scale = Math.Max(scale, iq[q, t, d].Magnitude);
+            if (scale <= 0) return (0, 0);
+            double herm = 0, q0 = 0;
+            for (int q = 0; q < qs.Count; q++)
+            {
+                var (qh, qk, ql) = qs[q].Index;
+                if ((qh, qk, ql) == (0, 0, 0))
+                {
+                    for (int t = 0; t < tLen2; t++)
+                        for (int d = 0; d < dLen2; d++)
+                            q0 = Math.Max(q0, Math.Abs(iq[q, t, d].Imaginary) / scale);
+                    continue;
+                }
+                if (!indexOf.TryGetValue((-qh, -qk, -ql), out var neg)) continue;//−q が無い q は残差を定義できない (集合の切り詰め)
+                for (int t = 0; t < tLen2; t++)
+                    for (int d = 0; d < dLen2; d++)
+                        herm = Math.Max(herm, (iq[q, t, d] - Conjugate(iq[neg, t, d])).Magnitude / scale);
+            }
+            return (herm, q0);
+        }
+        var (elaHerm, elaQ0) = MeasureHermitian(I_Elas, qList, qIndexOfAll, tLen, dLen);
+        var (tdsHerm, tdsQ0) = MeasureHermitian(I_Inel, qList, qIndexOfAll, tLen, dLen);
+
         #region 各ピクセルの計算
         //imagesを初期化
         int width = imageSize.Width, height = imageSize.Height;
@@ -2910,9 +3000,16 @@ public class BetheMethod
             qVecXY[qIndex] = qList[qIndex].Vec.ToPointD;
             stepPhasor[qIndex] = Exp(qVecXY[qIndex].X * resolution * TwoPiI);//x が 1 画素進むときの位相回転
         }
+        //260802Cl 追加: .Real 化で丸め/有限 q 打切り由来の小負値が出得るので、clamp 前の最小値を診断として残す (EDX と同じ作法)
+        double minPixEla = 0, minPixTds = 0;
+        //260802Cl 追加: 捨てている虚部の大きさ。像は実数なので Im は純粋な数値誤差であり、
+        //旧 .Magnitude 合成が信号へ足し込んでいた量は最輝点で (maxIm/maxRe)²/2、f 倍暗い画素ではその f² 倍になる
+        double maxImEla = 0, maxReEla = 0, maxImTds = 0, maxReTds = 0;
+        var minPixLockRef = new Lock();
         Parallel.For(0, height, y =>
         {
             Complex[] phasor = Shared.Rent(qLen), elasAcc = Shared.Rent(tdLen), tdsAcc = Shared.Rent(tdLen);
+            double localMinEla = 0, localMinTds = 0, lImEla = 0, lReEla = 0, lImTds = 0, lReTds = 0;
             try
             {
                 for (int x = 0; x < width; x++)
@@ -2941,12 +3038,41 @@ public class BetheMethod
                     for (int t = 0; t < Thicknesses.Length; t++)
                         for (int d = 0; d < dLen; d++, j++)
                         {
-                            image_ela[t][d][x + y * width] = elasAcc[j].Magnitude / radiusPix2;
-                            image_tds[t][d][x + y * width] = tdsAcc[j].Magnitude / radiusPix2;
+                            //260802Cl 変更 (作者指示: 物理としての正しさを優先。旧: elasAcc[j].Magnitude / radiusPix2):
+                            //  Σ_q I(q)e^{2πiq·r} は I(q) が Hermitian なら実数。補間の非対称が乗せる虚部 b は純粋な数値誤差なので、
+                            //  .Real (直交射影) で厳密に落とすのが正しい。.Magnitude = √(a²+b²) ≥ |a| は
+                            //   ① b² を信号へ足し込む片側バイアス (平均しても消えない)
+                            //   ② 暗部ほど b/a が大きくコントラストを潰す
+                            //   ③ |a₁+ib₁|+|a₂+ib₂| ≠ (a₁+a₂) で Both の線形性を壊す
+                            //   ④ 絶対値なので、ビーム数不足・q 集合切り詰めの証拠である負値を消してしまう
+                            //  という 4 点で誤り (設計書 §3.4 が EDX について書いているのと同じ理由)。
+                            //  なお q 集合が ±完備なら「I(q) を対称化してから合成」と .Real は数学的に同一。
+                            double vEla = elasAcc[j].Real / radiusPix2, vTds = tdsAcc[j].Real / radiusPix2;
+                            double iEla = Math.Abs(elasAcc[j].Imaginary) / radiusPix2, iTds = Math.Abs(tdsAcc[j].Imaginary) / radiusPix2;
+                            if (iEla > lImEla) lImEla = iEla;
+                            if (Math.Abs(vEla) > lReEla) lReEla = Math.Abs(vEla);
+                            if (iTds > lImTds) lImTds = iTds;
+                            if (Math.Abs(vTds) > lReTds) lReTds = Math.Abs(vTds);
+                            if (vEla < localMinEla) localMinEla = vEla;
+                            if (vTds < localMinTds) localMinTds = vTds;
+                            image_ela[t][d][x + y * width] = vEla;
+                            image_tds[t][d][x + y * width] = vTds;
                         }
                 }
             }
-            finally { Shared.Return(phasor); Shared.Return(elasAcc); Shared.Return(tdsAcc); }
+            finally
+            {
+                Shared.Return(phasor); Shared.Return(elasAcc); Shared.Return(tdsAcc);
+                lock (minPixLockRef)
+                {
+                    if (localMinEla < minPixEla) minPixEla = localMinEla;
+                    if (localMinTds < minPixTds) minPixTds = localMinTds;
+                    if (lImEla > maxImEla) maxImEla = lImEla;
+                    if (lReEla > maxReEla) maxReEla = lReEla;
+                    if (lImTds > maxImTds) maxImTds = lImTds;
+                    if (lReTds > maxReTds) maxReTds = lReTds;
+                }
+            }
         });
 
         //ガウスブラーを適用
@@ -2956,6 +3082,16 @@ public class BetheMethod
                 {
                     ImageProcess.GaussianBlurFast(ref image_ela[t][d], width, sourceSize / resolution);
                     ImageProcess.GaussianBlurFast(ref image_tds[t][d], width, sourceSize / resolution);
+                }
+
+        //260802Cl 追加: 弾性・TDS は非負量なので、丸め/有限 q 打切り由来の小負値だけ 0 へ寄せる。
+        //旧 .Magnitude は絶対値なので負値そのものが存在せず、異常の証拠も同時に消していた。量は MinPixel* で可視化する
+        for (int t = 0; t < Thicknesses.Length; t++)
+            for (int d = 0; d < dLen; d++)
+                for (int i = 0; i < width * height; i++)
+                {
+                    if (image_ela[t][d][i] < 0) image_ela[t][d][i] = 0;
+                    if (image_tds[t][d][i] < 0) image_tds[t][d][i] = 0;
                 }
 
         var image_both = Thicknesses.Select(e => defocusses.Select(e2 => GC.AllocateUninitializedArray<double>(width * height)).ToArray()).ToArray();
@@ -2974,6 +3110,18 @@ public class BetheMethod
         var edxSignals = new StemSignalMap[requests.Length];
         var edxQIndices = requests.Length == 0 ? [] : qList.Select(e1 => e1.Index).ToArray();
         var edxQEntryCounts = requests.Length == 0 ? [] : qEntryK.Select(e1 => e1?.Length ?? 0).ToArray();
+        //260802Cl 追加: EDX 実空間像の規格化除数 (py_multislice との外部比較で判明した絶対規格化の欠陥を修正)。
+        //像は image(R) = Re[Σ_q I(q) e^{2πiq·R}] / N。N は「入射プローブの強度を 1 に規格化する数」= 絞り内の入射方向数
+        //であり、これは q=0 の qEntry 数そのもの。従来は ADF 側から複製した radiusPix² (= div²/4) を使っていたが、
+        //radiusPix² は「方向格子に内接する円の半径の 2 乗」であって方向数ではない。両者の比は entries/radiusPix²
+        //( div→∞ で π/1.05² ≈ 2.85 に収束) なので、像の絶対値が約 2.7 倍過大かつ div 依存になっていた。
+        //実測 (SrTiO₃ [001] 200 kV, t=0.3905 nm, O-K): div 24/32/48/64 で像平均/(σtN/V) = 2.59/2.70/2.74/2.78 と
+        //div とともに動いたのに対し、I(q=0)/entries/(σtN/V) は全 div で 1.00586 一定 = 生の q 空間量は正しかった。
+        //ADF (ela/tds/both) 側の radiusPix² は**変更しない** — 相対強度表示の既存規約であり、§6.2 の byte-exact 回帰対象。
+        var qZeroIndex = qList.FindIndex(e1 => e1.Index == (0, 0, 0));
+        if (requests.Length > 0 && (qZeroIndex < 0 || edxQEntryCounts[qZeroIndex] == 0))
+            throw new InvalidOperationException("STEM-EDX: q=(0,0,0) が qList に無い、またはエントリ数 0 — 像の絶対規格化ができない");
+        var edxImageNorm = requests.Length == 0 ? 1.0 : edxQEntryCounts[qZeroIndex];
         //−q 対応付けの hkl 辞書は qList にしか依存しないのでチャネルループの外で 1 度だけ作る (§5.7-6。純粋な hkl→index で浮動小数は通らない)
         var qIndexOf = new Dictionary<(int, int, int), int>(qList.Count);
         for (int i = 0; i < qList.Count; i++) qIndexOf.Add(qList[i].Index, i);
@@ -2985,35 +3133,18 @@ public class BetheMethod
             var chData = ionData[chIndex];
             //260802Cl 変更: 暫定の文字列プロトコル (旧: var edxStage = $"Calculating I_EDX(Q) (ch {chIndex + 1}/{requests.Length})") を廃し型付き通知へ
             report(StemStage.IonizationQ, 0, chIndex, ionization.Channel);
-            var I_Edx = new Complex[qList.Count, tLen, dLen];
-            var uIonCache = new ConcurrentDictionary<(int H, int K, int L), Complex>();//uDictionary とは完全分離 (指示書 §2-3)。channel-scoped (チャネル間持ち越し禁止)
-            count = 0;
-            Parallel.For(0, qList.Count, qIndex =>
-                {
-                    var entryCount = qEntryK[qIndex]?.Length ?? 0;
-                    if (entryCount == 0 || bwSTEM.CancellationPending) return;
-                    var Uq = threadLocalUqEdx.Value;
-                    var sumD = new Complex[dLen];
-                    FillIonizationUq(Beams, qList[qIndex].Index, mat, chData, kvac, Uq, 0, uIonCache);
-                    if (bwSTEM.CancellationPending) return;
-                    for (int t = 0; t < Thicknesses.Length; t++)
-                    {
-                        Array.Clear(sumD, 0, dLen);
-                        for (int si = 0; si < _thick[t].Length; si++)
-                            fixed (Complex* _tc = tcSlice[sliceOffset[t] + si], _Uq = Uq, _sumD = sumD, _lenz = qEntryLenz[qIndex])
-                            fixed (int* _k = qEntryK[qIndex], _n4 = qEntryN4[qIndex])
-                            fixed (double* _r4 = qEntryR4[qIndex])
-                                NativeWrapper.STEM_InelasticQ(bLen, dLen, entryCount, _Uq, _tc, _k, _n4, _r4, _lenz, _sumD);
-                        var coeff = 2 * Math.PI / kvac * tStep[t];
-                        for (int dIndex = 0; dIndex < dLen; dIndex++)
-                        {
-                            I_Edx[qIndex, t, dIndex] = sumD[dIndex] * coeff;
-                            if (t > 0)
-                                I_Edx[qIndex, t, dIndex] += I_Edx[qIndex, t - 1, dIndex];
-                        }
-                    }
-                    if (Interlocked.Increment(ref count) % 4 == 0) report(StemStage.IonizationQ, (double)count / activeQCount, chIndex, ionization.Channel);//260802Cl 型付き進捗へ
-                });
+            //260802Cl 変更: q-major 経路ではここで積む。slice-major 経路では既に TDS と同じ slice ループで
+            //積み終わっている (I_EdxAll[chIndex]) ので、そのまま受け取る = 経路によらず以降の後処理は共通。
+            Complex[,,] I_Edx;
+            if (I_EdxAll[chIndex] is not null)
+                I_Edx = I_EdxAll[chIndex];
+            else
+            {
+                I_Edx = new Complex[qList.Count, tLen, dLen];
+                var uIonCache = new ConcurrentDictionary<(int H, int K, int L), Complex>();//uDictionary とは完全分離 (指示書 §2-3)。channel-scoped
+                AccumulateInelasticQ((qIndex, Uq) => FillIonizationUq(Beams, qList[qIndex].Index, mat, chData, kvac, Uq, 0, uIonCache),
+                    I_Edx, StemStage.IonizationQ, chIndex, ionization.Channel);
+            }
             if (bwSTEM.CancellationPending) { e.Cancel = true; return; }
 
             //260801Cl 追加: 対称化前スナップショット (fixture 凍結用、設計書 §6.3。対称化が共役・符号バグを隠すのを防ぐ。通常 run は null)
@@ -3114,7 +3245,8 @@ public class BetheMethod
                         for (int t = 0; t < Thicknesses.Length; t++)
                             for (int d = 0; d < dLen; d++, j++)
                             {
-                                var v = acc[j].Real / radiusPix2;
+                                //var v = acc[j].Real / radiusPix2;//260802Cl 変更前 (ADF 側からの複製。方向数でなく内接円半径² で割っていた)
+                                var v = acc[j].Real / edxImageNorm;//260802Cl 変更: 絞り内の入射方向数で割る = 入射電子 1 個あたりの量になる
                                 if (v < localMin) localMin = v;
                                 image_edx[t][d][x + y * width] = v;
                             }
@@ -3179,6 +3311,9 @@ public class BetheMethod
             EdxSignals = edxSignals,
             QIndices = edxQIndices,
             QEntryCounts = edxQEntryCounts,
+            //260802Cl 追加: 参照像の数値品質 (角度分解能が粗いほど残差が大きい)
+            ReferenceQuality = new StemReferenceQuality(elaHerm, elaQ0, tdsHerm, tdsQ0, minPixEla, minPixTds,
+                maxReEla > 0 ? maxImEla / maxReEla : 0, maxReTds > 0 ? maxImTds / maxReTds : 0),
         });
 
         return;
