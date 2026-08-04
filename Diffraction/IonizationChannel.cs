@@ -141,7 +141,26 @@ public sealed class StemSimulationResult
     public (int H, int K, int L)[] QIndices { get; init; }
     /// <summary>各 q のエントリ数 (aperture 重なりで有効だった方向数。0 = 未計算。EDX off では空配列)</summary>
     public int[] QEntryCounts { get; init; }
+
+    /// <summary>260802Cl 追加: 参照像 (弾性・TDS) の数値品質。設計書 §3.4 の規律を EDX 以外にも広げた際の実測値。
+    /// 像 I(r) は実数なので I(−q)=I(q)* が厳密に成り立つべきで、破れは方向グリッド上の bilinear 補間による
+    /// O(h²) の数値誤差にすぎない。**大きいほど角度分解能 (probe division) が粗い**ことを意味する。
+    /// EDX と違い run は止めない (欠陥ではなくユーザーの設定なので、報告して判断に委ねる)。</summary>
+    public StemReferenceQuality ReferenceQuality { get; init; }
 }
+
+/// <summary>260802Cl 追加: 参照像の数値品質診断 (値そのものには影響しない観測量)。</summary>
+/// <param name="ElasticHermitianMax">弾性 I(q) の非 Hermitian 残差 (相対)</param>
+/// <param name="ElasticQZeroImagMax">弾性 q=0 の虚部残差 (相対)</param>
+/// <param name="TdsHermitianMax">TDS I(q) の非 Hermitian 残差 (相対)</param>
+/// <param name="TdsQZeroImagMax">TDS q=0 の虚部残差 (相対)</param>
+/// <param name="ElasticMinPixelBeforeClamp">弾性像の clamp 前最小画素 (負なら打切り誤差の目安)</param>
+/// <param name="TdsMinPixelBeforeClamp">TDS 像の clamp 前最小画素</param>
+public sealed record StemReferenceQuality(
+    double ElasticHermitianMax, double ElasticQZeroImagMax,
+    double TdsHermitianMax, double TdsQZeroImagMax,
+    double ElasticMinPixelBeforeClamp, double TdsMinPixelBeforeClamp,
+    double ElasticImagOverRealMax, double TdsImagOverRealMax);
 
 /// <summary>260802Cl 追加: STEM run の進捗ステージ (設計書 §5.9-8)。値は GUI の "Stage n" 表示と一致させてある。</summary>
 public enum StemStage { EigenSolve = 1, ElasticQ = 2, PotentialMatrix = 3, InelasticQ = 4, IonizationQ = 5 }
@@ -462,15 +481,23 @@ public static class BoteSalvat
 
 #region F(s,E0) テーブル (260801Cl 追加)
 
-/// <summary>260801Cl 追加: 本番 F(s,E0) テーブル (dataset 1.0.0, 127ch) のリーダー。
+/// <summary>260801Cl 追加: 本番 F(s,E0) テーブルのリーダー。
 /// フォーマット・契約 = tools/IonizationGen/pack_resource.py ヘッダコメント + prod/MANIFEST.md。
-/// NistElasticPchipResource と同じ「blob 常駐 + チャネル単位 lazy Brotli decode + volatile 公開」。</summary>
+/// NistElasticPchipResource と同じ「blob 常駐 + チャネル単位 lazy Brotli decode + volatile 公開」。
+/// 260802Cl: formatVersion 2 (dataset 2.0.0) で 2p が j 分離され L2/L3 の shellCode が増えた。
+/// v1 (formatVersion 1, L23 1 本) の .bin も読める — 生成側の A/B 比較に使うため。</summary>
 public sealed class IonizationFsTable
 {
     private const string ResourceName = "Crystallography.IonizationFsE0.bin"; // csproj の LogicalName と一致させること
     private const int Magic = 0x31534649; // "IFS1"
-    public const int ShellCodeK = 0, ShellCodeL1 = 1, ShellCodeL23 = 2;
+    //260802Cl: L2=3 / L3=4 を追加。**L23=2 は欠番として予約**し番号を再利用しない
+    //(v1 の .bin を読んだときに意味が入れ替わらないようにするため)。
+    public const int ShellCodeK = 0, ShellCodeL1 = 1, ShellCodeL23 = 2, ShellCodeL2 = 3, ShellCodeL3 = 4;
     public const double SMaxAngstromInv = 4.0;
+
+    /// <summary>260802Cl 追加: 2p が j 分離された dataset か (L2/L3 が索引にある = v2)。
+    /// LTotal の合成を「L1+L2+L3」にするか「L1+L23」にするかの分岐に使う。</summary>
+    public bool HasJResolvedL { get; }
 
     public int Method { get; }             // 1=float32 / 2=1e-6 量子化+delta+shuffle
     public int SCount { get; }             // 81
@@ -520,7 +547,8 @@ public sealed class IonizationFsTable
         using var reader = new BinaryReader(new MemoryStream(blob, writable: false));
         if (reader.ReadInt32() != Magic) throw new InvalidDataException("IonizationFsE0.bin: bad magic");
         var formatVersion = reader.ReadInt32();
-        if (formatVersion != 1) throw new InvalidDataException($"IonizationFsE0.bin: unknown format version {formatVersion}");
+        //260802Cl: 1 (v1.0.0, L23 1 本) と 2 (v2.0.0, L2/L3 j 分離) を受け入れる。旧: != 1 で拒否
+        if (formatVersion is not (1 or 2)) throw new InvalidDataException($"IonizationFsE0.bin: unknown format version {formatVersion}");
         var codec = reader.ReadInt32();
         if (codec != 1) throw new InvalidDataException($"IonizationFsE0.bin: unknown codec {codec}");
         Method = reader.ReadInt32();
@@ -541,12 +569,15 @@ public sealed class IonizationFsTable
         for (int i = 0; i < channelCount; i++)
         {
             int shellCode = reader.ReadInt32(), z = reader.ReadInt32(), offset = reader.ReadInt32(), length = reader.ReadInt32();
-            if (shellCode is < ShellCodeK or > ShellCodeL23 || length <= 0 || offset != payloadLen)
+            //260802Cl: 上限を L23(2) → L3(4) へ。旧: shellCode is < ShellCodeK or > ShellCodeL23
+            if (shellCode is < ShellCodeK or > ShellCodeL3 || length <= 0 || offset != payloadLen)
                 throw new InvalidDataException("IonizationFsE0.bin: bad index entry"); // offset 連続 = 重複/オーバーラップ拒否
             if (!_index.TryAdd((shellCode, z), (offset, length)))
                 throw new InvalidDataException($"IonizationFsE0.bin: duplicate channel ({shellCode},{z})");
             payloadLen += length;
         }
+        //j 分離の有無は索引の実体で判定する (formatVersion は「読める形式か」だけを表す)
+        HasJResolvedL = _index.Keys.Any(k => k.ShellCode == ShellCodeL2);
         _payloadStart = (int)reader.BaseStream.Position;
         if (_payloadStart + payloadLen != blob.Length) throw new InvalidDataException("IonizationFsE0.bin: payload length mismatch");
         SGrid = new double[SCount];
@@ -793,29 +824,30 @@ public sealed class IonizationTableShape : INormalizedIonizationShape
 /// <summary>260801Cl 追加: LTotal 合成形状 F_L = [σ_L1·F_L1 + (σ_L2+σ_L3)·F_L23]/Σσ (実行時 Bote 重み、MANIFEST 契約)。</summary>
 public sealed class IonizationLTotalShape : INormalizedIonizationShape
 {
-    private readonly IonizationTableShape _l1, _l23;
-    private readonly double _w1, _w23; // σ 重み (正規化済み)
+    //260802Cl 変更: 副殻 2 本 (L1 + L23) 固定だったのを可変本数へ。v2 dataset では
+    //L1 + L2 + L3 の 3 本になる。σ=0 の副殻は shape=null + 重み 0 で渡ってくる契約。
+    //旧: private readonly IonizationTableShape _l1, _l23;  private readonly double _w1, _w23;
+    private readonly IonizationTableShape[] _shapes;
+    private readonly double[] _weights;   // σ 重み (総和 1 に正規化済み)
 
-    internal IonizationLTotalShape(IonizationTableShape l1, double sigmaL1, IonizationTableShape l23, double sigmaL23)
+    internal IonizationLTotalShape(IonizationTableShape[] shapes, double[] sigmas)
     {
-        var total = sigmaL1 + sigmaL23;
-        _l1 = l1; _l23 = l23;
-        _w1 = sigmaL1 / total;
-        _w23 = sigmaL23 / total;
+        var total = sigmas.Sum();
+        _shapes = shapes;
+        _weights = [.. sigmas.Select(s => s / total)];
     }
 
-    public bool UsedTailExtrapolation => (_l1?.UsedTailExtrapolation ?? false) || (_l23?.UsedTailExtrapolation ?? false);
+    public bool UsedTailExtrapolation => _shapes.Any(s => s?.UsedTailExtrapolation ?? false);
 
     public void Evaluate(ReadOnlySpan<double> sPerNm, Span<double> values)
     {
         Span<double> tmp = sPerNm.Length <= 256 ? stackalloc double[sPerNm.Length] : new double[sPerNm.Length];
-        if (_w1 > 0) _l1.Evaluate(sPerNm, values);
-        else values.Clear();
-        for (int k = 0; k < values.Length; k++) values[k] *= _w1;
-        if (_w23 > 0)
+        values.Clear();
+        for (int i = 0; i < _shapes.Length; i++)
         {
-            _l23.Evaluate(sPerNm, tmp);
-            for (int k = 0; k < values.Length; k++) values[k] += _w23 * tmp[k];
+            if (!(_weights[i] > 0)) continue;
+            _shapes[i].Evaluate(sPerNm, tmp);
+            for (int k = 0; k < values.Length; k++) values[k] += _weights[i] * tmp[k];
         }
     }
 }
@@ -834,26 +866,44 @@ public static class IonizationDataProvider
     //それぞれ独立に書いていた (同値性はハーネスのテストだけが担保。tools はリモート無しのローカルリポで CI にも乗らない)。
     //判定を Describe() 1 か所へ集約し、Resolve = Describe + 例外化 + shape 構築、Inspect = Describe そのもの、とする。
     //これで「Available ⇔ Resolve 成功」がテストではなく構造で保証される。
+    //260802Cl 追加: 殻 → その殻を構成するテーブル shellCode 列。空 = その dataset では扱えない殻。
+    //LTotal だけが複数本になり、v2 (j 分離) では L1+L2+L3、v1 では L1+L23 を束ねる。
+    //ここが「dataset の版差を吸収する唯一の場所」で、Describe / Resolve の分岐はこの 1 本に集約する。
+    private static int[] ShellCodesOf(IonizationShell shell, IonizationFsTable table) => shell switch
+    {
+        IonizationShell.K => [IonizationFsTable.ShellCodeK],
+        IonizationShell.L1 => [IonizationFsTable.ShellCodeL1],
+        IonizationShell.L2 when table.HasJResolvedL => [IonizationFsTable.ShellCodeL2],
+        IonizationShell.L3 when table.HasJResolvedL => [IonizationFsTable.ShellCodeL3],
+        IonizationShell.LTotal when table.HasJResolvedL =>
+            [IonizationFsTable.ShellCodeL1, IonizationFsTable.ShellCodeL2, IonizationFsTable.ShellCodeL3],
+        IonizationShell.LTotal => [IonizationFsTable.ShellCodeL1, IonizationFsTable.ShellCodeL23],
+        _ => [],
+    };
+
+    //260802Cl 追加: shellCode → Bote の副殻番号 (1=K, 2=L1, 3=L2, 4=L3)。
+    //L23 (v1 の 2p 平均) だけは L2+L3 の合算なので σ を 2 本足す必要があり、ここでは扱えない。
+    private static double SigmaOf(int shellCode, int z, double eV) => shellCode switch
+    {
+        IonizationFsTable.ShellCodeK => BoteSalvat.SigmaNm2(z, 1, eV),
+        IonizationFsTable.ShellCodeL1 => BoteSalvat.SigmaNm2(z, 2, eV),
+        IonizationFsTable.ShellCodeL2 => BoteSalvat.SigmaNm2(z, 3, eV),
+        IonizationFsTable.ShellCodeL3 => BoteSalvat.SigmaNm2(z, 4, eV),
+        _ => BoteSalvat.SigmaNm2(z, 3, eV) + BoteSalvat.SigmaNm2(z, 4, eV),   // ShellCodeL23
+    };
+
     /// <summary>チャネルの状態・edge・過電圧・σ・provenance を算出する共通コア (shape は作らない = Inspect が安く済む)。</summary>
     private static IonizationChannelInfo Describe(IonizationChannelSpec spec, double e0KeV, IonizationFsTable table)
     {
         //対応殻・収録有無の判定は provenance を作る前に済ませる (早期 return パスで捨てる record を作らない)
-        if (spec.Shell is not (IonizationShell.K or IonizationShell.LTotal))
+        //260802Cl: v2 dataset では L1/L2/L3 も単独で解決できる (旧: K と LTotal だけ)。
+        var codes = ShellCodesOf(spec.Shell, table);
+        if (codes.Length == 0)
             return new IonizationChannelInfo { Channel = spec, Status = IonizationAvailability.UnsupportedShell };
-
-        double edge;
-        if (spec.Shell == IonizationShell.K)
-        {
-            if (!table.Contains(IonizationFsTable.ShellCodeK, spec.Z))
-                return new IonizationChannelInfo { Channel = spec, Status = IonizationAvailability.UnsupportedElement };
-            edge = table.GetChannel(IonizationFsTable.ShellCodeK, spec.Z).EthKeV;
-        }
-        else
-        {
-            if (!table.Contains(IonizationFsTable.ShellCodeL1, spec.Z) || !table.Contains(IonizationFsTable.ShellCodeL23, spec.Z))
-                return new IonizationChannelInfo { Channel = spec, Status = IonizationAvailability.UnsupportedElement };
-            edge = Math.Min(table.GetChannel(IonizationFsTable.ShellCodeL1, spec.Z).EthKeV, table.GetChannel(IonizationFsTable.ShellCodeL23, spec.Z).EthKeV);
-        }
+        if (codes.Any(c => !table.Contains(c, spec.Z)))
+            return new IonizationChannelInfo { Channel = spec, Status = IonizationAvailability.UnsupportedElement };
+        //LTotal は開いている副殻のうち最小の端 (どれか 1 本でも励起できれば信号は出る)
+        var edge = codes.Min(c => table.GetChannel(c, spec.Z).EthKeV);
         var partial = new IonizationChannelInfo
         {
             Channel = spec,
@@ -866,11 +916,11 @@ public static class IonizationDataProvider
             return partial with { Status = IonizationAvailability.E0OutOfRange };
 
         // σ は各サブシェル自身の edge で計算 (MANIFEST 契約)。閉じている subshell は 0 で自然に落ちる
+        //260802Cl: 殻ごとの場合分けをやめ、構成 shellCode の σ を足す形に統一した
+        //(旧: K なら subshell 1、それ以外は 2+3+4 決め打ち)。
         var eV = e0KeV * 1e3;
-        var sigma = spec.Shell == IonizationShell.K
-            ? BoteSalvat.SigmaNm2(spec.Z, 1, eV)
-            : BoteSalvat.SigmaNm2(spec.Z, 2, eV) + BoteSalvat.SigmaNm2(spec.Z, 3, eV) + BoteSalvat.SigmaNm2(spec.Z, 4, eV);
-        //現行 dataset (K: Z=6-50 / L: Z=20-60、E0≥30 keV) では全収録チャネルが励起可能なため BelowEdge は実データでは到達しない
+        var sigma = codes.Sum(c => SigmaOf(c, spec.Z, eV));
+        //現行 dataset (K: Z=6-50 / L: Z=20-86、E0≥30 keV) では全収録チャネルが励起可能なため BelowEdge は実データでは到達しない
         //(全収録 edge < 30 keV)。synthetic table でのみテスト可能 (codex 20巡)
         return sigma <= 0
             ? partial with { Status = IonizationAvailability.BelowEdge }
@@ -878,7 +928,9 @@ public static class IonizationDataProvider
     }
 
     /// <summary>解決。E0 範囲外 (30–400 keV 以外) は ArgumentOutOfRangeException、
-    /// 未収録 Z/殻・below-edge は NotSupportedException。v1 で解決可能な殻は K / LTotal のみ。</summary>
+    /// 未収録 Z/殻・below-edge は NotSupportedException。
+    /// 260802Cl: v2 dataset では K / LTotal に加えて L1 / L2 / L3 も単独で解決できる
+    /// (v1 dataset を読んでいるときは L2 / L3 が UnsupportedShell になる)。</summary>
     public static IonizationData Resolve(IonizationChannelSpec spec, double e0KeV, IonizationFsTable table = null)
     {
         ArgumentNullException.ThrowIfNull(spec);
@@ -889,24 +941,25 @@ public static class IonizationDataProvider
             case IonizationAvailability.E0OutOfRange:
                 throw new ArgumentOutOfRangeException(nameof(e0KeV), e0KeV, $"STEM-EDX supports E0 = {MinE0KeV}–{MaxE0KeV} keV only (F table range, no extrapolation)");
             case IonizationAvailability.UnsupportedShell:
-                throw new NotSupportedException($"IonizationShell.{spec.Shell} is not available in v1 (use K or LTotal)");
+                throw new NotSupportedException($"IonizationShell.{spec.Shell} is not available in this dataset (j-resolved L: {table.HasJResolvedL})");
             case IonizationAvailability.UnsupportedElement:
-                throw new NotSupportedException($"Ionization table has no channel for Z={spec.Z} {spec.Shell} (K: Z=6–50, L: Z=20–60)");
+                throw new NotSupportedException($"Ionization table has no channel for Z={spec.Z} {spec.Shell} (K: Z=6–50, L: Z=20–86)");
             case IonizationAvailability.BelowEdge:
                 throw new NotSupportedException($"Z={spec.Z} {spec.Shell}: below edge at E0={e0KeV} keV (σ=0)");
         }
         //ここから先は Available 確定。shape は σ>0 の成分だけ構築する (σ=0 成分は null + 重み 0 で合成。Evaluate は w>0 の成分しか触らない契約)
-        if (spec.Shell == IonizationShell.K)
+        //260802Cl: 単一副殻も複数副殻も同じ経路で組む (旧: K を特別扱いし、L は L1+L23 決め打ち)。
+        var codes = ShellCodesOf(spec.Shell, table);
+        var eV = e0KeV * 1e3;
+        var sigmas = codes.Select(c => SigmaOf(c, spec.Z, eV)).ToArray();
+        if (codes.Length == 1)
         {
-            var ch = table.GetChannel(IonizationFsTable.ShellCodeK, spec.Z);
+            var ch = table.GetChannel(codes[0], spec.Z);
             return new IonizationData(spec, info.EdgeEnergyKeV, info.SigmaNm2, ch.BuildShape(e0KeV), info.CrossSectionSource, info.ShapeSource);
         }
-        var eV = e0KeV * 1e3;
-        double s1 = BoteSalvat.SigmaNm2(spec.Z, 2, eV), s23 = BoteSalvat.SigmaNm2(spec.Z, 3, eV) + BoteSalvat.SigmaNm2(spec.Z, 4, eV);
-        var shape = new IonizationLTotalShape(
-            s1 > 0 ? table.GetChannel(IonizationFsTable.ShellCodeL1, spec.Z).BuildShape(e0KeV) : null, s1,
-            s23 > 0 ? table.GetChannel(IonizationFsTable.ShellCodeL23, spec.Z).BuildShape(e0KeV) : null, s23);
-        return new IonizationData(spec, info.EdgeEnergyKeV, info.SigmaNm2, shape, info.CrossSectionSource, info.ShapeSource);
+        var shapes = codes.Select((c, i) => sigmas[i] > 0 ? table.GetChannel(c, spec.Z).BuildShape(e0KeV) : null).ToArray();
+        return new IonizationData(spec, info.EdgeEnergyKeV, info.SigmaNm2,
+            new IonizationLTotalShape(shapes, sigmas), info.CrossSectionSource, info.ShapeSource);
     }
 
     /// <summary>260801Cl 追加: GUI 向け照会 (設計書 §5.9-3)。throw せず状態 enum を返す。
@@ -927,6 +980,10 @@ public static class IonizationDataProvider
         table ??= IonizationFsTable.Default;
         var list = new List<IonizationChannelInfo>();
         foreach (var z in crystal.Atoms.Select(a => a.AtomicNumber).Distinct().OrderBy(z => z))
+            //260802Cl: 列挙は K と LTotal のまま据え置く。v2 で L1/L2/L3 も解決可能になったが、
+            //EDX は「列挙された全チャネルを計算する」仕様 (9daab2f4) なので、ここに副殻を足すと
+            //L 元素の計算量が 3 倍になるうえ、EDS 検出器が見るのは Lα/Lβ という線であって
+            //副殻ごとの空孔マップではない。副殻を分けて使うのは蛍光収率・線分岐を入れる発光層の仕事。
             foreach (var shell in new[] { IonizationShell.K, IonizationShell.LTotal })
             {
                 var info = Describe(new IonizationChannelSpec(z, shell), e0KeV, table);
