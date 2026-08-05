@@ -333,6 +333,18 @@ public class ConvertCrystalData
         }
 
     }
+
+    /// <summary>260805Cl 追加: CIF テキスト (ファイル内容そのもの) から Crystal を生成する。失敗時は null。ReciPro マクロ Crystal.LoadCifText 用。</summary>
+    public static Crystal ConvertToCrystalFromCifText(string cifText)
+    {
+        try { return ConvertFromCifText(cifText)?.ToCrystal(); }
+        catch (Exception e)
+        {
+            if (AssemblyState.IsDebug)
+                System.Windows.Forms.MessageBox.Show(e.Message);
+            return null;
+        }
+    }
     #endregion
 
     #region amcファイルの読み込み
@@ -883,10 +895,17 @@ public class ConvertCrystalData
     static readonly FrozenSet<string> ignoreWords3 = ["_refln", "_geom", "_platon", "_diffrn_refln"];
     private static Crystal2 ConvertFromCIF(string fileName)
     {
+        //260805Cl 変更: 本文をテキスト版 ConvertFromCifText へ抽出 (ReciPro マクロ Crystal.LoadCifText 用)。処理内容は不変
+        using var reader = new StreamReader(fileName);
+        return ConvertFromCifText(reader.ReadToEnd());
+    }
+
+    /// <summary>260805Cl 追加: CIF ファイルの内容 (テキストそのもの) から Crystal2 を生成する。ReciPro マクロ Crystal.LoadCifText 用の入口。</summary>
+    public static Crystal2 ConvertFromCifText(string cifText)
+    {
         string[] str;
-        using (var reader = new StreamReader(fileName))
         {
-            var strTemp = reader.ReadToEnd();
+            var strTemp = cifText;
             Replace(ref strTemp, "\r\n", "\n");
             Replace(ref strTemp, "\r", "\n");
 
