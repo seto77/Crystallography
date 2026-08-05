@@ -217,6 +217,30 @@ internal static class LocalizationData
             new("checkBoxAutoRowSize", "Text", "Auto resize row width", "行の幅を自動調整", "Zeilenbreite automatisch anpassen", "Ajuster auto. la largeur des lignes", "Ajustar ancho de fila automáticamente", "Ajustar largura da linha automaticamente", "Adatta larghezza riga automaticamente", "Автоподбор ширины строки", "自动调整行宽", "自動調整列寬", "행 너비 자동 조정"),
             new("numericBoxEffectiveDigit", "HeaderText", "Effective digit", "有効桁数", "Effektive Stelle", "Chiffre significatif", "Dígito efectivo", "Dígito efetivo", "Cifra significativa", "Значащая цифра", "有效位数", "有效位數", "유효 자릿수"),
         };
+        // 260805Cl 追加: 3Dプリント用モデル出力ダイアログ (ReciPro/StructureViewer/FormExport3DModel)。
+        // Designer 直書きの静的ラベルのみ (実行時に組み立てる labelInfo/labelSizeAng/labelResult/labelWarning は
+        // フォーム側で Localization.Loc を使う)。固定座標レイアウトなので、隣のコントロールに被らないよう訳語は短めに。
+        reg["FormExport3DModel"] = new Localization.Entry[]
+        {
+            new("this", "Text", "Export 3D Model", "3Dモデルの出力", "3D-Modell exportieren", "Exporter le modèle 3D", "Exportar modelo 3D", "Exportar modelo 3D", "Esporta modello 3D", "Экспорт 3D-модели", "导出 3D 模型", "匯出 3D 模型", "3D 모델 내보내기"),
+            new("groupBoxScale", "Text", "Scale", "スケール", "Maßstab", "Échelle", "Escala", "Escala", "Scala", "Масштаб", "比例", "比例尺", "배율"),
+            new("radioButtonFit", "Text", "Fit largest dimension:", "最大寸法を指定:", "Größte Abmessung:", "Plus grande dim. :", "Dimensión máxima:", "Dimensão máxima:", "Dimensione max.:", "Макс. размер:", "最大尺寸:", "最大尺寸：", "최대 치수:"),
+            new("radioButtonScale", "Text", "Fixed scale:", "スケール固定:", "Fester Maßstab:", "Échelle fixe :", "Escala fija:", "Escala fixa:", "Scala fissa:", "Фикс. масштаб:", "固定比例:", "固定比例尺：", "고정 축척:"),
+            new("groupBoxInclude", "Text", "Include", "出力する要素", "Einschließen", "Inclure", "Incluir", "Incluir", "Includi", "Включить", "包含", "包含", "포함"),
+            new("checkBoxAtoms", "Text", "Atoms", "原子", "Atome", "Atomes", "Átomos", "Átomos", "Atomi", "Атомы", "原子", "原子", "원자"),
+            new("checkBoxBonds", "Text", "Bonds", "結合", "Bindungen", "Liaisons", "Enlaces", "Ligações", "Legami", "Связи", "键", "鍵", "결합"),
+            new("checkBoxPolyhedra", "Text", "Polyhedra", "配位多面体", "Polyeder", "Polyèdres", "Poliedros", "Poliedros", "Poliedri", "Полиэдры", "配位多面体", "配位多面體", "배위 다면체"),
+            new("radioButtonPolySolid", "Text", "Polyhedra: solid faces", "多面体: 面で出力", "Polyeder: Flächen", "Polyèdres : faces", "Poliedros: caras", "Poliedros: faces", "Poliedri: facce", "Полиэдры: грани", "多面体: 实心面", "多面體：實心面", "다면체: 면"),
+            new("radioButtonPolyEdges", "Text", "edges,  dia.:", "稜線,  径:", "Kanten,  Ø:", "arêtes,  Ø :", "aristas,  Ø:", "arestas,  Ø:", "spigoli,  Ø:", "рёбра,  Ø:", "棱,  直径:", "稜,  直徑：", "모서리,  Ø:"),
+            new("checkBoxCellEdges", "Text", "Unit cell edges as cylinders,  dia.:", "単位胞の稜を円柱で出力,  径:", "Zellkanten als Zylinder,  Ø:", "Arêtes de maille (cyl.),  Ø :", "Aristas de celda (cil.),  Ø:", "Arestas da célula (cil.),  Ø:", "Spigoli di cella (cil.),  Ø:", "Рёбра ячейки (цил.),  Ø:", "晶胞棱作圆柱,  直径:", "晶胞稜作圓柱,  直徑：", "단위 격자 모서리(원기둥),  Ø:"),
+            new("groupBoxPrintability", "Text", "Printability", "印刷適性", "Druckbarkeit", "Imprimabilité", "Imprimibilidad", "Imprimibilidade", "Stampabilità", "Пригодность к печати", "可打印性", "可列印性", "출력 적합성"),
+            new("checkBoxThicken", "Text", "Thicken bonds thinner than:", "細い結合を太らせる,  下限:", "Bindungen verdicken unter:", "Épaissir liaisons sous :", "Engrosar enlaces bajo:", "Engrossar ligações sob:", "Ispessisci legami sotto:", "Утолщать связи тоньше:", "加粗细于此值的键:", "加粗細於此值的鍵：", "가는 결합 굵게, 하한:"),
+            new("groupBoxFormat", "Text", "Format", "出力形式", "Format", "Format", "Formato", "Formato", "Formato", "Формат", "格式", "格式", "형식"),
+            new("radioButtonStl", "Text", "STL (single color)", "STL (単色)", "STL (einfarbig)", "STL (monocouleur)", "STL (un color)", "STL (cor única)", "STL (colore unico)", "STL (один цвет)", "STL (单色)", "STL (單色)", "STL (단색)"),
+            new("radioButton3mf", "Text", "3MF (parts colored by element)", "3MF (元素ごとに色分け)", "3MF (nach Element gefärbt)", "3MF (coloré par élément)", "3MF (coloreado por elemento)", "3MF (colorido por elemento)", "3MF (colorato per elemento)", "3MF (цвет по элементам)", "3MF (按元素着色)", "3MF (依元素著色)", "3MF (원소별 색상)"),
+            new("buttonOK", "Text", "Save...", "保存...", "Speichern...", "Enregistrer...", "Guardar...", "Salvar...", "Salva...", "Сохранить...", "保存...", "儲存...", "저장..."),
+            new("buttonCancel", "Text", "Cancel", "キャンセル", "Abbrechen", "Annuler", "Cancelar", "Cancelar", "Annulla", "Отмена", "取消", "取消", "취소"),
+        };
         reg["FormIsotopeComposition"] = new Localization.Entry[]
         {
             new("ColumnAtomicWeight", "HeaderText", "Atomic Weight", "原子量", "Atomgewicht", "Masse atomique", "Peso atómico", "Peso atômico", "Peso atomico", "Атомный вес", "原子量", "原子量", "원자량"),
