@@ -30,7 +30,9 @@ namespace Crystallography;
 /// </summary>
 public sealed class KikuchiPotentialSnapshot
 {
+    /// <summary>対象の結晶 (参照のみ保持。数値は生成時に凍結済み)</summary>
     public Crystal Crystal { get; }
+    /// <summary>加速電圧 [kV]</summary>
     public double KV { get; }
     /// <summary>真空中波数 k_vac [nm⁻¹] (相対論補正込み)</summary>
     public double KVac { get; }
@@ -40,15 +42,20 @@ public sealed class KikuchiPotentialSnapshot
     public Complex UPrime0 { get; }
     /// <summary>診断: 吸収 (U' 全成分) を落とす (設計 §6 の E/D 消失テスト用)</summary>
     public bool AbsorptionOff { get; }
+    /// <summary>TDS 源カーネル (既定 = 厳密 Einstein 混合形)</summary>
     public IKikuchiInelasticKernel Kernel { get; }
     /// <summary>生成時の結晶内容ハッシュ (格子・原子・Occ・ADP・イオンモデル)。鮮度判定用</summary>
     public long ContentHash { get; }
+    /// <summary>生成時の Crystal.Atoms.Length (260806Cl /simplify2: hot loop から live crystal を読まないための凍結値。
+    /// Sites の AtomsIndex はこの値を上限とするため、計算中に UI が原子を削除しても配列境界が壊れない)</summary>
+    public int SpeciesCount { get; }
 
     private readonly BetheMethod _bethe; // 菊池専用インスタンス (ローカル U 辞書)
 
     /// <summary>対称等価位置展開済みの原子サイト (分率座標, Crystal.Atoms 添字, 占有率)</summary>
     internal readonly (double X, double Y, double Z, int AtomsIndex, double Occ)[] Sites;
 
+    /// <summary>snapshot を生成し、原子サイト・カーネル・U(0)・内容ハッシュを凍結する (UI スレッドで呼ぶこと。260806Cl /simplify2)</summary>
     public KikuchiPotentialSnapshot(Crystal crystal, double kV, IKikuchiInelasticKernel kernel = null, bool absorptionOff = false)
     {
         Crystal = crystal;
@@ -61,6 +68,7 @@ public sealed class KikuchiPotentialSnapshot
         UPrime0 = absorptionOff ? Complex.Zero : u.Imag;
         Kernel = kernel ?? new KikuchiTdsEinsteinKernel(crystal);
         ContentHash = ComputeCrystalHash(crystal);
+        SpeciesCount = crystal.Atoms.Length;
 
         var sites = new List<(double, double, double, int, double)>();
         for (int i = 0; i < crystal.Atoms.Length; i++)
@@ -83,7 +91,7 @@ public sealed class KikuchiPotentialSnapshot
     public bool Matches(Crystal crystal, double kV)
         => !AbsorptionOff && ReferenceEquals(Crystal, crystal) && KV == kV && ContentHash == ComputeCrystalHash(crystal);
 
-    /// <summary>格子・原子 (Z, イオン, Occ, 位置, Biso)・ElasticIonModel を畳んだ簡易内容ハッシュ</summary>
+    /// <summary>格子・原子 (Z, イオン, Occ, 位置, ADP)・ElasticIonModel を畳んだ簡易内容ハッシュ</summary>
     public static long ComputeCrystalHash(Crystal c)
     {
         var h = new HashCode();
@@ -92,7 +100,10 @@ public sealed class KikuchiPotentialSnapshot
         foreach (var atoms in c.Atoms)
         {
             h.Add(atoms.AtomicNumber); h.Add(atoms.SubNumberElectron); h.Add(atoms.Occ);
-            h.Add(atoms.Dsf.Biso);
+            var dsf = atoms.Dsf;
+            h.Add(dsf.Biso);
+            //260806Cl /simplify2: 異方 ADP 編集でも snapshot が失効するようフィールドを網羅 (kernel は Biso000 へ fallback するため)
+            h.Add(dsf.Biso000); h.Add(dsf.B11); h.Add(dsf.B22); h.Add(dsf.B33); h.Add(dsf.B12); h.Add(dsf.B23); h.Add(dsf.B31);
             foreach (var atom in atoms.Atom)
             { h.Add(atom.X); h.Add(atom.Y); h.Add(atom.Z); }
         }
@@ -107,6 +118,7 @@ public sealed class KikuchiPotentialSnapshot
 /// <summary>1 バンド分の 1D 動力学プロファイル。260805Cl 追加</summary>
 public sealed class KikuchiBandProfile
 {
+    /// <summary>このプロファイルが属する g/−g 面族</summary>
     public KikuchiBandFamily Family { get; init; }
     /// <summary>sinθ_B (このバンド・この kV)</summary>
     public double SinThetaB { get; init; }
@@ -119,19 +131,8 @@ public sealed class KikuchiBandProfile
     /// <summary>幾何退化 (バンド法線が視軸とほぼ平行) のとき false</summary>
     public bool Valid { get; init; }
 
-    /// <summary>x での線形補間 (範囲外は 0)</summary>
-    public double Interpolate(double x)
-    {
-        var xs = X;
-        if (!Valid || xs.Length < 2 || x <= xs[0] || x >= xs[^1])
-            return 0;
-        var t = (x - xs[0]) / (xs[1] - xs[0]); // 等間隔格子
-        int i = (int)t;
-        if (i >= xs.Length - 1)
-            return 0;
-        var f = t - i;
-        return C[i] * (1 - f) + C[i + 1] * f;
-    }
+    //260806Cl /simplify2 削除: Interpolate(double)。renderer が補間をインライン化して以降呼び出しゼロで、
+    //正しさに敏感なインデックス計算の複製 (ドリフト危険) になっていた。必要になったら renderer 側の実装を移す。
 }
 
 /// <summary>1 サンプル点の内部量 (単体テスト・golden 保存用の診断出力。設計 §6)。260805Cl 追加</summary>
@@ -147,9 +148,11 @@ public struct KikuchiPointDiagnostics
     public Complex C00, C10, C01, C11;
     /// <summary>縮約行列 S_{jj'} = α_j α_j'* Σ_{ii'} C_{i,j} C*_{i',j'} Q_{ii'}</summary>
     public Complex S00, S01, S10, S11;
-    /// <summary>参照計算 (Bragg 結合 off) の対角 γ と源強度</summary>
+    /// <summary>参照計算 (Bragg 結合 off) の対角 γ</summary>
     public Complex GammaRef;
+    /// <summary>参照計算の源強度 (実背景の Q_00)</summary>
     public double SRef;
+    /// <summary>この点の強度 I と参照強度 I_ref (非有限値は 0 に正規化済み。260806Cl /simplify2)</summary>
     public double I, IRef;
 }
 
@@ -165,6 +168,7 @@ public static class KikuchiProfileCalculator
     /// </summary>
     public const string DisplayNormalizedTag = "source-loss not balanced";
 
+    /// <summary>プロファイル計算の格子仕様・診断フラグ (作者調整枠は設計 §9 参照)</summary>
     public sealed class Options
     {
         /// <summary>SampleCount の既定値 (GUI の品質プリセット "Standard" と共有。260806Cl /simplify)</summary>
@@ -312,8 +316,11 @@ public static class KikuchiProfileCalculator
             SinThetaB = len / (2 * snap.KVac);
             GHat = GLab / len;
             CosEps = -GHat.Z; // b̂ = (0,0,−1) との内積
-            var sp2 = 1 - CosEps * CosEps;
-            SinEps = sp2 > 0 ? Math.Sqrt(sp2) : 0;
+            //260806Cl /simplify2 (数値レビュー F-3): √(1−cos²) は cosε≈±1 で桁落ちする (guard 境界で相対誤差 ~1e-4)。
+            //面内成分 √(Gx²+Gy²) は同じ量を桁落ちなしで与え、GPerp = (Gx, Gy, 0)/SinEps が 1 ulp 単位で正規化される
+            SinEps = Math.Sqrt(GHat.X * GHat.X + GHat.Y * GHat.Y);
+            //⚠不変条件 (F-2): SinThetaB < 0.5 と Direction の Clamp(±0.99) の組で p1 = 2K + 2m|g|sinθ' > 0.02·k_vac が保証される。
+            //どちらかを緩めるときは ComputePoint の p1 ガードが効くことを確認すること
             Valid = SinEps > 1e-6 && SinThetaB < 0.5; // 退化 (バンド法線 ∥ 視軸) と非物理な広角を除外
             GPerp = Valid ? (GHat - CosEps * new Vector3DBase(0, 0, -1)) / SinEps : new Vector3DBase(1, 0, 0);
         }
@@ -381,6 +388,10 @@ public static class KikuchiProfileCalculator
         double bigQ1 = k0.Length2 - k0g.Length2;
         double p0 = 2 * (nHat * k0);
         double p1 = 2 * (nHat * k0g);
+        //260806Cl /simplify2 (数値レビュー F-2): p1 → 0 は現状 SinThetaB<0.5 + Clamp±0.99 の組合せで排除されているが、
+        //その保証を暗黙にしない。ほぼ掠め角のビームは物理的にも 2 波近似の外なので、その点は寄与 0 で返す
+        if (p1 <= 1e-3 * p0)
+            return default;
 
         // --- 固有値問題行列 (getEigenMatrix と同一の構成) ---
         var uG = snap.GetU((mh, mk, ml), gm);
@@ -415,13 +426,15 @@ public static class KikuchiProfileCalculator
         { al0 = c11 / det; al1 = -c10 / det; }
 
         // --- 源振幅 τ とコヒーレンス (原子種ごと・2 波ぶん)。診断 swap は s² の入れ替えとして両方に効かせる ---
-        var atoms = snap.Crystal.Atoms;
-        int nSpec = atoms.Length;
+        //260806Cl /simplify2 (C-1): 種数は snapshot の凍結値を使う (live crystal を並列 hot loop から読まない。
+        //計算中の原子削除で Sites.AtomsIndex が配列境界を越える事故の防止)。
+        //(F-4): stackalloc は上限付き (巨大セルで pool スレッドの StackOverflow を防ぐ)
+        int nSpec = snap.SpeciesCount;
         var (sA, sB) = opt.SwapSourceWeights ? (s21, s20) : (s20, s21);
         var s2g = gm.Length2 / 4; // |q_0 − q_1|²/4 = |g|²/4 (2 ビームでは固定)
-        Span<double> tau0 = stackalloc double[nSpec];
-        Span<double> tau1 = stackalloc double[nSpec];
-        Span<double> coh = stackalloc double[nSpec];
+        Span<double> tau0 = nSpec <= 64 ? stackalloc double[64] : new double[nSpec];
+        Span<double> tau1 = nSpec <= 64 ? stackalloc double[64] : new double[nSpec];
+        Span<double> coh = nSpec <= 64 ? stackalloc double[64] : new double[nSpec];
         for (int i = 0; i < nSpec; i++)
         {
             tau0[i] = snap.Kernel.SourceAmplitude(i, sA);
@@ -475,7 +488,10 @@ public static class KikuchiProfileCalculator
             C00 = c00, C10 = c10, C01 = c01, C11 = c11,
             S00 = s00, S01 = s01, S10 = s10, S11 = s11,
             GammaRef = gRef, SRef = q00ref,
-            I = Math.Max(0, intensity), IRef = Math.Max(0, iRef),
+            //260806Cl /simplify2 (F-1): Math.Max(0, NaN) は NaN を素通しし、ComputeProfile の maxIref 集約を
+            //汚染して族全体を無言で消す。非有限値はここで 0 に正規化する
+            I = double.IsFinite(intensity) ? Math.Max(0, intensity) : 0,
+            IRef = double.IsFinite(iRef) ? Math.Max(0, iRef) : 0,
         };
     }
 

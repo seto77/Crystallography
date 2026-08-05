@@ -48,6 +48,7 @@ public sealed class KikuchiTdsEinsteinKernel : IKikuchiInelasticKernel
     private readonly Func<double, double>[] _factor;
     private readonly double[] _biso;
 
+    /// <summary>結晶の原子種ごとに弾性散乱因子と等方 Biso を凍結する (Biso 未設定は DefaultBiso 代用)</summary>
     public KikuchiTdsEinsteinKernel(Crystal crystal)
     {
         int n = crystal.Atoms.Length;
@@ -71,6 +72,7 @@ public sealed class KikuchiTdsEinsteinKernel : IKikuchiInelasticKernel
         }
     }
 
+    /// <inheritdoc/>
     public double SourceAmplitude(int atomsIndex, double s2)
     {
         var f = _factor[atomsIndex](s2);
@@ -95,5 +97,6 @@ public sealed class KikuchiTdsEinsteinKernel : IKikuchiInelasticKernel
 /// <summary>診断用の一様源 (τ = 1)。E/D 消失テスト専用 (設計 §3, §6)。260805Cl 追加</summary>
 public sealed class KikuchiUniformSourceKernel : IKikuchiInelasticKernel
 {
+    /// <inheritdoc/>
     public double SourceAmplitude(int atomsIndex, double s2) => 1.0;
 }
