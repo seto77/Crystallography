@@ -35,6 +35,16 @@ public interface IKikuchiInelasticKernel
 /// </summary>
 public sealed class KikuchiTdsEinsteinKernel : IKikuchiInelasticKernel
 {
+    /// <summary>
+    /// 260805Cl 追加: Biso 未設定 (0/NaN) の原子に代用する既定値 [nm²] (= 0.5 Å²、室温の典型値)。
+    /// B = 0 だと TDS 源が厳密に 0 になり菊池バンドが全て消える (物理的には正しいが、
+    /// B 未設定の結晶データは普通にあるため代用する)。代用したかは UsedDefaultBiso で通知
+    /// </summary>
+    public const double DefaultBiso = 0.005;
+
+    /// <summary>Biso 未設定の原子に DefaultBiso を代用したとき true (GUI が注記を出す)</summary>
+    public bool UsedDefaultBiso { get; }
+
     private readonly Func<double, double>[] _factor;
     private readonly double[] _biso;
 
@@ -52,7 +62,12 @@ public sealed class KikuchiTdsEinsteinKernel : IKikuchiInelasticKernel
             _factor[i] = AtomStatic.ElectronScatteringPeng[atoms.AtomicNumber][sub].Factor;
             var dsf = atoms.Dsf;
             var b = double.IsNaN(dsf.Biso) ? dsf.Biso000 : dsf.Biso; // v1 は等方 ADP のみ (設計 §3)
-            _biso[i] = double.IsNaN(b) ? 0 : b;
+            if (double.IsNaN(b) || b <= 1e-6)
+            {
+                b = DefaultBiso; // 260805Cl: B=0/未設定 → 既定値で代用 (作者実機報告: B=0 結晶で全バンド消失)
+                UsedDefaultBiso = true;
+            }
+            _biso[i] = b;
         }
     }
 
