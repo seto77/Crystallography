@@ -17,8 +17,8 @@ public sealed class KikuchiBandFamily
     /// <summary>canonical 側の逆格子ベクトル (結晶固定系, nm⁻¹)。回転は使用時に掛ける</summary>
     public Vector3DBase Vec { get; init; }
 
-    /// <summary>|g| [nm⁻¹]</summary>
-    public double GLength { get; init; }
+    /// <summary>|g| [nm⁻¹]。260806Cl /simplify: 導出値 (Vec と食い違い得る init フィールドを廃止)</summary>
+    public double GLength => Vec.Length;
 
     /// <summary>ラベル (例 "1 1 1")</summary>
     public string Text { get; init; }
@@ -26,13 +26,12 @@ public sealed class KikuchiBandFamily
     /// <summary>運動学相対強度 (静的候補順位用)</summary>
     public double RelativeIntensity { get; init; }
 
-    /// <summary>Bragg 半角の正弦 sinθ_B = |g|/(2 k_vac)。バンド全幅 (角度) は 2θ_B</summary>
-    public double SinThetaB(double kVac) => GLength / (2 * kVac);
-
     /// <summary>
     /// Vector3D 集合 (VectorOfG_KikuchiLine 相当) を g/−g 面族へペアリングする。
     /// canonical 代表は (h,k,l) の先頭非零成分が正の側。片符号しか含まれない入力でも canonical 形で1族にする。
     /// 返り値は入力の初出順を保存する (既存の静的選定順位を壊さない)。
+    /// 注 (260806Cl): 現行の唯一の生産者 Crystal.SetVectorOfG_KikuchiLine は最初から canonical 半空間しか
+    /// 列挙しないため、flip / dedup は防御的正規化 (他の入力源に備えたもの) であり通常は素通りする。
     /// </summary>
     public static List<KikuchiBandFamily> Pair(IEnumerable<Vector3D> vectors)
     {
@@ -50,8 +49,7 @@ public sealed class KikuchiBandFamily
             list.Add(new KikuchiBandFamily
             {
                 Index = idx,
-                Vec = flip ? new Vector3DBase(-v.X, -v.Y, -v.Z) : new Vector3DBase(v.X, v.Y, v.Z),
-                GLength = Math.Sqrt(v.X * v.X + v.Y * v.Y + v.Z * v.Z),
+                Vec = flip ? -(Vector3DBase)v : new Vector3DBase(v.X, v.Y, v.Z), //260806Cl /simplify: 既存の単項マイナス演算子を使用
                 Text = $"{idx.Item1} {idx.Item2} {idx.Item3}",
                 RelativeIntensity = v.RelativeIntensity,
             });

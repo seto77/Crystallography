@@ -76,9 +76,12 @@ public sealed class KikuchiPotentialSnapshot
         return AbsorptionOff ? (u.Real, Complex.Zero) : u;
     }
 
-    /// <summary>snapshot が現在の条件に対して新鮮か (結晶内容・kV・イオンモデル)</summary>
+    /// <summary>
+    /// snapshot が「標準用途」の現在条件に対して新鮮か (結晶内容・kV・イオンモデル)。
+    /// 260806Cl /simplify: 診断用 snapshot (AbsorptionOff) は常に false (GUI が診断 snapshot を誤って再利用しない保険)
+    /// </summary>
     public bool Matches(Crystal crystal, double kV)
-        => ReferenceEquals(Crystal, crystal) && KV == kV && ContentHash == ComputeCrystalHash(crystal);
+        => !AbsorptionOff && ReferenceEquals(Crystal, crystal) && KV == kV && ContentHash == ComputeCrystalHash(crystal);
 
     /// <summary>格子・原子 (Z, イオン, Occ, 位置, Biso)・ElasticIonModel を畳んだ簡易内容ハッシュ</summary>
     public static long ComputeCrystalHash(Crystal c)
@@ -164,8 +167,11 @@ public static class KikuchiProfileCalculator
 
     public sealed class Options
     {
+        /// <summary>SampleCount の既定値 (GUI の品質プリセット "Standard" と共有。260806Cl /simplify)</summary>
+        public const int DefaultSampleCount = 129;
+
         /// <summary>x 格子点数 (奇数推奨: 中心 x=0 を含む)</summary>
-        public int SampleCount { get; init; } = 129;
+        public int SampleCount { get; init; } = DefaultSampleCount;
         /// <summary>|x| の上限 (Bragg 半幅の倍数)</summary>
         public double XMax { get; init; } = 2.5;
         /// <summary>診断: 2 波の源振幅 τ を入れ替える (E/D 交換テスト。設計 §6)</summary>
@@ -205,10 +211,9 @@ public static class KikuchiProfileCalculator
             xs[i] = -opt.XMax + 2 * opt.XMax * i / (n - 1);
 
         var geo = new BandGeometry(snap, family, rotation);
-        // バンド最近接点が視軸から遠すぎる族は除外 (d̂(0)·b̂ = 視軸との余弦)
-        if (geo.Valid && -geo.Direction(0).Z < Math.Cos(opt.MaxScatteringAngle))
-            return new KikuchiBandProfile { Family = family, SinThetaB = geo.SinThetaB, X = xs, C = cs, Valid = false };
-        if (!geo.Valid)
+        // 幾何退化、またはバンド最近接点が視軸から遠すぎる族は除外 (d̂(0)·b̂ = 視軸との余弦)。
+        // 260806Cl /simplify: 同一の invalid プロファイルを返す 2 つの if を 1 つに統合 (|| は短絡するので退化時 Direction は呼ばれない)
+        if (!geo.Valid || -geo.Direction(0).Z < Math.Cos(opt.MaxScatteringAngle))
             return new KikuchiBandProfile { Family = family, SinThetaB = geo.SinThetaB, X = xs, C = cs, Valid = false };
 
         // 1 族 = ±g 両メンバーの 2×2 の和。検出方向が x を掃くとき、+g 系と −g 系の共鳴が
@@ -337,7 +342,7 @@ public static class KikuchiProfileCalculator
                 if (Math.Abs(cosPhi) <= 1)
                 {
                     var sinPhi = Math.Sqrt(1 - cosPhi * cosPhi); // 面外側は対称なので正側を取る
-                    var bxg = new Vector3DBase(bHat.Y * GPerp.Z - bHat.Z * GPerp.Y, bHat.Z * GPerp.X - bHat.X * GPerp.Z, bHat.X * GPerp.Y - bHat.Y * GPerp.X);
+                    var bxg = Vector3DBase.VectorProduct(bHat, GPerp); //260806Cl /simplify: 手書き外積を既存ヘルパーへ
                     return cosTs * bHat + sinTs * (cosPhi * GPerp + sinPhi * bxg);
                 }
             }
@@ -366,11 +371,10 @@ public static class KikuchiProfileCalculator
         var q1 = q0 - gm;
         double s20 = q0.Length2 / 4, s21 = q1.Length2 / 4;
 
-        // --- 反転幾何 (EBSD master-pattern と同一): beamDirection = d̂, 内向き法線 n̂ = −d̂ ---
+        // --- 反転幾何 (EBSD master-pattern と同一): beamDirection = d̂, 内向き法線 n̂ = −d̂。
+        //     getVecK0 の二次方程式は n̂ = −d̂ (単位) では閉形式 k0 = −√(k_vac²+u0)·d̂ に潰れる (260806Cl /simplify) ---
         var nHat = -dHat;
-        var b = nHat * (kVac * dHat); // = −k_vac
-        var xr = Math.Sqrt(b * b + snap.U0) - b;
-        var k0 = kVac * dHat + xr * nHat; // = −√(k_vac²+u0)·d̂
+        var k0 = -Math.Sqrt(kVac * kVac + snap.U0) * dHat;
 
         // --- 2 ビーム {0, g_m} の Q, P (getQ / getP と同一式) ---
         var k0g = k0 + gm;
@@ -485,40 +489,7 @@ public static class KikuchiProfileCalculator
     #endregion
 }
 
-#region 物理プロファイルキャッシュ (Phase 0 骨格)
-
-/// <summary>
-/// 物理プロファイルの二層キャッシュのうち物理側 (設計 §5)。
-/// キー: 結晶内容ハッシュ / kV / 厚み / 族 / バンド傾き cosε (1e-3 量子化。プロファイルは方位のうち
-/// 傾きのみに依存し、視軸まわりの方位角には不変) / 格子仕様 / 診断フラグ。
-/// 260805Cl 追加
-/// </summary>
-public sealed class KikuchiProfileCache
-{
-    private readonly Dictionary<(long Hash, double KV, double T, (int, int, int) Index, int CosEpsQ, int Samples, double XMax, bool Abs), KikuchiBandProfile> _dic = [];
-    private const int Capacity = 1024;
-
-    public bool TryGet(KikuchiPotentialSnapshot snap, KikuchiBandFamily family, Matrix3D rotation, double thickness,
-        KikuchiProfileCalculator.Options opt, out KikuchiBandProfile profile)
-        => _dic.TryGetValue(Key(snap, family, rotation, thickness, opt), out profile);
-
-    public void Add(KikuchiPotentialSnapshot snap, KikuchiBandFamily family, Matrix3D rotation, double thickness,
-        KikuchiProfileCalculator.Options opt, KikuchiBandProfile profile)
-    {
-        if (_dic.Count >= Capacity)
-            _dic.Clear(); // 素朴な全消し (LRU は将来必要になったら)
-        _dic[Key(snap, family, rotation, thickness, opt)] = profile;
-    }
-
-    public void Clear() => _dic.Clear();
-
-    private static (long, double, double, (int, int, int), int, int, double, bool) Key(
-        KikuchiPotentialSnapshot snap, KikuchiBandFamily family, Matrix3D rotation, double thickness, KikuchiProfileCalculator.Options opt)
-    {
-        var gLab = rotation * family.Vec;
-        var cosEps = -gLab.Z / gLab.Length;
-        return (snap.ContentHash, snap.KV, thickness, family.Index, (int)Math.Round(cosEps * 1000), opt.SampleCount, opt.XMax, snap.AbsorptionOff);
-    }
-}
-
-#endregion
+//260806Cl /simplify 削除: KikuchiProfileCache (Phase 0 骨格)。参照ゼロのまま Form 側の freshness 判定と
+//「stale の定義」が二重化し (cosε 量子化 vs 回転タプル)、キーが Options の診断フラグを含まないまま
+//実装が乖離し始めていたため、実プロファイリングでキャッシュが要ると分かった時点で設計し直す。
+//旧実装は git log (37b8a83 以前) 参照。
