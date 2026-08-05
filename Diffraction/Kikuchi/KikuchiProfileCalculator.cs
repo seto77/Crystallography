@@ -155,8 +155,12 @@ public struct KikuchiPointDiagnostics
 /// <summary>菊池 1D 動力学プロファイル計算 (2ビーム版)。260805Cl 追加</summary>
 public static class KikuchiProfileCalculator
 {
-    /// <summary>v1 の非整合暫定運用タグ (設計 §3「吸収と源の整合」)</summary>
-    public const string DisplayNormalizedTag = "Display-normalized / source-loss not balanced";
+    /// <summary>
+    /// v1 の非整合暫定運用タグ (設計 §3「吸収と源の整合」)。
+    /// 260806Cl: 明るさが物理スケールでなく符号付き tanh 圧縮であることも明示 (作者指摘:
+    /// tanh は CCD/IP/フィルムいずれの検出器特性とも一致しない表示用カーブなので、ユーザーへ開示する)
+    /// </summary>
+    public const string DisplayNormalizedTag = "Signed tanh brightness (not detector-linear) / source-loss not balanced";
 
     public sealed class Options
     {
