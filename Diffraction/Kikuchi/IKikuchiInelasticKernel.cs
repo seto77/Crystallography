@@ -16,6 +16,16 @@ public interface IKikuchiInelasticKernel
     /// s2 = |q|²/4 [nm⁻²] (散乱因子表の引数と同じ規約)。
     /// </summary>
     double SourceAmplitude(int atomsIndex, double s2);
+
+    /// <summary>
+    /// 260805Cl 追加: 源密度行列 Q の非対角 (原子局在由来の源コヒーレンス) の実振幅。
+    /// s2i, s2j = 2 波の |q_i|²/4, |q_j|²/4、s2ij = |q_i − q_j|²/4 (2 ビームでは = |g|²/4)。
+    /// 既定実装は因子化近似 τ_i·τ_j (設計 §3 の最小モデル)。厳密な Einstein 混合動的形状因子は
+    /// KikuchiTdsEinsteinKernel が override する (Omoto 2002 eq. 38 = Hall–Hirsch)。
+    /// 対角との整合: SourceCoherence(s2, s2, 0) = SourceAmplitude(s2)² を満たすこと。
+    /// </summary>
+    double SourceCoherence(int atomsIndex, double s2i, double s2j, double s2ij)
+        => SourceAmplitude(atomsIndex, s2i) * SourceAmplitude(atomsIndex, s2j);
 }
 
 /// <summary>
@@ -51,6 +61,19 @@ public sealed class KikuchiTdsEinsteinKernel : IKikuchiInelasticKernel
         var f = _factor[atomsIndex](s2);
         var t = f * f * (1 - Math.Exp(-2 * _biso[atomsIndex] * s2));
         return t > 0 ? Math.Sqrt(t) : 0;
+    }
+
+    /// <summary>
+    /// 260805Cl 追加: 厳密な Einstein 混合動的形状因子 (Omoto-Tsuda-Tanaka 2002 eq. 38 = Hall–Hirsch):
+    /// f(q_i) f(q_j) [e^{−W(q_i−q_j)} − e^{−W(q_i)−W(q_j)}], W(q) = B s² (s² = |q|²/4)。
+    /// 対角 (s2i=s2j=s², s2ij=0) は f²(1−e^{−2Bs²}) = SourceAmplitude² に一致。
+    /// 因子化近似 τ_i τ_j との差は q_i ∦ q_j 成分 (2W(g) 相当) の分だけ。
+    /// </summary>
+    public double SourceCoherence(int atomsIndex, double s2i, double s2j, double s2ij)
+    {
+        var b = _biso[atomsIndex];
+        return _factor[atomsIndex](s2i) * _factor[atomsIndex](s2j)
+             * (Math.Exp(-b * s2ij) - Math.Exp(-b * (s2i + s2j)));
     }
 }
 

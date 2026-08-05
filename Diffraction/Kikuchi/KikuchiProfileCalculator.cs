@@ -370,21 +370,24 @@ public static class KikuchiProfileCalculator
         else
         { al0 = c11 / det; al1 = -c10 / det; }
 
-        // --- 源振幅 τ (原子種ごと・2 波ぶん) ---
+        // --- 源振幅 τ とコヒーレンス (原子種ごと・2 波ぶん)。診断 swap は s² の入れ替えとして両方に効かせる ---
         var atoms = snap.Crystal.Atoms;
         int nSpec = atoms.Length;
+        var (sA, sB) = opt.SwapSourceWeights ? (s21, s20) : (s20, s21);
+        var s2g = gm.Length2 / 4; // |q_0 − q_1|²/4 = |g|²/4 (2 ビームでは固定)
         Span<double> tau0 = stackalloc double[nSpec];
         Span<double> tau1 = stackalloc double[nSpec];
+        Span<double> coh = stackalloc double[nSpec];
         for (int i = 0; i < nSpec; i++)
         {
-            tau0[i] = snap.Kernel.SourceAmplitude(i, s20);
-            tau1[i] = snap.Kernel.SourceAmplitude(i, s21);
-            if (opt.SwapSourceWeights)
-                (tau0[i], tau1[i]) = (tau1[i], tau0[i]);
+            tau0[i] = snap.Kernel.SourceAmplitude(i, sA);
+            tau1[i] = snap.Kernel.SourceAmplitude(i, sB);
+            // 260805Cl: 非対角は厳密な Einstein 混合動的形状因子 (Omoto 2002 eq. 38)。因子化近似は既定実装側
+            coh[i] = snap.Kernel.SourceCoherence(i, sA, sB, s2g);
         }
 
-        // --- 完全な源密度行列 Q_ij = Σ_a v_i v_j* (設計 §3。v1 既定は完全 Q) ---
-        //     v_{a,0} = √Occ·τ_a(q_0),  v_{a,1} = √Occ·τ_a(q_1)·e^{+2πi g_m·r_a} (CreatePhaseFactors と同じ符号)
+        // --- 完全な源密度行列 Q_ij = Σ_a (設計 §3。v1 既定は完全 Q) ---
+        //     Q_00 = Σ Occ·τ0², Q_11 = Σ Occ·τ1², Q_01 = Σ Occ·coh·e^{−2πi g_m·r_a} (CreatePhaseFactors と同じ符号規約)
         double q00 = 0, q11 = 0;
         Complex q01 = Complex.Zero;
         foreach (var site in snap.Sites)
@@ -394,7 +397,7 @@ public static class KikuchiProfileCalculator
             q00 += occ * t0 * t0;
             q11 += occ * t1 * t1;
             var (sin, cos) = Math.SinCos(2 * Math.PI * (mh * site.X + mk * site.Y + ml * site.Z));
-            q01 += occ * t0 * t1 * new Complex(cos, -sin); // v_0·v_1* = τ0τ1·e^{−2πi g_m·r}
+            q01 += occ * coh[site.AtomsIndex] * new Complex(cos, -sin);
         }
         if (opt.DiagonalSourceOnly)
             q01 = Complex.Zero;
