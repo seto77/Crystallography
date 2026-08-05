@@ -156,11 +156,11 @@ public struct KikuchiPointDiagnostics
 public static class KikuchiProfileCalculator
 {
     /// <summary>
-    /// v1 の非整合暫定運用タグ (設計 §3「吸収と源の整合」)。
-    /// 260806Cl: 明るさが物理スケールでなく符号付き tanh 圧縮であることも明示 (作者指摘:
-    /// tanh は CCD/IP/フィルムいずれの検出器特性とも一致しない表示用カーブなので、ユーザーへ開示する)
+    /// v1 の非整合暫定運用タグ (設計 §3「吸収と源の整合」の物理部分)。
+    /// 260806Cl: 表示スケール (linear/log/tanh) が選択式になったため、スケール名は GUI 側で前置し
+    /// 本定数は物理の注記のみに戻した (作者指摘による開示の実装)
     /// </summary>
-    public const string DisplayNormalizedTag = "Signed tanh brightness (not detector-linear) / source-loss not balanced";
+    public const string DisplayNormalizedTag = "source-loss not balanced";
 
     public sealed class Options
     {
