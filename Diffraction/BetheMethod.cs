@@ -3150,7 +3150,14 @@ public class BetheMethod
             //260801Cl 追加: 対称化前スナップショット (fixture 凍結用、設計書 §6.3。対称化が共役・符号バグを隠すのを防ぐ。通常 run は null)
             var iqRaw = ionization.CaptureRawIq ? (Complex[,,])I_Edx.Clone() : null;
             //260801Cl codex 17巡: 許容値は 0.01 を上限に「厳しくする方向のみ」許可 (緩和で §3.4 の fail 原則を骨抜きにしない)。StemSignalMap へ記録するため iScale 判定の外へ hoist
-            var hermTol = Math.Min(ionization.HermitianTolerance, 0.01);
+            //260805Cl 追加 (作者指示の収差検討用): 環境変数 RECIPRO_STEM_EDX_HERMTOL で cap を実験的に外せる
+            //escape hatch。未設定なら従来どおり (§3.4 の fail 原則は不変)。収差位相は ±q の補間誤差の相殺を
+            //壊して残差を押し上げる (実測: Au 200kV Cs1mm Δf-57.8nm で div53²=2.9e-2/132²=1.2e-2、Cs=0 なら 3e-4)。
+            //その残差が「対称化平均で消える良性ノイズ」かを div 収束で実測するための診断用 (EdxCheck aberr、指示書 §2.5)。
+            //var hermTol = Math.Min(ionization.HermitianTolerance, 0.01);//260805Cl 変更前
+            var hermTol = double.TryParse(Environment.GetEnvironmentVariable("RECIPRO_STEM_EDX_HERMTOL"),
+                System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var tolEnv)
+                ? tolEnv : Math.Min(ionization.HermitianTolerance, 0.01);
 
             //±q 対称化 (§3.4 の順序厳守: 独立計算 → 残差記録 → 許容超過は補正せず fail → 合格時のみ対称化 → q=0 実部固定)
             double iScale = 0;
