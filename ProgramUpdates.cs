@@ -17,8 +17,11 @@ public static class ProgramUpdates
 
     //260613Cl installerAssetName 追加 (デフォルト引数、既存呼び出しは無変更): アーキ別インストーラ資産名。
     //          空なら従来どおり {software}Setup.msi。ReciPro の arm64 ビルドは "ReciProSetup-arm64.msi" を渡す。
+    //260805Cl portable 追加 (デフォルト引数): Portable ZIP 版は MSI 自動更新が成り立たないため、新版があれば
+    //          最新リリースページの URL を返す (Path 空 = ダウンロード対象なしの印。呼び出し側はブラウザで URL を開く)。
     //旧シグネチャ: public static (string Title, string Message, bool NeedUpdate, string URL, string Path) Check(string software, string version)
-    public static (string Title, string Message, bool NeedUpdate, string URL, string Path) Check(string software, string version, string installerAssetName = "")
+    //旧シグネチャ: public static (string Title, string Message, bool NeedUpdate, string URL, string Path) Check(string software, string version, string installerAssetName = "")
+    public static (string Title, string Message, bool NeedUpdate, string URL, string Path) Check(string software, string version, string installerAssetName = "", bool portable = false)
     {
         try
         {
@@ -38,6 +41,12 @@ public static class ProgramUpdates
                 return ("Update checked!", $"You are running the latest version of {software}. Thank you!", false, "", "");
             else
             {
+                //260805Cl 追加: Portable ZIP 版はインストーラを扱わず、最新リリースページをブラウザで開く導線のみ提供する
+                if (portable)
+                    return ("Update checked!", $"New version {newVersion} is available.\r\n" +
+                        $"If you press 'Yes', the release page of the latest {software} will open in your browser.", true,
+                        $"https://github.com/seto77/{software}/releases/latest", "");
+
                 //260613Cl アーキ別インストーラ対応 + 資産存在チェック。
                 //          arm64 MSI は release 作成後に実機 smoke 合格を待って後付け添付されるため、
                 //          「新版は出ているが当該アーキのインストーラが未添付」の時間窓がある。
