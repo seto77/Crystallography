@@ -175,6 +175,13 @@ public static class KikuchiProfileCalculator
         /// 前方ピーク源に対し I_ref が潰れる遠方バンドの発散と、表示域外バンドの無駄な計算を防ぐ
         /// </summary>
         public double MaxScatteringAngle { get; init; } = 0.35;
+        /// <summary>
+        /// 260805Cl 追加: プロファイル代表点の視軸からの最小サンプル角 [rad]。
+        /// 最近接点をそのまま使うと視軸をかすめるバンドで q_0 → 0 (TDS 源消失) となり
+        /// c = I/I_ref が発散して帯全長を飽和させる (Si [111] 実写で確認)。代表点をバンドに沿って
+        /// この角度まで滑らせて評価する (Omoto 比較も中心を外した行で行う流儀と同じ)。
+        /// </summary>
+        public double SampleAngle { get; init; } = 0.025;
     }
 
     #region 公開 API
@@ -204,13 +211,28 @@ public static class KikuchiProfileCalculator
         // それぞれ片側の Bragg 線に現れるため、両方を足して初めてバンド全体になる。
         // E/D 非対称は member 間の鏡映を破る「前方ピーク源」(τ の q 依存) だけから生じ、
         // 一様源+吸収なしでは c(x) = c(−x) が厳密に成り立つ (設計 §1-3 と整合)。
-        double sumSq = 0;
+        //
+        // 260805Cl 正規化の見直し: 晶帯軸至近では q_0 → 0 で TDS 源が物理的に消え I_ref → 0 になる
+        // (比 c が発散し float Inf → 描画 NaN 全透明、の実機事故)。設計 §4 の ε は
+        // 「プロファイル内の max I_ref の 1e-3」という相対フロアとして実装する。
+        var iArr = new double[n];
+        var irefArr = new double[n];
+        double maxIref = 0;
         for (int i = 0; i < n; i++)
         {
             var dP = ComputePoint(snap, geo, xs[i], thickness, opt, +1);
             var dM = ComputePoint(snap, geo, xs[i], thickness, opt, -1);
-            var c = thickness <= 0 ? 0 :
-                (dP.I - dP.IRef) / Math.Max(dP.IRef, 1e-300) + (dM.I - dM.IRef) / Math.Max(dM.IRef, 1e-300);
+            iArr[i] = dP.I + dM.I;
+            irefArr[i] = dP.IRef; // I_ref は直進チャネルのみで member 非依存 (dM.IRef と同値)
+            maxIref = Math.Max(maxIref, irefArr[i]);
+        }
+        double sumSq = 0;
+        var floor = 1e-3 * maxIref;
+        for (int i = 0; i < n; i++)
+        {
+            var c = thickness <= 0 || floor <= 0 ? 0 : (iArr[i] - 2 * irefArr[i]) / Math.Max(irefArr[i], floor);
+            if (!double.IsFinite(c))
+                c = 0; // 非有限値は描画層に流さない
             cs[i] = c;
             sumSq += c * c;
         }
@@ -288,11 +310,12 @@ public static class KikuchiProfileCalculator
         }
 
         /// <summary>
-        /// プロファイル座標 x (= sinθ'/sinθ_B) に対応する出射方向 d̂ を返す。
-        /// d̂ は b̂ と ĝ の張る面内で、直接ビームに最も近い解 (バンド上で視軸に最近接の点)。
-        /// sinθ' ≡ −ĝ·d̂ (x = +1 が +g の Bragg 線)。
+        /// プロファイル座標 x (= sinθ'/sinθ_B) に対応する出射方向 d̂ を返す。sinθ' ≡ −ĝ·d̂ (x = +1 が +g の Bragg 線)。
+        /// 既定はバンド上で視軸に最近接の点 (b̂ と ĝ の張る面内の解) だが、最近接点が sampleAngle より
+        /// 視軸に近い場合は、同じ円錐 (−ĝ·d̂ = sinθ') 上を面外へ滑らせて視軸から sampleAngle の点で評価する
+        /// (q_0 → 0 の発散防止。260805Cl 追加)。
         /// </summary>
-        public Vector3DBase Direction(double x)
+        public Vector3DBase Direction(double x, double sampleAngle = 0)
         {
             var sinTp = Math.Clamp(x * SinThetaB, -0.99, 0.99);
             var bHat = new Vector3DBase(0, 0, -1);
@@ -301,6 +324,19 @@ public static class KikuchiProfileCalculator
             var dPsi = Math.Acos(sinTp);
             double p1 = psi0 + dPsi, p2 = psi0 - dPsi;
             var psi = Math.Cos(p1) >= Math.Cos(p2) ? p1 : p2; // 視軸 (cosψ 最大) に近い側
+            var (sinTs, cosTs) = Math.SinCos(sampleAngle);
+            if (sampleAngle > 0 && Math.Cos(psi) > cosTs)
+            {
+                // 円錐上で視軸から sampleAngle の点: d̂ = cosθs·b̂ + sinθs·(cosφ·ĝp + sinφ·(b̂×ĝp))
+                // −ĝ·d̂ = sinθ' → cosφ = −(sinθ' + CosEps·cosθs)/(SinEps·sinθs)
+                var cosPhi = -(sinTp + CosEps * cosTs) / (SinEps * sinTs);
+                if (Math.Abs(cosPhi) <= 1)
+                {
+                    var sinPhi = Math.Sqrt(1 - cosPhi * cosPhi); // 面外側は対称なので正側を取る
+                    var bxg = new Vector3DBase(bHat.Y * GPerp.Z - bHat.Z * GPerp.Y, bHat.Z * GPerp.X - bHat.X * GPerp.Z, bHat.X * GPerp.Y - bHat.Y * GPerp.X);
+                    return cosTs * bHat + sinTs * (cosPhi * GPerp + sinPhi * bxg);
+                }
+            }
             var (sinPsi, cosPsi) = Math.SinCos(psi);
             return cosPsi * bHat + sinPsi * GPerp;
         }
@@ -315,7 +351,7 @@ public static class KikuchiProfileCalculator
         double x, double thickness, Options opt, int member)
     {
         var kVac = snap.KVac;
-        var dHat = geo.Direction(x);
+        var dHat = geo.Direction(x, opt.SampleAngle); //260805Cl: 代表点は視軸から SampleAngle 以上 (q_0→0 の発散防止)
         var bHat = new Vector3DBase(0, 0, -1);
         var gm = member * geo.GLab; // member 側の g
         var (mh, mk, ml) = (member * geo.Family.Index.H, member * geo.Family.Index.K, member * geo.Family.Index.L);
@@ -417,9 +453,12 @@ public static class KikuchiProfileCalculator
                        + Fjj(g1, g0, thickness) * s10 + Fjj(g1, g1, thickness) * s11).Real;
 
         // --- 参照強度 I_ref: 同一源で Bragg 結合を切った計算 (設計 §4)。結合 0 では検出器へ届くのは
-        //     直接波チャネルのみ → I_ref = Q_00 · F_00(γ_ref), γ_ref = A00 (吸収対角は残す) ---
+        //     直接波チャネルのみ → I_ref = Q_00 · F_00(γ_ref), γ_ref = A00 (吸収対角は残す)。
+        //     260805Cl: swap 診断はバンド側 (Q) だけを反転し、参照 = 実背景は入れ替えない
+        //     (swap 時は τ(q_0) が tau1 側に入っているので q11 がそのまま実背景の Q_00 になる) ---
+        var q00ref = opt.SwapSourceWeights ? q11 : q00;
         var gRef = diagU / p0;
-        var iRef = (Fjj(gRef, gRef, thickness) * q00).Real;
+        var iRef = (Fjj(gRef, gRef, thickness) * q00ref).Real;
 
         return new KikuchiPointDiagnostics
         {
@@ -427,7 +466,7 @@ public static class KikuchiProfileCalculator
             Gamma0 = g0, Gamma1 = g1, Alpha0 = al0, Alpha1 = al1,
             C00 = c00, C10 = c10, C01 = c01, C11 = c11,
             S00 = s00, S01 = s01, S10 = s10, S11 = s11,
-            GammaRef = gRef, SRef = q00,
+            GammaRef = gRef, SRef = q00ref,
             I = Math.Max(0, intensity), IRef = Math.Max(0, iRef),
         };
     }
