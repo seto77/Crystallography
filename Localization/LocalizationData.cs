@@ -232,8 +232,10 @@ internal static class LocalizationData
             new("checkBoxPolyhedra", "Text", "Polyhedra", "配位多面体", "Polyeder", "Polyèdres", "Poliedros", "Poliedros", "Poliedri", "Полиэдры", "配位多面体", "配位多面體", "배위 다면체"),
             new("radioButtonPolySolid", "Text", "Polyhedra: solid faces", "多面体: 面で出力", "Polyeder: Flächen", "Polyèdres : faces", "Poliedros: caras", "Poliedros: faces", "Poliedri: facce", "Полиэдры: грани", "多面体: 实心面", "多面體：實心面", "다면체: 면"),
             new("radioButtonPolyEdges", "Text", "edges,  dia.:", "稜線,  径:", "Kanten,  Ø:", "arêtes,  Ø :", "aristas,  Ø:", "arestas,  Ø:", "spigoli,  Ø:", "рёбра,  Ø:", "棱,  直径:", "稜,  直徑：", "모서리,  Ø:"),
-            // 260805Cl 追加: 透かし格子 (メッシュ) スタイル
-            new("radioButtonPolyMesh", "Text", "see-through mesh,  pitch:", "透かしメッシュ,  ピッチ:", "Gitternetz,  Teilung:", "grille ajourée,  pas :", "rejilla calada,  paso:", "grade vazada,  passo:", "griglia traforata,  passo:", "ажурная сетка,  шаг:", "镂空网格,  间距:", "鏤空網格,  間距：", "메시 격자,  피치:"),
+            // 260805Cl 追加: 透かし格子 (メッシュ) スタイル。260805Cl 変更: バー径を稜線径から独立させ、ラジオ本文から ",  pitch:" を分離
+            new("radioButtonPolyMesh", "Text", "see-through mesh:", "透かしメッシュ:", "Gitternetz:", "grille ajourée :", "rejilla calada:", "grade vazada:", "griglia traforata:", "ажурная сетка:", "镂空网格:", "鏤空網格：", "메시 격자:"),
+            new("labelBarDia", "Text", "bar dia.:", "バー径:", "Steg-Ø:", "Ø barreau :", "Ø barra:", "Ø barra:", "Ø barra:", "Ø перемычки:", "杆直径:", "桿直徑：", "바 Ø:"),
+            new("labelPitch", "Text", "pitch:", "ピッチ:", "Teilung:", "pas :", "paso:", "passo:", "passo:", "шаг:", "间距:", "間距：", "피치:"),
             new("checkBoxCellEdges", "Text", "Unit cell edges as cylinders,  dia.:", "単位胞の稜を円柱で出力,  径:", "Zellkanten als Zylinder,  Ø:", "Arêtes de maille (cyl.),  Ø :", "Aristas de celda (cil.),  Ø:", "Arestas da célula (cil.),  Ø:", "Spigoli di cella (cil.),  Ø:", "Рёбра ячейки (цил.),  Ø:", "晶胞棱作圆柱,  直径:", "晶胞稜作圓柱,  直徑：", "단위 격자 모서리(원기둥),  Ø:"),
             new("groupBoxPrintability", "Text", "Printability", "印刷適性", "Druckbarkeit", "Imprimabilité", "Imprimibilidad", "Imprimibilidade", "Stampabilità", "Пригодность к печати", "可打印性", "可列印性", "출력 적합성"),
             new("checkBoxThicken", "Text", "Thicken bonds thinner than:", "細い結合を太らせる,  下限:", "Bindungen verdicken unter:", "Épaissir liaisons sous :", "Engrosar enlaces bajo:", "Engrossar ligações sob:", "Ispessisci legami sotto:", "Утолщать связи тоньше:", "加粗细于此值的键:", "加粗細於此值的鍵：", "가는 결합 굵게, 하한:"),
