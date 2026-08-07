@@ -190,6 +190,20 @@ public static class KikuchiProfileCalculator
         /// </summary>
         public double MaxScatteringAngle { get; init; } = 0.35;
         /// <summary>
+        /// 260807Cl 追加 (設計 Phase 2.5): systematic row の片側次数 N。
+        /// ビーム = {n·g : n = −N..+N} の **2N+1 波**を 1 つの基底で解く。
+        /// **0 (既定) = 従来の 2 ビーム経路** — {0,+g} と {0,−g} を別々に 2×2 で解いて和を取る。
+        /// 既定のままなら数値は 1 ビットも変わらない (新経路は完全に分岐している)。
+        /// ⚠ 2 ビーム経路が「1 族 = ±g 2 メンバーの和」で直進チャネルを 2 本数えるのに対し、
+        /// row 経路は ±g が同じ基底に入るので直進チャネルは 1 本。c の参照強度の係数が違う
+        /// (ComputeProfile の refCount)。
+        /// </summary>
+        public int RowOrder { get; init; }
+
+        /// <summary>RowOrder の上限 (2N+1 = 31 波)。これを超える値は丸める</summary>
+        public const int MaxRowOrder = 15;
+
+        /// <summary>
         /// 260805Cl 追加: プロファイル代表点の視軸からの最小サンプル角 [rad]。
         /// 最近接点をそのまま使うと視軸をかすめるバンドで q_0 → 0 (TDS 源消失) となり
         /// c = I/I_ref が発散して帯全長を飽和させる (Si [111] 実写で確認)。代表点をバンドに沿って
@@ -231,19 +245,32 @@ public static class KikuchiProfileCalculator
         var iArr = new double[n];
         var irefArr = new double[n];
         double maxIref = 0;
+        //260807Cl: row 経路は ±g が同じ基底に入るので直進チャネルが 1 本。2 ビーム経路は
+        //±g 2 メンバーの和なので 2 本。差し引く参照強度の本数がここで決まる
+        int refCount = opt.RowOrder > 0 ? 1 : 2;
+        var row = opt.RowOrder > 0 ? new RowPotential(snap, geo, opt.RowOrder) : null;
         for (int i = 0; i < n; i++)
         {
-            var dP = ComputePoint(snap, geo, xs[i], thickness, opt, +1);
-            var dM = ComputePoint(snap, geo, xs[i], thickness, opt, -1);
-            iArr[i] = dP.I + dM.I;
-            irefArr[i] = dP.IRef; // I_ref は直進チャネルのみで member 非依存 (dM.IRef と同値)
+            if (row != null)
+            {
+                var d = ComputeRowPoint(snap, geo, row, xs[i], thickness, opt);
+                iArr[i] = d.I;
+                irefArr[i] = d.IRef;
+            }
+            else
+            {
+                var dP = ComputePoint(snap, geo, xs[i], thickness, opt, +1);
+                var dM = ComputePoint(snap, geo, xs[i], thickness, opt, -1);
+                iArr[i] = dP.I + dM.I;
+                irefArr[i] = dP.IRef; // I_ref は直進チャネルのみで member 非依存 (dM.IRef と同値)
+            }
             maxIref = Math.Max(maxIref, irefArr[i]);
         }
         double sumSq = 0;
         var floor = 1e-3 * maxIref;
         for (int i = 0; i < n; i++)
         {
-            var c = thickness <= 0 || floor <= 0 ? 0 : (iArr[i] - 2 * irefArr[i]) / Math.Max(irefArr[i], floor);
+            var c = thickness <= 0 || floor <= 0 ? 0 : (iArr[i] - refCount * irefArr[i]) / Math.Max(irefArr[i], floor);
             if (!double.IsFinite(c))
                 c = 0; // 非有限値は描画層に流さない
             cs[i] = c;
@@ -280,6 +307,11 @@ public static class KikuchiProfileCalculator
         Matrix3D rotation, double thickness, int topN, Options opt = null, ISet<(int, int, int)> previousSelection = null)
     {
         opt ??= new Options();
+        //260807Cl (設計 Phase 2.5): row 計算を使うときは候補を row の生成元へ畳む。
+        //畳まないと {020} の row が beam として含む {040} を族としても足してしまい二重計上になる
+        //(MgO 比較で corr 0.914 → 0.898 と悪化するのを実測済み)。忘れると静かに悪化するので自動適用する
+        if (opt.RowOrder > 0)
+            candidates = KikuchiBandFamily.CollapseSystematicRows(candidates, opt.XMax);
         var profiles = new KikuchiBandProfile[candidates.Count];
         System.Threading.Tasks.Parallel.For(0, candidates.Count, i =>
             profiles[i] = ComputeProfile(snap, candidates[i], rotation, thickness, opt));
@@ -493,6 +525,191 @@ public static class KikuchiProfileCalculator
             I = double.IsFinite(intensity) ? Math.Max(0, intensity) : 0,
             IRef = double.IsFinite(iRef) ? Math.Max(0, iRef) : 0,
         };
+    }
+
+    #endregion
+
+    #region systematic row (2N+1 波)
+
+    /// <summary>
+    /// 260807Cl 追加 (設計 Phase 2.5): systematic row {n·g : n = −N..+N} の x 非依存な前計算。
+    /// U(m·g) と原子位置位相 e^{−2πi m g·r_a} はどちらも出射方向に依らないので、バンドごとに 1 回でよい
+    /// (2 ビーム経路が点ごとに getU を呼んでいたのは snapshot 側の辞書キャッシュ頼み)。
+    /// </summary>
+    private sealed class RowPotential
+    {
+        public readonly int Order;      // N
+        public readonly int BeamCount;  // 2N+1
+        public readonly double GLength2; // |g|²
+        private readonly Complex[] _u;       // _u[m + 2N] = U(m·g) (Real + i·Imag を畳んだ形)
+        private readonly Complex[] _phase;   // _phase[(m + 2N) * _nSite + a] = e^{−2πi m g·r_a}
+        private readonly int _nSite;
+
+        public RowPotential(KikuchiPotentialSnapshot snap, in BandGeometry geo, int order)
+        {
+            Order = Math.Clamp(order, 1, Options.MaxRowOrder);
+            BeamCount = 2 * Order + 1;
+            GLength2 = geo.GLab.Length2;
+            var (h, k, l) = geo.Family.Index;
+            int span = 4 * Order + 1; // m = −2N..+2N
+            _u = new Complex[span];
+            _nSite = snap.Sites.Length;
+            int nSite = _nSite;
+            _phase = new Complex[span * nSite];
+            for (int m = -2 * Order; m <= 2 * Order; m++)
+            {
+                int mi = m + 2 * Order;
+                if (m == 0)
+                    _u[mi] = Complex.Zero; // 対角は U'(0)+Q で別に入る (U(0) は k0 側に畳み込み済み)
+                else
+                {
+                    var u = snap.GetU((m * h, m * k, m * l), m * geo.GLab);
+                    _u[mi] = u.Real + Complex.ImaginaryOne * u.Imag;
+                }
+                for (int a = 0; a < nSite; a++)
+                {
+                    var s = snap.Sites[a];
+                    //2 ビーム経路の q01 と同じ符号規約 (CreatePhaseFactors 準拠): e^{−2πi (h_j−h_i)·r_a}
+                    var (sin, cos) = Math.SinCos(2 * Math.PI * m * (h * s.X + k * s.Y + l * s.Z));
+                    _phase[mi * nSite + a] = new Complex(cos, -sin);
+                }
+            }
+        }
+
+        /// <summary>U(m·g)</summary>
+        public Complex U(int m) => _u[m + 2 * Order];
+
+        /// <summary>e^{−2πi m g·r_a}</summary>
+        public Complex Phase(int m, int site) => _phase[(m + 2 * Order) * _nSite + site];
+    }
+
+    /// <summary>
+    /// systematic row の 1 点計算 (2N+1 波)。規約はすべて 2 ビーム版 ComputePoint と同一:
+    /// 行列 A[row + col·nb] = U(h_col − h_row)/P_col (非対角) / (i·U'(0) + Q_col)/P_col (対角)、
+    /// 反転幾何 (n̂ = −d̂, k0 = −√(k_vac²+u0)·d̂)、源の運動量移行 q_i = q_0 − h_i、
+    /// 厚み積分 F_{jj'}、I_ref = Bragg 結合を切った直進チャネル。
+    /// ⚠ ±g が同じ基底に入るので**族としての ± 和は取らない** (直進チャネルも 1 本。ComputeProfile の refCount)。
+    /// </summary>
+    private static (double I, double IRef) ComputeRowPoint(KikuchiPotentialSnapshot snap, in BandGeometry geo,
+        RowPotential row, double x, double thickness, Options opt)
+    {
+        var kVac = snap.KVac;
+        var dHat = geo.Direction(x, opt.SampleAngle);
+        var bHat = new Vector3DBase(0, 0, -1);
+        int N = row.Order, nb = row.BeamCount;
+        var gLab = geo.GLab;
+
+        var nHat = -dHat;
+        var k0 = -Math.Sqrt(kVac * kVac + snap.U0) * dHat;
+        double k0Len2 = k0.Length2;
+
+        // --- P_i = 2 n̂·(k0 + h_i), Q_i = |k0|² − |k0 + h_i|² ---
+        var p = new double[nb];
+        var bigQ = new double[nb];
+        for (int i = 0; i < nb; i++)
+        {
+            var kh = k0 + (i - N) * gLab;
+            p[i] = 2 * (nHat * kh);
+            bigQ[i] = k0Len2 - kh.Length2;
+        }
+        //2 ビーム版と同じ扱い: ほぼ掠め角のビームは 2 波近似の外なので寄与 0 で返す
+        if (p[N] <= 0)
+            return (0, 0);
+        for (int i = 0; i < nb; i++)
+            if (p[i] <= 1e-3 * p[N])
+                return (0, 0);
+
+        // --- 固有値問題行列 (column-major。getEigenMatrix と同一の構成) ---
+        var a = new Complex[nb * nb];
+        var diagU = Complex.ImaginaryOne * snap.UPrime0;
+        for (int col = 0; col < nb; col++)
+        {
+            var invP = 1.0 / p[col];
+            for (int r = 0; r < nb; r++)
+                a[r + col * nb] = r == col
+                    ? (diagU + bigQ[col]) * invP
+                    : opt.DisableBraggCoupling ? Complex.Zero : row.U(col - r) * invP;
+        }
+
+        // --- EVD と C⁻¹ (BetheMethod と同じ経路。native が無ければ MathNet) ---
+        Complex[] eigVal, eigVec, eigInv;
+        if (NativeWrapper.Enabled)
+        {
+            (eigVal, eigVec) = NativeWrapper.EigenSolver(nb, a);
+            eigInv = NativeWrapper.Inverse(nb, eigVec);
+        }
+        else
+        {
+            var evd = new MathNet.Numerics.LinearAlgebra.Complex.DenseMatrix(nb, nb, a)
+                .Evd(MathNet.Numerics.LinearAlgebra.Symmetricity.Asymmetric);
+            eigVal = ((MathNet.Numerics.LinearAlgebra.Complex.DenseVector)evd.EigenValues).Values;
+            eigVec = ((MathNet.Numerics.LinearAlgebra.Complex.DenseMatrix)evd.EigenVectors).Values;
+            eigInv = ((MathNet.Numerics.LinearAlgebra.Complex.DenseMatrix)evd.EigenVectors.Inverse()).Values;
+        }
+        // α_j = [C⁻¹]_{j, N} (ψ0 = 中央ビーム = e_N)
+        var alpha = new Complex[nb];
+        for (int j = 0; j < nb; j++)
+            alpha[j] = eigInv[j + N * nb];
+
+        // --- 源密度行列 Q_ij = Σ_a Occ_a · coh_a(s_i², s_j², s_ij²) · e^{−2πi (h_j−h_i)·r_a} ---
+        //     s_ij² = |q_i − q_j|²/4 = |h_j − h_i|²/4 = ((j−i)|g|)²/4
+        var q0 = kVac * (dHat - bHat);
+        var s2 = new double[nb];
+        for (int i = 0; i < nb; i++)
+            s2[i] = (q0 - (i - N) * gLab).Length2 / 4;
+        if (opt.SwapSourceWeights)
+            Array.Reverse(s2); // 診断: 源勾配の反転 (row では n → −n の鏡映。中央ビームは自分自身へ写る)
+
+        int nSpec = snap.SpeciesCount;
+        var coh = new double[nSpec];
+        var qMat = new Complex[nb * nb];
+        for (int i = 0; i < nb; i++)
+            for (int j = 0; j < nb; j++)
+            {
+                if (opt.DiagonalSourceOnly && i != j)
+                    continue; // 対角近似 (診断・単体テスト用)
+                int m = j - i;
+                var s2ij = m * m * row.GLength2 / 4;
+                for (int sp = 0; sp < nSpec; sp++)
+                    coh[sp] = snap.Kernel.SourceCoherence(sp, s2[i], s2[j], s2ij);
+                Complex acc = Complex.Zero;
+                for (int site = 0; site < snap.Sites.Length; site++)
+                {
+                    var st = snap.Sites[site];
+                    acc += st.Occ * coh[st.AtomsIndex] * row.Phase(m, site);
+                }
+                qMat[i + j * nb] = acc;
+            }
+
+        // --- W_{jj'} = Σ_{ii'} C_{i,j} Q_{i,i'} C*_{i',j'} を 2 段の行列積で (O(nb³)) ---
+        var t1 = new Complex[nb * nb]; // t1[i, j'] = Σ_{i'} Q_{i,i'} C*_{i',j'}
+        for (int jp = 0; jp < nb; jp++)
+            for (int i = 0; i < nb; i++)
+            {
+                Complex s = Complex.Zero;
+                for (int ip = 0; ip < nb; ip++)
+                    s += qMat[i + ip * nb] * Complex.Conjugate(eigVec[ip + jp * nb]);
+                t1[i + jp * nb] = s;
+            }
+
+        // --- I(t) = Re Σ_{jj'} α_j α_j'* W_{jj'} F_{jj'}(t) ---
+        Complex intensity = Complex.Zero;
+        for (int j = 0; j < nb; j++)
+            for (int jp = 0; jp < nb; jp++)
+            {
+                Complex w = Complex.Zero;
+                for (int i = 0; i < nb; i++)
+                    w += eigVec[i + j * nb] * t1[i + jp * nb];
+                intensity += alpha[j] * Complex.Conjugate(alpha[jp]) * w * Fjj(eigVal[j], eigVal[jp], thickness);
+            }
+
+        // --- I_ref: Bragg 結合を切ると直進チャネルだけが残る (2 ビーム版と同式) ---
+        var gRef = diagU / p[N];
+        var iRef = (Fjj(gRef, gRef, thickness) * qMat[N + N * nb].Real).Real;
+
+        //260806Cl /simplify2 (F-1) と同じ規律: 非有限値は描画層へ流さない
+        return (double.IsFinite(intensity.Real) ? Math.Max(0, intensity.Real) : 0,
+                double.IsFinite(iRef) ? Math.Max(0, iRef) : 0);
     }
 
     /// <summary>F_{jj'}(t) = [e^{λt}−1]/λ, λ = 2πi(γ_j − γ_j'*)。λ≈0 は t (EBSDSolverManaged と同一)</summary>

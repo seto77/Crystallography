@@ -56,4 +56,42 @@ public sealed class KikuchiBandFamily
         }
         return list;
     }
+
+    /// <summary>
+    /// 260807Cl 追加 (設計 Phase 2.5): systematic row 計算と組み合わせるときの候補整理。
+    /// 方向 (h,k,l)/gcd が同じ族を 1 本の row と見なし、その中で |g| 最小の族 (= row の生成元) だけを残す。
+    /// ただし生成元に対する倍率 n が xMax を超える高次は、生成元のプロファイル範囲 |x| ≤ xMax の外にあって
+    /// 描かれないので**独立な族として残す**。
+    ///
+    /// ⚠これをしないと**同一 row の高次を二重に計上する**: 候補には {020} と {040} が別々に並ぶのに、
+    /// {020} の row 計算 (N ≥ 2) は {040} を beam として既に含んでいる。
+    /// 260807Cl 実測 (MgO Omoto Fig 6): 畳まずに row を入れると corr が 0.914 → 0.898 と**悪化**し、
+    /// 畳むと 0.927 まで改善した。RowOrder &gt; 0 のときは ComputeProfiles が自動で適用する。
+    /// </summary>
+    public static List<KikuchiBandFamily> CollapseSystematicRows(IReadOnlyList<KikuchiBandFamily> families, double xMax)
+    {
+        static int Gcd(int a, int b) => b == 0 ? a : Gcd(b, a % b);
+        static (int, int, int) Dir(in (int H, int K, int L) idx)
+        {
+            var g = Gcd(Gcd(Math.Abs(idx.H), Math.Abs(idx.K)), Math.Abs(idx.L));
+            return g == 0 ? idx : (idx.H / g, idx.K / g, idx.L / g);
+        }
+
+        var generator = new Dictionary<(int, int, int), KikuchiBandFamily>();
+        foreach (var f in families)
+        {
+            var d = Dir(f.Index);
+            if (!generator.TryGetValue(d, out var cur) || f.GLength < cur.GLength)
+                generator[d] = f;
+        }
+        var kept = new List<KikuchiBandFamily>(families.Count);
+        foreach (var f in families)
+        {
+            var gen = generator[Dir(f.Index)];
+            // 倍率 1 (生成元自身) か、生成元の描画域外に落ちる高次だけ残す
+            if (ReferenceEquals(f, gen) || f.GLength > xMax * gen.GLength + 1e-9)
+                kept.Add(f);
+        }
+        return kept;
+    }
 }
