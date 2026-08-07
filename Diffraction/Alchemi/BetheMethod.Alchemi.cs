@@ -171,8 +171,18 @@ public partial class BetheMethod
             }
         }
 
+        //この基底が F(s) に要求する s の上限。G = g_h − g_g なので max s = max|g| (両端が対向するペア)。
+        //⚠小さい単位胞 × 系統反射列では Find_gVectors が長い 1 次元の列を選ぶので、ビーム数が
+        //  穏やかでも |g| が線形に伸びてテーブル上限 (s ≤ 8 Å⁻¹) を越え得る。実測: β-AlCo (a=0.286nm)
+        //  250 keV の h00 列は 250 beams で s = 8.00 Å⁻¹ に達し、tail 未収録の Co-L2 が hard fail した
+        var maxSAngstrom = union.Max(b => b.Vec.Length) * 0.1;
+
         var tiltSpan = orientations.Max(o => o.TiltRad) - orientations.Min(o => o.TiltRad);
         var warnings = new List<string>();
+        if (maxSAngstrom > IonizationFsTable.SMaxAngstromInv)
+            warnings.Add($"the basis needs F(s) up to s = {maxSAngstrom:f2} A^-1, beyond the tabulated range "
+                + $"({IonizationFsTable.SMaxAngstromInv:f0} A^-1) — channels whose tail fit is missing at this E0 will refuse the run. "
+                + "Reduce MaxNumOfBloch or drop those channels.");
         //設計 §5.4 の初期目安 (警告閾値であって最終判定ではない — 最終判定は expanded-basis 収束誤差)
         if (tiltSpan > 30e-3)
             warnings.Add($"tilt span {tiltSpan * 1e3:f1} mrad exceeds 30 mrad — outside the v1 FixedUnion guarantee (use TiledUnion, v1.1)");
@@ -185,7 +195,7 @@ public partial class BetheMethod
 
         var diagnostic = new AlchemiBasisDiagnostic(
             union.Length, centerOnly, tiltSpan,
-            minS.Where(double.IsFinite).DefaultIfEmpty(double.NaN).Max(),
+            minS.Where(double.IsFinite).DefaultIfEmpty(double.NaN).Max(), maxSAngstrom,
             AlchemiBasisDiagnostic.Hash(union.Select(b => b.Index)),
             double.NaN, true, [.. warnings]);
         return (union, diagnostic);
@@ -206,10 +216,21 @@ public partial class BetheMethod
         var muBuilder = new AlchemiMuBuilder(Crystal, [.. union.Select(b => b.Index)]);
         var mu = new Complex[nSite * nCh][];
         var mu00 = new double[nSite * nCh];
+        var maxSAngstrom = union.Max(b => b.Vec.Length) * 0.1;
         for (int s = 0; s < nSite; s++)
             for (int c = 0; c < nCh; c++)
             {
-                mu[s * nCh + c] = muBuilder.Build(chData[c], request.Sites[s], request.ModelTier);
+                //F(s) の収録範囲外は provider が hard fail する (silent extrapolation 禁止の契約)。
+                //素の例外は「どのチャネルが、どこまでの s を要求して落ちたか」を伝えないので文脈を足す
+                try { mu[s * nCh + c] = muBuilder.Build(chData[c], request.Sites[s], request.ModelTier); }
+                catch (InvalidOperationException ex)
+                {
+                    throw new InvalidOperationException(
+                        $"ALCHEMI: channel {chData[c].Target.ShortLabel} cannot cover this basis. "
+                        + $"The {union.Length}-beam union needs F(s) up to s = {maxSAngstrom:f2} A^-1 "
+                        + $"(tabulated to {IonizationFsTable.SMaxAngstromInv:f0} A^-1). "
+                        + "Reduce MaxNumOfBloch, narrow the scan, or drop this channel. Inner: " + ex.Message, ex);
+                }
                 mu00[s * nCh + c] = muBuilder.Mu00(chData[c], request.Sites[s]);
                 progress?.Invoke(new AlchemiProgress(AlchemiStage.BuildingMuMatrices, (double)(s * nCh + c + 1) / (nSite * nCh)));
             }

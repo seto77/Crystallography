@@ -108,13 +108,17 @@ public sealed record AlchemiTensorShape(int OrientationCount, int ThicknessCount
 /// <param name="MaxTiltRad">走査の全角幅 [rad]</param>
 /// <param name="MaxMinExcitationErrorPerNm">union に入った g の「走査内 min|s|」の最大値 [nm⁻¹]。
 /// 小さいほど「どの g も走査中どこかで励起される」= union が無駄に太っていない</param>
+/// <param name="MaxShapeArgumentAngstromInv">この基底が F(s) に要求する s = |G|/2 の最大値 [Å⁻¹]
+/// (G = g_h − g_g なので max|g| に等しい)。260807Cl 追加: 小さい単位胞を系統反射列条件で解くと
+/// Find_gVectors が**長い 1 次元の列**を選ぶため、ビーム数が穏やかでも |g| が線形に伸びて
+/// F(s) テーブルの収録上限 (s ≤ 8 Å⁻¹) を超え得る。**run 前に警告できる唯一の量**</param>
 /// <param name="BasisHash">sorted hkl の SHA-256 先頭 16 桁 (基底が同一かの照合用)</param>
 /// <param name="ExpandedBasisMaxRelDiff">1.25 倍基底との Total 最大相対差 (NaN = 診断未実施)</param>
 /// <param name="AcceptedForFit">expanded-basis 診断が閾値内に収まったか</param>
-/// <param name="Warnings">傾斜幅・基底膨張などの警告</param>
+/// <param name="Warnings">傾斜幅・基底膨張・F(s) 収録範囲などの警告</param>
 public sealed record AlchemiBasisDiagnostic(
     int BeamCount, int CenterOnlyBeamCount, double MaxTiltRad,
-    double MaxMinExcitationErrorPerNm, string BasisHash,
+    double MaxMinExcitationErrorPerNm, double MaxShapeArgumentAngstromInv, string BasisHash,
     double ExpandedBasisMaxRelDiff, bool AcceptedForFit, string[] Warnings)
 {
     /// <summary>union が中心のみの基底より何本増えたか。</summary>
