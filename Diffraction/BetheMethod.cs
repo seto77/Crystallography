@@ -41,8 +41,12 @@ public enum ElasticIonModel
 }
 
 /// <summary>Bethe法による動力学計算を提供するクラス。すべて、単位はnm</summary>
+//260807Cl 変更: class → partial class (旧: public class BetheMethod)。
+//ALCHEMI の方位ループは AccVoltage / Crystal / BaseRotation / getEigenMatrix (いずれも private) を
+//必要とするため BetheMethod の内側にしか置けないが、実体は Diffraction/Alchemi/BetheMethod.Alchemi.cs
+//へ完全に分離してある。本ファイルへの変更はこの 1 語だけ (既存 worker の数値には一切触れない)。
 [Serializable]
-public class BetheMethod
+public partial class BetheMethod
 {
     #region static readonly field
     private static readonly Complex One = Complex.One;
