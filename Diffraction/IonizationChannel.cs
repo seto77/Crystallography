@@ -21,18 +21,41 @@ namespace Crystallography;
 /// <summary>260801Cl 追加: イオン化殻。v1 のプロバイダが返すのは K / LTotal のみ (L1/L2/L3 は v2 で分離)。
 /// 260802Cl 変更: **値を明示** (旧: 暗黙の 0,1,2,3,4)。ReciPro のプリセットが (Z, Shell) の組を
 /// この基底値のまま永続化する (ImageSimulatorSetting.EdxChannels、設計書 §5.9.1-6) ので、
-/// 既存の値は変更・並べ替え禁止。新しい殻は末尾に追加すること。</summary>
-public enum IonizationShell { K = 0, LTotal = 1, L1 = 2, L2 = 3, L3 = 4 }
+/// 既存の値は変更・並べ替え禁止。新しい殻は末尾に追加すること。
+/// 260809Cl 追加: **M 殻 (dataset v4.0.0)**。契約どおり**末尾に追加**しており既存値は不変。
+/// MTotal が EDS の見る M 線 (Mα/Mβ) に対応する合成チャネルで、M1–M5 は副殻単独。
+/// ⚠ **Z = 30–32 (Zn/Ga/Ge) には M4/M5 が無い** (M1–M3 が 57 本、M4/M5 が 54 本)。
+/// Bote–Salvat の係数表が Z ≤ 32 では 7 副殻 (K, L1–L3, M1–M3) までしか持たないためで、
+/// F テーブルの生成側も同じ条件で弾いている。σ が無い以上そもそも重みを作れないので、
+/// MTotal は「表にある副殻だけ」を合算する契約 (LTotal のように全副殻を要求しない)。</summary>
+public enum IonizationShell { K = 0, LTotal = 1, L1 = 2, L2 = 3, L3 = 4, MTotal = 5, M1 = 6, M2 = 7, M3 = 8, M4 = 9, M5 = 10 }
 
 /// <summary>260801Cl 追加: 元素×殻のチャネル指定。</summary>
 public record IonizationChannelSpec(int Z, IonizationShell Shell)
 {
+    //260809Cl 変更: LTotal だけを特別扱いする三項演算子を、合成殻 (LTotal/MTotal) の表に置き換えた。
+    //M 殻が入って「合成殻が 2 つある」状態になったので、殻が増えるたびに 2 か所の三項演算子を
+    //直す形は保たない。単独副殻は enum 名そのまま (K / L1 / M5 …)。
+    private string ShellShort => Shell switch
+    {
+        IonizationShell.LTotal => "L",
+        IonizationShell.MTotal => "M",
+        _ => Shell.ToString(),
+    };
+
+    private string ShellLong => Shell switch
+    {
+        IonizationShell.LTotal => "L (total)",
+        IonizationShell.MTotal => "M (total)",
+        _ => Shell.ToString(),
+    };
+
     /// <summary>260801Cl 追加: 短い表示名 (例 "Fe-K" / "Sr-L")。要約・凡例・チャネル選択 UI で共通に使う
     /// (呼び出し側で殻の三項演算子を書き散らさない)。</summary>
-    public string ShortLabel => $"{AtomStatic.AtomicName(Z)}-{(Shell == IonizationShell.LTotal ? "L" : Shell.ToString())}";
+    public string ShortLabel => $"{AtomStatic.AtomicName(Z)}-{ShellShort}";
 
     /// <summary>260801Cl 追加: 原子番号と殻を明示した表示名 (例 "Fe (26) K" / "Sr (38) L (total)")。</summary>
-    public string Label => $"{AtomStatic.AtomicName(Z)} ({Z}) {(Shell == IonizationShell.LTotal ? "L (total)" : Shell.ToString())}";
+    public string Label => $"{AtomStatic.AtomicName(Z)} ({Z}) {ShellLong}";
 }
 
 /// <summary>260801Cl 追加: データ出所 (σ と形状で分離して保持する)。</summary>
@@ -485,14 +508,20 @@ public static class BoteSalvat
 /// フォーマット・契約 = tools/IonizationGen/pack_resource.py ヘッダコメント + prod/MANIFEST.md。
 /// NistElasticPchipResource と同じ「blob 常駐 + チャネル単位 lazy Brotli decode + volatile 公開」。
 /// 260802Cl: formatVersion 2 (dataset 2.0.0) で 2p が j 分離され L2/L3 の shellCode が増えた。
-/// v1 (formatVersion 1, L23 1 本) の .bin も読める — 生成側の A/B 比較に使うため。</summary>
+/// v1 (formatVersion 1, L23 1 本) の .bin も読める — 生成側の A/B 比較に使うため。
+/// 260809Cl: formatVersion 3 (dataset 4.0.0) で **M 殻 (M1–M5) が入り 246 → 525 チャネル**。
+/// 連続状態も κ 分解 Dirac に変わっているが、それは model_id が語る話で読み方は変わらない
+/// (s グリッド・E0 ノード規則・blob 構造はすべて v3 と同一)。1/2/3 のいずれも読める。</summary>
 public sealed class IonizationFsTable
 {
     private const string ResourceName = "Crystallography.IonizationFsE0.bin"; // csproj の LogicalName と一致させること
     private const int Magic = 0x31534649; // "IFS1"
     //260802Cl: L2=3 / L3=4 を追加。**L23=2 は欠番として予約**し番号を再利用しない
     //(v1 の .bin を読んだときに意味が入れ替わらないようにするため)。
+    //260809Cl: M1..M5 = 5..9 を末尾に追加 (同じ規律。2 は欠番のまま)。
+    //5..9 は Bote の副殻番号 5..9 (M1..M5) と 1 対 1 なので、SigmaOf は素直な並びで書ける。
     public const int ShellCodeK = 0, ShellCodeL1 = 1, ShellCodeL23 = 2, ShellCodeL2 = 3, ShellCodeL3 = 4;
+    public const int ShellCodeM1 = 5, ShellCodeM2 = 6, ShellCodeM3 = 7, ShellCodeM4 = 8, ShellCodeM5 = 9;
     //260805Cl 変更: 4.0 → 8.0 (dataset v3.0.0 で s グリッドを 81 → 161 点へ延長)。
     //正典の SrTiO₃ 条件 (a=0.3905nm, 125 beams, 200kV) が実際に要求する s は
     //max|q+g_i−g_j|/2 = 5.56 Å⁻¹ で、s≤4 では全行列要素の 5.5 % が tail 外挿頼みだった。
@@ -503,6 +532,11 @@ public sealed class IonizationFsTable
     /// <summary>260802Cl 追加: 2p が j 分離された dataset か (L2/L3 が索引にある = v2)。
     /// LTotal の合成を「L1+L2+L3」にするか「L1+L23」にするかの分岐に使う。</summary>
     public bool HasJResolvedL { get; }
+
+    /// <summary>260809Cl 追加: M 殻を収録した dataset か (M1 が索引にある = v4 以降)。
+    /// 版差の判定は formatVersion ではなく**索引の実体**で行う (HasJResolvedL と同じ規律) —
+    /// formatVersion は「読める形式か」しか語らないため。</summary>
+    public bool HasMShell { get; }
 
     public int Method { get; }             // 1=float32 / 2=1e-6 量子化+delta+shuffle
     public int SCount { get; }             // 81
@@ -553,7 +587,8 @@ public sealed class IonizationFsTable
         if (reader.ReadInt32() != Magic) throw new InvalidDataException("IonizationFsE0.bin: bad magic");
         var formatVersion = reader.ReadInt32();
         //260802Cl: 1 (v1.0.0, L23 1 本) と 2 (v2.0.0, L2/L3 j 分離) を受け入れる。旧: != 1 で拒否
-        if (formatVersion is not (1 or 2)) throw new InvalidDataException($"IonizationFsE0.bin: unknown format version {formatVersion}");
+        //260809Cl: 3 (v4.0.0, M1–M5 追加) を追加
+        if (formatVersion is not (1 or 2 or 3)) throw new InvalidDataException($"IonizationFsE0.bin: unknown format version {formatVersion}");
         var codec = reader.ReadInt32();
         if (codec != 1) throw new InvalidDataException($"IonizationFsE0.bin: unknown codec {codec}");
         Method = reader.ReadInt32();
@@ -576,15 +611,17 @@ public sealed class IonizationFsTable
         for (int i = 0; i < channelCount; i++)
         {
             int shellCode = reader.ReadInt32(), z = reader.ReadInt32(), offset = reader.ReadInt32(), length = reader.ReadInt32();
-            //260802Cl: 上限を L23(2) → L3(4) へ。旧: shellCode is < ShellCodeK or > ShellCodeL23
-            if (shellCode is < ShellCodeK or > ShellCodeL3 || length <= 0 || offset != payloadLen)
+            //260802Cl: 上限を L23(2) → L3(4) へ。260809Cl: → M5(9) へ。
+            //旧: shellCode is < ShellCodeK or > ShellCodeL23 / > ShellCodeL3
+            if (shellCode is < ShellCodeK or > ShellCodeM5 || length <= 0 || offset != payloadLen)
                 throw new InvalidDataException("IonizationFsE0.bin: bad index entry"); // offset 連続 = 重複/オーバーラップ拒否
             if (!_index.TryAdd((shellCode, z), (offset, length)))
                 throw new InvalidDataException($"IonizationFsE0.bin: duplicate channel ({shellCode},{z})");
             payloadLen += length;
         }
-        //j 分離の有無は索引の実体で判定する (formatVersion は「読める形式か」だけを表す)
+        //j 分離・M 殻の有無は索引の実体で判定する (formatVersion は「読める形式か」だけを表す)
         HasJResolvedL = _index.Keys.Any(k => k.ShellCode == ShellCodeL2);
+        HasMShell = _index.Keys.Any(k => k.ShellCode == ShellCodeM1);
         _payloadStart = (int)reader.BaseStream.Position;
         if (_payloadStart + payloadLen != blob.Length) throw new InvalidDataException("IonizationFsE0.bin: payload length mismatch");
         SGrid = new double[SCount];
@@ -599,7 +636,8 @@ public sealed class IonizationFsTable
         {
             if (_cache.TryGetValue((shellCode, z), out var hit)) return hit;
             if (!_index.TryGetValue((shellCode, z), out var entry))
-                throw new NotSupportedException($"Ionization table has no channel shellCode={shellCode}, Z={z} (K: Z=6–50, L1/L23: Z=20–60)");
+                //260809Cl: 収録範囲を dataset v4.0.0 のものへ (旧: "K: Z=6–50, L1/L23: Z=20–60")
+                throw new NotSupportedException($"Ionization table has no channel shellCode={shellCode}, Z={z} (K: Z=6–50, L: Z=20–86, M: Z=30–86 with M4/M5 only where 3d is occupied)");
             var table = Decode(entry, shellCode, z);
             _cache.Add((shellCode, z), table); // lock 内構築 = ExecutionAndPublication (半初期化を見せない)
             return table;
@@ -831,7 +869,11 @@ public sealed class IonizationTableShape : INormalizedIonizationShape
     }
 }
 
-/// <summary>260801Cl 追加: LTotal 合成形状 F_L = [σ_L1·F_L1 + (σ_L2+σ_L3)·F_L23]/Σσ (実行時 Bote 重み、MANIFEST 契約)。</summary>
+/// <summary>260801Cl 追加: LTotal 合成形状 F_L = [σ_L1·F_L1 + (σ_L2+σ_L3)·F_L23]/Σσ (実行時 Bote 重み、MANIFEST 契約)。
+/// 260809Cl: **MTotal もこの型で組む** — 合成規則 (実行時 Bote σ 重みの加重平均) が L と同一で、
+/// 実装は副殻の本数に依存しないため。⚠ **型名は LTotal のままだが L 専用ではない**
+/// (公開型なので改名しない。<see cref="BetheMethod"/> の UsedTailExtrapolation の型分岐が
+/// この名前で書かれており、M でもそのまま当たる)。</summary>
 public sealed class IonizationLTotalShape : INormalizedIonizationShape
 {
     //260802Cl 変更: 副殻 2 本 (L1 + L23) 固定だったのを可変本数へ。v2 dataset では
@@ -879,6 +921,13 @@ public static class IonizationDataProvider
     //260802Cl 追加: 殻 → その殻を構成するテーブル shellCode 列。空 = その dataset では扱えない殻。
     //LTotal だけが複数本になり、v2 (j 分離) では L1+L2+L3、v1 では L1+L23 を束ねる。
     //ここが「dataset の版差を吸収する唯一の場所」で、Describe / Resolve の分岐はこの 1 本に集約する。
+    //260809Cl 追加: MTotal は M1..M5 のうち **表にある副殻だけ**を束ねる (下の CodesFor)。
+    private static readonly int[] MShellCodes =
+    [
+        IonizationFsTable.ShellCodeM1, IonizationFsTable.ShellCodeM2, IonizationFsTable.ShellCodeM3,
+        IonizationFsTable.ShellCodeM4, IonizationFsTable.ShellCodeM5,
+    ];
+
     private static int[] ShellCodesOf(IonizationShell shell, IonizationFsTable table) => shell switch
     {
         IonizationShell.K => [IonizationFsTable.ShellCodeK],
@@ -888,17 +937,51 @@ public static class IonizationDataProvider
         IonizationShell.LTotal when table.HasJResolvedL =>
             [IonizationFsTable.ShellCodeL1, IonizationFsTable.ShellCodeL2, IonizationFsTable.ShellCodeL3],
         IonizationShell.LTotal => [IonizationFsTable.ShellCodeL1, IonizationFsTable.ShellCodeL23],
+        //260809Cl 追加: M 殻 (dataset v4.0.0 以降)。M 殻を持たない .bin では空 = UnsupportedShell
+        IonizationShell.M1 when table.HasMShell => [IonizationFsTable.ShellCodeM1],
+        IonizationShell.M2 when table.HasMShell => [IonizationFsTable.ShellCodeM2],
+        IonizationShell.M3 when table.HasMShell => [IonizationFsTable.ShellCodeM3],
+        IonizationShell.M4 when table.HasMShell => [IonizationFsTable.ShellCodeM4],
+        IonizationShell.M5 when table.HasMShell => [IonizationFsTable.ShellCodeM5],
+        IonizationShell.MTotal when table.HasMShell => MShellCodes,
         _ => [],
     };
 
+    /// <summary>260809Cl 追加: 合成殻か (副殻を σ 重みで束ねる殻)。</summary>
+    private static bool IsComposite(IonizationShell shell)
+        => shell is IonizationShell.LTotal or IonizationShell.MTotal;
+
+    /// <summary>260809Cl 追加: この (殻, Z) を実際に構成する shellCode 列。空 = その Z では作れない。
+    ///
+    /// **合成殻だけは「表にある副殻」で絞る。**Z = 30–32 (Zn/Ga/Ge) には M4/M5 の収録が無い
+    /// (M1–M3 が 57 本、M4/M5 が 54 本)。Bote–Salvat の係数表が Z ≤ 32 で 7 副殻までしか
+    /// 持たないためで、σ が無い = 重みが作れない以上、M1–M3 だけを足すのが唯一可能で
+    /// 正しい合成になる。全副殻が揃っていることを要求すると、これらの元素の M 線が
+    /// まるごと UnsupportedElement で落ちてしまう。
+    /// 単独副殻は従来どおり「無ければ無い」— 絞ると存在しない殻を黙って空で返してしまう。</summary>
+    private static int[] CodesFor(IonizationChannelSpec spec, IonizationFsTable table)
+    {
+        var codes = ShellCodesOf(spec.Shell, table);
+        return IsComposite(spec.Shell) ? [.. codes.Where(c => table.Contains(c, spec.Z))] : codes;
+    }
+
     //260802Cl 追加: shellCode → Bote の副殻番号 (1=K, 2=L1, 3=L2, 4=L3)。
     //L23 (v1 の 2p 平均) だけは L2+L3 の合算なので σ を 2 本足す必要があり、ここでは扱えない。
+    //260809Cl: M1..M5 (shellCode 5..9) → Bote 副殻 5..9。shellCode を Bote の副殻順に
+    //合わせて採番してあるので +1 で足りるが、L23 の欠番があるので switch のまま明示する。
+    //⚠ Bote の副殻数が足りない元素には F テーブル側にもチャネルが無い (生成時に
+    //  available_channels が同じ条件で弾いている) ので、ここで範囲外が来ることはない。
     private static double SigmaOf(int shellCode, int z, double eV) => shellCode switch
     {
         IonizationFsTable.ShellCodeK => BoteSalvat.SigmaNm2(z, 1, eV),
         IonizationFsTable.ShellCodeL1 => BoteSalvat.SigmaNm2(z, 2, eV),
         IonizationFsTable.ShellCodeL2 => BoteSalvat.SigmaNm2(z, 3, eV),
         IonizationFsTable.ShellCodeL3 => BoteSalvat.SigmaNm2(z, 4, eV),
+        IonizationFsTable.ShellCodeM1 => BoteSalvat.SigmaNm2(z, 5, eV),
+        IonizationFsTable.ShellCodeM2 => BoteSalvat.SigmaNm2(z, 6, eV),
+        IonizationFsTable.ShellCodeM3 => BoteSalvat.SigmaNm2(z, 7, eV),
+        IonizationFsTable.ShellCodeM4 => BoteSalvat.SigmaNm2(z, 8, eV),
+        IonizationFsTable.ShellCodeM5 => BoteSalvat.SigmaNm2(z, 9, eV),
         _ => BoteSalvat.SigmaNm2(z, 3, eV) + BoteSalvat.SigmaNm2(z, 4, eV),   // ShellCodeL23
     };
 
@@ -907,10 +990,13 @@ public static class IonizationDataProvider
     {
         //対応殻・収録有無の判定は provenance を作る前に済ませる (早期 return パスで捨てる record を作らない)
         //260802Cl: v2 dataset では L1/L2/L3 も単独で解決できる (旧: K と LTotal だけ)。
-        var codes = ShellCodesOf(spec.Shell, table);
-        if (codes.Length == 0)
+        //260809Cl: v4 dataset では M1–M5 / MTotal も解決できる。
+        //「この dataset にその殻があるか」(UnsupportedShell) と「この Z に収録があるか」
+        //(UnsupportedElement) を分けるため、殻の有無は絞る前の ShellCodesOf で見る。
+        if (ShellCodesOf(spec.Shell, table).Length == 0)
             return new IonizationChannelInfo { Channel = spec, Status = IonizationAvailability.UnsupportedShell };
-        if (codes.Any(c => !table.Contains(c, spec.Z)))
+        var codes = CodesFor(spec, table);
+        if (codes.Length == 0 || codes.Any(c => !table.Contains(c, spec.Z)))
             return new IonizationChannelInfo { Channel = spec, Status = IonizationAvailability.UnsupportedElement };
         //LTotal は開いている副殻のうち最小の端 (どれか 1 本でも励起できれば信号は出る)
         var edge = codes.Min(c => table.GetChannel(c, spec.Z).EthKeV);
@@ -930,8 +1016,8 @@ public static class IonizationDataProvider
         //(旧: K なら subshell 1、それ以外は 2+3+4 決め打ち)。
         var eV = e0KeV * 1e3;
         var sigma = codes.Sum(c => SigmaOf(c, spec.Z, eV));
-        //現行 dataset (K: Z=6-50 / L: Z=20-86、E0≥30 keV) では全収録チャネルが励起可能なため BelowEdge は実データでは到達しない
-        //(全収録 edge < 30 keV)。synthetic table でのみテスト可能 (codex 20巡)
+        //現行 dataset (K: Z=6-50 / L: Z=20-86 / M: Z=30-86、E0≥30 keV) では全収録チャネルが励起可能なため
+        //BelowEdge は実データでは到達しない (全収録 edge < 30 keV)。synthetic table でのみテスト可能 (codex 20巡)
         return sigma <= 0
             ? partial with { Status = IonizationAvailability.BelowEdge }
             : partial with { Status = IonizationAvailability.Available, SigmaNm2 = sigma };
@@ -951,15 +1037,18 @@ public static class IonizationDataProvider
             case IonizationAvailability.E0OutOfRange:
                 throw new ArgumentOutOfRangeException(nameof(e0KeV), e0KeV, $"STEM-EDX supports E0 = {MinE0KeV}–{MaxE0KeV} keV only (F table range, no extrapolation)");
             case IonizationAvailability.UnsupportedShell:
-                throw new NotSupportedException($"IonizationShell.{spec.Shell} is not available in this dataset (j-resolved L: {table.HasJResolvedL})");
+                throw new NotSupportedException($"IonizationShell.{spec.Shell} is not available in this dataset (j-resolved L: {table.HasJResolvedL}, M shell: {table.HasMShell})");
             case IonizationAvailability.UnsupportedElement:
-                throw new NotSupportedException($"Ionization table has no channel for Z={spec.Z} {spec.Shell} (K: Z=6–50, L: Z=20–86)");
+                throw new NotSupportedException($"Ionization table has no channel for Z={spec.Z} {spec.Shell} (K: Z=6–50, L: Z=20–86, M: Z=30–86)");
             case IonizationAvailability.BelowEdge:
                 throw new NotSupportedException($"Z={spec.Z} {spec.Shell}: below edge at E0={e0KeV} keV (σ=0)");
         }
         //ここから先は Available 確定。shape は σ>0 の成分だけ構築する (σ=0 成分は null + 重み 0 で合成。Evaluate は w>0 の成分しか触らない契約)
         //260802Cl: 単一副殻も複数副殻も同じ経路で組む (旧: K を特別扱いし、L は L1+L23 決め打ち)。
-        var codes = ShellCodesOf(spec.Shell, table);
+        //260809Cl: Describe と**同じ** CodesFor を使う (MTotal は表にある副殻だけ)。
+        //ここで ShellCodesOf を直接呼ぶと、M4/M5 が無い元素で Describe が Available と言った
+        //直後に GetChannel が落ちる — 「Available ⇔ Resolve 成功」の契約が壊れる。
+        var codes = CodesFor(spec, table);
         var eV = e0KeV * 1e3;
         var sigmas = codes.Select(c => SigmaOf(c, spec.Z, eV)).ToArray();
         if (codes.Length == 1)
@@ -994,7 +1083,10 @@ public static class IonizationDataProvider
             //EDX は「列挙された全チャネルを計算する」仕様 (9daab2f4) なので、ここに副殻を足すと
             //L 元素の計算量が 3 倍になるうえ、EDS 検出器が見るのは Lα/Lβ という線であって
             //副殻ごとの空孔マップではない。副殻を分けて使うのは蛍光収率・線分岐を入れる発光層の仕事。
-            foreach (var shell in new[] { IonizationShell.K, IonizationShell.LTotal })
+            //260809Cl: **MTotal を追加**。理由は LTotal と同じ (EDS が見るのは Mα/Mβ という線)。
+            //M1–M5 を個別に列挙しないのも同じ理由。M 殻を持たない .bin では UnsupportedShell に
+            //なって下の filter で落ちるので、旧 dataset を読んでいるときは何も増えない。
+            foreach (var shell in new[] { IonizationShell.K, IonizationShell.LTotal, IonizationShell.MTotal })
             {
                 var info = Describe(new IonizationChannelSpec(z, shell), e0KeV, table);
                 if (info.Status is not (IonizationAvailability.UnsupportedElement or IonizationAvailability.UnsupportedShell))
