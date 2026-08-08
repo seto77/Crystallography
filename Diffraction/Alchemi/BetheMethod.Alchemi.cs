@@ -179,10 +179,14 @@ public partial class BetheMethod
 
         var tiltSpan = orientations.Max(o => o.TiltRad) - orientations.Min(o => o.TiltRad);
         var warnings = new List<string>();
+        //260810Cl: 表は s ≤ 16 A^-1 まで実データを持つ。そこを越えた分は外挿されず
+        //**0 で打ち切られ、上界 ε が宣言される** (旧 dataset の指数 tail は撤回済み)。
+        //MaxNumOfBloch は 1600 で頭打ちにしてあり、実測の最大要求は 10.54 A^-1 なので
+        //通常この警告は出ない — 出たら基底か電圧の設定を疑うべき状況である
         if (maxSAngstrom > IonizationFsTable.SMaxAngstromInv)
             warnings.Add($"the basis needs F(s) up to s = {maxSAngstrom:f2} A^-1, beyond the tabulated range "
-                + $"({IonizationFsTable.SMaxAngstromInv:f0} A^-1) — channels whose tail fit is missing at this E0 will refuse the run. "
-                + "Reduce MaxNumOfBloch or drop those channels.");
+                + $"({IonizationFsTable.SMaxAngstromInv:f0} A^-1) — that part of the form factor is truncated to zero "
+                + "and reported as a bound, not extrapolated. Reduce MaxNumOfBloch or narrow the scan.");
         //設計 §5.4 の初期目安 (警告閾値であって最終判定ではない — 最終判定は expanded-basis 収束誤差)
         if (tiltSpan > 30e-3)
             warnings.Add($"tilt span {tiltSpan * 1e3:f1} mrad exceeds 30 mrad — outside the v1 FixedUnion guarantee (use TiledUnion, v1.1)");
@@ -220,7 +224,9 @@ public partial class BetheMethod
         for (int s = 0; s < nSite; s++)
             for (int c = 0; c < nCh; c++)
             {
-                //F(s) の収録範囲外は provider が hard fail する (silent extrapolation 禁止の契約)。
+                //260810Cl: dataset v5 では s > s_cert は 0 打ち切り + ε 宣言なので、ここで
+                //落ちるのは **運動学的に不可能な要求**だけになった (この E0 では Ewald 球上に
+                //その散乱ベクトルを持つビーム対が存在しない = 電圧を上げるか基底を狭めるしかない)。
                 //素の例外は「どのチャネルが、どこまでの s を要求して落ちたか」を伝えないので文脈を足す
                 try { mu[s * nCh + c] = muBuilder.Build(chData[c], request.Sites[s], request.ModelTier); }
                 catch (InvalidOperationException ex)

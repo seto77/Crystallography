@@ -3298,6 +3298,20 @@ public partial class BetheMethod
                     IonizationLTotalShape ls => ls.UsedTailExtrapolation,
                     _ => false,
                 },
+                //260810Cl 追加: dataset v5 は外挿しない代わりに s>s_cert を 0 で打ち切り、
+                //その領域の上界 ε を宣言する。**外挿フラグと違って「誤差の大きさ」が付く**
+                TruncatedBeyondSMax = chData.Shape switch
+                {
+                    IonizationTableShape ts => ts.TruncatedBeyondSMax,
+                    IonizationLTotalShape ls => ls.TruncatedBeyondSMax,
+                    _ => false,
+                },
+                TruncationBound = chData.Shape switch
+                {
+                    IonizationTableShape ts => ts.TruncationBound,
+                    IonizationLTotalShape ls => ls.TruncationBound,
+                    _ => 0.0,
+                },
                 Iq = I_Edx,//対称化後の生値 (検証・回帰用、§6.2)
                 IqBeforeSymmetrization = iqRaw,//fixture 用 (通常 null)
             };

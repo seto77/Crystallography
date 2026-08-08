@@ -137,8 +137,16 @@ public sealed class StemSignalMap
     public double QZeroImagMax { get; init; }
     /// <summary>clamp 前の最小画素値 (負値診断)</summary>
     public double MinPixelBeforeClamp { get; init; }
-    /// <summary>形状評価が s>4 Å⁻¹ の tail 外挿を使ったか (診断フラグ、silent extrapolation 禁止の契約)</summary>
+    /// <summary>形状評価が s>4 Å⁻¹ の tail 外挿を使ったか (診断フラグ、silent extrapolation 禁止の契約)。
+    /// ⚠ dataset v5 (formatVersion 4) 以降は外挿しないので常に false。
+    /// 代わりに <see cref="TruncatedBeyondSMax"/> を見ること</summary>
     public bool UsedTailExtrapolation { get; init; }
+    /// <summary>260810Cl 追加: 形状評価が s>s_cert を 0 で打ち切ったか (dataset v5 以降)。
+    /// s_cert は行ごとの運動学的保証上限で、低い E0 では 16 Å⁻¹ より小さい</summary>
+    public bool TruncatedBeyondSMax { get; init; }
+    /// <summary>260810Cl 追加: 打ち切った領域で保証する |F| の上界 ε (合成殻は Σ wᵢ·εᵢ)。
+    /// 打ち切っていなければ 0。**外挿と違って誤差の大きさが宣言される**</summary>
+    public double TruncationBound { get; init; }
     /// <summary>対称化後の I(q,t,d) (検証・回帰用の生値。設計書 §6.2「保存対象は最終画像だけでなく」)</summary>
     public Complex[,,] Iq { get; init; }
     /// <summary>±q 対称化前の I(q,t,d) (CaptureRawIq=true の run のみ、通常 run は null。fixture 用 §6.3 — 対称化後だけでは位相符号・共役ミスが隠れるため)</summary>
@@ -511,7 +519,15 @@ public static class BoteSalvat
 /// v1 (formatVersion 1, L23 1 本) の .bin も読める — 生成側の A/B 比較に使うため。
 /// 260809Cl: formatVersion 3 (dataset 4.0.0) で **M 殻 (M1–M5) が入り 246 → 525 チャネル**。
 /// 連続状態も κ 分解 Dirac に変わっているが、それは model_id が語る話で読み方は変わらない
-/// (s グリッド・E0 ノード規則・blob 構造はすべて v3 と同一)。1/2/3 のいずれも読める。</summary>
+/// (s グリッド・E0 ノード規則・blob 構造はすべて v3 と同一)。1/2/3 のいずれも読める。
+/// 260810Cl: formatVersion 4 (dataset 5.0.0) で **s グリッドが 161 → 321 点 (s ≤ 16 Å⁻¹)**、
+/// かつ **tail の意味論が変わった**。
+/// ⚠⚠ 旧 formatVersion の指数 tail `a·exp(−b·s)` は**撤回された** — 上界でも近似でもなく、
+/// 43 % の行で hard fail し、残りのうち高 l では**符号の逆の値を返していた**
+/// (Au L3 @300 kV, s=12 で +4.15e-5 vs 真値 −1.62e-3)。v4 では代わりに
+/// 行ごとに **s_cert (運動学的保証上限)** と **ε (s>s_cert の実測上界)** を持つ。
+/// ⚠ **1/2/3 の .bin はこのリーダーでは読めない** (s グリッド検査で拒否)。
+/// `.bin` と `Crystallography.dll` は必ず同時に差し替えること。</summary>
 public sealed class IonizationFsTable
 {
     private const string ResourceName = "Crystallography.IonizationFsE0.bin"; // csproj の LogicalName と一致させること
@@ -526,8 +542,21 @@ public sealed class IonizationFsTable
     //正典の SrTiO₃ 条件 (a=0.3905nm, 125 beams, 200kV) が実際に要求する s は
     //max|q+g_i−g_j|/2 = 5.56 Å⁻¹ で、s≤4 では全行列要素の 5.5 % が tail 外挿頼みだった。
     //v1/v2 の .bin (SCount=81) はこのリーダーでは読めない (下の s グリッド検査で拒否)。
-    public const double SMaxAngstromInv = 8.0;
+    //260810Cl 変更: 8.0 → 16.0 (dataset v5.0.0 で s グリッドを 161 → 321 点へ延長)。
+    //ALCHEMI が要求する s = max|g| は 1600 Bloch で 10.54 Å⁻¹ に達する (β-AlCo a=2.861 Å、
+    //AlchemiCheck basis の実測。**E0 にはほぼ依存しない**)。ReciPro 側は Bloch を
+    //1600 で打ち切ったので、この 16 Å⁻¹ は基底からは使い切れない (余裕 1.52×)。
+    public const double SMaxAngstromInv = 16.0;
+    //public const double SMaxAngstromInv = 8.0;   //260809Cl まで (dataset v3/v4)
     //public const double SMaxAngstromInv = 4.0;   //260804Cl まで (dataset v1/v2)
+
+    /// <summary>260810Cl 追加: tail の意味論 (formatVersion 4 / JSON schema 2)。
+    /// ⚠ 1 は旧「指数 tail 有効」の値なので**再利用しない**。</summary>
+    public const int TailKindNone = 0, TailKindBound = 2;
+
+    /// <summary>260810Cl 追加: tail が「実測上界 ε + s_cert」形式か (formatVersion ≥ 4)。
+    /// false なら旧 dataset の指数 tail。**版差の分岐はここ 1 か所に集める。**</summary>
+    public bool IsBoundedTail => _formatVersion >= 4;
 
     /// <summary>260802Cl 追加: 2p が j 分離された dataset か (L2/L3 が索引にある = v2)。
     /// LTotal の合成を「L1+L2+L3」にするか「L1+L23」にするかの分岐に使う。</summary>
@@ -549,6 +578,8 @@ public sealed class IonizationFsTable
 
     private readonly byte[] _blob;
     private readonly int _payloadStart;
+    //260810Cl 追加: tail の読み方が版で変わったので、ローカルではなくインスタンスに持つ
+    private readonly int _formatVersion;
     private readonly Dictionary<(int ShellCode, int Z), (int Offset, int Length)> _index = [];
     private readonly Dictionary<(int ShellCode, int Z), IonizationChannelTable> _cache = [];
     private readonly object _sync = new();
@@ -588,15 +619,18 @@ public sealed class IonizationFsTable
         var formatVersion = reader.ReadInt32();
         //260802Cl: 1 (v1.0.0, L23 1 本) と 2 (v2.0.0, L2/L3 j 分離) を受け入れる。旧: != 1 で拒否
         //260809Cl: 3 (v4.0.0, M1–M5 追加) を追加
-        if (formatVersion is not (1 or 2 or 3)) throw new InvalidDataException($"IonizationFsE0.bin: unknown format version {formatVersion}");
+        //260810Cl: 4 (v5.0.0, s≤16 + tail 意味論) を追加。1/2/3 は s グリッド検査で落ちる
+        if (formatVersion is not (1 or 2 or 3 or 4)) throw new InvalidDataException($"IonizationFsE0.bin: unknown format version {formatVersion}");
+        _formatVersion = formatVersion;
         var codec = reader.ReadInt32();
         if (codec != 1) throw new InvalidDataException($"IonizationFsE0.bin: unknown codec {codec}");
         Method = reader.ReadInt32();
         if (Method is not (1 or 2)) throw new InvalidDataException($"IonizationFsE0.bin: unknown method {Method}");
         SCount = reader.ReadInt32();
         SStep = reader.ReadDouble();
-        //260805Cl 変更: 81 → 161 (s≤4 → s≤8)。SMaxAngstromInv と整合を取る
-        if (SCount != 161 || SStep != 0.05) throw new InvalidDataException("IonizationFsE0.bin: unexpected s grid");
+        //260810Cl 変更: 161 → 321 (s≤8 → s≤16)。SMaxAngstromInv と整合を取る
+        if (SCount != 321 || SStep != 0.05) throw new InvalidDataException("IonizationFsE0.bin: unexpected s grid");
+        //if (SCount != 161 || SStep != 0.05) throw ... //260809Cl まで (dataset v3/v4)
         //if (SCount != 81 || SStep != 0.05) throw ... //260804Cl まで (dataset v1/v2)
         reader.ReadInt32(); // schemaVersion
         DatasetVersion = BoteSalvat.ReadString(reader);
@@ -711,13 +745,31 @@ public sealed class IonizationFsTable
             }
         }
         if (r.BaseStream.Position != raw.Length) throw new InvalidDataException("IonizationFsE0.bin: blob length mismatch");
-        // 構造検証: F(0)=1 (method2 は量子化後も 1e6*1e-6)、tail ノード整合 a=F(4)·e^{4b} (量子化誤差ぶんの許容)
+        // 構造検証: F(0)=1 (method2 は量子化後も 1e6*1e-6)、および tail の版別整合。
         var aTol = Method == 2 ? 1.1e-6 : 6e-8;
         for (int i = 0; i < rowCount; i++)
         {
             if (Math.Abs(f[i][0] - 1.0) > 1e-12) throw new InvalidDataException($"IonizationFsE0.bin: F(0)≠1 (Z={z}, row {i})");
+            if (_formatVersion >= 4)
+            {
+                //260810Cl: kind 2 = 実測上界。ε ≥ 0 で有限、s_cert はグリッド点で表の内側。
+                //⚠ s_cert < SMax は**正常** — E0 が低い行は運動学的に 16 Å⁻¹ へ届かない
+                //(K < 2k_i より s_kin = 1/λ。30 kV では 14.33 Å⁻¹ しかない)
+                if (tailFlag[i] != TailKindBound)
+                    throw new InvalidDataException($"IonizationFsE0.bin: unknown tail kind {tailFlag[i]} (Z={z}, row {i})");
+                if (!(tailA[i] >= 0.0) || double.IsNaN(tailA[i]) || double.IsInfinity(tailA[i]))
+                    throw new InvalidDataException($"IonizationFsE0.bin: bad tail bound eps={tailA[i]} (Z={z}, row {i})");
+                var cert = tailB[i];
+                var node = (int)Math.Round(cert / SStep);
+                if (node < 1 || node > SCount - 1 || Math.Abs(node * SStep - cert) > 1e-9)
+                    throw new InvalidDataException($"IonizationFsE0.bin: s_cert={cert} is not an s node (Z={z}, row {i})");
+                //保証域の外は厳密に 0 の埋め草 (生成側 C14 と同じ契約)
+                for (int j = node + 1; j < SCount; j++)
+                    if (f[i][j] != 0.0)
+                        throw new InvalidDataException($"IonizationFsE0.bin: non-zero padding beyond s_cert (Z={z}, row {i})");
+            }
             //260805Cl 変更: 4.0 決め打ち → SMaxAngstromInv (s グリッド上限の延長に追随)
-            if (tailFlag[i] != 0 && Math.Abs(tailA[i] * Math.Exp(-SMaxAngstromInv * tailB[i]) - f[i][SCount - 1]) > aTol)
+            else if (tailFlag[i] != 0 && Math.Abs(tailA[i] * Math.Exp(-SMaxAngstromInv * tailB[i]) - f[i][SCount - 1]) > aTol)
                 throw new InvalidDataException($"IonizationFsE0.bin: tail/F(s_max) inconsistent (Z={z}, row {i})");
         }
         return new IonizationChannelTable(this, z, shellCode, eth, e0, u, tailFlag, tailA, tailB, f);
@@ -736,8 +788,11 @@ public sealed class IonizationChannelTable
     private readonly double[] _x;     // ln(u-1)
     private readonly byte[] _tailFlag;
     private readonly double[] _tailA, _tailB;
-    private readonly double[][] _f;   // [row][81]
+    private readonly double[][] _f;   // [row][SCount]
     private readonly List<(int Lo, int Hi)> _tailRuns = [];
+    //260810Cl: formatVersion 4 の s_cert (= _tailB)。旧版は s グリッド上限で埋める
+    //ことで「全行が全ノードで有効」= 従来と同じ基底になる
+    private readonly double[] _sCert;
 
     internal IonizationChannelTable(IonizationFsTable owner, int z, int shellCode, double eth,
         double[] e0, double[] u, byte[] tailFlag, double[] tailA, double[] tailB, double[][] f)
@@ -746,6 +801,11 @@ public sealed class IonizationChannelTable
         E0KeV = e0; U = u; _tailFlag = tailFlag; _tailA = tailA; _tailB = tailB; _f = f;
         _x = new double[u.Length];
         for (int i = 0; i < u.Length; i++) _x[i] = Math.Log(u[i] - 1.0);
+        //260810Cl: v4 は tailB が s_cert。旧版は s_cert の概念が無いので上限で埋め、
+        //基底 subsetting が恒真になる = 従来とまったく同じ補間になるようにする
+        _sCert = new double[u.Length];
+        for (int i = 0; i < u.Length; i++)
+            _sCert[i] = owner.IsBoundedTail ? tailB[i] : owner.SStep * (owner.SCount - 1);
         for (int i = 0; i < tailFlag.Length;)
         {
             if (tailFlag[i] != 0)
@@ -780,30 +840,78 @@ public sealed class IonizationChannelTable
         int rows = RowCount, sCount = _owner.SCount;
         var grid = new double[sCount];
         var col = new double[rows];
+        var xs = new double[rows];
         for (int j = 0; j < sCount; j++)
         {
+            //260810Cl: **s ノード j で s_cert ≥ s_j の行だけを補間基底に使う。**
+            //E0 が低い行は運動学的に s_j へ届かず F が 0 の埋め草なので、素朴に混ぜると
+            //200 kV の問い合わせが 30 kV 行の埋め草に引きずられる。
+            //⚠ 除外が起きるのは 321 ノード中の上端だけ (s > 14.33)。通常の像 (s ≤ 5.6) と
+            //  ALCHEMI (E0 ≥ 80 kV) では全行が基底に入るので、挙動は従来と同一。
+            var sj = j * _owner.SStep;
+            int n = 0;
             var allPositive = true;
             for (int i = 0; i < rows; i++)
             {
-                col[i] = _f[i][j];
-                if (col[i] <= 0) allPositive = false;
+                if (_sCert[i] < sj - 1e-9) continue;
+                xs[n] = _x[i];
+                col[n] = _f[i][j];
+                if (col[n] <= 0) allPositive = false;
+                n++;
             }
+            //⚠ 本数だけでなく **問い合わせ E0 を挟んでいるか**を見る。挟んでいないなら
+            //  それは外挿であり、しかも「この E0 では s_j が運動学的に不可能」を意味する
+            //  (残った行はすべて問い合わせより高い E0)。
+            //  ⚠ **ここで throw してはいけない。**GridAt は全 321 ノードを一度に組むので、
+            //  投げると「30 kV では s=0.5 の評価すらできない」ことになってしまう。
+            //  届かないノードは 0 (行の埋め草と同じ) にしておき、**s 方向の補間器を
+            //  s_cert までで打ち切る**ことで触れないようにする (BuildShape 参照)。
+            //  ⚠ 判定は**行を実際に落としたノードだけ**に適用する (n == rows なら
+            //  基底は従来と同一なので、低 s の挙動を 1 ビットも変えない)
+            if (n < 2 || (n < rows && (xq < xs[0] - 1e-12 || xq > xs[n - 1] + 1e-12)))
+            {
+                grid[j] = 0.0;
+                continue;
+            }
+            var xv = xs.AsSpan(0, n).ToArray();
+            var yv = col.AsSpan(0, n).ToArray();
             if (allPositive)
             {
-                for (int i = 0; i < rows; i++) col[i] = Math.Log(col[i]);
-                grid[j] = Math.Exp(Pchip.Evaluate(_x, col, Pchip.Derivatives(_x, col), xq));
+                for (int i = 0; i < n; i++) yv[i] = Math.Log(yv[i]);
+                grid[j] = Math.Exp(Pchip.Evaluate(xv, yv, Pchip.Derivatives(xv, yv), xq));
             }
             else
-                grid[j] = Pchip.Evaluate(_x, col, Pchip.Derivatives(_x, col), xq);
+                grid[j] = Pchip.Evaluate(xv, yv, Pchip.Derivatives(xv, yv), xq);
         }
         grid[0] = 1.0; // s=0 は厳密 1 (契約)
         return grid;
     }
 
+    /// <summary>260810Cl 追加: formatVersion ≥ 4 の tail モデル (s_cert と上界 ε)。
+    ///
+    /// ⚠⚠ **ε は絶対に PCHIP しない。**内挿した上界は上界ではない —
+    /// 出荷格子上の代理量で leave-one-out すると 13,746 行中 665 行 (4.8 %) で破れ、
+    /// 最悪 1.55 倍だった。**問い合わせ E0 を挟む 2 行の max** を取る。
+    /// s_cert も同じ理由で**小さい方**(= 保証できる範囲の狭い方)を取る。</summary>
+    public bool TryGetTailModel(double e0KeV, out double eps, out double sCert)
+    {
+        eps = double.NaN; sCert = double.NaN;
+        if (!_owner.IsBoundedTail) return false;
+        var hit = Array.BinarySearch(E0KeV, e0KeV);
+        if (hit >= 0) { eps = _tailA[hit]; sCert = _sCert[hit]; return true; }
+        int i = Math.Clamp(~hit - 1, 0, RowCount - 2);
+        eps = Math.Max(_tailA[i], _tailA[i + 1]);      // 上界は max。内挿しない
+        sCert = Math.Min(_sCert[i], _sCert[i + 1]);    // 保証域は狭い方
+        return true;
+    }
+
     /// <summary>s>4 tail の減衰係数 b̂(E0) (連続性アンカー方式、codex 16巡)。取得不能なら false。
-    /// tail≠null の連続 E0 区間内のみで PCHIP。E0 を挟む行に null が絡む場合は不可。exact node はその行の b。</summary>
+    /// tail≠null の連続 E0 区間内のみで PCHIP。E0 を挟む行に null が絡む場合は不可。exact node はその行の b。
+    /// ⚠ **formatVersion ≥ 4 では常に false** — 指数 tail は撤回された
+    /// (上界でも近似でもなく、高 l で符号を外していた)。<see cref="TryGetTailModel"/> を使う。</summary>
     public bool TryGetTailB(double e0KeV, out double bHat)
     {
+        if (_owner.IsBoundedTail) { bHat = double.NaN; return false; }
         var hit = Array.BinarySearch(E0KeV, e0KeV);
         if (hit >= 0 && _tailFlag[hit] != 0) { bHat = _tailB[hit]; return true; }
         int i = hit >= 0 ? hit : ~hit - 1;
@@ -834,18 +942,42 @@ public sealed class IonizationTableShape : INormalizedIonizationShape
     private readonly bool _tailAvailable;
     private readonly int _z, _shellCode;
     private bool _usedTail;
+    //260810Cl: formatVersion ≥ 4 の契約
+    private readonly bool _bounded;
+    private readonly double _eps, _sCert;
+    private bool _truncated;
 
     internal IonizationTableShape(IonizationChannelTable table, double[] sGrid, double[] grid, double e0KeV)
     {
-        _sGrid = sGrid; _grid = grid;
-        _deriv = Pchip.Derivatives(sGrid, grid);
-        _f4 = grid[^1];
-        _tailAvailable = table.TryGetTailB(e0KeV, out _bHat);
+        _bounded = table.TryGetTailModel(e0KeV, out _eps, out _sCert);
+        //260810Cl: **s 方向の補間器を s_cert までで打ち切る。**s_cert より上のノードは
+        //運動学的に届かず GridAt が 0 を置いているので、そこを PCHIP の台に含めると
+        //s_cert 直下の区間まで埋め草に汚染される。台から外せば汚染は起こらない
+        //(最終ノードの微分は片側推定になるが、そこから先にデータは存在しない)。
+        if (_bounded && _sCert < sGrid[^1] - 1e-9)
+        {
+            int nCert = (int)Math.Round(_sCert / (sGrid[1] - sGrid[0]));
+            nCert = Math.Clamp(nCert, 1, sGrid.Length - 1);
+            _sGrid = sGrid[..(nCert + 1)];
+            _grid = grid[..(nCert + 1)];
+        }
+        else { _sGrid = sGrid; _grid = grid; }
+        _deriv = Pchip.Derivatives(_sGrid, _grid);
+        _f4 = _grid[^1];
+        _tailAvailable = !_bounded && table.TryGetTailB(e0KeV, out _bHat);
         _z = table.Z; _shellCode = table.ShellCode;
     }
 
-    /// <summary>s>4 Å⁻¹ の tail 外挿を使ったか (診断)。</summary>
+    /// <summary>s>4 Å⁻¹ の tail 外挿を使ったか (診断)。
+    /// ⚠ formatVersion ≥ 4 では外挿しないので常に false。代わりに
+    /// <see cref="TruncatedBeyondSMax"/> を見る。</summary>
     public bool UsedTailExtrapolation => _usedTail;
+
+    /// <summary>260810Cl 追加: s > s_cert を 0 で打ち切ったか (formatVersion ≥ 4)。</summary>
+    public bool TruncatedBeyondSMax => _truncated;
+
+    /// <summary>260810Cl 追加: 打ち切った領域で保証する上界 ε。打ち切っていなければ 0。</summary>
+    public double TruncationBound => _truncated ? _eps : 0.0;
 
     public void Evaluate(ReadOnlySpan<double> sPerNm, Span<double> values)
     {
@@ -854,6 +986,19 @@ public sealed class IonizationTableShape : INormalizedIonizationShape
             var sA = sPerNm[k] * 0.1; // nm⁻¹ → Å⁻¹
             if (sA == 0.0)
                 values[k] = 1.0;
+            else if (_bounded)
+            {
+                //260810Cl: formatVersion ≥ 4。表の内側は表の値、外側は **0 ± ε**。
+                //⚠ 外挿はしない — 旧 tail は上界でも近似でもなく、高 l では符号を外していた。
+                //  s_cert は行 (= この E0) の運動学的保証上限で、16 Å⁻¹ とは限らない
+                if (sA <= _sCert)
+                    values[k] = Pchip.Evaluate(_sGrid, _grid, _deriv, sA);
+                else
+                {
+                    values[k] = 0.0;
+                    _truncated = true;
+                }
+            }
             else if (sA <= IonizationFsTable.SMaxAngstromInv)
                 values[k] = Pchip.Evaluate(_sGrid, _grid, _deriv, sA);
             else if (_tailAvailable)
@@ -890,6 +1035,23 @@ public sealed class IonizationLTotalShape : INormalizedIonizationShape
     }
 
     public bool UsedTailExtrapolation => _shapes.Any(s => s?.UsedTailExtrapolation ?? false);
+
+    /// <summary>260810Cl 追加: 副殻のどれかが打ち切られたか。</summary>
+    public bool TruncatedBeyondSMax => _shapes.Any(s => s?.TruncatedBeyondSMax ?? false);
+
+    /// <summary>260810Cl 追加: 合成殻の上界 = Σ wᵢ·εᵢ (既存の σ 重み)。
+    /// F_total = Σ wᵢ·Fᵢ で各 |Fᵢ| ≤ εᵢ なので、三角不等式でこれが上界になる。</summary>
+    public double TruncationBound
+    {
+        get
+        {
+            var b = 0.0;
+            for (int i = 0; i < _shapes.Length; i++)
+                if (_weights[i] > 0 && _shapes[i] is not null)
+                    b += _weights[i] * _shapes[i].TruncationBound;
+            return b;
+        }
+    }
 
     public void Evaluate(ReadOnlySpan<double> sPerNm, Span<double> values)
     {
