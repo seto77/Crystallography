@@ -58,8 +58,14 @@ public partial class BetheMethod
         //--- 1. チャネル解決 (run 中は immutable。プロバイダ選択と範囲判定を実行中に持ち込まない) ---
         progress?.Invoke(new AlchemiProgress(AlchemiStage.ResolvingIonizationData, 0));
         var chData = new IonizationData[request.Channels.Length];
+        //260813Cl: ChannelDataOverride は感度試験専用 (既定 null = 従来どおり)。
+        //長さが合わないまま黙って片方だけ差し替わる事故を防ぐため、ここで弾く。
+        if (request.ChannelDataOverride is { } ovr && ovr.Length != chData.Length)
+            throw new ArgumentException(
+                $"ChannelDataOverride の長さ {ovr.Length} が Channels の {chData.Length} と違う");
         for (int c = 0; c < chData.Length; c++)
-            chData[c] = IonizationDataProvider.Resolve(request.Channels[c], request.IncidentEnergyKeV);
+            chData[c] = request.ChannelDataOverride?[c]
+                        ?? IonizationDataProvider.Resolve(request.Channels[c], request.IncidentEnergyKeV);
         progress?.Invoke(new AlchemiProgress(AlchemiStage.ResolvingIonizationData, 1));
         cancel.ThrowIfCancellationRequested();
 

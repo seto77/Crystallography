@@ -90,6 +90,16 @@ public sealed record AlchemiRequest(
 
     /// <summary>native Eigen を使う (false で managed MathNet に固定。backend 一致検証用)。</summary>
     public bool UseNativeSolver { get; init; } = true;
+
+    /// <summary>260813Cl 追加: **解決済みチャネルデータの差し替え (診断専用)**。null なら
+    /// 通常どおり <see cref="IonizationDataProvider.Resolve(IonizationChannelSpec, double, IonizationFsTable)"/>
+    /// が引く。<see cref="Channels"/> と同じ長さ・同じ順序でなければならない。
+    ///
+    /// ⚠ **用途は感度試験** — F(s) に既知の摂動 δF を載せた形状を渡し、同じ幾何・同じ
+    /// Bloch 解の下で観測量 Y の変化を測る。F はμ を通してしか入らず、Bloch 係数は F に
+    /// 依らないので、**2 回の run の差は δF の寄与だけを厳密に取り出す**。
+    /// ⚠ 既定 null では 1 ビットも挙動が変わらない (`UseNativeSolver` と同じ位置づけ)。</summary>
+    public IonizationData[] ChannelDataOverride { get; init; } = null;
 }
 
 /// <summary>260807Cl 追加: 結果テンソルの形 (flat 配列 [sample, thickness, site, channel] の添字計算)。</summary>
