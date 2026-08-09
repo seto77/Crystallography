@@ -102,6 +102,18 @@ public sealed record AlchemiTensorShape(int OrientationCount, int ThicknessCount
         => ((orientation * ThicknessCount + thickness) * SiteCount + site) * ChannelCount + channel;
 }
 
+/// <summary>260809Cl 追加: 定量 fit に使ってよいかの**保証表示**。生の診断値 (bool) と分けるための三値。
+/// v1 が常に <see cref="NotEvaluated"/> を返す理由は <see cref="AlchemiBasisDiagnostic.Eligibility"/>。</summary>
+public enum AlchemiFitEligibility
+{
+    /// <summary>判定を出さない (v1)。「適格でない」ではなく「評価していない」。</summary>
+    NotEvaluated,
+    /// <summary>基底収束の診断が閾値内。</summary>
+    Eligible,
+    /// <summary>基底収束の診断が閾値を超えた。</summary>
+    NotEligible,
+}
+
 /// <summary>260807Cl 追加: 基底 (FixedUnion) の診断 (設計 §5.4)。fit の可否判定に使うので結果に必ず保存する。</summary>
 /// <param name="BeamCount">union の本数 (実際に解いた次元)</param>
 /// <param name="CenterOnlyBeamCount">走査中心だけで Find_gVectors したときの本数</param>
@@ -114,7 +126,8 @@ public sealed record AlchemiTensorShape(int OrientationCount, int ThicknessCount
 /// F(s) テーブルの収録上限 (s ≤ 8 Å⁻¹) を超え得る。**run 前に警告できる唯一の量**</param>
 /// <param name="BasisHash">sorted hkl の SHA-256 先頭 16 桁 (基底が同一かの照合用)</param>
 /// <param name="ExpandedBasisMaxRelDiff">1.25 倍基底との Total 最大相対差 (NaN = 診断未実施)</param>
-/// <param name="AcceptedForFit">expanded-basis 診断が閾値内に収まったか</param>
+/// <param name="AcceptedForFit">expanded-basis 診断が閾値内に収まったか (**生の診断結果**。
+/// 公開表示に使ってよいかは <see cref="Eligibility"/> を見ること)</param>
 /// <param name="Warnings">傾斜幅・基底膨張・F(s) 収録範囲などの警告</param>
 public sealed record AlchemiBasisDiagnostic(
     int BeamCount, int CenterOnlyBeamCount, double MaxTiltRad,
@@ -123,6 +136,24 @@ public sealed record AlchemiBasisDiagnostic(
 {
     /// <summary>union が中心のみの基底より何本増えたか。</summary>
     public int AddedByUnion => BeamCount - CenterOnlyBeamCount;
+
+    /// <summary>260809Cl 追加: 「fit 適格」と**保証表示してよいか**。GUI と CSV はこちらを使う。
+    /// <para>
+    /// ⚠ 現在は常に <see cref="AlchemiFitEligibility.NotEvaluated"/> を返す (作者決定 260809Cl)。
+    /// 指示書 §2-8 の 3 点が未修正なため:
+    /// ⑤ 分母が (方位×厚み×サイト×チャネル) テンソル全体の最大値なので σ の小さいチャネルが薄まる /
+    /// ⑥ 分子が絶対収率なので ICP では落ちる共通スケール変化も数える /
+    /// ⑦ Find_gVectors がエワルド球スクリーニング律速で「1.25 倍にしても基底が増えない」領域があり、
+    ///    そこでは**基底を自分自身と比べて**しまうので <see cref="AcceptedForFit"/> = true が
+    ///    「収束した」を意味しない (= 偽陽性)。
+    /// </para>
+    /// <para>
+    /// 偽陽性がある状態で「適格」と保証表示するのは誤りの方向が悪いので、v1 は判定を出さない。
+    /// **⑦ → ⑤ → ⑥ の順で直したら、ここを <c>AcceptedForFit ? Eligible : NotEligible</c> に戻すこと。**
+    /// <see cref="AcceptedForFit"/> と <see cref="ExpandedBasisMaxRelDiff"/> は生の診断値として残してあるので、
+    /// 回帰テスト (AlchemiCheck) はそのまま使える。
+    /// </para></summary>
+    public AlchemiFitEligibility Eligibility => AlchemiFitEligibility.NotEvaluated;
 
     /// <summary>sorted hkl から basis hash を作る。</summary>
     internal static string Hash(IEnumerable<(int H, int K, int L)> indices)
