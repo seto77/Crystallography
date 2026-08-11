@@ -216,6 +216,10 @@ public sealed class AlchemiResult
     public double[] Mu00Nm2 { get; init; }
     /// <summary>単位胞体積 [nm³]</summary>
     public double UnitCellVolumeNm3 { get; init; }
+    /// <summary>260811Cl 追加: この run の虚部に入っていた減衰の出所。非チャネリング項は
+    /// **ここが TDS だけのときしか計算されない** (<see cref="AbsorptionSource"/>)。
+    /// 「何を再注入したのか」は結果の解釈に直結するので provenance として保存する。</summary>
+    public AbsorptionSource AbsorptionSources { get; init; } = AbsorptionSource.TdsRedistributable;
     /// <summary>物理量と規格化 (設計 §3.6: 表示正規化とは別管理)</summary>
     public SignalQuantity Quantity { get; init; } = SignalQuantity.IonizationVacanciesGenerated;
     public SignalNormalization Normalization { get; init; } = SignalNormalization.PerIncidentElectron;

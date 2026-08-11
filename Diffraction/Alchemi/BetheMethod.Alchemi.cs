@@ -118,6 +118,7 @@ public partial class BetheMethod
             IncidentEnergyKeV = request.IncidentEnergyKeV,
             Mu00Nm2 = mu00,
             UnitCellVolumeNm3 = Crystal.Volume,
+            AbsorptionSources = ImaginaryPotentialAbsorption,//260811Cl 追加: 何を再注入したのかを結果に残す
         };
     }
 
@@ -286,7 +287,10 @@ public partial class BetheMethod
                     alpha = ((DVec)((DMat)evd.EigenVectors).LU().Solve(new DVec((Complex[])psi0.Clone()))).Values;
                 }
 
-                var reduction = new AlchemiReduction(bLen, eigenValues, eigenVectors, alpha, request.ThicknessesNm);
+                //260811Cl: 虚部の出所を明示的に渡す。既定に頼らず毎回引き渡すのは、getU 側の宣言と
+                //再注入側の前提を **1 本の線でつなぐ**ため (宣言が TDS 以外になった瞬間に Yield が落ちる)
+                var reduction = new AlchemiReduction(bLen, eigenValues, eigenVectors, alpha, request.ThicknessesNm,
+                    ImaginaryPotentialAbsorption);
                 var l = reduction.CoherentPathLengthNm();//方位あたり 1 回 (以後キャッシュ)
                 for (int t = 0; t < tLen; t++) lcoh[oi * tLen + t] = l[t];
 

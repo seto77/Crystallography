@@ -18,6 +18,13 @@
 // 残り厚みぶん random 方位相当の断面積で発生させる。吸収ゼロ → Σ_g|ψ_g|² ≡ 1 → L_coh = t → Y_dech = 0。
 // **t − L_coh が有意に負なら clamp せず hard fail** (基底・符号・規格化エラーの検出器、§3.4)。
 //
+// ⚠ 260811Cl: t − L_coh は虚部が作る減衰を**出所を問わず全部**拾う。だから再注入が正当なのは
+// 虚部が TDS だけのとき (= 電子がエネルギーを保ったまま試料内に残るとき) に限られる。
+// この前提を型で持たせたのが <see cref="AbsorptionSource"/> で、コンストラクタで宣言し
+// <see cref="AlchemiReduction.Yield"/> が検査する。現行の虚部は TDS のみ (ICSC 2003 との照合で二重計上が
+// 無いことを確認済み) なので、既定値のままでは挙動は変わらない — 効くのは将来 mean absorption や
+// 経験的 damping を混ぜたときで、そのとき黙って過大評価にならずに落ちる。
+//
 // ⚠ この Diffraction/Alchemi/ フォルダは WinForms / System.Drawing 非依存を規律で維持する。
 // ⚠ 既存 CBED / STEM / EBSD の worker・バッファ・総和順序には触らない (別パス方式、設計 §8)。
 
@@ -65,6 +72,7 @@ public sealed class AlchemiReduction
     private readonly bool[] _degenerate;    // λ ≈ 0 (ロピタルで F → t)
     private readonly Complex[] _eigen;
     private readonly double[] _t;
+    private readonly AbsorptionSource _absorption;// 虚部の出所 (再注入してよいのは TDS だけ)
     private double[] _lcoh;                 // L_coh(t) の遅延キャッシュ (方位ごとに 1 回で足りる)
 
     /// <summary>厚み一覧 [nm] (構築時に渡したもの)。</summary>
@@ -78,7 +86,12 @@ public sealed class AlchemiReduction
     /// <param name="eigenVectors">固有ベクトル C_g^{(j)} (b×b, column-major: eigenVectors[j*b + g])</param>
     /// <param name="alpha">励起振幅 α_j (b 個)</param>
     /// <param name="thicknessesNm">厚み [nm]</param>
-    public AlchemiReduction(int bLen, Complex[] eigenValues, Complex[] eigenVectors, Complex[] alpha, double[] thicknessesNm)
+    /// <param name="absorption">260811Cl 追加: この固有系の**虚部に何が入っているか** (<see cref="AbsorptionSource"/>)。
+    /// 非チャネリング項は失われた流束を「試料内に残るランダム方位の電子」として**まるごと**再注入するので、
+    /// TDS 以外が混ざっていたら <see cref="Yield"/> が落ちる。既定は v1 の実態
+    /// (<see cref="BetheMethod.ImaginaryPotentialAbsorption"/> = TDS のみ) で、既存の呼び出しは 1 ビットも変わらない</param>
+    public AlchemiReduction(int bLen, Complex[] eigenValues, Complex[] eigenVectors, Complex[] alpha, double[] thicknessesNm,
+        AbsorptionSource absorption = AbsorptionSource.TdsRedistributable)
     {
         ArgumentNullException.ThrowIfNull(eigenValues);
         ArgumentNullException.ThrowIfNull(eigenVectors);
@@ -89,6 +102,7 @@ public sealed class AlchemiReduction
         _b = bLen;
         _eigen = eigenValues;
         _t = thicknessesNm;
+        _absorption = absorption;
 
         _d = GC.AllocateUninitializedArray<Complex>(bLen * bLen);
         for (int j = 0; j < bLen; j++)
@@ -153,6 +167,17 @@ public sealed class AlchemiReduction
     {
         if (!(unitCellVolumeNm3 > 0))
             throw new ArgumentOutOfRangeException(nameof(unitCellVolumeNm3), unitCellVolumeNm3, "unit cell volume must be positive");
+        //260811Cl: 再注入してよいのは TDS だけ。t − L_coh は虚部が作る減衰を**出所を問わず全部**拾うので、
+        //TDS 以外が混じったまま再注入すると、真の非弾性損失や経験的 damping まで
+        //「まだ試料内にいてイオン化する電子」として数えてしまう (静かに、必ず過大の側へ)。
+        //ここで落とすのは「吸収を混ぜるな」ではなく「混ぜたなら出所ごとに分けて再注入せよ」の意味。
+        if (includeDechannelled && !_absorption.IsFullyRedistributable())
+            throw new InvalidOperationException(
+                $"ALCHEMI dechannelling: the absorptive potential declares {_absorption}, which is not purely "
+                + $"{AbsorptionSource.TdsRedistributable}. The dechannelled term re-injects the entire flux lost from the "
+                + "coherent field as randomly directed electrons that keep ionizing, and that is only defensible for thermal "
+                + "diffuse scattering. Split the absorptive matrix by source and drive the re-injection from the TDS part "
+                + "alone, or set includeDechannelled = false.");
         var raw = Contract(mu);
         var dyn = new double[raw.Length];
         for (int i = 0; i < raw.Length; i++) dyn[i] = raw[i] / unitCellVolumeNm3;

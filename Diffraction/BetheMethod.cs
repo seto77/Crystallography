@@ -3546,6 +3546,18 @@ public partial class BetheMethod
     #endregion Image Simulation
 
     #region ポテンシャル U
+
+    /// <summary>260811Cl 追加: <see cref="getU(in double, in Beam, in Beam, double, double, int, int)"/> が組む
+    /// **虚部の出所**。現状は熱散漫散乱 (TDS) だけ — 虚部は <c>es.FactorImaginary*</c> (Debye-Waller に基づく
+    /// TDS 吸収形状因子) からしか作られておらず、mean absorption も経験的 damping も足していない。
+    /// <para>
+    /// ⚠ **虚部に別の減衰を足したら、ここを必ず更新すること。**
+    /// ALCHEMI の非チャネリング項は「虚部で失われた流束は全部まだ試料内にいる」と仮定して再注入するので、
+    /// TDS 以外が混ざったまま再注入すると静かに過大評価になる。宣言が TDS 以外を含めば
+    /// <see cref="AlchemiReduction.Yield"/> が実行時に落ちて気付ける (<see cref="AbsorptionSource"/> の注記)。
+    /// </para></summary>
+    public AbsorptionSource ImaginaryPotentialAbsorption => AbsorptionSource.TdsRedistributable;
+
     /// <summary>
     /// ポテンシャルUを求める。h, inner, outerを省略した場合は、通常のポテンシャルを計算する。
     /// hのみを省略すると局所形式の非弾性ポテンシャル、全て省略しない場合は非局所形式のポテンシャルを計算。
