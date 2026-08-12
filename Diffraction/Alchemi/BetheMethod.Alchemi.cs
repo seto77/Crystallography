@@ -149,8 +149,13 @@ public partial class BetheMethod
         var centerIndex = orientations.Length / 2;
         for (int i = 0; i < orientations.Length; i++)
         {
+            //260812Cl: 基底に使う方位を request で限定できる (診断専用・既定 null = 全方位で従来どおり)。
+            //中心方位は基底に入らなくても CenterOnlyBeamCount の報告のため常に Find_gVectors する
+            var isBasisSource = request.BasisOrientationIndices == null || Array.IndexOf(request.BasisOrientationIndices, i) >= 0;
+            if (!isBasisSource && i != centerIndex) continue;
             var beams = Find_gVectors(BaseRotation, getVecK0(kvac, u0, orientations[i].BeamDirection, surface), surface, maxNumOfBloch);
             if (i == centerIndex) centerOnly = beams.Length;
+            if (!isBasisSource) continue;//260812Cl
             foreach (var b in beams)
                 map.TryAdd(b.Index, b);//Vec / Ureal / Uimag は方位非依存なので最初の 1 本で足りる (P,Q は方位ごとに reset)
         }

@@ -100,6 +100,18 @@ public sealed record AlchemiRequest(
     /// 依らないので、**2 回の run の差は δF の寄与だけを厳密に取り出す**。
     /// ⚠ 既定 null では 1 ビットも挙動が変わらない (`UseNativeSolver` と同じ位置づけ)。</summary>
     public IonizationData[] ChannelDataOverride { get; init; } = null;
+
+    /// <summary>260812Cl 追加: **基底 (FixedUnion) を組むのに使う方位の添字 (診断専用)**。null なら
+    /// 通常どおり走査の全方位で Find_gVectors した真の union を取る。
+    ///
+    /// ⚠ **用途は独立実装との突き合わせ** — 文献の Bloch 波計算は「中心方位で 1 回選んだ固定基底」を
+    /// 走査全域に使うことが多い (例: Muto &amp; Ohtsuka 2017 は s_g &lt; 0.3 nm⁻¹ の約 160 本)。
+    /// その流儀を再現しないと、基底選択の差が実装差として残差に混ざる。走査中心の添字 1 つを渡すと
+    /// 文献式の固定基底になる。
+    /// ⚠ **生産経路では null のまま** — 方位を限定した基底は傾斜端で Ewald 球近傍の反射を落とし
+    /// 収束が下がる。それが union を採った理由 (BuildFixedUnion の冒頭コメント)。
+    /// ⚠ 既定 null では 1 ビットも挙動が変わらない (`ChannelDataOverride` と同じ位置づけ)。</summary>
+    public int[] BasisOrientationIndices { get; init; } = null;
 }
 
 /// <summary>260807Cl 追加: 結果テンソルの形 (flat 配列 [sample, thickness, site, channel] の添字計算)。</summary>
