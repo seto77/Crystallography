@@ -2970,7 +2970,8 @@ new(4.86738014,0.319974401,4.58872425,
         /// そこで閉形式を捨て、**annular 版と同一の被積分関数**を全立体角で積分する形に統一した。</para>
         /// <para>積分は annular の局所版 (<see cref="FactorImaginaryAnnular(double, Vector3DBase, double, double, double, int, int, bool)"/>)
         /// と同じ形。g は |g| しか渡ってこないので**電子線に垂直 (x 軸)** に置く (実際の反射はほぼ垂直で、
-        /// 旧閉形式も |g| だけの関数だった)。φ 方向は g を x 軸に置いたことで φ → −φ 対称なので [0, π] を 2 倍する。</para>
+        /// 旧閉形式も |g| だけの関数だった)。φ 方向は g を x 軸に置いたことで φ → −φ と φ → π−φ の 4 回対称になり、
+        /// [0, π/2] の評価だけで全周が取れる (260812Cl、指示書 8-8-1b。詳細は <see cref="PhiCosFolded"/>)。</para>
         /// <para>⚠ 精度: 前方に鋭いピークを持つ被積分関数なので、θ は**等間隔ではなく s の等比刻み**で区切って積分する
         /// (単一区間の Gauss-Legendre では全立体角で 0.2 % ずれることを実測済み)。旧閉形式との一致は
         /// <c>useTail: false</c> (被積分関数を旧来の Gauss だけに戻す) で <see cref="FactorImaginaryGaussianAnalytic"/> と
@@ -3003,17 +3004,34 @@ new(4.86738014,0.319974401,4.58872425,
                     var (sinθ, cosθ) = Math.SinCos(θ);
                     double kSinθ = k0 * sinθ, kCosθmk0 = k0 * cosθ - k0;
                     double kz2 = kCosθmk0 * kCosθmk0;
-                    return GaussLegendreRule.Integrate(φ =>
+                    //260812Cl 変更 (指示書 8-8-1b): φ 積分を [0, π] の求積呼び出しから、同じ点則を φ = π/2 の
+                    //偶対称で折り畳んだループへ (節点・重みは PhiCosFolded / PhiWeightsFolded に前計算済み)。
+                    //  |k ∓ g/2|²/4 = q0 ∓ d と書ける (q0 = (|q|² + gHalf²)/4、d = kx·gHalf/2、|q|² = kSinθ² + kz2)。
+                    //  φ → π−φ は kx → −kx = kMinusG ↔ kPlusG の入れ替えなので、積 f1·f2 は φ = π/2 について厳密に偶。
+                    //  Debye-Waller 項は和 kMinusG + kPlusG = 2·q0 にしか依存せず φ に依らないので、θ 側で 1 回だけ評価する
+                    //  (Math.Exp が φ 点ごと → θ ごとになる)。⚠ 式変形で丸め順が変わるため旧コードとビット一致はしない
+                    //  (相対 1e-14 級。検証は AlchemiCheck absorb -numeric の 48×48 参照との突き合わせが担う)。
+                    double q0 = (kSinθ * kSinθ + kz2 + s2) / 4, dHalf = kSinθ * gHalf / 2;
+                    double dw = 1 - Math.Exp(m * (s2 - 2 * q0));
+                    double phiSum = 0;
+                    for (int i = 0; i < PhiCosFolded.Length; i++)
                     {
-                        var (sinφ, cosφ) = Math.SinCos(φ);
-                        //|k ∓ g/2|²/4。annular 版と同じ式を g = (2·gHalf, 0, 0) で書き下したもの (ky, kz は g に触らない)
-                        double kx = kSinθ * cosφ, ky = kSinθ * sinφ;
-                        double rest = ky * ky + kz2;
-                        double dx = kx - gHalf, ex = kx + gHalf;
-                        double kMinusG = (dx * dx + rest) / 4, kPlusG = (ex * ex + rest) / 4;
-                        double f1 = ElasticFactorWithTail(kMinusG / 100, useTail), f2 = ElasticFactorWithTail(kPlusG / 100, useTail);
-                        return f1 * f2 * (1 - Math.Exp(m * (s2 - kMinusG - kPlusG)));
-                    }, 0, Math.PI, AbsorptionPhiPoints) * 2 * sinθ;//φ → −φ 対称なので半周を 2 倍
+                        double d = dHalf * PhiCosFolded[i];
+                        phiSum += PhiWeightsFolded[i] * ElasticFactorWithTail((q0 - d) / 100, useTail) * ElasticFactorWithTail((q0 + d) / 100, useTail);
+                    }
+                    return phiSum * dw * sinθ;
+                    //旧 (260811Cl): φ を [0, π] で毎回求積し、DW 項も φ 点ごとに評価していた
+                    //return GaussLegendreRule.Integrate(φ =>
+                    //{
+                    //    var (sinφ, cosφ) = Math.SinCos(φ);
+                    //    //|k ∓ g/2|²/4。annular 版と同じ式を g = (2·gHalf, 0, 0) で書き下したもの (ky, kz は g に触らない)
+                    //    double kx = kSinθ * cosφ, ky = kSinθ * sinφ;
+                    //    double rest = ky * ky + kz2;
+                    //    double dx = kx - gHalf, ex = kx + gHalf;
+                    //    double kMinusG = (dx * dx + rest) / 4, kPlusG = (ex * ex + rest) / 4;
+                    //    double f1 = ElasticFactorWithTail(kMinusG / 100, useTail), f2 = ElasticFactorWithTail(kPlusG / 100, useTail);
+                    //    return f1 * f2 * (1 - Math.Exp(m * (s2 - kMinusG - kPlusG)));
+                    //}, 0, Math.PI, AbsorptionPhiPoints) * 2 * sinθ;//φ → −φ 対称なので半周を 2 倍
                 }, thetaLo, thetaHi, AbsorptionThetaPoints);
             }
             return gamma * k0 / 2 * total * 0.01;
@@ -3035,6 +3053,29 @@ new(4.86738014,0.319974401,4.58872425,
         /// <para>⚠ 精度を上げたくなったらここを 16×16 に戻せばよい。区間の切り方 (<see cref="AbsorptionSEdges"/>) の方が
         /// 点数より効くので、まず区切りを疑うこと。</para></summary>
         private const int AbsorptionThetaPoints = 12, AbsorptionPhiPoints = 8;
+
+        /// <summary>φ 積分の折り畳み Gauss-Legendre 則 (cos φᵢ と重み)。260812Cl 追加 (指示書 8-8-1b)。
+        /// <para>[0, π] の <see cref="AbsorptionPhiPoints"/> 点 Gauss-Legendre 則は節点・重みとも φ = π/2 に対して対称で、
+        /// 被積分関数も φ = π/2 について厳密に偶 (φ → π−φ は kMinusG ↔ kPlusG の入れ替え)。よって**前半の節点だけを
+        /// 評価して重みを 2 倍すれば、元の 8 点則と同じ値**が半分の評価数で得られる。⚠ [0, π/2] に張り直した 4 点則とは
+        /// 違う (それは代数次数が 15 → 7 に落ちる。codex 019ff404 の指摘)。φ → −φ 対称の全周 2 倍もここへ畳み込み、
+        /// 重みは元の則の計 4 倍にしてある。</para>
+        /// <para>節点は固定なので cos まで前計算する (φ ループ内の三角関数が消える。被積分関数は cos φ にしか依らない)。</para></summary>
+        private static readonly double[] PhiCosFolded, PhiWeightsFolded;
+
+        static ES()
+        {
+            //[0, π] の AbsorptionPhiPoints 点則から前半 (φ < π/2) を抜き、重みへ折り畳み分 ×2 と全周分 ×2 を畳み込む。
+            //点数が奇数のときの中央点 (φ = π/2) は対を持たないので全周分 ×2 のみ (現在は 8 点なので該当なし)。
+            var rule = new GaussLegendreRule(0, Math.PI, AbsorptionPhiPoints);
+            double[] x = rule.Abscissas, w = rule.Weights;
+            List<double> cosList = [], wList = [];
+            for (int i = 0; i < x.Length; i++)
+                if (x[i] < Math.PI / 2 * (1 - 1e-12)) { cosList.Add(Math.Cos(x[i])); wList.Add(4 * w[i]); }
+                else if (x[i] < Math.PI / 2 * (1 + 1e-12)) { cosList.Add(0); wList.Add(2 * w[i]); }
+            PhiCosFolded = [.. cosList];
+            PhiWeightsFolded = [.. wList];
+        }
 
         /// <summary>Gauss 型専用の解析閉形式による局所非弾性散乱因子。**260811Cl 改名: 旧 <c>FactorImaginary</c>**。
         /// 本番からは使わなくなったが、
