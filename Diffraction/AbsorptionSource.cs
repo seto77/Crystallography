@@ -1,4 +1,4 @@
-// 260811Cl 新規作成: 吸収 (複素ポテンシャルの虚部) の**出所を型で持つ**。
+﻿// 260811Cl 新規作成: 吸収 (複素ポテンシャルの虚部) の**出所を型で持つ**。
 //
 // 動機は予防であって、現状の不具合の修正ではない。2026-08-11 の文献精査 (ICSC 2003 の照合) で
 // **現在の吸収経路は TDS だけであり、二重計上は無い**ことを確認している。危ないのはこの先で:
@@ -31,7 +31,7 @@ public enum AbsorptionSource
 
     /// <summary>熱散漫散乱 (TDS)。電子はほぼ全エネルギーを保ったまま試料内に残り、方向だけを失う。
     /// **非チャネリング電子として再注入してよい唯一の出所**。
-    /// 現行 ReciPro の虚部はここだけ (<see cref="AtomStatic.ES.FactorImaginary(double, double, double)"/> 系)。</summary>
+    /// 現行 ReciPro の虚部はここだけ (<see cref="AtomStatic.ES.FactorImaginary(double, double, double, bool)"/> 系)。</summary>
     TdsRedistributable = 1,
 
     /// <summary>真の非弾性損失 (プラズモン励起・内殻イオン化に伴う損失など)。

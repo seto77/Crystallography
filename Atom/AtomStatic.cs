@@ -2737,6 +2737,35 @@ new(4.86738014,0.319974401,4.58872425,
 
         private readonly (double A, double B)[] Prms = [];
 
+        /// <summary>X 線用コンストラクタの定数項 c (電子用では 0)。260811Cl 追加: 高 s テールの f_x を
+        /// <see cref="Factor"/> デリゲート経由でなく直接評価するために保持する。</summary>
+        private readonly double ConstantC;
+
+        /// <summary>原子番号。260811Cl 追加: 高 s テール (Mott–Bethe) は Z を要求するが、表は
+        /// <c>ElectronScatteringPeng[z][sub]</c> と外側の添字で Z を表しており、ES 自身は自分の Z を知らなかった。
+        /// 表そのものを書き換えると数千行に触ることになるので、表の構築後に <see cref="AtomStatic"/> の
+        /// 静的コンストラクタが <see cref="AttachTail"/> で埋める。
+        /// <para>⚠ 埋めているのは電子用の 2 表 (Peng と 8 Gaussian) だけ。X 線用 (<see cref="XrayScatteringWK"/> 等) と
+        /// Kirkland 用のエントリでは **0 のまま**である (テールを使わないので不要)。</para></summary>
+        public int AtomicNumber { get; private set; }
+
+        /// <summary>同じ元素の**中性原子**の X 線散乱因子 (Mott–Bethe の f_x)。260811Cl 追加。
+        /// <para>イオンのエントリでもここは中性を指す (高 s では電子雲が効かず核電荷 Z だけが見えるため。§ElasticFactorWithTail)。</para>
+        /// <para>null なら高 s テールは無効 = 純 Peng に落ちる。</para></summary>
+        private ES NeutralXray;
+
+        /// <summary>高 s テールに必要な情報 (Z と中性原子の X 線散乱因子) を後から与える。260812Cl 追加。
+        /// <para>表の構築後に <see cref="AtomStatic"/> の静的コンストラクタだけが呼ぶ。2 つの値は常に対で
+        /// 意味を持つので、フィールドを個別に公開せず 1 メソッドにまとめて**片方だけ設定された状態を作れなく**している
+        /// (入れ子クラスの private フィールドは外側クラスからは見えないため、以前は internal へ開いていた)。</para></summary>
+        /// <param name="z">原子番号。0 (Unknown) を渡すとテールは無効になる</param>
+        /// <param name="neutralXray">同じ元素の中性原子の X 線散乱因子。null ならテールは無効</param>
+        internal void AttachTail(int z, ES neutralXray)
+        {
+            AtomicNumber = z;
+            NeutralXray = z > 0 ? neutralXray : null;
+        }
+
         #endregion
 
         #region コンストラクタ
@@ -2749,6 +2778,7 @@ new(4.86738014,0.319974401,4.58872425,
             Prms = [(a1, b1), (a2, b2), (a3, b3), (a4, b4)];
             //Factor = new Func<double, double>(s2 => (Prms.Sum(p => p.A * Math.Exp(-s2 * 0.01 * p.B)) + c) * 0.1);
             var prms = Prms; // 260718Cl: Factor 呼び出し毎の LINQ Sum (クロージャ+列挙子割り当て) を順序保存ループに置換。加算順は Enumerable.Sum と同一でビット一致
+            ConstantC = c;//260811Cl 追加: Mott-Bethe テールから f_x を直接 (デリゲート経由でなく) 評価するため
             Factor = s2 => { double sum = 0; foreach (var (A, B) in prms) sum += A * Math.Exp(-s2 * 0.01 * B); return (sum + c) * 0.1; };
         }
 
@@ -2759,6 +2789,7 @@ new(4.86738014,0.319974401,4.58872425,
             Prms = [(a1, b1), (a2, b2), (a3, b3), (a4, b4), (a5, b5)];
             //Factor = new Func<double, double>(s2 => (Prms.Sum(p => p.A * Math.Exp(-s2 * 0.01 * p.B)) + c) * 0.1);
             var prms = Prms; // 260718Cl: LINQ Sum → 順序保存ループ (ビット一致)
+            ConstantC = c;//260811Cl 追加: Mott-Bethe テールから f_x を直接 (デリゲート経由でなく) 評価するため
             Factor = s2 => { double sum = 0; foreach (var (A, B) in prms) sum += A * Math.Exp(-s2 * 0.01 * B); return (sum + c) * 0.1; };
         }
 
@@ -2824,12 +2855,196 @@ new(4.86738014,0.319974401,4.58872425,
 
         #region 非弾性散乱因子の計算
 
-        /// <summary>局所形式の非弾性散乱因子 (TDS吸収ポテンシャル)</summary>
+        #region 弾性散乱因子の高 s テール (吸収ポテンシャルの被積分関数用)
+
+        //260811Cl 追加: 吸収ポテンシャル (TDS) の積分に使う弾性散乱因子を、高 s で Mott–Bethe へ切り替える。
+        //
+        //【なぜ要るか】
+        //  Peng の 5 Gauss 型 f_e = Σ A exp(−B s²) は s が大きいと**厳密に消える**。吸収の積分
+        //  ∫dΩ f(k−g) f(k−h) [1 − exp(…)] は運動量移行の全域を舐めるので、テールが消えると吸収が失われる。
+        //  影響は経路で桁違いに違い、EBSD の後方散乱 (θ ∈ [π/2, π] ⇒ s ≈ k0 = 200 keV で 39.9 Å⁻¹) では
+        //  **積分結果が 1e-248 = 数値ゼロ**になっていた (リリース済み機能の不具合)。
+        //  実際の f_e は Mott–Bethe から (Z − f_x)/s² に比例し、**1/s² でしか落ちない**。
+        //
+        //【接続点をどう決めたか】(AlchemiCheck absorb -join、2026-08-11 実測)
+        //  Peng と Mott–Bethe の 2 者だけでは「どちらが正しいか」が決まらないので、**第三の独立な参照**として
+        //  Kirkland (3 Lorentzian + 3 Gaussian。Lorentzian 項が 1/q² テールを構造的に持つ) を並べて測った:
+        //
+        //    s[Å⁻¹]      0.5    1.0    1.5    2.0    2.5    3.0    4.0     6.0      8.0     20      40
+        //    Peng/Kirk   1.00   1.00   1.01   0.97   0.74   0.45   0.09    4e-4    1e-7    1e-51   1e-211
+        //    MB  /Kirk   1.00   1.00   1.00   1.00   1.00   1.00   1.00    1.00    0.99    0.98    0.97
+        //
+        //  → **Mott–Bethe は全域で Kirkland に一致し、Peng は s ≈ 2.1 Å⁻¹ で 5 % 外れ始める** (Z=14 で 2.07、
+        //    Z=31 で 2.10。20 % 外れるのは 2.4)。表の出典は「s ≤ 6 Å⁻¹ の当てはめ」と称しているが、
+        //    実効的な有効範囲は s ≲ 2 Å⁻¹ である。
+        //  → そこで **s ≤ 1.5 は Peng、s ≥ 2.5 は Mott–Bethe、その間は smoothstep で混ぜる**。
+        //    交点 (比 = 1) を探して不連続ゼロで繋ぐ案もあったが、交点の位置は (Z − f_x) の桁落ちに敏感で
+        //    物理的な意味が無く、元素ごとに動く (codex 相談 2026-08-11)。**両者が数 % 以内で一致している区間で
+        //    滑らかに渡す**方が、値も傾きも連続になり元素にも依らない。混合による誤差は最大でも約 3 %。
+        //  ⚠ 下限を 1.5 に置いたのは**保守的な判断**である。Mott–Bethe は s ≈ 0.3 Å⁻¹ まで健全だが、
+        //    通常の前方散乱 (STEM/CBED の実用域) で従来の Peng の値を動かさないことを優先した。
+        //
+        //【f_x のクランプ】
+        //  Waasmaier–Kirfel の当てはめは元素によっては b が負の項を含み (C: a4=−4.24, b4=−0.000294、N: c=−11.80)、
+        //  当てはめ範囲外の s で f_x が**負へ発散**する。s = 40 Å⁻¹ では C で (Z − f_x) が 41 % 過大になる。
+        //  物理的には 0 ≤ f_x ≤ Z なので、その範囲へクランプする。クランプが効き始めるのは f_x ≈ 0 の付近なので
+        //  値も傾きもほぼ連続で、高 s では自動的に Rutherford 極限 0.023934·Z/s² に落ちる。
+        //  実測でも Z=31 の MB/Kirkland が高 s で 1.03 → クランプ後 1.00 に寄る (= 独立な参照が裏付ける)。
+        //
+        //【イオン】
+        //  高 s では電子雲が効かず核電荷だけが見えるので、イオンのエントリでも**中性原子の**Mott–Bethe を使う。
+        //  正味電荷の裸単極子項 (MottBetheMonopoleCoefficient·ΔZ/s²) は BetheMethod.getU が**弾性の実部にだけ**
+        //  足しており、吸収の積分には入っていないので**二重計上にはならない** (codex 確認)。
+        //
+        //⚠ これは「正しい値にした」のではなく「**意味の無いゼロを、桁の合う値に置き換えた**」改修である。
+        //  Mott–Bethe 自体も第一 Born 近似なので s ≈ 40 Å⁻¹ の絶対値が厳密なわけではない。
+        //
+        //【どこに入れて、どこに入れていないか】
+        //  入れた   … FactorImaginary (局所・全立体角) と FactorImaginaryAnnular 2 本 = **吸収の本番経路すべて**
+        //  入れない … ⚠ FactorImaginaryAnnularFlatEwald と FactorImaginaryAnnular2 は Gauss 和の直書きのまま。
+        //             どちらも「未完成」「没?」で本番から呼ばれていないため。**復活させるときは必ずここも直すこと**
+        //  入れない … ⚠ **弾性散乱の実部** (BetheMethod.getU が呼ぶ es.Factor) は従来どおり純 Peng である。
+        //             「Peng が s ≳ 2 Å⁻¹ で使えない」のは表の性質なので実部にも当てはまるが、実用的な反射は
+        //             |g| ≤ 50 nm⁻¹ (s ≈ 0.25 Å⁻¹) で接続域に遠く届かず、変えると既存の全結果が動くため触っていない。
+
+        /// <summary>Peng から Mott–Bethe へ渡す下端 [Å⁻¹] (ここまでは純 Peng)</summary>
+        private const double TailJoinLow = 1.5;
+
+        /// <summary>Peng から Mott–Bethe へ渡す上端 [Å⁻¹] (ここから先は純 Mott–Bethe)</summary>
+        private const double TailJoinHigh = 2.5;
+
+        //⚠ 二乗版を別に置くのは、最頻経路 (純 Peng) から Math.Sqrt を消すため。const なのでコンパイル時に畳まれる
+        private const double TailJoinLow2 = TailJoinLow * TailJoinLow, TailJoinHigh2 = TailJoinHigh * TailJoinHigh;
+
+        /// <summary>Mott–Bethe 係数を Å 規約にしたもの。f[Å] = 0.023934·(Z − f_x)/s²[Å⁻²]
+        /// (<see cref="MottBetheMonopoleCoefficient"/> は s² が nm⁻²・f が nm の規約なので 1/10)</summary>
+        private const double MottBetheCoefficientAngstrom = MottBetheMonopoleCoefficient / 10;
+
+        /// <summary>Peng の Gauss 和そのもの [Å] (s² は Å⁻²)。テールを持たない従来の弾性散乱因子。260812Cl 追加
+        /// <para><see cref="Factor"/> と同じ和だが単位換算を挟まない (<c>PengSum(x) == Factor(100*x) * 10</c>、電子用は c = 0)。
+        /// 求積点ごとに呼ばれるので、デリゲート経由の <see cref="Factor"/> ではなくこちらを使う。</para></summary>
+        private double PengSum(double s2)
+        {
+            double sum = 0;
+            foreach (var (A, B) in Prms) sum += A * Math.Exp(-s2 * B);
+            return sum;
+        }
+
+        /// <summary>吸収ポテンシャルの積分に使う弾性散乱因子。高 s で Mott–Bethe へ渡す二段構成 (詳細は直前のコメント)。260811Cl 追加</summary>
+        /// <param name="s2">s² (単位: Å⁻², s = sinθ/λ)。annular 系の被積分関数が持っている量と同じ規約
+        /// (⚠ <see cref="Factor"/> は s² が nm⁻²・戻り値が nm。同じクラス内で規約が違うので取り違えないこと)</param>
+        /// <param name="useTail">false にすると高 s テールを使わず旧来の Gauss だけを返す。**検証専用**
+        /// (テールの効果を、同じ求積・同じ経路で切り分けて測るため。tools/AlchemiCheck が使っている)。260812Cl 追加</param>
+        /// <returns>f_e (単位: Å)。従来の被積分関数と同じく Å で返す (呼び出し側が末尾でまとめて nm² へ換算する)</returns>
+        /// <remarks>⚠ <see cref="Prms"/> を持つ Gauss 系のエントリでのみ意味を持つ。Kirkland 用 (Lorentzian) の
+        /// エントリは <see cref="Prms"/> が空で、そもそも <see cref="AttachTail"/> も呼ばれないので純 Peng 側 (= 0) へ落ちる。</remarks>
+        internal double ElasticFactorWithTail(double s2, bool useTail = true)
+        {
+            //純 Peng の側。ここが最頻 (前方散乱) なので Gauss 和だけで抜ける
+            if (!useTail || s2 <= TailJoinLow2 || NeutralXray == null)
+                return PengSum(s2);
+
+            //Mott–Bethe 側。f_x は [0, Z] へクランプ (当てはめ範囲外で負へ発散する元素があるため)
+            //f_x [電子数] = Σ A exp(−s² B) + c (s² は Å⁻²)。ES.Factor と同じ式を単位換算なしで書き下したもの
+            double fx = NeutralXray.ConstantC;
+            foreach (var (A, B) in NeutralXray.Prms) fx += A * Math.Exp(-s2 * B);
+            if (fx < 0) fx = 0;
+            else if (fx > AtomicNumber) fx = AtomicNumber;
+            var mottBethe = MottBetheCoefficientAngstrom * (AtomicNumber - fx) / s2;
+
+            if (s2 >= TailJoinHigh2)
+                return mottBethe;
+
+            //接続区間: smoothstep (値も傾きも連続) で混ぜる
+            var t = (Math.Sqrt(s2) - TailJoinLow) / (TailJoinHigh - TailJoinLow);
+            var w = t * t * (3 - 2 * t);
+            return (1 - w) * PengSum(s2) + w * mottBethe;
+        }
+
+        #endregion
+
+        /// <summary>局所形式の非弾性散乱因子 (TDS吸収ポテンシャル)。260811Cl 変更: Gauss 型専用の解析閉形式から**数値積分**へ。
+        /// <para>閉形式は f_e が Gauss の和であることを使って導かれているので、高 s テール (Mott–Bethe) を持つ
+        /// 弾性散乱因子には**原理的に使えない**。テールを annular 側だけに入れると、同じ「吸収」を指す 2 つの経路が
+        /// 別々の f_e を使うことになり、CBED/ALCHEMI (閉形式) と STEM/EBSD の背景 (annular) で辻褄が合わなくなる。
+        /// そこで閉形式を捨て、**annular 版と同一の被積分関数**を全立体角で積分する形に統一した。</para>
+        /// <para>積分は annular の局所版 (<see cref="FactorImaginaryAnnular(double, Vector3DBase, double, double, double, int, int, bool)"/>)
+        /// と同じ形。g は |g| しか渡ってこないので**電子線に垂直 (x 軸)** に置く (実際の反射はほぼ垂直で、
+        /// 旧閉形式も |g| だけの関数だった)。φ 方向は g を x 軸に置いたことで φ → −φ 対称なので [0, π] を 2 倍する。</para>
+        /// <para>⚠ 精度: 前方に鋭いピークを持つ被積分関数なので、θ は**等間隔ではなく s の等比刻み**で区切って積分する
+        /// (単一区間の Gauss-Legendre では全立体角で 0.2 % ずれることを実測済み)。旧閉形式との一致は
+        /// <c>useTail: false</c> (被積分関数を旧来の Gauss だけに戻す) で <see cref="FactorImaginaryGaussianAnalytic"/> と
+        /// 突き合わせて検証する。</para></summary>
+        /// <param name="kV">kV(電子のエネルギー)</param>
+        /// <param name="s2">S2 (単位: nm^-2, S = sinθ/λ = 1/2d)</param>
+        /// <param name="m">温度因子 m (単位: nm^2), NaNの場合はゼロにして計算</param>
+        /// <param name="useTail">false にすると高 s テールを使わず旧来の Gauss だけの弾性散乱因子で積分する (数値積分そのものの検証用)。260811Cl 追加</param>
+        /// <returns> 戻り値が無次元量</returns>
+        //260811Cl シグネチャ変更 (useTail 追加)。旧: public double FactorImaginary(double kV, double s2, double m)
+        public double FactorImaginary(double kV, double s2, double m, bool useTail = true)
+        {
+            if (double.IsNaN(m) || m == 0)
+                return 0;
+
+            var gamma = 1 + UniversalConstants.e0 * kV * 1E3 / UniversalConstants.m0 / UniversalConstants.c2;
+            var k0 = UniversalConstants.Convert.EnergyToElectronWaveNumber(kV);
+
+            double gHalf = Math.Sqrt(s2);//|g|/2 [nm⁻¹]。annular 版の gx2 に相当 (g を x 軸に置くので x 成分がこれ)
+            double total = 0;
+            //θ の区切りは s (= |q|/2 [nm⁻¹]) の等比刻み。s = k0 sin(θ/2) なので θ = 2 asin(s/k0)。
+            //物理的に意味のある変数で切るので、20 kV でも 300 kV でも同じ相対精度になる (k0 は 3 倍以上違う)。
+            for (int seg = 0; seg + 1 < AbsorptionSEdges.Length; seg++)
+            {
+                double sLo = AbsorptionSEdges[seg], sHi = AbsorptionSEdges[seg + 1];
+                if (sLo >= k0) break;
+                double thetaLo = 2 * Math.Asin(sLo / k0), thetaHi = sHi >= k0 ? Math.PI : 2 * Math.Asin(sHi / k0);
+                total += GaussLegendreRule.Integrate(θ =>
+                {
+                    var (sinθ, cosθ) = Math.SinCos(θ);
+                    double kSinθ = k0 * sinθ, kCosθmk0 = k0 * cosθ - k0;
+                    double kz2 = kCosθmk0 * kCosθmk0;
+                    return GaussLegendreRule.Integrate(φ =>
+                    {
+                        var (sinφ, cosφ) = Math.SinCos(φ);
+                        //|k ∓ g/2|²/4。annular 版と同じ式を g = (2·gHalf, 0, 0) で書き下したもの (ky, kz は g に触らない)
+                        double kx = kSinθ * cosφ, ky = kSinθ * sinφ;
+                        double rest = ky * ky + kz2;
+                        double dx = kx - gHalf, ex = kx + gHalf;
+                        double kMinusG = (dx * dx + rest) / 4, kPlusG = (ex * ex + rest) / 4;
+                        double f1 = ElasticFactorWithTail(kMinusG / 100, useTail), f2 = ElasticFactorWithTail(kPlusG / 100, useTail);
+                        return f1 * f2 * (1 - Math.Exp(m * (s2 - kMinusG - kPlusG)));
+                    }, 0, Math.PI, AbsorptionPhiPoints) * 2 * sinθ;//φ → −φ 対称なので半周を 2 倍
+                }, thetaLo, thetaHi, AbsorptionThetaPoints);
+            }
+            return gamma * k0 / 2 * total * 0.01;
+        }
+
+        /// <summary>吸収の全立体角積分で θ を区切る s の等比刻み [nm⁻¹]。260811Cl 追加
+        /// <para>⚠ annular 版が nTheta/nPhi を引数で受けるのに対し、こちらは定数である。annular は検出器条件が
+        /// 呼び出し側から来るので刻みも引数だが、こちらは**常に全立体角**で条件が変わらないため。</para>
+        /// <para>⚠ 末尾は必ず ∞ にしておく。有限値で止めると、k0 がその値を超える加速電圧 (数 MV) で
+        /// **最後の区間が θ = π に届かず後方散乱を丸ごと落とす**。s ≥ k0 の区間は θ = π で頭打ちになるので、
+        /// ∞ を置いておけば電圧に依らず必ず全立体角を覆う。</para></summary>
+        private static readonly double[] AbsorptionSEdges = [0, 0.3, 1, 3, 9, 27, 81, 243, 729, double.PositiveInfinity];
+
+        /// <summary>同上、1 区間あたりの Gauss-Legendre 点数。260811Cl 追加
+        /// <para>決め方 (AlchemiCheck absorb -numeric、2026-08-11): **同じ被積分関数・同じ球面幾何を 48×48 で解いた参照**
+        /// と突き合わせ、現実的な反射 (|g| ≤ 50 nm⁻¹) の全域で f''(0) 比 0.05 % 以内に収まる最小の組み合わせを採った。
+        /// 12×8 で 0.023 %、16×16 で 0.0024 %。テールのモデル自体の不確かさが数 % あるので 0.02 % は十分に小さく、
+        /// 点数は 1/2.7 で済む (ポテンシャル行列 1 枚あたり数百 ms の差になる)。</para>
+        /// <para>⚠ 精度を上げたくなったらここを 16×16 に戻せばよい。区間の切り方 (<see cref="AbsorptionSEdges"/>) の方が
+        /// 点数より効くので、まず区切りを疑うこと。</para></summary>
+        private const int AbsorptionThetaPoints = 12, AbsorptionPhiPoints = 8;
+
+        /// <summary>Gauss 型専用の解析閉形式による局所非弾性散乱因子。**260811Cl 改名: 旧 <c>FactorImaginary</c>**。
+        /// 本番からは使わなくなったが、
+        /// **数値積分版の検証基準**として残す (<see cref="FactorImaginary"/> を useTail:false で呼んだ値と一致するはず)。
+        /// 高 s テールを持つ f_e には原理的に使えない (閉形式は Gauss の二重和から導かれているため)。</summary>
         /// <param name="kV">kV(電子のエネルギー)</param>
         /// <param name="s2">S2 (単位: nm^-2, S = sinθ/λ = 1/2d)</param>
         /// <param name="m">温度因子 m (単位: nm^2), NaNの場合はゼロにして計算</param>
         /// <returns> 戻り値が無次元量</returns>
-        public double FactorImaginary(double kV, double s2, double m)
+        public double FactorImaginaryGaussianAnalytic(double kV, double s2, double m)
         {
             if (double.IsNaN(m) || m == 0)
                 return 0;
@@ -2918,7 +3133,10 @@ new(4.86738014,0.319974401,4.58872425,
         /// <param name="nTheta"> θ方向の Gauss-Legendre 求積点数 (デフォルト60)</param>
         /// <param name="nPhi"> φ方向の Gauss-Legendre 求積点数 (デフォルト20)</param>
         /// <returns></returns>
-        public double FactorImaginaryAnnular(double kV, Vector3DBase g, double m, double inner, double outer, int nTheta = 60, int nPhi = 20)
+        //260812Cl シグネチャ変更 (useTail 追加)。旧: public double FactorImaginaryAnnular(double kV, Vector3DBase g, double m, double inner, double outer, int nTheta = 60, int nPhi = 20)
+        //  false にすると高 s テールを使わず旧来の Gauss だけで積分する。**検証専用** (改修が検出器条件ごとに
+        //  どれだけ効くかを、同じ求積・同じ経路で比べるため)。本番は既定の true を使う。
+        public double FactorImaginaryAnnular(double kV, Vector3DBase g, double m, double inner, double outer, int nTheta = 60, int nPhi = 20, bool useTail = true)
         {
             if (double.IsNaN(m)) return 0;
             var gamma = 1 + UniversalConstants.e0 * kV * 1E3 / UniversalConstants.m0 / UniversalConstants.c2;
@@ -2944,12 +3162,10 @@ new(4.86738014,0.319974401,4.58872425,
                     double ex = kx + gx2, ey = ky + gy2, ez = kCosθmk0 + gz2;
                     double kPlusG = (ex * ex + ey * ey + ez * ez) / 4;
 
-                    double f_kMinusG = 0, f_kPlusG = 0;
-                    foreach (var (A, B) in Prms)
-                    {
-                        f_kMinusG += A * Math.Exp(-kMinusG * B / 100);
-                        f_kPlusG += A * Math.Exp(-kPlusG * B / 100);
-                    }
+                    //260811Cl 変更: Gauss 和の直書きから ElasticFactorWithTail へ (高 s テールの復活)。
+                    //  引数は s² [Å⁻²] = (nm⁻² の kMinusG)/100。旧コードが exp(−kMinusG·B/100) と書いていたのと同じ換算。
+                    //旧: foreach (var (A, B) in Prms) { f_kMinusG += A * Math.Exp(-kMinusG * B / 100); f_kPlusG += A * Math.Exp(-kPlusG * B / 100); }
+                    double f_kMinusG = ElasticFactorWithTail(kMinusG / 100, useTail), f_kPlusG = ElasticFactorWithTail(kPlusG / 100, useTail);
                     return f_kMinusG * f_kPlusG * (1 - Math.Exp(m * (gLen2 - kMinusG - kPlusG)));
                 }, 0, 2 * Math.PI, nPhi) * sinθ;
             }, inner, outer, nTheta);
@@ -2971,7 +3187,9 @@ new(4.86738014,0.319974401,4.58872425,
         /// <param name="nTheta"> θ方向の Gauss-Legendre 求積点数 (デフォルト60)</param>
         /// <param name="nPhi"> φ方向の Gauss-Legendre 求積点数 (デフォルト20)</param>
         /// <returns></returns>
-        public double FactorImaginaryAnnular(double kV, Vector3DBase g, Vector3DBase h, double m, double inner, double outer, int nTheta = 60, int nPhi = 20)
+        //260812Cl シグネチャ変更 (useTail 追加。意味は局所版と同じ・検証専用)。
+        //旧: public double FactorImaginaryAnnular(double kV, Vector3DBase g, Vector3DBase h, double m, double inner, double outer, int nTheta = 60, int nPhi = 20)
+        public double FactorImaginaryAnnular(double kV, Vector3DBase g, Vector3DBase h, double m, double inner, double outer, int nTheta = 60, int nPhi = 20, bool useTail = true)
         {
             if (double.IsNaN(m)) return 0;
             var gamma = 1 + UniversalConstants.e0 * kV * 1E3 / UniversalConstants.m0 / UniversalConstants.c2;
@@ -2995,12 +3213,9 @@ new(4.86738014,0.319974401,4.58872425,
                     double k_g = (dx1 * dx1 + dy1 * dy1 + dz1 * dz1) / 400;
                     double dx2 = kx - hx, dy2 = ky - hy, dz2 = kCosθmk0 - hz;
                     double k_h = (dx2 * dx2 + dy2 * dy2 + dz2 * dz2) / 400;
-                    double f_k_g = 0, f_k_h = 0;
-                    foreach (var (A, B) in Prms)
-                    {
-                        f_k_g += A * Math.Exp(-k_g * B);
-                        f_k_h += A * Math.Exp(-k_h * B);
-                    }
+                    //260811Cl 変更: 局所版と同じく高 s テールを持つ弾性散乱因子へ (k_g / k_h は既に s² [Å⁻²])。
+                    //旧: foreach (var (A, B) in Prms) { f_k_g += A * Math.Exp(-k_g * B); f_k_h += A * Math.Exp(-k_h * B); }
+                    double f_k_g = ElasticFactorWithTail(k_g, useTail), f_k_h = ElasticFactorWithTail(k_h, useTail);
                     return f_k_g * f_k_h * 0.01 * (1 - Math.Exp(m * (g_h - k_g * 100 - k_h * 100)));
                 }, 0, 2 * Math.PI, nPhi) * sinθ;
             }, inner, outer, nTheta);
@@ -3034,6 +3249,30 @@ new(4.86738014,0.319974401,4.58872425,
        
     }
     #endregion
+
+    /// <summary>260811Cl 追加: 表の構築が終わったあとに、各 <see cref="ES"/> へ「自分が誰か」を教える。
+    /// <para>高 s テール (<see cref="ES.ElasticFactorWithTail"/>) は Z と中性原子の X 線散乱因子を要求するが、
+    /// 表は <c>ElectronScatteringPeng[z][sub]</c> と**外側の添字**で Z を表しており、ES 自身は知らなかった。
+    /// 数千行の表リテラルに Z を書き足す代わりに、ここで一度だけ埋める。</para>
+    /// <para>静的コンストラクタは全ての静的フィールド初期化子の**後**に走ることが保証されているので、
+    /// ここから両方の表を参照して差し支えない。</para></summary>
+    static AtomStatic()
+    {
+        //中性エントリは常に [z][0] (BetheMethod.getU の ElasticIonModel.Neutral 分岐と同じ規約)。
+        //表に穴がある元素は null を返し、テールは無効になる (ElasticFactorWithTail が純 Peng へ落ちる)
+        static ES neutralXrayOf(int z)
+            => z > 0 && z < XrayScatteringWK.Length && XrayScatteringWK[z].Length > 0 ? XrayScatteringWK[z][0] : null;
+
+        for (int z = 0; z < ElectronScatteringPeng.Length; z++)
+            foreach (var es in ElectronScatteringPeng[z])
+                es.AttachTail(z, neutralXrayOf(z));
+
+        //Peng 以外の電子用テーブルも、いつ吸収の経路から呼ばれても同じ規約で動くように埋めておく
+        //(現状 getU が使うのは Peng だけだが、片方だけ埋まっていると「なぜかテールが効かない」事故になる)
+        for (int z = 0; z < ElectronScatteringEightGaussian.Length; z++)
+            if (ElectronScatteringEightGaussian[z] is ES es)
+                es.AttachTail(z, neutralXrayOf(z));
+    }
 
     #region 静的メソッド
 
