@@ -50,6 +50,15 @@
     </EmbeddedResource>
   </ItemGroup>
 
+  <!-- 260818Cl: Temari 原子散乱因子 f_x / f_e (dataset-factors v1.0.0, CC-BY-4.0)。全 7681 節点を絶対量子化して
+       Brotli 圧縮 (ReciPro 固有の格納形式。Temari データセットの仕様ではない)。生成は
+       tools/TemariFactorsGen/pack_temari_factors.py、展開は AtomStatic.TemariScattering が元素単位 lazy。 -->
+  <ItemGroup>
+    <EmbeddedResource Include="Atom\TemariFactors.bin">
+      <LogicalName>Crystallography.TemariFactors.bin</LogicalName>
+    </EmbeddedResource>
+  </ItemGroup>
+
   <!-- 260801Cl: STEM-EDX イオン化データ。F(s,E0) 本番テーブル (dataset 1.0.0, 127ch, 完全自前 DHFS 計算) と
        Bote-Salvat 断面積係数 (Z=1-99, NIST public domain 系)。生成は tools/IonizationGen/pack_resource.py、
        契約は同 prod/MANIFEST.md。実行時は IonizationFsTable / BoteSalvat がチャネル/一括 lazy 展開。 -->

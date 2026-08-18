@@ -2728,7 +2728,10 @@ new(4.86738014,0.319974401,4.58872425,
         /// <summary>散乱因子の計算方法</summary>
         public readonly string Method;
 
-        /// <summary>引数がS2 (単位: nm^-2), 戻り値が振幅 (単位: nm)の関数</summary>
+        /// <summary>引数が S2 (単位: nm^-2)、戻り値が振幅の関数。
+        /// <para>⚠ 260818Cl 訂正: 単位は<b>用途で違う</b>。電子線用コンストラクタは <b>nm</b> を返すが、
+        /// X 線用は <b>electrons × 0.1</b> を返す (末尾の <c>* 0.1</c>)。旧 doc は「nm」とだけ書いていて
+        /// X 線について誤りだった。FormBeamInteraction はこの規約に依存している (WK 分岐で ×10 して electrons へ戻す)。</para></summary>
         public Func<double, double> Factor { get; }
 
 
@@ -7533,5 +7536,358 @@ new(4.86738014,0.319974401,4.58872425,
 
     #endregion
 
+
+    #region Temari 原子散乱因子 f_x / f_e (dataset-factors v1.0.0) 260818Cl 追加
+
+    /// <summary>
+    /// Temari の原子散乱因子。<see cref="TemariScattering(int)"/> が返す 1 元素分の表。260818Cl 追加。
+    /// <para>出典: Temari dataset-factors v1.0.0 (Yusuke SETO), CC-BY-4.0,
+    /// <see href="https://github.com/seto77/Temari"/> release <c>dataset-factors-v1.0.0</c>。
+    /// 完全 Dirac SCF (小成分込み) + 厳密交換 KLI による第一原理計算で、フィット係数ではない
+    /// (model_id <c>DHFS-KLI-DTM1-dt16-neutral-v1</c>)。</para>
+    /// <para>⚠ <b>中性原子のみ・Z = 1–86 のみ</b>。Temari は「イオンはこの表からは導出できない」と明記しているので、
+    /// イオンに中性値を代用したり Peng 型の Mott–Bethe 単極子を足したりしてはいけない。</para>
+    /// <para>⚠ <see cref="Fe"/> は first-Born (Mott–Bethe) の<b>非相対論的</b>電子散乱因子で、入射電子の
+    /// <b>γ は含まない</b> (Peng / Doyle–Turner と同じ規約)。γ は下流で掛けること。</para>
+    /// <para>⚠ 定義域は 0 ≤ s ≤ 6 Å⁻¹ のみ。<b>外挿もクランプもしない</b> (範囲外は例外)。</para>
+    /// </summary>
+    public sealed class TemariFactor
+    {
+        /// <summary>原子番号。</summary>
+        public int AtomicNumber { get; }
+
+        private readonly TemariSpline splineFx;   // s 上、左端 clamped f_x'(0)=0 / 右端 not-a-knot
+        private readonly TemariSpline splineFe;   // t = s² 上、両端 not-a-knot
+
+        internal TemariFactor(int z, double[] s, double[] t, double[] fx, double[] fe)
+        {
+            AtomicNumber = z;
+            // Temari の interpolation_contract。⚠ PCHIP / linear / natural / smoothing はいずれも契約が禁じている
+            splineFx = new TemariSpline(s, fx, TemariSpline.End.Clamped, TemariSpline.End.NotAKnot, leftValue: 0.0);
+            splineFe = new TemariSpline(t, fe, TemariSpline.End.NotAKnot, TemariSpline.End.NotAKnot);
+        }
+
+        private static double Guard(double s)
+        {
+            if (double.IsNaN(s) || double.IsInfinity(s))
+                throw new ArgumentOutOfRangeException(nameof(s), "s が NaN / Inf。");
+            if (s < 0.0 || s > TemariSMaxAngstromInv)
+                throw new ArgumentOutOfRangeException(nameof(s),
+                    $"s = {s} は定義域 [0, {TemariSMaxAngstromInv}] の外。Temari は外挿もクランプもしない。");
+            return s;
+        }
+
+        /// <summary>X 線原子散乱因子 f_x(s) [electrons]。s = sinθ/λ [Å⁻¹] (q = 4πs)。</summary>
+        public double Fx(double sAngstromInv) => splineFx.Evaluate(Guard(sAngstromInv));
+
+        /// <summary>電子線原子散乱因子 f_e(s) [Å]。⚠ γ は含まない。s = sinθ/λ [Å⁻¹]。</summary>
+        public double Fe(double sAngstromInv) { double s = Guard(sAngstromInv); return splineFe.Evaluate(s * s); }
+    }
+
+    /// <summary>
+    /// C² 3 次スプライン (Hermite 形。未知数は節点の傾き m_i)。260818Cl 追加。
+    /// <para>⚠ Temari の参照ローダ <c>tools/temari_factors_contract.py</c> の <c>spline_slopes</c> /
+    /// <c>CubicSpline</c> を<b>同じ式・同じ消去順で</b>移植したもの。式を「整理」すると参照実装との一致
+    /// (相対 1e-12) が崩れうるので、見た目が冗長でも変えないこと。natural / PCHIP での代用は契約が禁じている。</para>
+    /// <para>⚠ <c>End.Natural</c> と右端の <c>End.Clamped</c> (と <c>rightValue</c>) は**どこからも使っていない** —
+    /// 参照実装との 1:1 対応を保つためだけに残してある。未使用だからと削らないこと (削ると差分照合ができなくなる)。</para>
+    /// </summary>
+    private sealed class TemariSpline
+    {
+        internal enum End { NotAKnot, Clamped, Natural }
+
+        private readonly double[] x, y, m;
+
+        public TemariSpline(double[] x, double[] y, End left, End right, double leftValue = 0.0, double rightValue = 0.0)
+        {
+            this.x = x;
+            this.y = y;
+            m = Slopes(x, y, left, right, leftValue, rightValue);
+        }
+
+        private static double[] Slopes(double[] x, double[] y, End left, End right, double leftValue, double rightValue)
+        {
+            int n = x.Length;
+            var h = new double[n - 1];
+            var d = new double[n - 1];
+            for (int i = 0; i < n - 1; i++) { h[i] = x[i + 1] - x[i]; d[i] = (y[i + 1] - y[i]) / h[i]; }
+
+            var a = new double[n]; var b = new double[n]; var c = new double[n]; var r = new double[n];
+            for (int i = 1; i < n - 1; i++)
+            {
+                a[i] = h[i];
+                b[i] = 2.0 * (h[i - 1] + h[i]);
+                c[i] = h[i - 1];
+                r[i] = 3.0 * (h[i] * d[i - 1] + h[i - 1] * d[i]);
+            }
+
+            if (left == End.NotAKnot)
+            {
+                b[0] = h[1];
+                c[0] = x[2] - x[0];
+                r[0] = ((h[0] + 2.0 * c[0]) * h[1] * d[0] + h[0] * h[0] * d[1]) / c[0];
+            }
+            else if (left == End.Clamped) { b[0] = 1.0; c[0] = 0.0; r[0] = leftValue; }
+            else { b[0] = 2.0; c[0] = 1.0; r[0] = 3.0 * d[0]; }              // Natural: 2 m0 + m1 = 3 d0
+
+            if (right == End.NotAKnot)
+            {
+                a[n - 1] = x[n - 1] - x[n - 3];
+                b[n - 1] = h[n - 3];
+                r[n - 1] = (h[n - 2] * h[n - 2] * d[n - 3] + (2.0 * a[n - 1] + h[n - 2]) * h[n - 3] * d[n - 2]) / a[n - 1];
+            }
+            else if (right == End.Clamped) { a[n - 1] = 0.0; b[n - 1] = 1.0; r[n - 1] = rightValue; }
+            else { a[n - 1] = 1.0; b[n - 1] = 2.0; r[n - 1] = 3.0 * d[n - 2]; } // Natural: m_{n-2} + 2 m_{n-1} = 3 d_{n-2}
+
+            // 三重対角 (a: 下、b: 対角、c: 上) を解く。⚠ 参照実装 _thomas と同じ消去順・同じ破壊的更新
+            for (int i = 1; i < n; i++)
+            {
+                double w = a[i] / b[i - 1];
+                b[i] -= w * c[i - 1];
+                r[i] -= w * r[i - 1];
+            }
+            var slope = new double[n];
+            slope[n - 1] = r[n - 1] / b[n - 1];
+            for (int i = n - 2; i >= 0; i--)
+                slope[i] = (r[i] - c[i] * slope[i + 1]) / b[i];
+            return slope;
+        }
+
+        /// <summary>xq での値。区間の選び方も Hermite 基底の評価順も参照実装と同一。</summary>
+        public double Evaluate(double xq)
+        {
+            int lo = 0, hi = x.Length;                                    // Python の bisect_right
+            while (lo < hi)
+            {
+                int mid = (lo + hi) >> 1;
+                if (xq < x[mid]) hi = mid; else lo = mid + 1;
+            }
+            int i = lo - 1;
+            if (i < 0) i = 0;
+            if (i > x.Length - 2) i = x.Length - 2;
+
+            double h = x[i + 1] - x[i];
+            double t = (xq - x[i]) / h;
+            double omt = 1.0 - t;
+            double h00 = (1.0 + 2.0 * t) * omt * omt;
+            double h10 = t * omt * omt;
+            double h01 = t * t * (3.0 - 2.0 * t);
+            double h11 = t * t * (t - 1.0);
+            return h00 * y[i] + h10 * h * m[i] + h01 * y[i + 1] + h11 * h * m[i + 1];
+        }
+    }
+
+    /// <summary>Temari の表に収録されている原子番号の下限 (含む)。260818Cl 追加。</summary>
+    public const int TemariMinAtomicNumber = 1;
+
+    /// <summary>Temari の表に収録されている原子番号の上限 (含む)。⚠ Z = 87–98 は収録されていない。260818Cl 追加。</summary>
+    public const int TemariMaxAtomicNumber = 86;
+
+    /// <summary>Temari の定義域上限 s = sinθ/λ [Å⁻¹]。これを超える要求は例外 (外挿禁止)。260818Cl 追加。</summary>
+    public const double TemariSMaxAngstromInv = 6.0;
+
+    /// <summary>Temari の f_e に入射電子の γ が<b>含まれていない</b>こと (Peng / Doyle–Turner と同じ規約)。260818Cl 追加。</summary>
+    public const bool TemariGammaIncluded = false;
+
+    /// <summary>原子番号 z が Temari の表に収録されているか。260818Cl 追加。</summary>
+    public static bool IsTemariSupported(int z) => z >= TemariMinAtomicNumber && z <= TemariMaxAtomicNumber;
+
+    /// <summary>Temari のデータセット版 (例 "1.0.0")。260818Cl 追加。</summary>
+    public static string TemariDatasetVersion => TemariMeta("dataset_version");
+
+    /// <summary>Temari の物理処方 ID (例 "DHFS-KLI-DTM1-dt16-neutral-v1")。260818Cl 追加。</summary>
+    public static string TemariModelId => TemariMeta("model_id");
+
+    /// <summary>Temari の元 release タグ (例 "dataset-factors-v1.0.0")。260818Cl 追加。</summary>
+    public static string TemariReleaseTag => TemariMeta("release_tag");
+
+    /// <summary>Temari データセットのライセンス ("CC-BY-4.0")。260818Cl 追加。</summary>
+    public static string TemariLicense => TemariMeta("license");
+
+    /// <summary>Temari の帰属表示の全文 (About / マニュアル用)。260818Cl 追加。</summary>
+    public static string TemariAttribution => TemariMeta("attribution");
+
+    /// <summary>詰め込んだ元 JSON 86 本の合成 SHA-256 (どの出荷物由来かの指紋)。260818Cl 追加。</summary>
+    public static string TemariSourceSha256 => TemariMeta("source_sha256");
+
+    /// <summary>f_x の量子化ステップ [electrons] (公開値の丸め粒度の 1/10)。260818Cl 追加。</summary>
+    public static double TemariQuantizationStepFx { get { EnsureTemariLoaded(); return temariStepFx; } }
+
+    /// <summary>f_e の量子化ステップ [Å] (公開値の丸め粒度の 1/10)。260818Cl 追加。</summary>
+    public static double TemariQuantizationStepFe { get { EnsureTemariLoaded(); return temariStepFe; } }
+
+    /// <summary>
+    /// 原子番号 z の Temari 原子散乱因子を返す (未収録なら null)。元素単位で lazy に展開しキャッシュする。260818Cl 追加。
+    /// <para>格納形式は ReciPro 固有 (Temari データセットの仕様ではない): 節点は 7681 点すべてを持つが、値は絶対量子化
+    /// されている (f_x 1e-10 electrons / f_e 1e-11 Å = 公開値の 11 桁丸め粒度の 1/10)。公開値からのずれは最大
+    /// 5e-11 / 5e-12、契約スプラインで評価した曲線の差は 7.5e-11 / 7.2e-12 で、Temari の認証予算 1e-7 の 1/1300。
+    /// 生成は tools/TemariFactorsGen/pack_temari_factors.py。</para>
+    /// <para>⚠ <b>「Temari の契約テストに合格」とは言えない</b> — 同テストの許容は相対 1e-12 で、絶対量子化した表は
+    /// 小さい f_x (H の高 s 側) で相対 7.6e-6 ずれる。言えるのは<b>「補間法は契約どおり」</b>まで。</para>
+    /// </summary>
+    public static TemariFactor TemariScattering(int z)
+    {
+        if (!IsTemariSupported(z))
+            return null;
+        //260818Cl Volatile 化: temariBlob は win-arm64 の弱メモリモデル対策で volatile にしてあるのに、
+        //  同じ危険 (半初期化された TemariFactor を非 null として観測する) がある配列要素が素の読み書きだった。
+        var hit = Volatile.Read(ref temariCache[z]);
+        if (hit != null)
+            return hit;
+        EnsureTemariLoaded();
+        lock (temariSync)
+        {
+            var cached = Volatile.Read(ref temariCache[z]);
+            if (cached != null)
+                return cached;
+            if (!temariIndex.TryGetValue(z, out var entry))
+                return null;
+
+            int n = temariNodeCount, nd = n - 3;   // nd = 3 階差分列の長さ
+            byte[] raw;
+            using (var compressed = new System.IO.MemoryStream(temariBlob, temariPayloadStart + entry.Offset, entry.Length, writable: false))
+            using (var decompressor = new System.IO.Compression.BrotliStream(compressed, System.IO.Compression.CompressionMode.Decompress))
+            using (var output = new System.IO.MemoryStream(6 * 8 + 2 * 4 * nd))
+            {
+                decompressor.CopyTo(output);
+                raw = output.ToArray();
+            }
+            if (raw.Length != 6 * 8 + 2 * 4 * nd)
+                throw new System.IO.InvalidDataException($"TemariFactors resource: Z={z} payload length {raw.Length} unexpected.");
+
+            var seeds = new long[6];
+            for (int i = 0; i < 6; i++)
+                seeds[i] = BitConverter.ToInt64(raw, i * 8);
+            int pos = 6 * 8;
+
+            var fx = DecodeTemari(raw, pos, nd, n, seeds[0], seeds[1], seeds[2], temariStepFx);
+            var fe = DecodeTemari(raw, pos + 4 * nd, nd, n, seeds[3], seeds[4], seeds[5], temariStepFe);
+
+            var el = new TemariFactor(z, temariS, temariT, fx, fe);
+            Volatile.Write(ref temariCache[z], el);// ⚠ el の構築完了後に公開する
+            return el;
+        }
+    }
+
+    /// <summary>byte-plane shuffle を解いて 3 階差分を 3 段積分し、量子化値 × step を返す。260818Cl 追加。
+    /// <para>符号化 (パッカー側): d1[i]=q[i+1]-q[i], d2[i]=d1[i+1]-d1[i], d3[i]=d2[i+1]-d2[i]、
+    /// 種値 = (q[0], d1[0], d2[0])。⚠ 差分は int32 で格納するが、積分の途中は int64 でないと溢れる
+    /// (q は最大 8.6e11)。</para></summary>
+    private static double[] DecodeTemari(byte[] raw, int basePos, int nd, int n, long q0, long d10, long d20, double step)
+    {
+        //260818Cl 3 段の積分を 1 パスへ融合 (旧: d2[n-2] と d1[n-1] の long[] を実体化していた。
+        //  それぞれ前から順に 1 回書いて 1 回読むだけなのでスカラで足りる。1 チャネルあたり約 123 KB の一時割当を削減)。
+        //  漸化式は変えていない: d2[i+1]=d2[i]+d3[i] / d1[i+1]=d1[i]+d2[i] / q[i+1]=q[i]+d1[i]
+        var values = new double[n];
+        long q = q0, d1 = d10, d2 = d20;
+        values[0] = q * step;
+        for (int i = 0; i < n - 1; i++)
+        {
+            q += d1;
+            values[i + 1] = q * step;
+            d1 += d2;
+            if (i < nd)// d3 は nd = n-3 本しかない (末尾 2 段は d1/d2 の繰り上がりだけで進む)
+                d2 += raw[basePos + i]
+                    | (raw[basePos + nd + i] << 8)
+                    | (raw[basePos + 2 * nd + i] << 16)
+                    | (raw[basePos + 3 * nd + i] << 24);
+        }
+        return values;
+    }
+
+    // 埋め込みリソース TemariFactors.bin を元素単位で lazy 展開する。方式は NistElasticPchipResource /
+    // IonizationFsTable と同じ「blob 常駐 + 元素単位 lazy Brotli decode + volatile 公開」。
+    // 形式は生成器 tools/TemariFactorsGen/pack_temari_factors.py と一致。
+    private const string TemariResourceName = "Crystallography.TemariFactors.bin"; // csproj の LogicalName と一致
+    private const int TemariMagic = 0x46524D54;   // "TMRF"
+
+    private static volatile byte[] temariBlob;    // double-checked locking の publish フィールド (win-arm64 の弱メモリモデル対策で volatile)
+    private static Dictionary<int, (int Offset, int Length)> temariIndex;
+    private static Dictionary<string, string> temariMeta;
+    private static int temariNodeCount, temariPayloadStart;
+    private static double temariStepFx, temariStepFe;
+    private static double[] temariS, temariT;     // 契約の s 節点と t = s² (全元素で共通)
+    private static readonly TemariFactor[] temariCache = new TemariFactor[TemariMaxAtomicNumber + 1];
+    private static readonly object temariSync = new();
+
+    private static string TemariMeta(string key)
+    {
+        EnsureTemariLoaded();
+        return temariMeta.TryGetValue(key, out var v) ? v : "";
+    }
+
+    private static void EnsureTemariLoaded()
+    {
+        if (temariBlob != null)
+            return;
+        lock (temariSync)
+        {
+            if (temariBlob != null)
+                return;
+            var asm = typeof(AtomStatic).Assembly;
+            using var stream = asm.GetManifestResourceStream(TemariResourceName)
+                ?? throw new InvalidOperationException($"Embedded resource not found: {TemariResourceName}");
+            var blob = new byte[stream.Length];
+            stream.ReadExactly(blob);
+
+            using var reader = new System.IO.BinaryReader(new System.IO.MemoryStream(blob, writable: false));
+            if (reader.ReadInt32() != TemariMagic)
+                throw new System.IO.InvalidDataException("TemariFactors resource: bad magic.");
+            int version = reader.ReadInt32();
+            if (version != 1)
+                throw new System.IO.InvalidDataException($"TemariFactors resource: unsupported format version {version}.");
+            int codec = reader.ReadInt32();       // 1 = brotli
+            int method = reader.ReadInt32();      // 1 = 3 階差分 + byte-plane shuffle
+            int nodeCount = reader.ReadInt32();
+            int diffOrder = reader.ReadInt32();
+            double sMax = reader.ReadDouble();
+            double stepFx = reader.ReadDouble();
+            double stepFe = reader.ReadDouble();
+            if (codec != 1 || method != 1 || diffOrder != 3)
+                throw new System.IO.InvalidDataException("TemariFactors resource: unsupported codec/method.");
+            if (nodeCount != 7681 || sMax != TemariSMaxAngstromInv)
+                throw new System.IO.InvalidDataException($"TemariFactors resource: unexpected grid ({nodeCount} nodes, s_max {sMax}).");
+
+            int metaCount = reader.ReadInt32();
+            var meta = new Dictionary<string, string>(metaCount, StringComparer.Ordinal);
+            for (int i = 0; i < metaCount; i++)
+            {
+                string k = BoteSalvat.ReadString(reader), v = BoteSalvat.ReadString(reader);//260818Cl 既存 helper を再利用 (長さ前置 UTF-8)
+                meta[k] = v;
+            }
+
+            int count = reader.ReadInt32();
+            //260818Cl 追加: 格子 (nodeCount/sMax) は検査しているのに元素数だけ無検査だった。将来 Z=87-98 を含む
+            //  blob を読ませると temariCache が足りず IsTemariSupported も弾くので、**黙って**その元素だけ欠ける。
+            if (count != TemariMaxAtomicNumber - TemariMinAtomicNumber + 1)
+                throw new System.IO.InvalidDataException($"TemariFactors resource: {count} elements, expected {TemariMaxAtomicNumber - TemariMinAtomicNumber + 1}.");
+            var index = new Dictionary<int, (int, int)>(count);
+            for (int i = 0; i < count; i++)
+            {
+                int z = reader.ReadInt32();
+                int offset = reader.ReadInt32();
+                int length = reader.ReadInt32();
+                index[z] = (offset, length);
+            }
+
+            // 契約の s 節点。⚠ 配列は収録せず式で再構成する (6*i は整数なので / は正しく丸めた binary64 を返す)。
+            //   t は累積加算せず s から直接作る。
+            var s = new double[nodeCount];
+            var t = new double[nodeCount];
+            for (int i = 0; i < nodeCount; i++) { s[i] = sMax * i / (nodeCount - 1); t[i] = s[i] * s[i]; }
+
+            temariNodeCount = nodeCount;
+            temariStepFx = stepFx;
+            temariStepFe = stepFe;
+            temariPayloadStart = (int)reader.BaseStream.Position;
+            temariS = s;
+            temariT = t;
+            temariMeta = meta;
+            temariIndex = index;
+            temariBlob = blob;   // ⚠ 最後に代入する (他フィールドの store が先に可視になる必要がある)
+        }
+    }
+
+    #endregion
 
 }
