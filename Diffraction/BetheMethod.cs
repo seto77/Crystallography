@@ -365,7 +365,9 @@ public partial class BetheMethod
         var diskAmplitudeValid = beamDirectionsP.Select(beamDirection =>
         {
             if (bwCBED.CancellationPending) return null;
-            var coeff = Math.Abs(1.0 / beamDirection.Z); // = 1/cosTau
+            // 260829Cl 削除: var coeff = Math.Abs(1.0 / beamDirection.Z); // = 1/cosTau
+            //   宣言のみで一度も使われていない死変数 (obliquity 補正を意図した痕跡)。厚さ t と伝播座標は
+            //   表面法線方向で定義済みなので、ここで 1/cosτ を別途掛けると二重補正になる。適用せず削除。
 
             var vecK0 = getVecK0(kvac, u0, beamDirection);
 
