@@ -73,6 +73,7 @@ public sealed class AlchemiReduction
     private readonly Complex[] _eigen;
     private readonly double[] _t;
     private readonly AbsorptionSource _absorption;// 虚部の出所 (再注入してよいのは TDS だけ)
+    private readonly double[] _pOverP0;     // 260829Cl 追加: L_coh の流束重み P_g/P_0 (null = 重みなし)
     private double[] _lcoh;                 // L_coh(t) の遅延キャッシュ (方位ごとに 1 回で足りる)
 
     /// <summary>厚み一覧 [nm] (構築時に渡したもの)。</summary>
@@ -90,8 +91,11 @@ public sealed class AlchemiReduction
     /// 非チャネリング項は失われた流束を「試料内に残るランダム方位の電子」として**まるごと**再注入するので、
     /// TDS 以外が混ざっていたら <see cref="Yield"/> が落ちる。既定は v1 の実態
     /// (<see cref="BetheMethod.ImaginaryPotentialAbsorption"/> = TDS のみ) で、既存の呼び出しは 1 ビットも変わらない</param>
+    /// <param name="pOverP0">260829Cl 追加: 各ビームの P_g/P_0 (P_g = 2n̂·(k₀+g))。L_coh の生存流束を
+    /// Σ_g (P_g/P_0)|ψ_g|² (表面法線方向の全電流。無吸収で厳密に 1) で数えるための重み。
+    /// null なら従来どおり Σ_g|ψ_g|² (P_g ≈ P_0 の近似。系統列 ALCHEMI では差は ~10⁻³ 以下)</param>
     public AlchemiReduction(int bLen, Complex[] eigenValues, Complex[] eigenVectors, Complex[] alpha, double[] thicknessesNm,
-        AbsorptionSource absorption = AbsorptionSource.TdsRedistributable)
+        AbsorptionSource absorption = AbsorptionSource.TdsRedistributable, double[] pOverP0 = null)
     {
         ArgumentNullException.ThrowIfNull(eigenValues);
         ArgumentNullException.ThrowIfNull(eigenVectors);
@@ -103,6 +107,9 @@ public sealed class AlchemiReduction
         _eigen = eigenValues;
         _t = thicknessesNm;
         _absorption = absorption;
+        if (pOverP0 is not null && pOverP0.Length < bLen)
+            throw new ArgumentException($"AlchemiReduction: pOverP0 is smaller than bLen = {bLen}");
+        _pOverP0 = pOverP0; // 260829Cl 追加
 
         _d = GC.AllocateUninitializedArray<Complex>(bLen * bLen);
         for (int j = 0; j < bLen; j++)
@@ -136,22 +143,28 @@ public sealed class AlchemiReduction
         return ContractCore(BuildS(mu));
     }
 
-    /// <summary>L_coh(t) = ∫₀ᵗ Σ_g |ψ_g(z)|² dz [nm] (μ = I の同じ縮約)。
-    /// 吸収ゼロなら C はユニタリで Σ_g|ψ_g|² ≡ 1 となり L_coh = t になる。
+    /// <summary>L_coh(t) = ∫₀ᵗ Σ_g (P_g/P_0)|ψ_g(z)|² dz [nm] (μ = diag(P_g/P_0) の同じ縮約)。
+    /// 260829Cl 変更: 生存流束を表面法線方向の全電流 Σ (P_g/P_0)|ψ_g|² で数える (コンストラクタに pOverP0 を渡した場合)。
+    /// 吸収ゼロならこの量が厳密に 1 で L_coh = t になる (行割り修正後の正しい保存量。
+    /// 旧記述「C はユニタリで Σ_g|ψ_g|² ≡ 1」は P_g ≈ P_0 の近似でのみ成立)。pOverP0 = null なら従来の Σ|ψ_g|²。
     /// 方位だけで決まる量なので初回で作って以後使い回す (チャネル・サイトが増えても O(b³) は 1 回)。
     /// 返す配列は共有 = **書き換えないこと**。</summary>
     public double[] CoherentPathLengthNm()
     {
         //競合しても同じ値を 2 度作るだけ (決定的計算 + 参照代入) なので lock を張らない
         if (_lcoh is not null) return _lcoh;
-        //μ = I なので S = D†D。μ を実体化せずに直接組む (b² の一時行列を作らない)
+        //μ = diag(P_g/P_0) (null なら I) なので S = D†μD。μ を実体化せずに直接組む (b² の一時行列を作らない)
         var s = new Complex[_b * _b];
         for (int j = 0; j < _b; j++)
             for (int jp = 0; jp < _b; jp++)
             {
                 Complex acc = 0;
-                for (int g = 0; g < _b; g++)
-                    acc += Complex.Conjugate(_d[g + jp * _b]) * _d[g + j * _b];
+                if (_pOverP0 is null)
+                    for (int g = 0; g < _b; g++)
+                        acc += Complex.Conjugate(_d[g + jp * _b]) * _d[g + j * _b];
+                else
+                    for (int g = 0; g < _b; g++)
+                        acc += Complex.Conjugate(_d[g + jp * _b]) * _pOverP0[g] * _d[g + j * _b];
                 s[jp + j * _b] = acc;
             }
         return _lcoh = ContractCore(s);

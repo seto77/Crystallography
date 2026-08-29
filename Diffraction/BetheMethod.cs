@@ -3854,21 +3854,34 @@ public partial class BetheMethod
             getPotentialMatrix(dim, b, ref potentialMatrix);
         }
         //A行列を決定
-        // 260321Cl 変更前:
+        // 260829Cl 変更: P の除算を列側 (b[col].P) から行側 (b[row].P) へ修正。
+        //   線形化 Bethe 方程式 γP_g C_g = Q_g C_g + Σ_h (Û_{g−h}+iU'_{g,h}) C_h の行列は行 g を P_g で割る
+        //   A = D_P⁻¹B̃ で、固有ベクトル成分がそのまま平面波振幅 C_g になる (公開マニュアル appendix a3-bloch-wave と同一)。
+        //   2021 年の 1 次元配列化 (column-major 消費化) の際にループ字面が据え置かれ、列割り M = B̃D_P⁻¹ = D_P·A·D_P⁻¹
+        //   へ退行していた。固有値は相似変換で不変だが、固有列が P_g C_g となり回折振幅に P_g/P_0 が乗る
+        //   (無吸収の保存量が本来の Σ P_g|ψ_g|² でなく非物理な Σ|ψ_g|²/P_g になっていた)。
+        //   分子 (row=g, col=h) = Û_{g−h} は 20240524 の位相符号修正以降正しく、対角 Q_g/P_g は row==col なので不変。
+        //   検証: tools/BetheDivCheck (無吸収流束不変量 + 修正前後の per-beam ψ 比 = P_0/P_g)。
+        // 260829Cl 変更前 (260321Cl: 逆数を事前計算し除算→乗算へ):
         // for (int col = 0; col < dim; col++)
         // {
+        //     var invP = 1.0 / b[col].P;
+        //     var colBase = col * dim;
         //     for (int row = 0; row < dim; row++)
-        //         eigenMatrix[row + col * dim] = potentialMatrix[row + col * dim] / b[col].P;
-        //     eigenMatrix[col * dim + col] += b[col].Q / b[col].P;
+        //         eigenMatrix[colBase + row] = potentialMatrix[colBase + row] * invP;
+        //     eigenMatrix[colBase + col] += b[col].Q * invP; // 260321Cl: 対角成分に Q/P を加算
         // }
-        for (int col = 0; col < dim; col++) // 260321Cl: 逆数を事前計算し除算→乗算へ（div は mul より約4倍遅い）
+        var invP = ArrayPool<double>.Shared.Rent(dim);
+        for (int i = 0; i < dim; i++)
+            invP[i] = 1.0 / b[i].P;
+        for (int col = 0; col < dim; col++)
         {
-            var invP = 1.0 / b[col].P;
             var colBase = col * dim;
             for (int row = 0; row < dim; row++)
-                eigenMatrix[colBase + row] = potentialMatrix[colBase + row] * invP;
-            eigenMatrix[colBase + col] += b[col].Q * invP; // 260321Cl: 対角成分に Q/P を加算
+                eigenMatrix[colBase + row] = potentialMatrix[colBase + row] * invP[row];
+            eigenMatrix[colBase + col] += b[col].Q * invP[col]; // 対角成分に Q/P を加算 (行割りでも Q_g/P_g のまま)
         }
+        ArrayPool<double>.Shared.Return(invP);
         if (isNull)
             Shared.Return(potentialMatrix);//potentialMatrixを返却
     }
@@ -3892,15 +3905,29 @@ public partial class BetheMethod
         // 前提: gMap は単射 (beamsBase は hkl 一意、P>0 フィルタは順序保存の部分集合)。よって row==col のとき
         // gMap[row]==gMap[col] となり base 対角 (Real を含まない i*Imag) を、row≠col では base 非対角を読む。
         // beams を並べ替えるとこの単射前提と呼び出し側の gMap 構築 (単調探索) が崩れるので並べ替えないこと。
+        // 260829Cl 変更: P の除算を列側から行側へ修正 (通常版 getEigenMatrix と同じ退行の修正。理由はそちらのコメント参照)。
+        // 260829Cl 変更前:
+        // for (int col = 0; col < bLen; col++)
+        // {
+        //     var invP = 1.0 / beams[col].P;
+        //     var colBase = col * bLen;
+        //     var srcCol = gMap[col] * baseLen;
+        //     for (int row = 0; row < bLen; row++)
+        //         eigenMatrix[colBase + row] = basePotential[srcCol + gMap[row]] * invP;
+        //     eigenMatrix[colBase + col] += beams[col].Q * invP; // 対角に Q/P を加算
+        // }
+        var invP = ArrayPool<double>.Shared.Rent(bLen);
+        for (int i = 0; i < bLen; i++)
+            invP[i] = 1.0 / beams[i].P;
         for (int col = 0; col < bLen; col++)
         {
-            var invP = 1.0 / beams[col].P;
             var colBase = col * bLen;
             var srcCol = gMap[col] * baseLen;
             for (int row = 0; row < bLen; row++)
-                eigenMatrix[colBase + row] = basePotential[srcCol + gMap[row]] * invP;
-            eigenMatrix[colBase + col] += beams[col].Q * invP; // 対角に Q/P を加算
+                eigenMatrix[colBase + row] = basePotential[srcCol + gMap[row]] * invP[row];
+            eigenMatrix[colBase + col] += beams[col].Q * invP[col]; // 対角に Q/P を加算 (行割りでも Q_g/P_g のまま)
         }
+        ArrayPool<double>.Shared.Return(invP);
     }
 
 

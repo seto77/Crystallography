@@ -431,8 +431,11 @@ public static class KikuchiProfileCalculator
         var diagU = Complex.ImaginaryOne * snap.UPrime0;
         Complex a00 = diagU / p0;
         Complex a11 = (diagU + bigQ1) / p1;
-        Complex a01 = opt.DisableBraggCoupling ? Complex.Zero : (uG.Real + Complex.ImaginaryOne * uG.Imag) / p1;   // [row0, col1] = U(g_1−g_0) = U(+g)
-        Complex a10 = opt.DisableBraggCoupling ? Complex.Zero : (uMg.Real + Complex.ImaginaryOne * uMg.Imag) / p0; // [row1, col0] = U(g_0−g_1) = U(−g)
+        // 260829Cl 変更: 非対角の P 除算を列側から行側へ修正 (getEigenMatrix と同じ退行の修正。行 g の方程式を P_g で割る)。
+        //   固有値は a01·a10 の積にしか依らないので不変。固有ベクトル (= 振幅 C_g) と α が正しくなる。
+        // 260829Cl 変更前: a01 = (...) / p1;  a10 = (...) / p0;
+        Complex a01 = opt.DisableBraggCoupling ? Complex.Zero : (uG.Real + Complex.ImaginaryOne * uG.Imag) / p0;   // [row0, col1] = U(g_1−g_0) = U(+g)
+        Complex a10 = opt.DisableBraggCoupling ? Complex.Zero : (uMg.Real + Complex.ImaginaryOne * uMg.Imag) / p1; // [row1, col0] = U(g_0−g_1) = U(−g)
 
         // --- 2×2 EVD (閉形式) と α = C⁻¹ψ0, ψ0 = (1,0)ᵀ ---
         var half = (a00 + a11) / 2;
@@ -620,16 +623,26 @@ public static class KikuchiProfileCalculator
                 return (0, 0);
 
         // --- 固有値問題行列 (column-major。getEigenMatrix と同一の構成) ---
+        // 260829Cl 変更: P の除算を列側 (p[col]) から行側 (p[r]) へ修正 (getEigenMatrix と同じ退行の修正)。
+        // 260829Cl 変更前:
+        // for (int col = 0; col < nb; col++)
+        // {
+        //     var invP = 1.0 / p[col];
+        //     for (int r = 0; r < nb; r++)
+        //         a[r + col * nb] = r == col
+        //             ? (diagU + bigQ[col]) * invP
+        //             : opt.DisableBraggCoupling ? Complex.Zero : row.U(col - r) * invP;
+        // }
         var a = new Complex[nb * nb];
         var diagU = Complex.ImaginaryOne * snap.UPrime0;
+        var invP = new double[nb];
+        for (int i = 0; i < nb; i++)
+            invP[i] = 1.0 / p[i];
         for (int col = 0; col < nb; col++)
-        {
-            var invP = 1.0 / p[col];
             for (int r = 0; r < nb; r++)
                 a[r + col * nb] = r == col
-                    ? (diagU + bigQ[col]) * invP
-                    : opt.DisableBraggCoupling ? Complex.Zero : row.U(col - r) * invP;
-        }
+                    ? (diagU + bigQ[col]) * invP[col]
+                    : opt.DisableBraggCoupling ? Complex.Zero : row.U(col - r) * invP[r];
 
         // --- EVD と C⁻¹ (BetheMethod と同じ経路。native が無ければ MathNet) ---
         Complex[] eigVal, eigVec, eigInv;
