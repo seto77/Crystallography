@@ -7537,14 +7537,20 @@ new(4.86738014,0.319974401,4.58872425,
     #endregion
 
 
-    #region Temari 原子散乱因子 f_x / f_e (dataset-factors v1.0.0) 260818Cl 追加
+    #region Temari 原子散乱因子 f_x / f_e (dataset-factors v2.0.0) 260818Cl 追加、260918Cl v2.0.0 へ更新
 
     /// <summary>
     /// Temari の原子散乱因子。<see cref="TemariScattering(int)"/> が返す 1 元素分の表。260818Cl 追加。
-    /// <para>出典: Temari dataset-factors v1.0.0 (Yusuke SETO), CC-BY-4.0,
-    /// <see href="https://github.com/seto77/Temari"/> release <c>dataset-factors-v1.0.0</c>。
+    /// <para>出典: Temari dataset-factors v2.0.0 (Yusuke SETO), CC-BY-4.0, DOI 10.5281/zenodo.22820415,
+    /// <see href="https://github.com/seto77/Temari"/> release <c>dataset-factors-v2.0.0</c> (260918Cl v1.0.0 から更新)。
     /// 完全 Dirac SCF (小成分込み) + 厳密交換 KLI による第一原理計算で、フィット係数ではない
-    /// (model_id <c>DHFS-KLI-DTM1-dt16-neutral-v1</c>)。</para>
+    /// (model_id <c>DHFS-KLI-DTM1-dt16-neutral-v1</c>。処方は v1.0.0 と同じ)。</para>
+    /// <para>⚠ <b>数値の精度について、データセットは厳密な誤差上界を主張していない</b> — 全表が
+    /// <c>artifact_role = computed</c> / <c>certification_status = not_certified</c> (Temari の作者決定 I34 / I36。
+    /// v1.0.0 が名乗っていた「停止誤差の上界」は撤回された)。ReciPro が検査しているのは<b>公開した release への所属</b>
+    /// (manifest の sha256 と各表の sha256 = 生成 tools/TemariFactorsGen/pack_temari_factors.py) と
+    /// <b>自分の変換</b> (再量子化と補間) だけで、精度の主張を足さない。表示や文書で「認証された精度」と書かないこと。
+    /// 状態は <see cref="TemariCertificationStatus"/>、1 文の説明は <see cref="TemariAccuracyStatement"/>。</para>
     /// <para>⚠ <b>中性原子のみ・Z = 1–86 のみ</b>。Temari は「イオンはこの表からは導出できない」と明記しているので、
     /// イオンに中性値を代用したり Peng 型の Mott–Bethe 単極子を足したりしてはいけない。</para>
     /// <para>⚠ <see cref="Fe"/> は first-Born (Mott–Bethe) の<b>非相対論的</b>電子散乱因子で、入射電子の
@@ -7692,13 +7698,35 @@ new(4.86738014,0.319974401,4.58872425,
     /// <summary>原子番号 z が Temari の表に収録されているか。260818Cl 追加。</summary>
     public static bool IsTemariSupported(int z) => z >= TemariMinAtomicNumber && z <= TemariMaxAtomicNumber;
 
-    /// <summary>Temari のデータセット版 (例 "1.0.0")。260818Cl 追加。</summary>
+    /// <summary>Temari のデータセット版 (例 "2.0.0")。260818Cl 追加。</summary>
     public static string TemariDatasetVersion => TemariMeta("dataset_version");
+
+    /// <summary>この版の DOI (例 "10.5281/zenodo.22820415")。引用と保存の識別子であって、精度の表明ではない。260918Cl 追加。</summary>
+    public static string TemariDoi => TemariMeta("doi");
+
+    /// <summary>系列の DOI (常に最新版へ解決。例 "10.5281/zenodo.22644247")。260918Cl 追加。</summary>
+    public static string TemariConceptDoi => TemariMeta("doi_concept");
+
+    /// <summary>全表の <c>artifact_role</c> (v2.0.0 は "computed")。260918Cl 追加。</summary>
+    public static string TemariArtifactRole => TemariMeta("artifact_role");
+
+    /// <summary>全表の <c>certification_status</c> (v2.0.0 は "not_certified" = 厳密な誤差上界の主張なし)。260918Cl 追加。
+    /// ⚠ 空文字は「欄の無い古い .bin」なので、"certified" と読み替えない。</summary>
+    public static string TemariCertificationStatus => TemariMeta("certification_status");
+
+    /// <summary>状態の理由 (データセットの文をそのまま)。260918Cl 追加。</summary>
+    public static string TemariCertificationStatusReason => TemariMeta("certification_status_reason");
+
+    /// <summary>保証の範囲を述べる 1 文 (About / マニュアル / ツールチップ用。「認証」の語を使わない)。260918Cl 追加。</summary>
+    public static string TemariAccuracyStatement => TemariMeta("accuracy_statement");
+
+    /// <summary>詰めた release の manifest.json (生バイト) の sha256 = 公開物への所属の根拠。260918Cl 追加。</summary>
+    public static string TemariManifestSha256 => TemariMeta("manifest_sha256");
 
     /// <summary>Temari の物理処方 ID (例 "DHFS-KLI-DTM1-dt16-neutral-v1")。260818Cl 追加。</summary>
     public static string TemariModelId => TemariMeta("model_id");
 
-    /// <summary>Temari の元 release タグ (例 "dataset-factors-v1.0.0")。260818Cl 追加。</summary>
+    /// <summary>Temari の元 release タグ (例 "dataset-factors-v2.0.0")。260818Cl 追加。</summary>
     public static string TemariReleaseTag => TemariMeta("release_tag");
 
     /// <summary>Temari データセットのライセンス ("CC-BY-4.0")。260818Cl 追加。</summary>
@@ -7720,8 +7748,10 @@ new(4.86738014,0.319974401,4.58872425,
     /// 原子番号 z の Temari 原子散乱因子を返す (未収録なら null)。元素単位で lazy に展開しキャッシュする。260818Cl 追加。
     /// <para>格納形式は ReciPro 固有 (Temari データセットの仕様ではない): 節点は 7681 点すべてを持つが、値は絶対量子化
     /// されている (f_x 1e-10 electrons / f_e 1e-11 Å = 公開値の 11 桁丸め粒度の 1/10)。公開値からのずれは最大
-    /// 5e-11 / 5e-12、契約スプラインで評価した曲線の差は 7.5e-11 / 7.2e-12 で、Temari の認証予算 1e-7 の 1/1300。
-    /// 生成は tools/TemariFactorsGen/pack_temari_factors.py。</para>
+    /// 5e-11 / 5e-12、契約スプラインで評価した曲線の差は 6.1e-11 / 7.1e-12 (v2.0.0 の golden 12 点で実測、260918Cl。
+    /// 検査 B の許容 7.5e-11 / 7.2e-12 は v1.0.0 のときのまま)。
+    /// ⚠ これは<b>公開値からの変換差</b>であって、物理量の精度ではない (データセットは誤差上界を主張していない)。
+    /// 物理量の精度と足して「総合精度」を作らないこと。生成は tools/TemariFactorsGen/pack_temari_factors.py。</para>
     /// <para>⚠ <b>「Temari の契約テストに合格」とは言えない</b> — 同テストの許容は相対 1e-12 で、絶対量子化した表は
     /// 小さい f_x (H の高 s 側) で相対 7.6e-6 ずれる。言えるのは<b>「補間法は契約どおり」</b>まで。</para>
     /// </summary>
