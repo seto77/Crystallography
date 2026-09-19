@@ -446,6 +446,10 @@ public class DiffuseScatteringFactor
     #region B type. Getのみ
     /// <summary>unit: nm^2</summary>
     public double Biso => OriginalType == Type.B ? Iso : Iso * PI2 * 8;
+    /// <summary>260919Cl 追加: g=0 の実効等方 B [nm²]。IsZero なら 0、等方なら Biso、非等方なら (Biso が NaN のとき) Biso000。getU の g=0 経路と同じ選択規則を 1 か所にまとめたもの。NaN は 0 にする。</summary>
+    public double BisoEffective { get { double b = IsZero ? 0 : UseIso ? Biso : double.IsNaN(Biso) ? Biso000 : Biso; return double.IsNaN(b) || b < 0 ? 0 : b; } }
+    /// <summary>260919Cl 追加: B 未設定 (0) の原子に与える零点振動相当の下限 [nm²] (= 0.1 Å²)。後方散乱源 σ_n と MC のコヒーレンス破壊判定で使う (getU の吸収ポテンシャルには適用しない)。</summary>
+    public const double BisoFloorNm2 = 1E-3;
 
     /// <summary>unit: nm^2. g=000の時のBiso. Acta Cryst. (1959). 12, 609 , Hamilton の式に従って、Bisoを計算</summary>
     public double Biso000 => (B11 * a2 + B22 * b2 + B33 * c2 + 2 * B12 * ab + 2 * B23 * bc + 2 * B31 * ca) * 4.0 / 3.0;

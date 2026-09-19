@@ -157,6 +157,14 @@ public class MonteCarlo
     public readonly InelasticScatteringModels InelasticScatteringModel;
     /// <summary>260401Cl シミュレーション打ち切りエネルギー (keV)。電子エネルギーがこれ以下になると追跡を終了する</summary>
     public readonly double ThresholdKev;
+    /// <summary>260919Cl 追加: 弾性散乱のコヒーレンス破壊確率 1−exp(−2B s²) に使う組成平均の等方 B [nm²] (下限 1e-3 nm²)。
+    /// Bloch 波が扱う干渉性 Bragg 散乱の割合 exp(−2B s²) は「イベント無し」と等価に扱い、残りの熱散漫成分だけが源の深さをリセットする。</summary>
+    public readonly double MeanDebyeWallerBNm2;
+    /// <summary>260919Cl 追加: 非弾性散乱が局在 (コヒーレンス破壊) と判定される運動量移行のしきい値 q_c = ω_p / v_F (プラズモンカットオフ) を k=1/λ 系 [nm⁻¹] (物理慣例の値 ÷ 2π) で保持。
+    /// q &lt; q_c は集団励起 (プラズモン) / 非局在の電子正孔対で Bloch 状態を保つ。q &gt; q_c は単一粒子励起 (Bethe ridge) で反跳電子が事象を 1/q に局在させる。</summary>
+    public readonly double InelasticLocalizationQNm;
+    /// <summary>260919Cl 追加: これ以上の損失 [eV] は内殻・単一粒子励起として運動量移行によらず局在とみなす (損失スペクトルの高損失テール開始点 max(1.8 E_p, 30 eV) と同じ)。</summary>
+    public readonly double InelasticLocalizedLossEv;
     /// <summary>(260331Ch) Mott/NIST sampler 用の元素組成と数密度</summary>
     private readonly ElasticSpecies[] ElasticComponents = [];
     /// <summary>(260331Ch) 混合系の全元素数密度合計 [1/nm³]。巨視的断面積 Σ = Σ_i(n_i·σ_i) から有効微視的断面積 σ_eff = Σ/n_total を逆算する際に使う</summary>
@@ -254,9 +262,15 @@ public class MonteCarlo
     /// <param name="LastInelasticEnergyBeforeLoss">260401Cl 最後の非弾性散乱直前のエネルギー (keV)</param>
     /// <param name="LastInelasticEnergyAfterLoss">260401Cl 最後の非弾性散乱直後のエネルギー (keV)。この電子が回折に寄与する</param>
     /// <param name="LastInelasticDirection">260401Cl 最後の非弾性散乱時点での進行方向。回折条件の評価に使用</param>
+    /// <param name="HasLastDecoherenceEvent">260919Cl 追加: コヒーレンス破壊イベント (非弾性、または DW 確率で熱散漫と判定された弾性) が 1 回以上発生したか</param>
+    /// <param name="LastDecoherenceDepth">260919Cl 追加: 最後のコヒーレンス破壊イベントの深さ (nm)。ここから表面までが Bloch 波で扱う干渉性の経路</param>
+    // public readonly record struct BackscatteredElectronDetail( // 260919Cl 変更前 (HasLastDecoherenceEvent / LastDecoherenceDepth 無し)
+    //     double Depth, V3 Direction, double Energy, double TotalEnergyLoss, bool HasLastInelasticEvent,
+    //     double LastInelasticDepth, double LastInelasticEnergyBeforeLoss, double LastInelasticEnergyAfterLoss, V3 LastInelasticDirection);
     public readonly record struct BackscatteredElectronDetail( // (260331Ch) EBSD 寄与電子の最後の非弾性散乱情報を後段で解析できるようにする
         double Depth, V3 Direction, double Energy, double TotalEnergyLoss, bool HasLastInelasticEvent,
-        double LastInelasticDepth, double LastInelasticEnergyBeforeLoss, double LastInelasticEnergyAfterLoss, V3 LastInelasticDirection);
+        double LastInelasticDepth, double LastInelasticEnergyBeforeLoss, double LastInelasticEnergyAfterLoss, V3 LastInelasticDirection,
+        bool HasLastDecoherenceEvent, double LastDecoherenceDepth); // 260919Cl 追加
 
     /// <summary>あるエネルギーにおける電子輸送パラメータの一式。弾性・非弾性散乱のステップ長と方向・エネルギー損失の計算に使う。</summary>
     /// <param name="ScreeningParameter">260401Cl Screened Rutherford の遮蔽パラメータ α = coeff0/E。原子核電荷の遮蔽効果を表し、散乱角分布の前方集中度を制御</param>
@@ -308,6 +322,18 @@ public class MonteCarlo
         ValenceElectronCount = valenceElectronCount is > 0 ? valenceElectronCount.Value : EstimateValenceElectronCount(z); // (260331Ch)
         BandGapEv = bandGapEv is >= 0 ? bandGapEv.Value : 0.0; // (260331Ch)
         ElasticComponents = atoms is null ? [] : BuildElasticSpecies(atoms, ρ); // (260401Ch) 配布版は generated data だけから Mott sampler を構築する
+        // 260919Cl 追加: 組成平均の等方 B [nm²] (Atoms.Dsf は nm² 格納)。B 未設定の結晶でも零点振動相当の下限 1e-3 nm² を入れる
+        {
+            double sumB = 0, sumW = 0;
+            if (atoms != null)
+                foreach (var atomsItem in atoms)
+                {
+                    double b = atomsItem.Dsf?.BisoEffective ?? 0; // 選択規則は Dsf.BisoEffective に集約
+                    double w = atomsItem.Occ * Math.Max(1, atomsItem.Atom?.Length ?? 1);
+                    sumB += b * w; sumW += w;
+                }
+            MeanDebyeWallerBNm2 = Math.Max(DiffuseScatteringFactor.BisoFloorNm2, sumW > 0 ? sumB / sumW : 0);
+        }
         for (int i = 0; i < ElasticComponents.Length; i++)
             TotalElasticNumberDensityPerNm3 += ElasticComponents[i].NumberDensityPerNm3;
 
@@ -319,6 +345,15 @@ public class MonteCarlo
         TppGamma = 0.191 * Math.Pow(ρ, -0.5); // (260331Ch)
         TppC = 1.97 - 0.91 * u; // (260331Ch)
         TppD = 53.4 - 20.8 * u; // (260331Ch)
+        // 260919Cl 追加: プラズモンカットオフ q_c = ω_p / v_F。価電子密度 n_v [nm⁻³] = Nv·ρ·N_A/A、k_F = (3π² n_v)^{1/3}、
+        //   q_c = E_p / ((ħ²/m_e)·k_F) (ħ²/m_e = 0.0761996 eV·nm²、物理慣例 rad/nm)。Si で ≈ 12 rad/nm (1.2 Å⁻¹)。InelasticDecoherenceProbability の q は k=1/λ 系なので 2π で割って格納 (Si ≈ 1.9 nm⁻¹)。
+        {
+            double atomsPerNm3 = A > 0 ? ρ / A * UniversalConstants.A * 1E-21 : 0; // ρ [g/cm³]·N_A/A → 1/nm³ (/simplify2: リテラルを UniversalConstants.A へ)
+            double kF = Math.Cbrt(3 * Math.PI * Math.PI * nv * atomsPerNm3);
+            InelasticLocalizationQNm = kF > 0 ? TppPlasmaEnergyEv / (0.0761996 * kF) / (2 * Math.PI) : 0; // (/simplify2) k_F が作れないときは q_c=0 = 常に局在 (従来どおり非弾性は必ずリセット)。+∞ だと逆に「絶対にリセットしない」になる // 2π で割り、k=1/λ (結晶学慣例) の q² = k²(θ²+θ_E²) と同じ単位にする
+            double minLossEv = Math.Max(BandGapEv > 0 ? BandGapEv : 1.0, 0.5);
+            InelasticLocalizedLossEv = Math.Max(1.8 * Math.Max(TppPlasmaEnergyEv, minLossEv + 0.5), 30.0); // CreateBulkLossSamplerEntry の tailOnsetEv と同じ定義
+        }
 
         //散乱係数の計算中に出てくる定数
         coeff0 = 0.0034 * Math.Pow(Z, 2.0 / 3.0);
@@ -1028,6 +1063,41 @@ public class MonteCarlo
     /// 選択された非弾性散乱モデルに応じて 1 回の非弾性散乱でのエネルギー損失 ΔE [keV] をサンプリングする。
     /// DiscreteMeanLoss: 常に平均値。DiscreteBulkDiimfpApproximation: bulk DIIMFP 近似分布。
     /// </summary>
+    /// <summary>
+    /// 260919Cl 追加: 弾性散乱 (エネルギー e [keV]、散乱角 cosθ) が熱散漫 (非干渉) 成分か。確率は 1−exp(−2B s²)、s = k·sin(θ/2) → 2s² = k²(1−cosθ)。
+    /// 干渉性 Bragg 散乱 (割合 exp(−2B s²)) は Bloch 波側が扱うので、ここでは「イベント無し」と同じ扱い。
+    /// x &gt; 20 は確率 1 (乱数を省く)、x &lt; 0.03 は 1−e^{−x} ≈ x(1−x/2) (相対誤差 1.5e-4 未満) で Exp を省く。
+    /// </summary>
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+    private bool IsThermalDiffuseElasticEvent(double e, double cosθ)
+    {
+        double x = MeanDebyeWallerBNm2 * UniversalConstants.Convert.EnergyToElectronWaveNumberSquared(e) * (1 - cosθ);
+        if (x > 20) return true;
+        double pDiffuse = x < 0.03 ? x * (1 - 0.5 * x) : 1 - Math.Exp(-x);
+        return Rnd.NextDouble() < pDiffuse;
+    }
+
+    /// <summary>
+    /// 260919Cl 追加: 損失 lossKev の非弾性散乱が電子のコヒーレンス (Bloch 状態) を壊す確率。
+    /// (1) 損失が InelasticLocalizedLossEv 以上なら内殻・単一粒子励起として常に 1 (終状態が原子を特定する)。
+    /// (2) それ未満の価電子励起は、運動量移行 q がプラズモンカットオフ q_c を超える割合を返す。角度分布は Bethe ridge θ_c=√(ΔE/E) で
+    ///     打ち切った Lorentzian dP ∝ θdθ/(θ²+θ_E²) (θ_E=ΔE/2E)、q² = k²(θ²+θ_E²)。q &lt; q_c の集団励起・非局在の電子正孔対は
+    ///     Bloch 状態を保つ (バンド内遷移、エネルギーフィルター実験でプラズモン損失電子にも菊池バンドが残る事実に対応)。
+    /// </summary>
+    public double InelasticDecoherenceProbability(double energyKev, double lossKev)
+    {
+        double dE = lossKev * 1000.0, E = energyKev * 1000.0;
+        if (!(dE > 0) || !(E > dE)) return 1.0;
+        if (dE >= InelasticLocalizedLossEv) return 1.0;
+        double k2 = UniversalConstants.Convert.EnergyToElectronWaveNumberSquared(energyKev); // nm⁻² (k=1/λ 系)
+        double thetaE2 = dE / (2 * E); thetaE2 *= thetaE2;
+        double thetaC2 = dE / E;
+        double thetaQ2 = InelasticLocalizationQNm * InelasticLocalizationQNm / k2 - thetaE2;
+        if (thetaQ2 <= 0) return 1.0;
+        if (thetaQ2 >= thetaC2) return 0.0;
+        return 1.0 - Math.Log(1 + thetaQ2 / thetaE2) / Math.Log(1 + thetaC2 / thetaE2);
+    }
+
     private double SampleInelasticLossKev(double currentKev, double meanLossKev)
     {
         if (!(meanLossKev > 0))
@@ -1240,6 +1310,7 @@ public class MonteCarlo
         double e = InitialKev;
         double vX = 0, vY = 0, vZ = -1;
         double d = 0;// 260321Ch: 表面からの深さだけを直接追跡する
+        bool hasLastDecoherenceEvent = false; double lastDecoherenceDepth = double.NaN; // 260919Cl 追加
         int n = 0;
         //電子エネルギーがThresholdKev以下になるか、試料を脱出するまでループ
         while (e > ThresholdKev)
@@ -1253,6 +1324,7 @@ public class MonteCarlo
             if (n++ != 0)
             {
                 double cosθ = SampleElasticScatteringCosTheta(e, α, GetNearestNistElasticEnergyIndex(e * 1000.0)), sinθ = Math.Sqrt(1 - cosθ * cosθ); // 260401Cl nistEnergyIndex 追加 (CSDA パスは性能非優先)
+                if (IsThermalDiffuseElasticEvent(e, cosθ)) { hasLastDecoherenceEvent = true; lastDecoherenceDepth = d; } // 260919Cl 追加: 熱散漫成分なら源の深さをリセット
                 double φ = 2 * Math.PI * rnd3;
                 var (sinφ, cosφ) = Math.SinCos(φ);
                 double sinθcosφ = sinθ * cosφ, sinθsinφ = sinθ * sinφ;
@@ -1289,7 +1361,8 @@ public class MonteCarlo
             double.NaN,
             double.NaN,
             double.NaN,
-            new V3(double.NaN, double.NaN, double.NaN)); // (260331Ch) CSDA では最後の離散非弾性散乱は定義できない
+            new V3(double.NaN, double.NaN, double.NaN), // (260331Ch) CSDA では最後の離散非弾性散乱は定義できない
+            hasLastDecoherenceEvent, lastDecoherenceDepth); // 260919Cl 追加
     }
 
     /// <summary>
@@ -1305,6 +1378,7 @@ public class MonteCarlo
         bool hasLastInelasticEvent = false;
         double lastInelasticDepth = double.NaN, lastInelasticEnergyBeforeLoss = double.NaN, lastInelasticEnergyAfterLoss = double.NaN;
         var lastInelasticDirection = new V3(double.NaN, double.NaN, double.NaN);
+        bool hasLastDecoherenceEvent = false; double lastDecoherenceDepth = double.NaN; // 260919Cl 追加
 
         while (e > ThresholdKev)
         {
@@ -1330,6 +1404,7 @@ public class MonteCarlo
             {
                 double rnd3 = Rnd.NextDouble();
                 double cosθ = SampleElasticScatteringCosTheta(e, parameters.ScreeningParameter, parameters.NearestNistElasticEnergyIndex), sinθ = Math.Sqrt(1 - cosθ * cosθ); // 260401Cl nistEnergyIndex 追加
+                if (IsThermalDiffuseElasticEvent(e, cosθ)) { hasLastDecoherenceEvent = true; lastDecoherenceDepth = d; } // 260919Cl 追加: 熱散漫成分なら源の深さをリセット
                 double φ = 2 * Math.PI * rnd3;
                 var (sinφ, cosφ) = Math.SinCos(φ);
                 double sinθcosφ = sinθ * cosφ, sinθsinφ = sinθ * sinφ;
@@ -1354,9 +1429,15 @@ public class MonteCarlo
             {
                 hasLastInelasticEvent = true;
                 lastInelasticDepth = d;
+                // hasLastDecoherenceEvent = true; lastDecoherenceDepth = d; // 260919Cl 追加 (同日改訂前): 非弾性散乱は常にコヒーレンスを壊す扱いだった
                 lastInelasticEnergyBeforeLoss = e;
                 lastInelasticDirection = new V3(vX, vY, vZ);
-                e = Math.Max(e - SampleInelasticLossKev(e, parameters.MeanInelasticLossKev), 0.0); // (260331Ch)
+                // e = Math.Max(e - SampleInelasticLossKev(e, parameters.MeanInelasticLossKev), 0.0); // (260331Ch) 260919Cl 変更前
+                var lossKev = SampleInelasticLossKev(e, parameters.MeanInelasticLossKev); // 260919Cl 変更: 損失を先に決め、局在判定に使う
+                // 260919Cl 追加: 非弾性散乱は運動量移行 (局在) で判定。内殻/高損失は常に、価電子励起は q > q_c の割合だけ源をリセットする
+                var pDecoherence = InelasticDecoherenceProbability(e, lossKev);
+                if (pDecoherence >= 1 || (pDecoherence > 0 && Rnd.NextDouble() < pDecoherence)) { hasLastDecoherenceEvent = true; lastDecoherenceDepth = d; } // p=0/1 では乱数を引かない
+                e = Math.Max(e - lossKev, 0.0);
                 lastInelasticEnergyAfterLoss = e;
             }
         }
@@ -1369,7 +1450,8 @@ public class MonteCarlo
             lastInelasticDepth,
             lastInelasticEnergyBeforeLoss,
             lastInelasticEnergyAfterLoss,
-            lastInelasticDirection);
+            lastInelasticDirection,
+            hasLastDecoherenceEvent, lastDecoherenceDepth); // 260919Cl 追加
     }
 
 }

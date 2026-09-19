@@ -116,13 +116,18 @@ public partial class BetheMethod
     public bool UseNonLocalAbsorption { get; set; }
 
     // 260316Cl 追加
-    /// <summary>
-    /// EBSD計算で TDS バックグラウンドを含めるかどうか。
-    /// true の場合、Bloch波から TDS により失われた電子がインコヒーレントに
-    /// 後方脱出する効果を滑らかなバックグラウンドとして加算する。
-    /// 重い元素ではバックグラウンドが相対的に大きく、菊池バンドのコントラストが低下する。
-    /// </summary>
+    //     /// <summary>
+    //     /// EBSD計算で TDS バックグラウンドを含めるかどうか。
+    //     /// true の場合、Bloch波から TDS により失われた電子がインコヒーレントに
+    //     /// 後方脱出する効果を滑らかなバックグラウンドとして加算する。
+    //     /// 重い元素ではバックグラウンドが相対的に大きく、菊池バンドのコントラストが低下する。
+    //     /// </summary> // 260919Cl 変更前の summary (加算モデル)
+    /// <summary>260919Cl 変更: true のとき、局所後方散乱源 Σσ_n|ψ(r_n)|² を後方半球で積分した非局所吸収ポテンシャル U'_back による源 (2π/k)ψ†U'_backψ で置き換える (加算ではない。同じ物理断面積の非局所版)。</summary>
     public bool IncludeTDSBackground { get; set; }
+    /// <summary>260919Cl 追加: 吸収 (熱散漫散乱) で干渉性チャネルから失われたフラックスを、菊池変調を持たない拡散背景として再注入する (フラックス保存)。
+    /// Bloch 波の計算では吸収された電子は消えるが、実際には検出器に届く。再注入量は方向 k に属する (相反定理) ので、晶帯軸の相対輝度への効果は小さく結晶依存
+    /// (Si では不変、Fe3O4 では僅かに明るくなる)。「晶帯軸を抑える」効果は無い。</summary>
+    public bool IncludeAbsorbedFluxBackground { get; set; }
 
     //260613Cl 追加
     private static ElasticIonModel _elasticIonModel = ElasticIonModel.Neutral;
@@ -639,11 +644,13 @@ public partial class BetheMethod
     /// crystal-fixed master 向けの EBSD 計算を開始する。
     /// ebsdNew が本命になったので、以後はこちらを使う。
     /// </summary>
-    public void RunEBSDNew(int maxNumOfBloch, double[] voltages, Matrix3D rotation, double[] thickness, Vector3DBase[] beamDirections, Solver solver = Solver.Auto, int thread = 1, bool useNonLocalAbsorption = false, bool includeTDSBackground = false)
+    // public void RunEBSDNew(int maxNumOfBloch, double[] voltages, Matrix3D rotation, double[] thickness, Vector3DBase[] beamDirections, Solver solver = Solver.Auto, int thread = 1, bool useNonLocalAbsorption = false, bool includeTDSBackground = false) // 260919Cl 変更前
+    public void RunEBSDNew(int maxNumOfBloch, double[] voltages, Matrix3D rotation, double[] thickness, Vector3DBase[] beamDirections, Solver solver = Solver.Auto, int thread = 1, bool useNonLocalAbsorption = false, bool includeTDSBackground = false, bool includeAbsorbedFluxBackground = false) // 260919Cl includeAbsorbedFluxBackground 追加
     {
         MaxNumOfBloch = maxNumOfBloch;
         UseNonLocalAbsorption = useNonLocalAbsorption;
         IncludeTDSBackground = includeTDSBackground;
+        IncludeAbsorbedFluxBackground = includeAbsorbedFluxBackground; // 260919Cl 追加
 
         BaseRotation = new Matrix3D(rotation);
         BeamDirections = beamDirections;
@@ -685,13 +692,15 @@ public partial class BetheMethod
     }
 
     /// <summary>原子位置とビーム集合から、EBSD solver に渡す位相因子行列を column-major で作る。</summary>
-    private Complex[] CreatePhaseFactors((double x, double y, double z, double sigma)[] atomArray, int nAtoms, Beam[] beams)
+    // private Complex[] CreatePhaseFactors((double x, double y, double z, double sigma)[] atomArray, int nAtoms, Beam[] beams) // 260919Cl 変更前 (sigma は未使用)
+    private Complex[] CreatePhaseFactors((double x, double y, double z)[] atomArray, int nAtoms, Beam[] beams) // 260919Cl sigma を除去
     {
         var beamCount = beams?.Length ?? 0;
         var phaseNG = Shared.Rent(nAtoms * beamCount); // (260321Ch) MasterPattern の代表方向前計算では ArrayPool を使って GC 負荷を下げる
         for (int n = 0; n < nAtoms; n++)
         {
-            var (xn, yn, zn, _) = atomArray[n];
+            // var (xn, yn, zn, _) = atomArray[n]; // 260919Cl 変更前 (sigma 付き 4 要素)
+            var (xn, yn, zn) = atomArray[n]; // 260919Cl sigma を除去
             for (int g = 0; g < beamCount; g++)
             {
                 var (h, k, l) = beams[g].Index;
@@ -1330,19 +1339,19 @@ public partial class BetheMethod
         #endregion
 
         #region 原子情報の事前準備
-        var atomSites = new List<(double x, double y, double z, double sigma)>();
+        // var atomSites = new List<(double x, double y, double z, double sigma)>(); // 260919Cl 変更前: sigma = Z^1.7·Occ (無次元の任意重み。TDS 項 2π/k·U'_back と 7〜8 桁ずれていた)
+        var atomSites = new List<(double x, double y, double z)>(); // 260919Cl 変更: σ_n は電圧に依存するので電圧ループ内で sigmaArray に入れる
         foreach (var atoms in Crystal.Atoms)
         {
-            double sigma = Math.Pow(atoms.AtomicNumber, 1.7) * atoms.Occ;
             foreach (var atom in atoms.Atom)
-                atomSites.Add((atom.X, atom.Y, atom.Z, sigma));
+                atomSites.Add((atom.X, atom.Y, atom.Z));
         }
         var atomArray = atomSites.ToArray();
         int nAtoms = atomArray.Length;
 
         var sigmaArray = new double[nAtoms];
-        for (int n = 0; n < nAtoms; n++)
-            sigmaArray[n] = atomArray[n].sigma;
+        // for (int n = 0; n < nAtoms; n++) // 260919Cl 変更前
+        //     sigmaArray[n] = atomArray[n].sigma;
 
         double[][] ebsdBackground = null;
         #endregion
@@ -1372,6 +1381,31 @@ public partial class BetheMethod
             var kvac = UniversalConstants.Convert.EnergyToElectronWaveNumber(AccVoltage);
             var u0 = getU(AccVoltage).Real.Real;
             uDictionary.Clear();
+
+            #region 260919Cl 追加: 後方散乱源の重み σ_n を物理スケールで計算
+            // σ_n = (2π/k)·(γ_rel/πV)·Occ_n·f'_n,back(0)  [1/nm]
+            //   f'_n,back(0) = 後方半球 (θ=π/2..π) で積分した TDS 吸収形状因子 (CreateMasterPatternMuBack の g=h=0 成分と同じ積分)。
+            //   これで Σ_n σ_n = (2π/k)·U'_0,back となり、局所源 Σσ_n|ψ(r_n)|² と非局所源 (2π/k)ψ†U'_backψ が同じ単位・同じ規格化になる
+            //   (平面波極限で両者 = μ_back·t)。旧 Z^1.7 は無次元の任意重みで、非局所項が 1e-7 倍程度にしか見えなかった。
+            //   DW 因子 [1−exp(−2M)] は後方散乱角 (s≈k0) では 1 に飽和するので、B 未設定 (m=0) の原子には下限 1e-3 nm² を入れて
+            //   「後方散乱源が 0 になる」非物理を避ける (10 kV 以上で exp(−m·k0²) ≤ 1e-3 なので積分値は DW=1 と実質同じ)。
+            {
+                var gammaRel = 1 + UniversalConstants.e0 * AccVoltage * 1E3 / UniversalConstants.m0 / UniversalConstants.c2;
+                double sigmaScale = 2 * Math.PI / kvac * gammaRel / Math.PI / Crystal.Volume;
+                var zeroVec = new Vector3DBase(0, 0, 0);
+                int siteIndex = 0;
+                foreach (var atoms in Crystal.Atoms)
+                {
+                    double m = Math.Max(atoms.Dsf?.BisoEffective ?? 0, DiffuseScatteringFactor.BisoFloorNm2); // getU の g=0 と同じ m [nm²] (選択規則は Dsf.BisoEffective に集約)。B 未設定の原子は下限で持ち上げるので、その場合 Σσ_n は (2π/k)U'_0,back (=0) より大きい
+                    int sub = _elasticIonModel == ElasticIonModel.Neutral ? 0 : atoms.SubNumberElectron;
+                    var fBack = AtomStatic.ElectronScatteringPeng[atoms.AtomicNumber][sub].FactorImaginaryAnnular(AccVoltage, zeroVec, m, Math.PI / 2, Math.PI, 30, 12);
+                    double sigma = sigmaScale * atoms.Occ * fBack;
+                    foreach (var _ in atoms.Atom)
+                        sigmaArray[siteIndex++] = sigma;
+                }
+            }
+            #endregion
+            double sigmaSum = 0; foreach (var v in sigmaArray) sigmaSum += v; // 260919Cl 追加: Σσ_n = (2π/k)U'_0,back。吸収フラックス再注入の単位深さあたり強度
 
             var referenceSurface = Vector3DBase.Normarize(Surface); // (260321Ch) 新経路では固定表面系を基準に、等価な beam / surface 条件へ変換する
             var referenceBeamDirection = Vector3DBase.Normarize(-referenceSurface); // (260321Ch) 固定表面に対する法線出射方向
@@ -1651,6 +1685,14 @@ public partial class BetheMethod
                                 background = ComputeTDSMatrixBackground(bLen, eigenValues, eigenVectors, alpha, muBackFiltered, tdsCoeff, Thicknesses);
                         }
 
+                        // 260919Cl 追加: 吸収で失われたフラックスを拡散背景として再注入 (局所源・非局所源のどちらにも同じ量を足す)
+                        if (IncludeAbsorbedFluxBackground)
+                        {
+                            var diffuse = ComputeAbsorbedFluxBackground(bLen, eigenValues, eigenVectors, alpha, sigmaSum, Thicknesses);
+                            var dst = background ?? intensity; // 非局所源が有るときは intensity は使われない (Disk 格納部で background が優先)
+                            for (int t = 0; t < diffuse.Length; t++) dst[t] += diffuse[t];
+                        }
+
                         if (background != null)
                             ebsdBackground[i] = background;
 
@@ -1728,8 +1770,10 @@ public partial class BetheMethod
                     if (ebsdIntensity[r] is not null)
                     {
                         var signal = ebsdIntensity[r][t];
-                        var tds = ebsdBackground?[r]?[t] ?? 0;
-                        amplitudes[r] = new Complex(Math.Sqrt(Math.Max(0, signal + tds)), 0);
+                        // var tds = ebsdBackground?[r]?[t] ?? 0; // 260919Cl 変更前: 局所源 + 非局所源を加算していた (同じ後方散乱過程の二重計上)
+                        // amplitudes[r] = new Complex(Math.Sqrt(Math.Max(0, signal + tds)), 0); // 260919Cl 変更前
+                        var value = ebsdBackground?[r]?[t] ?? signal; // 260919Cl 変更: 非局所源 (2π/k·ψ†U'_backψ) が有ればそれで局所源 Σσ_n|ψ(r_n)|² を置換する
+                        amplitudes[r] = new Complex(Math.Sqrt(Math.Max(0, value)), 0);
                     }
 
                 Disks[vIndex][t] = new CBED_Disk([0, 0, 0], new Vector3DBase(0, 0, 0),
@@ -1891,6 +1935,66 @@ public partial class BetheMethod
 
 
     /// <summary>
+    /// 260919Cl 追加: 吸収で干渉性チャネルから失われたフラックスの、拡散背景としての寄与 D(t) (各厚さ、tLen 個)。
+    /// 干渉性の波の単位胞平均密度 N(z) = Σ_g |ψ_g(z)|² = Re Σ_jj' T_jj' exp(λ_jj' z)、T_jj' = α_j conj(α_j') Σ_g C_g^j conj(C_g^j')、
+    /// λ_jj' = 2πi(γ_j − conj γ_j') (EBSDSolverManaged と同じ)。N(0) = 1 で吸収により単調減少する。
+    /// 失われた分 1 − N(z) は方向情報を持たない拡散電子として、原子で平均の後方散乱率 Σσ_n を持つ:
+    ///   D(t) = Σσ_n ∫_0^t (1 − N(z)) dz = Σσ_n [ t − Re Σ_jj' T_jj' F_jj'(t) ]。
+    /// チャネリングが無い極限 (|ψ|²≡1) では干渉性項と合わせて dI/dz = Σσ_n となり、フラックスが保存する。
+    /// 晶帯軸では 1s 状態の吸収が大きく N が速く減るので D も大きい。再注入は同じ方向 k に足されるため、晶帯軸の相対輝度はほぼ変わらない (実測: Si 不変、Fe3O4 で僅増)。
+    /// </summary>
+    private static double[] ComputeAbsorbedFluxBackground(int bLen, Complex[] eigenValues, Complex[] eigenVectors, Complex[] alpha, double sigmaSum, double[] thicknesses)
+    {
+        int tLen = thicknesses.Length;
+        var result = new double[tLen];
+        if (!(sigmaSum > 0) || bLen <= 0) return result;
+        int bLen2 = bLen * bLen;
+        var T = Shared.Rent(bLen2); // T_jj' = α_j conj(α_j') Σ_g C_g^j conj(C_g^j')。Hermitian (T_j'j = conj T_jj') なので jp ≤ j だけ作る (ArrayPool: 方向ごとの並列呼び出し)
+        var expGamma = Shared.Rent(bLen * tLen); // E[j,t] = exp(2πi γ_j t)。exp(λ_jj' t) = E[j,t]·conj(E[j',t]) なので指数は bLen·tLen 回で済む
+        var sum = Shared.Rent(tLen);
+        try
+        {
+            for (int j = 0; j < bLen; j++)
+            {
+                var aj = alpha[j];
+                for (int jp = 0; jp <= j; jp++)
+                {
+                    Complex g = 0;
+                    for (int gi = 0; gi < bLen; gi++)
+                        g += eigenVectors[j * bLen + gi] * eigenVectors[jp * bLen + gi].Conjugate();
+                    T[j * bLen + jp] = aj * alpha[jp].Conjugate() * g;
+                }
+            }
+            for (int j = 0; j < bLen; j++)
+                for (int t = 0; t < tLen; t++)
+                    expGamma[j * tLen + t] = Exp(TwoPiI * eigenValues[j] * thicknesses[t]);
+            // D(t)/Σσ = t − Re Σ T F = Re Σ_jj' T_jj' (t − F_jj'(t))  (Σ T = N(0) = 1 を使う。t と ΣTF を別々に持つと弱吸収で桁落ちする)
+            //   t − F = t − (e^{λt} − 1)/λ。|λt| が小さいときは級数 −(λt²/2)(1 + λt/3 + (λt)²/12) で評価 (λ=0 で厳密に 0)。
+            //   Hermitian 対称 (T_j'j = conj T_jj'、(t−F)_j'j = conj (t−F)_jj') により実部は対角 + 2×下三角。
+            Array.Clear(sum, 0, tLen);
+            for (int j = 0; j < bLen; j++)
+                for (int jp = 0; jp <= j; jp++)
+                {
+                    var lam = TwoPiI * (eigenValues[j] - eigenValues[jp].Conjugate());
+                    var tj = jp == j ? T[j * bLen + jp] : 2 * T[j * bLen + jp];
+                    for (int t = 0; t < tLen; t++)
+                    {
+                        double thick = thicknesses[t];
+                        var lt = lam * thick;
+                        Complex tMinusF = lt.MagnitudeSquared() < 1e-6
+                            ? -(lt * thick / 2) * (1 + lt / 3 + lt * lt / 12)
+                            : thick - (expGamma[j * tLen + t] * expGamma[jp * tLen + t].Conjugate() - One) / lam;
+                        sum[t] += tj * tMinusF;
+                    }
+                }
+            for (int t = 0; t < tLen; t++)
+                result[t] = sigmaSum * Math.Max(0.0, sum[t].Real);
+        }
+        finally { Shared.Return(T); Shared.Return(expGamma); Shared.Return(sum); }
+        return result;
+    }
+
+    /// <summary>
     /// STEM 整合型 TDS バックグラウンドを U' 行列形式で計算する。 (260316Cl 追加)
     /// EigenEnabled=false の Managed フォールバック時に使用。
     /// EigenEnabled=true の場合は _EBSDSolverWithTDS (C++ Eigen) で一括計算される。
@@ -1917,7 +2021,9 @@ public partial class BetheMethod
     ///   STEM: I_TDS = ∫ tc†(z) · U'_det · tc(z) dz  (検出器角度範囲)
     ///   EBSD: I_TDS = ∫ tc†(z) · U'_back · tc(z) dz (後方散乱半球)
     ///   同じ F 行列を使うため、コヒーレント信号と同じ 1/μ スケーリングを持ち、
-    ///   信号と同じオーダーの強度が得られる。
+    ///   信号と同じオーダーの強度が得られる (260919Cl: σ_n の物理スケール化で実際にそうなった)。
+    /// 260919Cl 注記: σ_n を物理スケール ((2π/k)(γ/πV)Occ·f'_back(0)) にしたので、本関数の出力は局所源の非局所版として
+    ///   同じ単位になる。IncludeTDSBackground=true では加算ではなく局所源を置換する (Disk への格納部参照)。
     /// </summary>
     private static double[] ComputeTDSMatrixBackground(
         int bLen, Complex[] eigenValues, Complex[] eigenVectors, Complex[] alpha,

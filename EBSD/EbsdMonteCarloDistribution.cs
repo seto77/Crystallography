@@ -20,6 +20,18 @@ public sealed class EbsdMonteCarloDistribution
     /// <summary>model 2 用。detector bin の absolute 強度を保った depth-slice 重み。260325Ch 追加</summary>
     public double[,][] BinAbsoluteSliceWeights { get; }
 
+    /// <summary>260919Cl 追加: 表面非晶質層の厚さ [nm] (0 = 無し)。輸送は結晶と同じ組成・密度で計算し、層内に源を持つ電子だけを「変調なし」に振り分ける。</summary>
+    public double AmorphousLayerNm { get; }
+    /// <summary>260919Cl 追加: ビンごとの、干渉性後方散乱源が表面非晶質層内にある電子の割合 (0..1)。合成時に (1−fA)·変調あり + fA·方向平均 として使う。</summary>
+    public double[,] BinAmorphousFraction { get; }
+    /// <summary>260919Cl 追加: 非晶質層が有効 (厚さ &gt; 0) か。false のとき合成器は平面平均の計算を省く。</summary>
+    public bool HasAmorphousLayer => AmorphousLayerNm > 0; // 260919Cl (/simplify) 派生値にする
+    /// <summary>260919Cl 追加: 全ビン合算の λ(E) による深さ重み (エネルギー因子は 1、添字 ei*DepthCount+di、model 0/1 用の累積形)。
+    /// 非晶質層内の源の基準強度 ⟨M⟩(e) をエネルギーごとに作るのに使い、ビンごとの深さフィットの揺らぎが一様成分のムラにならないようにする。非晶質層が無い (厚さ 0) ときは null。</summary>
+    public double[] GlobalDepthWeights { get; }
+    /// <summary>260919Cl 追加: 同上の depth-slice 区間質量形 (model 2 用)。非晶質層が無いときは null。</summary>
+    public double[] GlobalDepthSliceWeights { get; }
+
     /// <summary>この分布を作った MasterPattern の energy 数。260727Cl 追加</summary>
     public int EnergyCount { get; }
 
@@ -152,7 +164,8 @@ public sealed class EbsdMonteCarloDistribution
         double detX, double detY, double detZ,
         double halfWidth, double halfHeight,
         double[] energies, double[] depths,
-        int binCount = 8)
+        int binCount = 8,
+        double amorphousLayerNm = 0) // 260919Cl 追加: 表面非晶質層の厚さ [nm]。層内の源は変調なし成分、結晶内の深さは層厚を引く
     {
         //260725Ch: 下流の bilinear bin 補間は常に隣接 2×2 ビンと非空の energy/depth 軸を前提とする
         ArgumentNullException.ThrowIfNull(bseList);
@@ -175,6 +188,12 @@ public sealed class EbsdMonteCarloDistribution
             for (int j = 0; j < binCount; j++)
                 bins[i, j] = new List<(double, double)>();
 
+        var binTotals = new int[binCount, binCount]; // 260919Cl 追加: 非晶質層内の源も含めたビンの電子数
+        var amorphousCounts = new int[binCount, binCount]; // 260919Cl 追加
+        var binEnergies = new List<double>[binCount, binCount]; // 260919Cl 追加: 非晶質層内の源も含む全電子のエネルギー (エネルギー分布のフィットに使う)
+        for (int i = 0; i < binCount; i++) for (int j = 0; j < binCount; j++) binEnergies[i, j] = new List<double>();
+        var allCrystalline = new List<(double depth, double energy)>(); // 260919Cl 追加: 結晶内の源が少ないビンの λ(E) フォールバック用 (全ビン合算)
+        if (!(amorphousLayerNm > 0) || !double.IsFinite(amorphousLayerNm)) amorphousLayerNm = 0; // 260919Cl 追加
         foreach (var (depth, vec, energy) in bseList)
         {
             // double dDenom = vec.Y * sinDet + vec.Z * cosDet;
@@ -206,37 +225,60 @@ public sealed class EbsdMonteCarloDistribution
 
             int bi = Math.Clamp((int)((px + 1) * 0.5 * binCount), 0, binCount - 1);
             int bj = Math.Clamp((int)((1 - py) * 0.5 * binCount), 0, binCount - 1);
-            bins[bi, bj].Add((depth, energy));
+            binTotals[bi, bj]++; // 260919Cl 追加
+            binEnergies[bi, bj].Add(energy); // 260919Cl 追加
+            if (depth < amorphousLayerNm) { amorphousCounts[bi, bj]++; continue; } // 260919Cl 追加: 層内の源は菊池変調を持たない一様成分として数える
+            // bins[bi, bj].Add((depth, energy)); // 260919Cl 変更前
+            bins[bi, bj].Add((depth - amorphousLayerNm, energy)); // 260919Cl 変更: 結晶内の深さは結晶表面 (層の底) から測る
+            allCrystalline.Add((depth - amorphousLayerNm, energy)); // 260919Cl 追加
         }
 
         BinWeights = new double[binCount, binCount][];
         BinAbsoluteSliceWeights = new double[binCount, binCount][]; // (260325Ch) model 2 用
+        AmorphousLayerNm = amorphousLayerNm; BinAmorphousFraction = new double[binCount, binCount]; // 260919Cl 追加
         int eLen = energies.Length, dLen = depths.Length;
         EnergyCount = eLen; DepthCount = dLen; // 260727Cl 追加: 消費側が格子一致を検査できるようにする
 
         // 260602Cl 変更: 64 ビンは互いに独立 (distinct な BinWeights[bi,bj]/BinAbsoluteSliceWeights[bi,bj] へ書く) なので
         //   Parallel.For 化。bins への集約 (上の foreach) は逐次のまま、ここはフィット段だけ並列化する。
+        // 260919Cl 追加: 全ビン合算の λ(E) 多項式。結晶内の源が 10 本未満のビン (厚い非晶質層・検出器端) で使う
+        bool hasGlobalLambda = allCrystalline.Count >= 10;
+        double gla = 1E6, glb = 0, glc = 0; // λ→∞ = 深さ一様 (合算でも足りないときのフォールバック)
+        if (hasGlobalLambda) FitLambdaFromData(allCrystalline, energies, out gla, out glb, out glc);
+        // 260919Cl 追加: 合算 λ(E) の深さ重み (エネルギー因子 1)。合成器で非晶質源の基準強度 ⟨M⟩(e) を作るのに使う
+        if (amorphousLayerNm > 0) // (/simplify) 非晶質層が無ければ使われないので作らない
+        {
+            var ones = new double[eLen]; Array.Fill(ones, 1.0);
+            GlobalDepthWeights = new double[eLen * dLen]; GlobalDepthSliceWeights = new double[eLen * dLen];
+            FillBinWeights(GlobalDepthWeights, energies, depths, ones, gla, glb, glc, useSliceMass: false, totalScale: 1.0);
+            FillBinWeights(GlobalDepthSliceWeights, energies, depths, ones, gla, glb, glc, useSliceMass: true, totalScale: 1.0);
+        }
         Parallel.For(0, binCount * binCount, (int idx) =>
         {
             int bi = idx / binCount, bj = idx % binCount;
             var binData = bins[bi, bj];
             var weights = new double[eLen * dLen];
             var absoluteSliceWeights = new double[eLen * dLen]; // (260325Ch) model 2 用
-            double binFraction = bseList.Length > 0 ? (double)binData.Count / bseList.Length : 0.0; // (260325Ch)
+            // double binFraction = bseList.Length > 0 ? (double)binData.Count / bseList.Length : 0.0; // (260325Ch) 260919Cl 変更前
+            int binTotal = binTotals[bi, bj]; // 260919Cl 追加
+            double binFraction = bseList.Length > 0 ? (double)binTotal / bseList.Length : 0.0; // 260919Cl 変更: 重みの総量はビンの全電子 (非晶質分は合成時に fA で振り分ける)
+            BinAmorphousFraction[bi, bj] = binTotal > 0 ? (double)amorphousCounts[bi, bj] / binTotal : 0.0; // 260919Cl 追加
 
-            if (binData.Count < 10)
+            // if (binData.Count < 10) // 260919Cl 変更前: 結晶内の源が 10 本未満だと一様フォールバック (0 本なら重みゼロ)。厚い非晶質層で隣接ビンと重みの作り方が変わり 8×8 のブロック状ムラになった
+            if (binTotal < 10) // 260919Cl 変更: ビンの全電子が 10 本未満のときだけ一様フォールバック
             {
-                double uniform = binData.Count > 0 ? 1.0 / (eLen * dLen) : 0.0;
+                double uniform = binTotal > 0 ? 1.0 / (eLen * dLen) : 0.0; // 260919Cl 変更: binData.Count → binTotal (全電子が層内でも重みを持つ)
                 Array.Fill(weights, uniform);
 
-                double absoluteUniform = binData.Count > 0 ? binFraction / (eLen * dLen) : 0.0; // (260325Ch)
+                double absoluteUniform = binTotal > 0 ? binFraction / (eLen * dLen) : 0.0; // (260325Ch) 260919Cl binData.Count → binTotal
                 Array.Fill(absoluteSliceWeights, absoluteUniform);
             }
             else
             {
                 // FitBinDistribution(binData, beamEnergy, energies, depths, weights); // (260325Ch) 旧実装
                 // FitBinDistribution(binData, beamEnergy, energies, depths, absoluteSliceWeights, useSliceMass: true, totalScale: binFraction); // 260602Cl 変更前: 同一 binData に 2 回呼び meanE/sigma/gE/lambda を二重計算
-                FitBinDistribution(binData, beamEnergy, energies, depths, weights, absoluteSliceWeights, binFraction); // 260602Cl: 共通 fit から weights と absoluteSliceWeights を両方埋める
+                // FitBinDistribution(binData, beamEnergy, energies, depths, weights, absoluteSliceWeights, binFraction); // 260602Cl: 共通 fit から weights と absoluteSliceWeights を両方埋める // 260919Cl 変更前
+                FitBinDistribution(binData, binEnergies[bi, bj], energies, depths, weights, absoluteSliceWeights, binFraction, hasGlobalLambda, gla, glb, glc); // 260919Cl 変更: エネルギーは全電子、λ は結晶内の源 (少なければ全ビン合算)
             }
 
             BinWeights[bi, bj] = weights;
@@ -250,29 +292,41 @@ public sealed class EbsdMonteCarloDistribution
     //   これらは useSliceMass/totalScale に依存しない共通部 (Stage1) なので 1 回だけ計算し、
     //   weights の書き込み (Stage2) のみ 2 種類行う。物理的な値は旧 2 回呼びと厳密一致。
     // 旧シグネチャ: FitBinDistribution(data, beamEnergy, energies, depths, weights, bool useSliceMass=false, double totalScale=1.0)
+    // private static void FitBinDistribution(List<(double depth, double energy)> data, double beamEnergy, double[] energies, double[] depths, double[] weights, double[] absoluteSliceWeights, double binFraction) // 260919Cl 変更前のシグネチャ
+    /// <summary>260919Cl 変更: エネルギー分布は非晶質層内の源も含む全電子 (allEnergies) から、λ(E) は結晶内の源 (data) から作る。
+    /// 結晶内の源が 10 本未満なら全ビン合算の λ(E) (hasGlobalLambda) を使い、それも無ければ深さ一様 (λ→∞)。
+    /// 旧 Stage1 の本体は ComputeEnergyGaussian / FitLambdaFromData へ切り出した (中身は同じ)。</summary>
     private static void FitBinDistribution(
-        List<(double depth, double energy)> data,
-        double beamEnergy,
-        double[] energies, double[] depths,
+        List<(double depth, double energy)> data, List<double> allEnergies,
+        double[] energies, double[] depths, // 260919Cl (/simplify2) 未使用だった beamEnergy を除去
         double[] weights,             // useSliceMass=false, totalScale=1.0 相当
         double[] absoluteSliceWeights, // useSliceMass=true,  totalScale=binFraction 相当
-        double binFraction)
+        double binFraction, bool hasGlobalLambda, double gla, double glb, double glc)
     {
-        int eLen = energies.Length; // 260602Cl: dLen は Stage2 (FillBinWeights) に移ったのでここでは不要
-        int count = data.Count;
-        if (count == 0) return;
+        if (allEnergies.Count == 0) return;
+        var gE = ComputeEnergyGaussian(allEnergies, energies);
+        double la = gla, lb = glb, lc = glc;
+        if (data.Count >= 10) FitLambdaFromData(data, energies, out la, out lb, out lc);
+        else if (!hasGlobalLambda) { la = 1E6; lb = 0; lc = 0; }
+        FillBinWeights(weights, energies, depths, gE, la, lb, lc, useSliceMass: false, totalScale: 1.0);
+        FillBinWeights(absoluteSliceWeights, energies, depths, gE, la, lb, lc, useSliceMass: true, totalScale: binFraction);
+    }
 
-        #region Stage1: 共通 fit パラメータ (meanE, sigmaL/R, gE[], lambda 多項式 la/lb/lc)
+    /// <summary>260919Cl 追加 (旧 FitBinDistribution Stage1 前半): 電子のエネルギー分布を左右非対称ガウシアンで近似し、energies 格子上の重み gE を返す。</summary>
+    private static double[] ComputeEnergyGaussian(List<double> electronEnergies, double[] energies)
+    {
+        int eLen = energies.Length;
+        int count = electronEnergies.Count;
         double sumE = 0;
-        foreach (var d in data) sumE += d.energy;
+        foreach (var e in electronEnergies) sumE += e;
         double meanE = sumE / count;
 
         double varL = 0, varR = 0;
         int nL = 0, nR = 0;
-        foreach (var d in data)
+        foreach (var e in electronEnergies)
         {
-            if (d.energy < meanE) { varL += (d.energy - meanE) * (d.energy - meanE); nL++; }
-            else { varR += (d.energy - meanE) * (d.energy - meanE); nR++; }
+            if (e < meanE) { varL += (e - meanE) * (e - meanE); nL++; }
+            else { varR += (e - meanE) * (e - meanE); nR++; }
         }
         double sigmaL = nL > 1 ? Math.Sqrt(varL / nL) : 0.5;
         double sigmaR = nR > 1 ? Math.Sqrt(varR / nR) : 0.5;
@@ -292,6 +346,13 @@ public sealed class EbsdMonteCarloDistribution
             gE[ei] = Math.Exp(-dE * dE * inv2SigmaSq);
         }
 
+        return gE;
+    }
+
+    /// <summary>260919Cl 追加 (旧 FitBinDistribution Stage1 後半): エネルギー格子ごとの平均深さから λ(E) の 2 次多項式 la + lb·E + lc·E² を作る。</summary>
+    private static void FitLambdaFromData(List<(double depth, double energy)> data, double[] energies, out double la, out double lb, out double lc)
+    {
+        int eLen = energies.Length;
         double eStep = eLen > 1 ? Math.Abs(energies[0] - energies[^1]) / (eLen - 1) : 1.0;
         double halfStep = eStep * 0.5, e0 = energies[0];
 
@@ -343,20 +404,14 @@ public sealed class EbsdMonteCarloDistribution
         for (int ei = 0; ei < eLen; ei++)
             lambdaPerEnergy[ei] = depthCountPerEnergy[ei] > 3 ? Math.Max(1.0, depthSumPerEnergy[ei] / depthCountPerEnergy[ei]) : -1;
 
-        FitLambdaPolynomial(energies, lambdaPerEnergy, out double la, out double lb, out double lc);
-        #endregion
-
-        #region Stage2: 共通パラメータから 2 種の weights を書き込み
-        FillBinWeights(weights, energies, depths, gE, la, lb, lc, useSliceMass: false, totalScale: 1.0);
-        FillBinWeights(absoluteSliceWeights, energies, depths, gE, la, lb, lc, useSliceMass: true, totalScale: binFraction);
-        #endregion
+        FitLambdaPolynomial(energies, lambdaPerEnergy, out la, out lb, out lc);
     }
 
     /// <summary>
     /// 260602Cl 追加: 共通 fit パラメータ (gE, lambda 多項式 la/lb/lc) から 1 つの weights 配列を埋める。
     /// useSliceMass=false: 連続深さ重み g(E)·exp(-z/λ)/λ。
     /// useSliceMass=true : depth slice 区間質量 g(E)·(exp(-z_prev/λ) - exp(-z/λ))。
-    /// 旧 FitBinDistribution の weights 書き込み部 (Stage2) をそのまま切り出したもの。
+    /// 旧 FitBinDistribution の weights 書き込み部 (Stage2) をそのまま切り出したもの。(260919Cl: 分割時に誤って消した summary を復元)
     /// </summary>
     private static void FillBinWeights(
         double[] weights, double[] energies, double[] depths, double[] gE,
@@ -461,7 +516,8 @@ public sealed class EbsdMonteCarloDistribution
         c = ((s1 * s3 - s2 * s2) * r0 + (s1 * s2 - s0 * s3) * r1 + (s0 * s2 - s1 * s1) * r2) * invDet;
     }
 
-    public static (double energyLoss80, double depth99) ComputeRangesFromMC(
+    // public static (double energyLoss80, double depth99) ComputeRangesFromMC( // 260919Cl 変更前: エネルギー損失は 80 パーセンタイル
+    public static (double energyLoss95, double depth99) ComputeRangesFromMC( // 260919Cl 変更: エネルギー損失は 95 パーセンタイルまで
         (double Depth, V3 Vec, double Energy)[] bseList,
         double beamEnergy)
     {
@@ -477,25 +533,28 @@ public sealed class EbsdMonteCarloDistribution
             depths[i] = bseList[i].Depth;
         }
 
-        int idxLoss80 = Math.Min((int)(n * 0.8), n - 1);
+        // int idxLoss80 = Math.Min((int)(n * 0.8), n - 1); // 260919Cl 変更前
+        int idxLoss95 = Math.Min((int)(n * 0.95), n - 1); // 260919Cl 変更: 95 パーセンタイル
         int idxDepth99 = Math.Min((int)(n * 0.99), n - 1); // (260326Ch)
 
         // 260602Cl 変更: 80%/99% パーセンタイルのためのフルソート 2 回を QuickSelect (nth_element) に置換。
         //   QuickSelect.Execute(span, k, cmp) は span[k] に sorted index k の値を置く (前は <=, 後は >=) ので、
         //   Array.Sort 後の losses[idxLoss80]/depths[idxDepth99] と同一値。O(n log n) → 平均 O(n)。
         // Array.Sort(losses); Array.Sort(depths); // 260602Cl 変更前
-        QuickSelect.Execute(losses.AsSpan(), idxLoss80, static (a, b) => a.CompareTo(b));
+        QuickSelect.Execute(losses.AsSpan(), idxLoss95, static (a, b) => a.CompareTo(b));
         QuickSelect.Execute(depths.AsSpan(), idxDepth99, static (a, b) => a.CompareTo(b));
 
-        return (losses[idxLoss80], depths[idxDepth99]);
+        return (losses[idxLoss95], depths[idxDepth99]); // 260919Cl idxLoss80 → idxLoss95
     }
 
     public static (double[] energies, double energyStart, double energyEnd, double energyStep,
                     double[] depths, double depthStart, double depthEnd, double depthStep)
-        ComputeGridFromRanges(double beamEnergy, double energyLoss80, double depth99)
+        // ComputeGridFromRanges(double beamEnergy, double energyLoss80, double depth99) // 260919Cl 変更前
+        ComputeGridFromRanges(double beamEnergy, double energyLoss95, double depth99) // 260919Cl 変更: 第 2 引数は 95 パーセンタイルのエネルギー損失
     {
-        int numEnergyLevels = 8;
-        double rawEnergyStep = energyLoss80 / (numEnergyLevels - 1);
+        // int numEnergyLevels = 8; // 260919Cl 変更前
+        int numEnergyLevels = 16; // 260919Cl 変更: 8 → 16 段
+        double rawEnergyStep = energyLoss95 / (numEnergyLevels - 1); // 260919Cl energyLoss80 → energyLoss95
         double energyStep = Math.Max(0.1, Math.Round(rawEnergyStep / 0.1) * 0.1);
         double energyStart = beamEnergy;
         double energyEnd = Math.Round((beamEnergy - energyStep * (numEnergyLevels - 1)) / 0.1) * 0.1;

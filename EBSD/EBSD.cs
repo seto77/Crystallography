@@ -27,7 +27,8 @@ public class EBSD
             BetheMethod.Solver solver = BetheMethod.Solver.Auto,
             int thread = 1,
             bool useNonLocalAbsorption = false,
-            bool includeTDSBackground = false)
+            bool includeTDSBackground = false,
+            bool includeAbsorbedFluxBackground = false) // 260919Cl 追加
         {
             Crystal = crystal ?? throw new ArgumentNullException(nameof(crystal));
             MaxNumOfBloch = maxNumOfBloch;
@@ -39,6 +40,7 @@ public class EBSD
             Thread = thread;
             UseNonLocalAbsorption = useNonLocalAbsorption;
             IncludeTDSBackground = includeTDSBackground;
+            IncludeAbsorbedFluxBackground = includeAbsorbedFluxBackground; // 260919Cl 追加
         }
 
         /// <summary>計算対象の結晶。</summary>
@@ -70,13 +72,16 @@ public class EBSD
 
         /// <summary>TDS 背景を含めるかどうか。</summary>
         public bool IncludeTDSBackground { get; }
+        /// <summary>260919Cl 追加: 吸収で失われたフラックスを拡散背景として再注入する。</summary>
+        public bool IncludeAbsorbedFluxBackground { get; }
 
         /// <summary>Bethe 計算側の進捗を規格化するための基準値。</summary>
         public int DivisionCount => Math.Max(1, GridSize * GridSize * Math.Max(1, Energies.Length) * 2); // (260321Ch) MasterPattern は常に全球計算する
 
         /// <summary> 非同期実行中に UI 側の配列が変更されても影響しないよう、配列も複製して保持する。 </summary>
         public MasterPatternBuildRequest Clone()
-            => new(Crystal, MaxNumOfBloch, Energies, Depths, GridSize, Solver, Thread, UseNonLocalAbsorption, IncludeTDSBackground);
+            // => new(Crystal, MaxNumOfBloch, Energies, Depths, GridSize, Solver, Thread, UseNonLocalAbsorption, IncludeTDSBackground); // 260919Cl 変更前
+            => new(Crystal, MaxNumOfBloch, Energies, Depths, GridSize, Solver, Thread, UseNonLocalAbsorption, IncludeTDSBackground, IncludeAbsorbedFluxBackground); // 260919Cl
     }
 
     /// <summary>MasterPattern 作成中の進捗情報。</summary>
@@ -227,7 +232,7 @@ public class EBSD
 
         try
         {
-            masterPatternBethe.RunEBSDNew(currentMasterPatternBuildRequest.MaxNumOfBloch, currentMasterPatternBuildRequest.Energies, Matrix3D.IdentityMatrix, currentMasterPatternBuildRequest.Depths, directions, currentMasterPatternBuildRequest.Solver, currentMasterPatternBuildRequest.Thread, currentMasterPatternBuildRequest.UseNonLocalAbsorption, currentMasterPatternBuildRequest.IncludeTDSBackground);
+            masterPatternBethe.RunEBSDNew(currentMasterPatternBuildRequest.MaxNumOfBloch, currentMasterPatternBuildRequest.Energies, Matrix3D.IdentityMatrix, currentMasterPatternBuildRequest.Depths, directions, currentMasterPatternBuildRequest.Solver, currentMasterPatternBuildRequest.Thread, currentMasterPatternBuildRequest.UseNonLocalAbsorption, currentMasterPatternBuildRequest.IncludeTDSBackground, currentMasterPatternBuildRequest.IncludeAbsorbedFluxBackground); // 260919Cl includeAbsorbedFluxBackground 追加
             return true;
         }
         catch

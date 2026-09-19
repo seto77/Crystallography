@@ -244,6 +244,70 @@ public sealed class EbsdPatternComposer
         return (pos, neg);
     }
 
+    /// <summary>260919Cl 追加: 各 (energy, depth) 平面の方向平均 (全セルの単純平均)。depthWidths を渡すと model 2 と同じ差分 max(0, M_d − M_{d−1})/Δt の平均。
+    /// 表面非晶質層に源を持つ電子 (菊池変調なし・電子 1 本あたりの強度は結晶内の源と同じ) の寄与に使う。</summary>
+    static (double[] pos, double[] neg) GetPlaneMeans(float[][] posPlanes, float[][] negPlanes, int dLen, double[] depthWidths)
+    {
+        double[] Means(float[][] planes)
+        {
+            var m = new double[planes.Length];
+            Parallel.For(0, planes.Length, w =>
+            {
+                var p = planes[w];
+                if (p == null || p.Length == 0) return;
+                int di = w % dLen;
+                var prev = depthWidths != null && di > 0 ? planes[w - 1] : null;
+                double invWidth = depthWidths != null ? 1.0 / depthWidths[di] : 1.0;
+                // (/simplify2) 六方格子の無効セルは plane に 0 が入るので、累積強度 p[i] > 0 のセルだけを平均に入れる (正方格子では全セル有効)
+                double sum = 0; long n = 0;
+                if (prev != null && prev.Length >= p.Length)
+                    for (int i = 0; i < p.Length; i++) { if (p[i] > 0) { sum += Math.Max(0.0, p[i] - prev[i]); n++; } }
+                else if (depthWidths != null)
+                    for (int i = 0; i < p.Length; i++) { if (p[i] > 0) { sum += p[i]; n++; } }
+                else
+                    for (int i = 0; i < p.Length; i++) { if (p[i] > 0) { sum += p[i]; n++; } }
+                m[w] = n > 0 ? sum / n * invWidth : 0;
+            });
+            return m;
+        }
+        return (Means(posPlanes), Means(negPlanes));
+    }
+
+    /// <summary>260919Cl 追加: 各 (energy, depth) の平面平均を、全ビン合算の深さ重み g で d 方向に平均した「エネルギーごとの基準値」(長さ eLen) にする。
+    /// 非晶質層内の源の強度は「同じエネルギーの結晶内の源の平均強度」と定義し、ビンごとの深さフィットには依存させない (依存させると電子数の少ないビンで一様成分がムラになる)。</summary>
+    static double[] CollapseToEnergyReference(double[] means, int dLen, double[] g)
+    {
+        int eLen = means.Length / dLen;
+        var o = new double[eLen]; // (/simplify2) d 方向に複製せず、エネルギーごとの値だけ返す (消費側は [ei] で引く)
+        for (int ei = 0; ei < eLen; ei++)
+        {
+            double num = 0, den = 0, plain = 0;
+            for (int di = 0; di < dLen; di++)
+            {
+                int w = ei * dLen + di;
+                double gw = g != null && w < g.Length ? g[w] : 0;
+                num += means[w] * gw; den += gw; plain += means[w];
+            }
+            o[ei] = den > 0 ? num / den : plain / dLen;
+        }
+        return o;
+    }
+
+    /// <summary>260919Cl 追加: 同じ MasterPattern・同じ MC 分布・同じ差分フラグなら基準値を再計算しない (パン・ズームのたびに 40M 要素を舐めない)。</summary>
+    private (MasterPattern Mp, EbsdMonteCarloDistribution Dist, bool Differential, double[] Pos, double[] Neg) planeMeanCache;
+    private (double[] pos, double[] neg) GetPlaneMeansCached(MasterPattern mp, EbsdMonteCarloDistribution dist, float[][] posPlanes, float[][] negPlanes, int dLen, double[] depthWidths)
+    {
+        bool differential = depthWidths != null;
+        if (ReferenceEquals(planeMeanCache.Mp, mp) && ReferenceEquals(planeMeanCache.Dist, dist) && planeMeanCache.Differential == differential && planeMeanCache.Pos != null)
+            return (planeMeanCache.Pos, planeMeanCache.Neg);
+        var r = GetPlaneMeans(posPlanes, negPlanes, dLen, depthWidths);
+        var g = differential ? dist.GlobalDepthSliceWeights : dist.GlobalDepthWeights;
+        var pos = CollapseToEnergyReference(r.pos, dLen, g);
+        var neg = CollapseToEnergyReference(r.neg, dLen, g);
+        planeMeanCache = (mp, dist, differential, pos, neg);
+        return (pos, neg);
+    }
+
     /// <summary>
     /// 構築済みルックアップテーブルと MC フィッティング結果を使い、
     /// 全エネルギー・深さの加重平均 EBSD パターンを計算する。260325Cl 追加
@@ -257,6 +321,9 @@ public sealed class EbsdPatternComposer
         double scaleW = view.ScaleW, scaleH = view.ScaleH, viewOffX = view.OffX, viewOffY = view.OffY; // 260724Cl 追加: ラスター=視野全体化に伴い、検出器正規化±1 は物理位置から算出
         double halfW = view.HalfWidth, halfH = view.HalfHeight; // 260724Cl 追加
         var (posPlanes, negPlanes) = GetAllPlanes(mp, eLen, dLen);//260718Cl
+        var amorphousFraction = dist.BinAmorphousFraction; // 260919Cl 追加: 表面非晶質層に源を持つ電子の割合 (ビンごと)
+        bool hasAmorphous = dist.HasAmorphousLayer; // 260919Cl 追加 (/simplify: 層が無ければ fA の双線形補間も省く)
+        var (posMeans, negMeans) = hasAmorphous ? GetPlaneMeansCached(mp, dist, posPlanes, negPlanes, dLen, null) : (null, null); // 260919Cl 追加: 変調なし成分用の方向平均
 
         //Array.Clear(values); //260725Ch: 下の Parallel.For が全画素を必ず代入するため、描画前の全配列ゼロクリアは不要
 
@@ -292,6 +359,7 @@ public sealed class EbsdPatternComposer
 
                     // ビン重みのバイリニア補間係数
                     double c00 = (1 - fx) * (1 - fy), c10 = fx * (1 - fy), c01 = (1 - fx) * fy, c11 = fx * fy;
+                    double fA = hasAmorphous ? c00 * amorphousFraction[bi0, bj0] + c10 * amorphousFraction[bi0 + 1, bj0] + c01 * amorphousFraction[bi0, bj0 + 1] + c11 * amorphousFraction[bi0 + 1, bj0 + 1] : 0; // 260919Cl 追加: 非晶質源の割合 (双線形)
 
                     var bw00 = dist.BinWeights[bi0, bj0];
                     var bw10 = dist.BinWeights[bi0 + 1, bj0];
@@ -303,6 +371,7 @@ public sealed class EbsdPatternComposer
 
                     // 全エネルギー・深さで加重合計
                     double sum = 0;
+                    double sumMean = 0; // 260919Cl 追加: 非晶質源 (変調なし) 用の方向平均強度
 
                     if (isHexGrid) // 260331Cl: 六方格子
                     {
@@ -318,6 +387,7 @@ public sealed class EbsdPatternComposer
                                 var plane = posZ ? posPlanes[wIdx] : negPlanes[wIdx];//260718Cl 事前展開した配列を参照
                                 if (plane == null || plane.Length == 0) continue;
                                 sum += weight * (hw0 * plane[hIdx0] + hw1 * plane[hIdx1] + hw2 * plane[hIdx2]);
+                                if (fA > 0) sumMean += weight * (posZ ? posMeans[ei] : negMeans[ei]); // 260919Cl 追加
                             }
                     }
                     else // 正方格子
@@ -337,9 +407,11 @@ public sealed class EbsdPatternComposer
                                 if (plane == null || plane.Length == 0) continue;
                                 double intensity = (mpW0 * plane[idx] + mpW1 * plane[idx + 1]) * mpFh1 + (mpW0 * plane[idx + gs] + mpW1 * plane[idx + gs + 1]) * mpFh;
                                 sum += weight * intensity;
+                                if (fA > 0) sumMean += weight * (posZ ? posMeans[ei] : negMeans[ei]); // 260919Cl 追加
                             }
                     }
-                    pVal0[i] = sum;
+                    // pVal0[i] = sum; // 260919Cl 変更前
+                    pVal0[i] = fA > 0 ? (1 - fA) * sum + fA * sumMean : sum; // 260919Cl 変更: 非晶質層内の源は方向平均 (変調なし) で寄与
                 }
             });
         }
@@ -461,6 +533,9 @@ public sealed class EbsdPatternComposer
         EnsureGlobalNormalizationFactorsModel1(mp); //260726Cl: 呼び出し側の Ensure 忘れを構造的に不可能にする (係数はキャッシュ済みなら再計算しない)
         var planeScaleFactors = globalNormalizationFactors;
         var (posPlanes, negPlanes) = GetAllPlanes(mp, eLen, dLen);//260718Cl
+        var amorphousFraction = dist.BinAmorphousFraction; // 260919Cl 追加: 表面非晶質層に源を持つ電子の割合 (ビンごと)
+        bool hasAmorphous = dist.HasAmorphousLayer; // 260919Cl 追加 (/simplify: 層が無ければ fA の双線形補間も省く)
+        var (posMeans, negMeans) = hasAmorphous ? GetPlaneMeansCached(mp, dist, posPlanes, negPlanes, dLen, null) : (null, null); // 260919Cl 追加: 変調なし成分用の方向平均
 
         //Array.Clear(values); //260725Ch: 全画素上書きのため不要
 
@@ -490,11 +565,13 @@ public sealed class EbsdPatternComposer
                     double fx = Math.Clamp(bx - bi0, 0, 1);
 
                     double c00 = (1 - fx) * (1 - fy), c10 = fx * (1 - fy), c01 = (1 - fx) * fy, c11 = fx * fy;
+                    double fA = hasAmorphous ? c00 * amorphousFraction[bi0, bj0] + c10 * amorphousFraction[bi0 + 1, bj0] + c01 * amorphousFraction[bi0, bj0 + 1] + c11 * amorphousFraction[bi0 + 1, bj0 + 1] : 0; // 260919Cl 追加: 非晶質源の割合 (双線形)
 
                     double[] bw00 = dist.BinWeights[bi0, bj0], bw10 = dist.BinWeights[bi0 + 1, bj0], bw01 = dist.BinWeights[bi0, bj0 + 1], bw11 = dist.BinWeights[bi0 + 1, bj0 + 1];
                     bool posZ = pPosZ0[i];
 
                     double sum = 0;
+                    double sumMean = 0; // 260919Cl 追加: 非晶質源 (変調なし) 用の方向平均強度
                     if (isHexGrid) // 260331Cl
                     {
                         int i3 = i * 3;
@@ -511,6 +588,7 @@ public sealed class EbsdPatternComposer
                                 var plane = posZ ? posPlanes[wIdx] : negPlanes[wIdx];//260718Cl 事前展開した配列を参照
                                 if (plane == null || plane.Length == 0) continue;
                                 sum += weight * (hw0 * plane[hIdx0] + hw1 * plane[hIdx1] + hw2 * plane[hIdx2]) * planeScaleFactor;
+                                if (fA > 0) sumMean += weight * (posZ ? posMeans[ei] : negMeans[ei]) * planeScaleFactor; // 260919Cl 追加
                             }
                     }
                     else
@@ -534,9 +612,11 @@ public sealed class EbsdPatternComposer
                                 double intensity = (mpW0 * plane[idx] + mpW1 * plane[idx + 1]) * mpFh1
                                                  + (mpW0 * plane[idx + gs] + mpW1 * plane[idx + gs + 1]) * mpFh;
                                 sum += weight * intensity * planeScaleFactor;
+                                if (fA > 0) sumMean += weight * (posZ ? posMeans[ei] : negMeans[ei]) * planeScaleFactor; // 260919Cl 追加
                             }
                     }
-                    pVal0[i] = sum;
+                    // pVal0[i] = sum; // 260919Cl 変更前
+                    pVal0[i] = fA > 0 ? (1 - fA) * sum + fA * sumMean : sum; // 260919Cl 変更: 非晶質層内の源は方向平均 (変調なし) で寄与
                 }
             });
         }
@@ -626,9 +706,13 @@ public sealed class EbsdPatternComposer
         double scaleW = view.ScaleW, scaleH = view.ScaleH, viewOffX = view.OffX, viewOffY = view.OffY; // 260724Cl 追加
         double halfW = view.HalfWidth, halfH = view.HalfHeight; // 260724Cl 追加
         var (posPlanes, negPlanes) = GetAllPlanes(mp, eLen, dLen);//260718Cl
+        var amorphousFraction = dist.BinAmorphousFraction; // 260919Cl 追加: 表面非晶質層に源を持つ電子の割合 (ビンごと)
+        bool hasAmorphous = dist.HasAmorphousLayer; // 260919Cl 追加 (/simplify: 層が無ければ fA の双線形補間も省く)
+        double[] posMeans = null, negMeans = null; // 260919Cl 追加: model 2 は差分 ΔM/Δt の平均 (depthWidths 確定後に取得)
         //260726Cl 追加 (正本 §1.4): plane は累積 M(t) なので隣接差は区間積分。区間平均 R̄=ΔM/Δt にするため区間幅で割る
         //(MC 側の重みは区間質量なので割らない)。等間隔グリッドでは全体が定数倍だが、不等間隔では区間ごとの重み比が変わる
         var depthWidths = mp.DepthIntervals;
+        if (hasAmorphous) (posMeans, negMeans) = GetPlaneMeansCached(mp, dist, posPlanes, negPlanes, dLen, depthWidths); // 260919Cl 追加: model 2 は差分 ΔM/Δt の平均 (/simplify: 以前は null 版を先に呼んでキャッシュを取りこぼしていた)
 
         //Array.Clear(values); //260725Ch: 全画素上書きのため不要
 
@@ -658,11 +742,13 @@ public sealed class EbsdPatternComposer
                     double fx = Math.Clamp(bx - bi0, 0, 1);
 
                     double c00 = (1 - fx) * (1 - fy), c10 = fx * (1 - fy), c01 = (1 - fx) * fy, c11 = fx * fy;
+                    double fA = hasAmorphous ? c00 * amorphousFraction[bi0, bj0] + c10 * amorphousFraction[bi0 + 1, bj0] + c01 * amorphousFraction[bi0, bj0 + 1] + c11 * amorphousFraction[bi0 + 1, bj0 + 1] : 0; // 260919Cl 追加: 非晶質源の割合 (双線形)
 
                     double[] bw00 = dist.BinAbsoluteSliceWeights[bi0, bj0], bw10 = dist.BinAbsoluteSliceWeights[bi0 + 1, bj0], bw01 = dist.BinAbsoluteSliceWeights[bi0, bj0 + 1], bw11 = dist.BinAbsoluteSliceWeights[bi0 + 1, bj0 + 1];
                     bool posZ = pPosZ0[i];
 
                     double sum = 0;
+                    double sumMean = 0; // 260919Cl 追加: 非晶質源 (変調なし) 用の方向平均強度
                     if (isHexGrid) // 260331Cl
                     {
                         int i3 = i * 3;
@@ -681,6 +767,7 @@ public sealed class EbsdPatternComposer
                                 if (planePrevious != null && planePrevious.Length > 0)
                                     intensity -= hw0 * planePrevious[hIdx0] + hw1 * planePrevious[hIdx1] + hw2 * planePrevious[hIdx2];
                                 sum += weight * Math.Max(0.0, intensity) / depthWidths[di]; //260726Cl: 区間平均 ΔM/Δt
+                                if (fA > 0) sumMean += weight * (posZ ? posMeans[ei] : negMeans[ei]); // 260919Cl 追加 (平均は既に /Δt 済み)
                             }
                     }
                     else
@@ -706,9 +793,11 @@ public sealed class EbsdPatternComposer
                                     intensity -= (mpW0 * planePrevious[idx] + mpW1 * planePrevious[idx + 1]) * mpFh1
                                              + (mpW0 * planePrevious[idx + gs] + mpW1 * planePrevious[idx + gs + 1]) * mpFh;
                                 sum += weight * Math.Max(0.0, intensity) / depthWidths[di]; //260726Cl: 区間平均 ΔM/Δt
+                                if (fA > 0) sumMean += weight * (posZ ? posMeans[ei] : negMeans[ei]); // 260919Cl 追加 (平均は既に /Δt 済み)
                             }
                     }
-                    pVal0[i] = sum;
+                    // pVal0[i] = sum; // 260919Cl 変更前
+                    pVal0[i] = fA > 0 ? (1 - fA) * sum + fA * sumMean : sum; // 260919Cl 変更: 非晶質層内の源は方向平均 (変調なし) で寄与
                 }
             });
         }
