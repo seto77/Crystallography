@@ -21,7 +21,15 @@ public sealed record EbsdMatchingContext(
     double[] Reference,
     int RasterWidth,
     int RasterHeight,
-    Matrix3D Rotation);
+    Matrix3D Rotation,
+    //260920Cl 追加 (幾何較正の高解像度化・前処理の対称化): 表示中の実測値をフル解像度のまま持つ。
+    //  Reference は Find 用に縮小 + 強制背景除算済みで、較正には粗すぎる & シミュレーション側と非対称だった。
+    //  DisplayReference はユーザーの「背景を平坦化」設定がそのまま反映された値 (生 or 平坦化後)。
+    //  SimFlattenFwhmPx > 0 のとき、較正はシミュレーション側にも同じ半値幅の高域通過を掛けて比べる。
+    double[] DisplayReference = null,
+    int DisplayWidth = 0,
+    int DisplayHeight = 0,
+    double SimFlattenFwhmPx = 0);
 
 /// <summary>
 /// 実測 EBSD パターンからの方位候補探索 (Radon テンプレート照合 or MasterPattern 辞書照合 + ZNCC 複合ランク + 仕上げ)。

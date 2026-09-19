@@ -353,8 +353,18 @@ public static class EbsdPatternScorer
 
     [ThreadStatic] static double[] box3Scratch; //260724Cl: RobustPreprocessFast の第 4 バッファ (スレッドローカル再利用)
 
+    /// <summary>260920Cl 追加: data から自身の広域背景 (box blur 3 連 = ガウシアン近似、半値全幅 fwhm) を差し引く。
+    /// 表示側の <see cref="ImageProcess.SubtractGaussianBackground"/> と同じ高域通過だが、直接畳み込みでなく O(1)/画素 の box 近似なので
+    /// 1 評価ごとに掛ける較正でも実用になる (fwhm 100 px のガウシアンは 600 演算/画素、box3 は 25 演算/画素)。work1/work2 は data と同じ長さ</summary>
+    internal static void SubtractBoxBackground(double[] data, double[] work1, double[] work2, int w, int h, double fwhm)
+    {
+        if (!(fwhm >= 1)) { Array.Clear(data); return; } //ぼかし幅が 1 px 未満なら 原画像 − 原画像 = 0
+        Box3Seq(data, work1, work2, w, h, fwhm / 2.354820045);
+        for (int i = 0; i < data.Length; i++) data[i] -= work1[i];
+    }
+
     /// <summary>box blur 3 連 (ガウシアン分散一致近似、完全逐次)。src → dst (src は不変)。work は作業バッファ。260724Cl 追加</summary>
-    static void Box3Seq(double[] src, double[] dst, double[] work, int w, int h, double sigma)
+    internal static void Box3Seq(double[] src, double[] dst, double[] work, int w, int h, double sigma) // 260920Cl: 幾何較正が 1 評価ごとに背景を引くため internal 化
     {
         int r = Math.Max(1, (int)Math.Round((Math.Sqrt(4 * sigma * sigma + 1) - 1) / 2)); //3 連の合成分散 3(w²−1)/12 = σ² となる box 幅
         //260725Cl: 境界正規化 1/n を位置別に事前計算し BoxPassSeq 内の毎画素除算 (~18 回/画素) を乗算化 (prof: box が前処理の 52%)
@@ -472,7 +482,29 @@ public static class EbsdPatternScorer
     /// 簡易 Nelder-Mead (初期ステップ明示・下降単体法)。objective を最小化する。260724Cl 追加
     /// MathNet の NelderMeadSimplex は初期シンプレックス制御が弱いため自前実装 (数変数・数百評価の用途限定)。
     /// </summary>
-    public static (double[] Best, double Value, int Evaluations) NelderMead(Func<double[], double> objective, double[] start, double[] step, int maxEval = 400, double tol = 1E-5)
+    /// <summary>260920Cl 追加: NelderMead を最良点から刻みを縮めて繰り返す (再起動付き)。素の Nelder-Mead は谷で停滞するので、
+    /// 収まった点を中心に初期シンプレックスを張り直すと残差がさらに下がる。改善が tol 未満になるか restarts 回で打ち切る</summary>
+    public static (double[] Best, double Value, int Evaluations) NelderMeadRestart(Func<double[], double> objective, double[] start, double[] step,
+        int maxEvalPerRun = 400, double tol = 1E-5, double xtolRel = 0, int restarts = 3, double shrink = 0.25)
+    {
+        var best = (double[])start.Clone();
+        var scale = (double[])step.Clone();
+        double bestValue = double.PositiveInfinity;
+        int evalTotal = 0;
+        for (int k = 0; k <= restarts; k++)
+        {
+            var (b, v, e) = NelderMead(objective, best, scale, maxEvalPerRun, tol, xtolRel);
+            evalTotal += e;
+            if (!(v < bestValue - tol)) { if (v < bestValue) { bestValue = v; best = b; } break; } //改善が止まったら終了
+            bestValue = v; best = b;
+            for (int i = 0; i < scale.Length; i++) scale[i] *= shrink;
+        }
+        return (best, bestValue, evalTotal);
+    }
+
+    //260920Cl シグネチャ変更: xtolRel を追加 (0 = 従来どおり関数値の幅だけで打ち切る)。既存の呼び出し側 (方位探索) は既定値のままなので挙動不変
+    //旧: public static (double[] Best, double Value, int Evaluations) NelderMead(Func<double[], double> objective, double[] start, double[] step, int maxEval = 400, double tol = 1E-5)
+    public static (double[] Best, double Value, int Evaluations) NelderMead(Func<double[], double> objective, double[] start, double[] step, int maxEval = 400, double tol = 1E-5, double xtolRel = 0)
     {
         int n = start.Length;
         var simplex = new double[n + 1][];
@@ -489,7 +521,18 @@ public static class EbsdPatternScorer
         while (eval < maxEval)
         {
             Array.Sort(values, simplex);
-            if (Math.Abs(values[n] - values[0]) < tol) break;
+            // if (Math.Abs(values[n] - values[0]) < tol) break; // 260920Cl 変更前: 関数値の幅だけで打ち切っていた。
+            //   PC-DD が縮退した平らな谷では ZNCC が tol 以下しか動かなくてもパラメータは大きく動けるので、
+            //   xtolRel > 0 のときはシンプレックスの広がり (初期刻み比) も同時に小さいことを要求する
+            if (Math.Abs(values[n] - values[0]) < tol)
+            {
+                if (xtolRel <= 0) break;
+                double extent = 0;
+                for (int i = 1; i <= n; i++)
+                    for (int j = 0; j < n; j++)
+                        extent = Math.Max(extent, Math.Abs(simplex[i][j] - simplex[0][j]) / Math.Max(1E-300, Math.Abs(step[j])));
+                if (extent < xtolRel) break;
+            }
 
             var centroid = new double[n];
             for (int i = 0; i < n; i++)
