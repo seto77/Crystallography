@@ -163,6 +163,35 @@ public static class ImageProcess
         finally { ArrayPool<double>.Shared.Return(tmpPixels); }
     }
 
+    /// <summary>260920Cl 追加: 画像から、その Gaussian ぼかし (半値全幅 fwhm [px]) を差し引き、緩やかに変わる明るさ分布を取り除く (ハイパスフィルタ)。
+    /// ぼかしは <see cref="GaussianBlurFast(double[], int, double)"/> (可分・端は有効画素の重みで正規化するので縁が暗くならない)。
+    /// 元画像は書き換えない。results を渡すと再利用する (pixels と同じ配列でもよい)。fwhm が 1 px 未満なら ぼかし = 原画像 なので全て 0。</summary>
+    /// <param name="pixels">画像データの一次元配列</param>
+    /// <param name="width">画像の幅</param>
+    /// <param name="fwhm">ピクセル単位の Gaussian の半値全幅</param>
+    /// <param name="results">出力バッファ (省略時は新規確保)</param>
+    static public double[] SubtractGaussianBackground(double[] pixels, int width, double fwhm, double[] results = null)
+    {
+        if (results == null || results.Length != pixels.Length) results = GC.AllocateUninitializedArray<double>(pixels.Length);
+        if (!(fwhm >= 1)) { Array.Fill(results, 0.0); return results; }
+        if (ReferenceEquals(results, pixels))
+        {   // その場書き換え: ぼかしを一時配列に取ってから差し引く
+            var blurred = ArrayPool<double>.Shared.Rent(pixels.Length);
+            try
+            {
+                GaussianBlurFast(pixels, width, fwhm / 2, blurred);
+                Parallel.For(0, pixels.Length / width, h => { for (int i = h * width, e = i + width; i < e; i++) results[i] = pixels[i] - blurred[i]; });
+            }
+            finally { ArrayPool<double>.Shared.Return(blurred); }
+        }
+        else
+        {
+            GaussianBlurFast(pixels, width, fwhm / 2, results);
+            Parallel.For(0, pixels.Length / width, h => { for (int i = h * width, e = i + width; i < e; i++) results[i] = pixels[i] - results[i]; });
+        }
+        return results;
+    }
+
     #endregion
 
     /// <summary>周囲のピクセルと比べて、標準偏差 × threshold以上外れたピクセルは、周囲のピクセルの平均強度にする。</summary>
