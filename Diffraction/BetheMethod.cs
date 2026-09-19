@@ -124,6 +124,12 @@ public partial class BetheMethod
     //     /// </summary> // 260919Cl 変更前の summary (加算モデル)
     /// <summary>260919Cl 変更: true のとき、局所後方散乱源 Σσ_n|ψ(r_n)|² を後方半球で積分した非局所吸収ポテンシャル U'_back による源 (2π/k)ψ†U'_backψ で置き換える (加算ではない。同じ物理断面積の非局所版)。</summary>
     public bool IncludeTDSBackground { get; set; }
+    /// <summary>260919Cl 追加 (試行): 局所後方散乱源 Σσ_n|ψ(r_n)|² を実空間で幅 σ [nm] の等方 Gaussian にぼかす
+    /// (源行列 U_gh = Σσ_n e^{2πi(h−g)·r_n} に exp(−2π²σ²|g−h|²) を掛け、TDS 行列経路 (2π/k)ψ†Uψ で評価)。
+    /// NaN = 従来 (点源、S = B†diag(σ)B 経路)。0 = 行列経路で点源 (同値性の確認用)。
+    /// 仮説: 表面近くの最後のイベントの多くは運動量移行 s の小さい小角散乱で、源は ~1/(2πs) に広がり 1s 状態 (0.2 Å) を分解できない。
+    /// σ ≈ 0.5〜1 Å で晶帯軸だけが選択的に暗くなり、バンド変調が残るなら仮説を支持する。</summary>
+    public static double SourceSmearingSigmaNm { get; set; } = double.NaN;
     /// <summary>260919Cl 追加: 吸収 (熱散漫散乱) で干渉性チャネルから失われたフラックスを、菊池変調を持たない拡散背景として再注入する (フラックス保存)。
     /// Bloch 波の計算では吸収された電子は消えるが、実際には検出器に届く。再注入量は方向 k に属する (相反定理) ので、晶帯軸の相対輝度への効果は小さく結晶依存
     /// (Si では不変、Fe3O4 では僅かに明るくなる)。「晶帯軸を抑える」効果は無い。</summary>
@@ -649,7 +655,8 @@ public partial class BetheMethod
     {
         MaxNumOfBloch = maxNumOfBloch;
         UseNonLocalAbsorption = useNonLocalAbsorption;
-        IncludeTDSBackground = includeTDSBackground;
+        // IncludeTDSBackground = includeTDSBackground; // 260919Cl 変更前
+        IncludeTDSBackground = includeTDSBackground || double.IsFinite(SourceSmearingSigmaNm); // 260919Cl 変更 (試行): 源ぼかしは TDS 行列経路で評価するので同経路を有効化
         IncludeAbsorbedFluxBackground = includeAbsorbedFluxBackground; // 260919Cl 追加
 
         BaseRotation = new Matrix3D(rotation);
@@ -730,6 +737,38 @@ public partial class BetheMethod
                 muBack[col * beamCount + row] = val;
             }
         return muBack; // (260321Ch)
+    }
+
+    /// <summary>260919Cl 追加 (試行): 局所源を幅 sigmaNm の Gaussian でぼかした源行列 U_gh = (1/tdsCoeff)·Σ_n σ_n e^{2πi(h−g)·r_n}·exp(−2π²σ²|g−h|²)。
+    /// TDS 行列経路 tdsCoeff·ψ†Uψ に渡すと、σ=0 で局所源 S = B†diag(σ)B と同値 (U_gh の並びは CreateMasterPatternMuBack と同じ column-major、row=g, col=h)。
+    /// |g−h| は ReciPro の逆格子 (1/d、2π 無し) [1/nm] なので Gaussian の Fourier 変換は exp(−2π²σ²q²) (DW 因子 exp(−B s²), s=q/2, B=8π²⟨u²⟩ と同形)。</summary>
+    private Complex[] CreateSmearedLocalSourceMatrix(Beam[] beams, (double x, double y, double z)[] atomArray, double[] sigmaArray, double tdsCoeff, double sigmaNm)
+    {
+        var beamCount = beams?.Length ?? 0;
+        var m = Shared.Rent(beamCount * beamCount);
+        var localCache = new Dictionary<int, Complex>();
+        double gauss = -2 * Math.PI * Math.PI * sigmaNm * sigmaNm, invCoeff = tdsCoeff > 0 ? 1 / tdsCoeff : 0;
+        for (int col = 0; col < beamCount; col++)
+            for (int row = 0; row < beamCount; row++)
+            {
+                int dh = beams[row].H - beams[col].H, dk = beams[row].K - beams[col].K, dl = beams[row].L - beams[col].L;
+                var key = compose(dh, dk, dl);
+                if (!localCache.TryGetValue(key, out var val))
+                {
+                    var d = beams[row].Vec - beams[col].Vec; // g − h [1/nm]
+                    double w = Math.Exp(gauss * (d.X * d.X + d.Y * d.Y + d.Z * d.Z)) * invCoeff;
+                    double re = 0, im = 0;
+                    for (int n = 0; n < atomArray.Length; n++)
+                    {   // e^{2πi(h−g)·r_n} = e^{−2πi(dh x + dk y + dl z)}
+                        var (sin, cos) = Math.SinCos(-TwoPi * (dh * atomArray[n].x + dk * atomArray[n].y + dl * atomArray[n].z));
+                        re += sigmaArray[n] * cos; im += sigmaArray[n] * sin;
+                    }
+                    val = new Complex(w * re, w * im);
+                    localCache[key] = val;
+                }
+                m[col * beamCount + row] = val;
+            }
+        return m;
     }
 
     /// <summary>MasterPattern 用のポテンシャル行列を ArrayPool から確保して構築する。</summary>
@@ -1480,7 +1519,10 @@ public partial class BetheMethod
                     {
                         var bp = beamsPreliminary[idx].Beams;
                         if (bp == null) return;
-                        muBackArrays[idx] = CreateMasterPatternMuBack(AccVoltage, bp); // (260321Ch)
+                        // muBackArrays[idx] = CreateMasterPatternMuBack(AccVoltage, bp); // (260321Ch) // 260919Cl 変更前
+                        muBackArrays[idx] = double.IsFinite(SourceSmearingSigmaNm)
+                            ? CreateSmearedLocalSourceMatrix(bp, atomArray, sigmaArray, tdsCoeff, SourceSmearingSigmaNm) // 260919Cl 追加 (試行): ぼかした局所源 (非局所源より優先)
+                            : CreateMasterPatternMuBack(AccVoltage, bp); // (260321Ch)
                     });
                     uDictionary.Clear();
                 }
