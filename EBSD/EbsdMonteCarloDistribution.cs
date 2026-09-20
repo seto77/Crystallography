@@ -181,7 +181,10 @@ public sealed class EbsdMonteCarloDistribution
         if (!(halfHeight > 0) || !double.IsFinite(halfHeight)) throw new ArgumentOutOfRangeException(nameof(halfHeight));
 
         BinCount = binCount;
-        bool useEnergyWeight = double.IsFinite(energyWeightDeadKeV); EnergyWeightDeadKeV = useEnergyWeight ? energyWeightDeadKeV : double.NaN; // 260919Cl 追加 (試行)
+        //260920Cl (/simplify2): E_dead がビームエネルギー以上だと全電子の φ が 0 になり、パターンが例外も警告も無く恒等的にゼロになる。
+        //  低加速 (5〜10 keV) の EBSD で E_dead を上限 10 keV にすると実際に起こるので、重み無しへ落とす
+        bool useEnergyWeight = double.IsFinite(energyWeightDeadKeV) && energyWeightDeadKeV < beamEnergy; // 260919Cl 追加 / 260920Cl ガード追加
+        EnergyWeightDeadKeV = useEnergyWeight ? energyWeightDeadKeV : double.NaN;
         double totalWeight = 0; // 260919Cl 追加: Σφ(E) (重み無しなら電子数)
 
         var (sinDet, cosDet) = Math.SinCos(detTilt);
@@ -205,6 +208,8 @@ public sealed class EbsdMonteCarloDistribution
         if (!(amorphousLayerNm > 0) || !double.IsFinite(amorphousLayerNm)) amorphousLayerNm = 0; // 260919Cl 追加
         foreach (var (depth, vec, energy) in bseList)
         {
+            //260920Cl (/simplify2): 重みの母数は全電子。検出器を外れる continue より前で積む (旧 binFraction の分母 bseList.Length と同義)
+            totalWeight += useEnergyWeight ? Math.Max(0, energy - energyWeightDeadKeV) : 1.0;
             // double dDenom = vec.Y * sinDet + vec.Z * cosDet;
             // if (Math.Abs(dDenom) < 1e-15) continue;
             // double k = dNumer / dDenom;
@@ -236,7 +241,9 @@ public sealed class EbsdMonteCarloDistribution
             int bj = Math.Clamp((int)((1 - py) * 0.5 * binCount), 0, binCount - 1);
             // binTotals[bi, bj]++; binEnergies[bi, bj].Add(energy); // 260919Cl 変更前
             double phi = useEnergyWeight ? Math.Max(0, energy - energyWeightDeadKeV) : 1.0; // 260919Cl 追加 (試行): 蛍光体の発光量 ∝ E − E_dead
-            binTotals[bi, bj] += phi; binCounts[bi, bj]++; totalWeight += phi; // 260919Cl 変更
+            binTotals[bi, bj] += phi; binCounts[bi, bj]++; // 260919Cl 変更
+            //260920Cl (/simplify2): totalWeight はループ先頭で全電子ぶん積む。ここで積むと母数が「検出器に当たった電子」になり、
+            //  重み OFF (φ=1) でも旧 bseList.Length と一致しなくなっていた
             binEnergies[bi, bj].Add(energy); binEnergyWeights[bi, bj].Add(phi); // 260919Cl 追加
             // if (depth < amorphousLayerNm) { amorphousCounts[bi, bj]++; continue; } // 260919Cl 変更前
             if (depth < amorphousLayerNm) { amorphousCounts[bi, bj] += phi; continue; } // 260919Cl 追加: 層内の源は菊池変調を持たない一様成分として数える (重み付き)

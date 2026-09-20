@@ -75,10 +75,8 @@ public static class EbsdGeometryCalibrator
     /// <summary>ソフト境界の外で返す罰則値の下駄。目的関数は -ZNCC (= 高々 1 程度) なので、10 なら確実に棄却される。260727Cl 追加</summary>
     const double SoftBoundPenaltyBase = 10;
 
-    /// <summary>較正の最後に行う 6 変数 (PC_u, PC_v, lnDD, 方位 3) 同時最適化の評価上限。260726Cl 追加。
-    /// 6 次元なので交互法の 3 変数段 (120-150) より多く要る。1 評価ごとに projector を作り直す重い段だが、
-    /// 交互法では下れない斜めの谷をここで下る</summary>
-    const int JointPolishMaxEval = 600;
+    //260920Cl (/simplify) 削除: const int JointPolishMaxEval = 600; — 多段化で StageMaxEval[].Joint へ吸収され、
+    //  doc も「1 評価ごとに projector を作り直す」という撤去済みの設計を説明したままだった
 
     /// <summary>較正の多点開始オフセット。値は無次元 [-1,1]³ で、消費側で <see cref="StartSpreadPc"/> (検出器幅・高さ比) と
     /// <see cref="StartSpreadLnDd"/> (lnDD) を掛けてスケールする。260726Cl 追加 (作者要望)。 //260727Cl: doc が旧値 (1%・0.02) のままで実装 (8%・0.08) と食い違っていたので訂正
@@ -125,7 +123,6 @@ public static class EbsdGeometryCalibrator
     /// <summary>260920Cl 追加: 1 つの比較解像度。Reference は正規化済み (ZNCC の参照)、FlattenFwhm はシミュレーション側に掛ける高域通過の半値幅 [この解像度の px]</summary>
     sealed class Scale { public int W, H; public double[] Reference; public double FlattenFwhm; }
 
-    /// <summary>260920Cl 追加: スレッドごとの作業バッファ (投影先と box blur の作業用)</summary>
     /// <summary>260920Cl 追加: スレッドごとの作業バッファ (投影先・box blur の作業用・使い回すプロジェクタ)。
     /// Proj は幾何が変わるたび Rebuild するだけで、配列の確保はこの 1 回きり</summary>
     sealed class Work
@@ -179,11 +176,10 @@ public static class EbsdGeometryCalibrator
                 || Math.Abs(dlnDd) > SoftBoundLnDd;
         }
 
-        int evalTotal = 0, evalsDone = 0;
+        int evalTotal = 0; //260920Cl (/simplify): 進捗は完了した開始点の数で出すので、評価回数の逐次カウンタ (旧 evalsDone) は不要
         double ScoreWith(Scale sc, Work w, EbsdPatternProjector proj, Matrix3D rot, bool innerParallel)
         {
             cancel.ThrowIfCancellationRequested();
-            Interlocked.Increment(ref evalsDone);
             proj.Project(context.MasterPattern, rot, context.PositivePlane, context.NegativePlane, w.Buf, innerParallel);
             //260920Cl: 実測側が平坦化されているならシミュレーション側にも同じ高域通過を掛ける (これを欠くと ZNCC がモデル由来の背景勾配に引かれる)
             if (sc.FlattenFwhm >= 1) EbsdPatternScorer.SubtractBoxBackground(w.Buf, w.W1, w.W2, sc.W, sc.H, sc.FlattenFwhm, innerParallel); //260920Cl: 最終段は内部も並列
@@ -218,7 +214,9 @@ public static class EbsdGeometryCalibrator
             {
                 cancel.ThrowIfCancellationRequested();
                 //① 幾何固定で方位 (粗 0.7°)
-                var projFixed = new EbsdPatternProjector(MakeGeom(fu, fv, lnDd), sc.W, sc.H);
+                //260920Cl: 方位段は幾何が固定なので視線を 1 回だけ作り直して使い回す (旧: 毎ラウンド new = フル解像度で 33 MB)
+                w.Proj.Rebuild(MakeGeom(fu, fv, lnDd), innerParallel);
+                var projFixed = w.Proj;
                 var (bo, _, eo) = EbsdPatternScorer.NelderMead(v => ScoreWith(sc, w, projFixed, EbsdIndexer.PerturbRotation(r0, v[0], v[1], v[2]), innerParallel),
                     [0, 0, 0], [0.7, 0.7, 0.7], maxOri, tol, xtol);
                 r0 = EbsdIndexer.PerturbRotation(r0, bo[0], bo[1], bo[2]); Interlocked.Add(ref evalTotal, eo);
@@ -238,7 +236,8 @@ public static class EbsdGeometryCalibrator
             }
             //仕上げの方位微調整
             const double polishStep = EbsdOrientationSearch.OrientationPolishStepDeg;
-            var projFinal = new EbsdPatternProjector(MakeGeom(fu, fv, lnDd), sc.W, sc.H);
+            w.Proj.Rebuild(MakeGeom(fu, fv, lnDd), innerParallel); //260920Cl: 同上
+            var projFinal = w.Proj;
             var (bf, vf, ef) = EbsdPatternScorer.NelderMead(v => ScoreWith(sc, w, projFinal, EbsdIndexer.PerturbRotation(r0, v[0], v[1], v[2]), innerParallel),
                 [0, 0, 0], [polishStep, polishStep, polishStep], maxOri, tol, xtol);
             r0 = EbsdIndexer.PerturbRotation(r0, bf[0], bf[1], bf[2]); Interlocked.Add(ref evalTotal, ef);

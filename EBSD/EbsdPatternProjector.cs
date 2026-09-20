@@ -382,22 +382,27 @@ public static class EbsdPatternScorer
         else for (int i = 0; i < data.Length; i++) data[i] -= work1[i];
     }
 
-    /// <summary>box blur 3 連 (ガウシアン分散一致近似、完全逐次)。src → dst (src は不変)。work は作業バッファ。260724Cl 追加</summary>
+    /// <summary>box blur 3 連 (ガウシアン分散一致近似)。src → dst (src は不変)。work は作業バッファ。260724Cl 追加。
+    /// 260920Cl: parallel=false (既定) なら完全逐次 — 呼び出し側が既に並列な辞書探索用。true は行/列帯で並列化する (較正の最終段用)</summary>
     internal static void Box3Seq(double[] src, double[] dst, double[] work, int w, int h, double sigma, bool parallel = false) // 260920Cl: internal 化 + 並列フラグ
     {
         int r = Math.Max(1, (int)Math.Round((Math.Sqrt(4 * sigma * sigma + 1) - 1) / 2)); //3 連の合成分散 3(w²−1)/12 = σ² となる box 幅
         //260725Cl: 境界正規化 1/n を位置別に事前計算し BoxPassSeq 内の毎画素除算 (~18 回/画素) を乗算化 (prof: box が前処理の 52%)
-        Span<double> invX = w <= 2048 ? stackalloc double[w] : new double[w];
-        Span<double> invY = h <= 2048 ? stackalloc double[h] : new double[h];
+        //260920Cl (/simplify2): parallel のときは後段の Parallel.For デリゲートへ配列で渡すので、stackalloc に作ってから
+        //  ToArray で複製し直すのは二重手間 (w+h≈2400 要素 × 評価回数)。最初から配列に作る
+        Span<double> invX = !parallel && w <= 2048 ? stackalloc double[w] : new double[w];
+        Span<double> invY = !parallel && h <= 2048 ? stackalloc double[h] : new double[h];
         //260725Cl (/simplify): フル窓の内部は 1/(2r+1) 定数を共有 — 除算は両端 ~2r 個のみ (旧: 全 w+h 要素で除算。値は同一 = ビット一致)
         double invMid = 1.0 / (2 * r + 1);
         for (int x = 0; x < w; x++) invX[x] = x >= r && x < w - r ? invMid : 1.0 / (Math.Min(x + r, w - 1) - Math.Max(x - r, 0) + 1);
         for (int y = 0; y < h; y++) invY[y] = y >= r && y < h - r ? invMid : 1.0 / (Math.Min(y + r, h - 1) - Math.Max(y - r, 0) + 1);
         //260725Cl: 縦パスの行アキュムレータ化で横パス出力の一時バッファが必要 (in-place 縦パス廃止)
         if (parallel)
-        {   //260920Cl: 並列版は ThreadStatic のスクラッチが使えない (ワーカースレッドごとに別物になる) ので都度確保する
-            var tmpH = new double[w * h];
-            var ix = invX.ToArray(); var iy = invY.ToArray(); //ローカル関数へ Span は渡せない
+        {   //260920Cl (/simplify): tmpH は呼び出しスレッドで確保してワーカーへ渡すだけ (各ワーカーは重ならない範囲しか触らない) なので、
+            //  逐次版と同じ ThreadStatic スクラッチが使える。旧実装はここで毎回 new double[w*h] = フル解像度で 1 評価 11 MB を捨てていた
+            if (box3ScratchH == null || box3ScratchH.Length < w * h) box3ScratchH = new double[w * h];
+            var tmpH = box3ScratchH;
+            var ix = invX.ToArray(); var iy = invY.ToArray(); //Parallel.For のデリゲートへ Span は渡せないので配列へ (w+h 要素のみ)
             BoxPassPar(src, dst, tmpH, w, h, r, ix, iy);
             BoxPassPar(dst, work, tmpH, w, h, r, ix, iy);
             BoxPassPar(work, dst, tmpH, w, h, r, ix, iy);
@@ -426,8 +431,10 @@ public static class EbsdPatternScorer
                 if (rem >= 0) sum -= src[row + rem];
             }
         });
+        //260920Cl (/simplify2): 帯の境界を double 8 個 = 64 B (キャッシュライン) に揃える。揃えないと隣接する 2 帯が
+        //  同じラインへ dst を書き、行ごとに無効化が往復する (w=1344・32 コアだと帯幅 42 で毎回ずれていた)。結果はビット一致
         int bands = Math.Min(Environment.ProcessorCount, Math.Max(1, w / 32));
-        int bandWidth = (w + bands - 1) / bands;
+        int bandWidth = ((w + bands - 1) / bands + 7) & ~7;
         Parallel.For(0, bands, b => //縦パス: tmpH → dst (列帯ごとに独立なアキュムレータ)
         {
             int x0 = b * bandWidth, x1 = Math.Min(w, x0 + bandWidth);
@@ -579,14 +586,19 @@ public static class EbsdPatternScorer
     static double ZnccSimdParallel(double[] normalizedRef, double[] pattern)
     {
         int n = pattern.Length;
-        int blocks = Math.Min(Environment.ProcessorCount * 2, Math.Max(1, n / 8192));
-        int size = (n + blocks - 1) / blocks;
+        //260920Cl (/simplify2): ブロック境界も 8 要素に揃える (未整列開始とスカラー末尾を減らす)。分割規則は固定なので決定的なまま
+        int blocks = Math.Min(Environment.ProcessorCount, Math.Max(1, n / 8192));
+        int size = ((n + blocks - 1) / blocks + 7) & ~7;
         var sums = new double[blocks];
         Parallel.For(0, blocks, b =>
         {
             int lo = b * size, hi = Math.Min(n, lo + size);
-            double s = 0;
-            for (int k = lo; k < hi; k++) s += pattern[k];
+            //260920Cl (/simplify): ブロック本体もベクトル化する (旧実装はスカラーで、SIMD が効くのは逐次経路だけだった)
+            int vc = Vector<double>.Count, k = lo;
+            var vs = Vector<double>.Zero;
+            for (; k <= hi - vc; k += vc) vs += new Vector<double>(pattern, k);
+            double s = Vector.Sum(vs);
+            for (; k < hi; k++) s += pattern[k];
             sums[b] = s;
         });
         double total = 0;
@@ -596,8 +608,17 @@ public static class EbsdPatternScorer
         Parallel.For(0, blocks, b =>
         {
             int lo = b * size, hi = Math.Min(n, lo + size);
-            double va = 0, dt = 0;
-            for (int k = lo; k < hi; k++) { double d = pattern[k] - mean; va += d * d; dt += normalizedRef[k] * d; }
+            int vc = Vector<double>.Count, k = lo;
+            var vm = new Vector<double>(mean);
+            Vector<double> vv = Vector<double>.Zero, vd = Vector<double>.Zero;
+            for (; k <= hi - vc; k += vc)
+            {
+                var d = new Vector<double>(pattern, k) - vm;
+                vv += d * d;
+                vd += new Vector<double>(normalizedRef, k) * d;
+            }
+            double va = Vector.Sum(vv), dt = Vector.Sum(vd);
+            for (; k < hi; k++) { double d = pattern[k] - mean; va += d * d; dt += normalizedRef[k] * d; }
             vars[b] = va; dots[b] = dt;
         });
         double var2 = 0, dot2 = 0;
@@ -610,8 +631,13 @@ public static class EbsdPatternScorer
     /// 簡易 Nelder-Mead (初期ステップ明示・下降単体法)。objective を最小化する。260724Cl 追加
     /// MathNet の NelderMeadSimplex は初期シンプレックス制御が弱いため自前実装 (数変数・数百評価の用途限定)。
     /// </summary>
-    /// <summary>260920Cl 追加: NelderMead を最良点から刻みを縮めて繰り返す (再起動付き)。素の Nelder-Mead は谷で停滞するので、
-    /// 収まった点を中心に初期シンプレックスを張り直すと残差がさらに下がる。改善が tol 未満になるか restarts 回で打ち切る</summary>
+    /// <summary>260920Cl 追加: <see cref="NelderMead"/> を最良点から刻みを縮めて繰り返す (再起動付き)。素の Nelder-Mead は谷で停滞するので、
+    /// 収まった点を中心に初期シンプレックスを張り直すと残差がさらに下がる。改善が tol 未満になるか restarts 回で打ち切る。
+    /// ⚠260920Cl (/simplify2): 直上の「簡易 Nelder-Mead…」の doc は下の <see cref="NelderMead"/> のものだったが、
+    ///   本メソッドを挿し込んだときに帰属がずれていた。下の本体側へ doc を戻してある</summary>
+    /// <param name="restarts">刻みを縮めて張り直す最大回数</param>
+    /// <param name="shrink">1 回の再起動で刻みに掛ける係数</param>
+    /// <param name="xtolRel">初期刻みに対するシンプレックスの広がりの打ち切り閾値 (0 = 関数値の幅だけで打ち切る)</param>
     public static (double[] Best, double Value, int Evaluations) NelderMeadRestart(Func<double[], double> objective, double[] start, double[] step,
         int maxEvalPerRun = 400, double tol = 1E-5, double xtolRel = 0, int restarts = 3, double shrink = 0.25)
     {
@@ -623,6 +649,9 @@ public static class EbsdPatternScorer
         {
             var (b, v, e) = NelderMead(objective, best, scale, maxEvalPerRun, tol, xtolRel);
             evalTotal += e;
+            //260920Cl (/simplify2): 1 回目は無条件に採用する。旧実装は v が NaN だと 2 つの比較が両方 false になり、
+            //  bestValue が +∞ のまま返って呼び出し側の順位付けとステータス表示が壊れていた
+            if (k == 0) { bestValue = v; best = b; if (double.IsNaN(v)) break; continue; }
             if (!(v < bestValue - tol)) { if (v < bestValue) { bestValue = v; best = b; } break; } //改善が止まったら終了
             bestValue = v; best = b;
             for (int i = 0; i < scale.Length; i++) scale[i] *= shrink;
@@ -630,7 +659,10 @@ public static class EbsdPatternScorer
         return (best, bestValue, evalTotal);
     }
 
-    //260920Cl シグネチャ変更: xtolRel を追加 (0 = 従来どおり関数値の幅だけで打ち切る)。既存の呼び出し側 (方位探索) は既定値のままなので挙動不変
+    /// <summary>簡易 Nelder-Mead (初期ステップ明示・下降単体法)。objective を最小化する。260724Cl 追加。
+    /// MathNet の NelderMeadSimplex は初期シンプレックス制御が弱いため自前実装 (数変数・数百評価の用途限定)</summary>
+    /// <param name="xtolRel">初期刻みに対するシンプレックスの広がりの打ち切り閾値。0 (既定) なら関数値の幅だけで打ち切る = 従来動作</param>
+    //260920Cl シグネチャ変更: xtolRel を追加。既存の呼び出し側 (方位探索) は既定値のままなので挙動不変
     //旧: public static (double[] Best, double Value, int Evaluations) NelderMead(Func<double[], double> objective, double[] start, double[] step, int maxEval = 400, double tol = 1E-5)
     public static (double[] Best, double Value, int Evaluations) NelderMead(Func<double[], double> objective, double[] start, double[] step, int maxEval = 400, double tol = 1E-5, double xtolRel = 0)
     {

@@ -26,6 +26,7 @@ public sealed record EbsdMatchingContext(
     //  Reference は Find 用に縮小 + 強制背景除算済みで、較正には粗すぎる & シミュレーション側と非対称だった。
     //  DisplayReference はユーザーの「背景を平坦化」設定がそのまま反映された値 (生 or 平坦化後)。
     //  SimFlattenFwhmPx > 0 のとき、較正はシミュレーション側にも同じ半値幅の高域通過を掛けて比べる。
+    //  ⚠単位は **DisplayWidth と同じ実測画像 px** (呼び出し側で検出器 px から換算して渡すこと)。
     double[] DisplayReference = null,
     int DisplayWidth = 0,
     int DisplayHeight = 0,
