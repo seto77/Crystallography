@@ -139,15 +139,19 @@ public static class EbsdOrientationSearch
             { top.Rotation = rFin; top.Zncc = -v2; }
 
             //260725Cl 追加 (作者指示): ここまでは「候補の順位付け」のための保守的な微調整 (robust ZNCC を ±0.25° だけ)。
-            //順位が確定したあとの最終方位は、Calibrate geometry と同じ目的関数 (素の前処理での ZNCC = context.Reference) と
-            //同じステップ (0.7°→0.2°) で仕上げ直す。両者の目的関数が違うと「Find→トップ選択→Calibrate→再び Find」を
-            //繰り返したときに方位が 2 値を約 1° で往復して収束しない (作者の実機報告)。順位付けの保護 (±0.25°+ガード) は
-            //誤候補を ZNCC で押し上げないためのもので、最終方位の精度のためのものではない、という切り分け。
+            //順位が確定したあとの最終方位は、Calibrate geometry と同じ目的関数・同じステップ (0.7°→0.1°) で仕上げ直す。
+            //両者の目的関数が違うと「Find→トップ選択→Calibrate→再び Find」を繰り返したときに方位が 2 値を約 1° で
+            //往復して収束しない (作者の実機報告)。順位付けの保護 (±0.25°+ガード) は誤候補を ZNCC で押し上げないための
+            //もので、最終方位の精度のためのものではない、という切り分け。
+            //260920Cl 変更 (作者指示「Calibrate は ZNCC。Find もこれに統一」): 較正が多段解像度 + ユーザー指定の平坦化 +
+            //  ZnccSimd へ移ったので、160 px + 強制背景除算の素の Zncc を見ていたこちらとは目的関数がずれていた。
+            //  較正の最終段そのものを作る EbsdGeometryCalibrator.CreateFinalScorer を通して、定義を 1 つに戻す。
+            //旧: projector.Project(...160 px...); return -EbsdPatternScorer.Zncc(context.Reference, buf);
+            var finalScorer = EbsdGeometryCalibrator.CreateFinalScorer(context);
             double ScoreRaw(double[] v)
             {
                 cancel.ThrowIfCancellationRequested();
-                projector.Project(context.MasterPattern, EbsdIndexer.PerturbRotation(top.Rotation, v[0], v[1], v[2]), context.PositivePlane, context.NegativePlane, buf);
-                return -EbsdPatternScorer.Zncc(context.Reference, buf);
+                return -finalScorer.Zncc(EbsdIndexer.PerturbRotation(top.Rotation, v[0], v[1], v[2]));
             }
             var (p1, _, _) = EbsdPatternScorer.NelderMead(ScoreRaw, [0, 0, 0], [0.7, 0.7, 0.7], 150);
             //260725Cl 変更: 仕上げステップ 0.2 → OrientationPolishStepDeg (0.1、作者指示)。較正の最終段と同じ値を使う

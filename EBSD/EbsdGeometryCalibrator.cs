@@ -123,6 +123,48 @@ public static class EbsdGeometryCalibrator
     /// <summary>260920Cl 追加: 1 つの比較解像度。Reference は正規化済み (ZNCC の参照)、FlattenFwhm はシミュレーション側に掛ける高域通過の半値幅 [この解像度の px]</summary>
     sealed class Scale { public int W, H; public double[] Reference; public double FlattenFwhm; }
 
+    /// <summary>260920Cl 追加 (作者指示): 幾何を固定して方位だけ動かすときの採点器。較正の**最終段とまったく同じ**
+    /// 参照 (表示中の実測値をフル解像度で正規化)・同じ高域通過・同じ ZNCC を使う。
+    /// 方位探索の仕上げ段がこれを通ることで Find と Calibrate の目的関数が一致する。
+    /// 両者が違うと「Find → トップ選択 → Calibrate → 再び Find」で方位が 2 値を約 1° で往復して収束しない (作者の実機報告)。
+    /// DisplayReference が無い旧経路では context.Reference (縮小 + 強制背景除算) の 1 段になるので、従来の採点と同じになる</summary>
+    public sealed class FixedGeometryScorer
+    {
+        readonly EbsdMatchingContext context;
+        readonly Scale scale;
+        readonly EbsdPatternProjector projector;
+        readonly double[] buf, work1, work2;
+
+        /// <summary>採点に使う解像度 (較正の最終段と同じ)</summary>
+        public int Width => scale.W;
+        /// <summary>同上</summary>
+        public int Height => scale.H;
+
+        internal FixedGeometryScorer(EbsdMatchingContext context)
+        {
+            this.context = context;
+            scale = BuildScales(context)[^1]; //最終段 = 最も細かい解像度
+            projector = new EbsdPatternProjector(context.Geometry, scale.W, scale.H);
+            int n = scale.W * scale.H;
+            buf = new double[n]; work1 = new double[n]; work2 = new double[n];
+        }
+
+        /// <summary>与えた方位での ZNCC。値が大きいほど実測に近い (較正は −ZNCC を最小化している)</summary>
+        public double Zncc(Matrix3D rotation)
+        {
+            projector.Project(context.MasterPattern, rotation, context.PositivePlane, context.NegativePlane, buf);
+            if (scale.FlattenFwhm >= 1) EbsdPatternScorer.SubtractBoxBackground(buf, work1, work2, scale.W, scale.H, scale.FlattenFwhm, true);
+            return EbsdPatternScorer.ZnccSimd(scale.Reference, buf, true);
+        }
+    }
+
+    /// <summary>260920Cl 追加 (作者指示): 較正の最終段と同じ採点器を作る。方位探索の仕上げ段と目的関数を揃えるための入口</summary>
+    public static FixedGeometryScorer CreateFinalScorer(EbsdMatchingContext context)
+    {
+        ArgumentNullException.ThrowIfNull(context);
+        return new FixedGeometryScorer(context);
+    }
+
     /// <summary>260920Cl 追加: スレッドごとの作業バッファ (投影先・box blur の作業用・使い回すプロジェクタ)。
     /// Proj は幾何が変わるたび Rebuild するだけで、配列の確保はこの 1 回きり</summary>
     sealed class Work
