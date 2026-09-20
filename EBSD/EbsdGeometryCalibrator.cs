@@ -180,7 +180,10 @@ public static class EbsdGeometryCalibrator
             => ScoreWith(sc, w, new EbsdPatternProjector(MakeGeom(fu, fv, lnDd), sc.W, sc.H), rot, innerParallel);
 
         var coarse = scales[0];
-        double startZncc = -ScoreAt(coarse, new Work(coarse.W * coarse.H), footU0, footV0, lnDd0, context.Rotation, true);
+        //260920Cl: 較正前後の ZNCC は**同じ解像度**で測る。段ごとに ZNCC の絶対値は変わる (細かいほど下がる) ので、
+        //  旧: 開始値を粗い段、結果を最終段で測っており、改善しても悪化したように見えていた
+        var finest = scales[^1];
+        double startZncc = -ScoreAt(finest, new Work(finest.W * finest.H), footU0, footV0, lnDd0, context.Rotation, true);
 
         //--- 1 開始点ぶんの較正 (交互法 → 方位仕上げ → 6 変数同時 (最終段は再起動付き))
         (double Zncc, double Fu, double Fv, double LnDd, Matrix3D Rot, int Rounds, bool Converged, double JointGain)
