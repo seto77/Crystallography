@@ -121,6 +121,22 @@ public sealed class EbsdDetectorGeometry
     public V3 SampleToLab(in V3 sample)
         => new(sample.X, cosSmp * sample.Y - sinSmp * sample.Z, sinSmp * sample.Y + cosSmp * sample.Z);
 
+    /// <summary>260921Cl 追加: 試料から出ていく方向 (試料系) が検出器のどのピクセルに当たるかを返す (PixelToSampleDirection の逆)。
+    /// 晶帯軸の予測位置を出すのに使う。検出器面と交わらない (後ろ向き・平行) 方向は null。</summary>
+    public (double Col, double Row)? SampleDirectionToPixel(in V3 outgoingSample)
+    {
+        //PixelToSampleDirection は視線 = -P̂ を返すので、出ていく方向はその逆符号 = +P̂
+        var v = SampleToLab(outgoingSample);
+        double vn = V3.Dot(Normal, v), cn = V3.Dot(Normal, Center);
+        //t·v が検出器面 (法線 n、点 C) 上に来る t。t ≤ 0 は検出器の裏側
+        if (Math.Abs(vn) < 1E-12) return null;
+        double t = cn / vn;
+        if (!(t > 0) || !double.IsFinite(t)) return null;
+        var d = t * v - Center; //検出器中心から見た面内ベクトル
+        double u = XMirror * V3.Dot(d, Ex), w = V3.Dot(d, Ey); //u は表示 mm (PixelToMm と同じ規約)
+        return (u / PixelSize + WidthPx / 2.0 - 0.5, w / PixelSize + HeightPx / 2.0 - 0.5);
+    }
+
     /// <summary>面法線 (lab) → 画像ピクセル座標系のバンド中心線係数 A·col + B·row + C = 0 (LineToLabNormal の逆投影)</summary>
     public (double A, double B, double C) LabNormalToLine(in V3 gLab)
     {

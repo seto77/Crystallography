@@ -31,7 +31,12 @@ public sealed class EbsdOrientationCandidate
     public string AssignmentText => string.Join(", ", Assignments.OrderBy(p => p.Key).Select(p => $"{p.Key}:({p.Value.H} {p.Value.K} {p.Value.L})"));
 
     /// <summary>hkl のみの表示 (Radon 方位探索用: キーは強度順ランクでバンド番号でないため)。260724Cl 追加</summary>
-    public string HklText => string.Join(" ", Assignments.OrderBy(p => p.Key).Select(p => $"({p.Value.H} {p.Value.K} {p.Value.L})"));
+    /// <summary>260921Cl 追加: 晶帯軸からの指数付け (EbsdZoneAxisIndexer) の結果なら true。
+    /// Assignments の値は (h,k,l) ではなく [u,v,w] になり、表示の括弧も角括弧へ変わる</summary>
+    public bool IsZoneAxis;
+
+    public string HklText => string.Join(" ", Assignments.OrderBy(p => p.Key).Select(p =>
+        IsZoneAxis ? $"[{p.Value.H} {p.Value.K} {p.Value.L}]" : $"({p.Value.H} {p.Value.K} {p.Value.L})"));
 }
 
 /// <summary>
@@ -304,7 +309,7 @@ public static class EbsdIndexer
     #region 数学ユーティリティ
 
     /// <summary>Wahba/Kabsch: Σ w·m·gᵀ の SVD から R (g→m) を求める。m=試料系観測、g=結晶系。縮退時は null</summary>
-    static Matrix3D SolveWahba((V3 m, V3 g, double w)[] eqs)
+    internal static Matrix3D SolveWahba((V3 m, V3 g, double w)[] eqs) //260921Cl: EbsdZoneAxisIndexer からも使うので internal 化
     {
         var h = MathNet.Numerics.LinearAlgebra.Double.DenseMatrix.Create(3, 3, 0);
         foreach (var (m, g, w) in eqs)
