@@ -52,7 +52,11 @@ public sealed class EbsdMonteCarloDistribution
     /// EbsdPatternComposer の表示合成 (ApplyWeightedModel2 = absolute MC × differential master) のグローバル近似で、位置依存重みを検出器全体で平均している。 //260727Cl: 移設に伴い参照先を訂正
     /// ZNCC 方位照合 (複合ランク・幾何較正) 用の実測に忠実なシミュレーションパターン。単一スライスより実測との相関が上がることをベンチで確認済み。
     /// </summary>
-    public (float[] Pos, float[] Neg) ComposeGlobalWeightedPattern(MasterPattern mp)
+    //260920Cl シグネチャ変更 (作者指示): 損失依存のコントラスト係数 A(E) = exp(−(E0 − E)/E_c) を掛けられるようにした。
+    //  表示合成 (EbsdPatternComposer.CoherenceLossDecayKeV) と同じ重みにしないと、ZNCC の目的関数だけ別のパターンを見ることになる。
+    //  ⚠ここでは (1 − A) の平坦な台座を足していない。ZNCC は画像全体への定数加算・定数倍に不変なので、方向に依らない成分は結果を変えないため。
+    //旧: public (float[] Pos, float[] Neg) ComposeGlobalWeightedPattern(MasterPattern mp)
+    public (float[] Pos, float[] Neg) ComposeGlobalWeightedPattern(MasterPattern mp, double beamEnergyKeV = double.NaN, double coherenceLossDecayKeV = double.NaN)
     {
         ArgumentNullException.ThrowIfNull(mp); //260725Ch: null を後段の不明瞭な参照例外にしない
         if (mp.GridSize < 2) throw new ArgumentException("MasterPattern.GridSize must be at least 2.", nameof(mp)); //260725Ch
@@ -71,6 +75,16 @@ public sealed class EbsdMonteCarloDistribution
                 if (bw == null) continue;
                 for (int k = 0; k < wG.Length && k < bw.Length; k++) wG[k] += bw[k];
             }
+        //260920Cl 追加: エネルギースライスごとに A(E) を掛ける。直後に総和で正規化するので、重みの規約 (総和 1) は保たれる
+        if (coherenceLossDecayKeV > 0 && double.IsFinite(coherenceLossDecayKeV) && eLen > 0)
+        {
+            double e0 = beamEnergyKeV > 0 && double.IsFinite(beamEnergyKeV) ? beamEnergyKeV : mp.Energies.Max();
+            for (int ei = 0; ei < eLen; ei++)
+            {
+                double a = Math.Exp(-Math.Max(0, e0 - mp.Energies[ei]) / coherenceLossDecayKeV);
+                for (int di = 0; di < dLen; di++) wG[ei * dLen + di] *= a;
+            }
+        }
         double wSum = 0;
         foreach (var v in wG) wSum += v;
         if (wSum > 0) for (int k = 0; k < wG.Length; k++) wG[k] /= wSum;
