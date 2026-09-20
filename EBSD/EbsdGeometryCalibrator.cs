@@ -109,7 +109,8 @@ public static class EbsdGeometryCalibrator
     static readonly int[] StageLongSides = [160, 480, 0];
 
     /// <summary>260920Cl 追加: 2 段目・3 段目へ持ち上げる上位解の数。1 段目 (粗) の谷が浅いと最良が入れ替わるため 1 点に絞らない</summary>
-    static readonly int[] StageKeep = [6, 1];
+    //260920Cl: 中段の点数はコア数に合わせる (6 点だと多コア機で遊ぶ)。最終段は 1 点にして評価の内部を並列にする
+    static readonly int[] StageKeep = [Math.Max(6, Environment.ProcessorCount), 1];
 
     /// <summary>260920Cl 追加: 各段の Nelder-Mead の収束条件。段が細かくなるほど厳しくする
     /// (関数値の幅 tol と、初期刻みに対するシンプレックスの広がり xtolRel の両方)</summary>
@@ -125,7 +126,19 @@ public static class EbsdGeometryCalibrator
     sealed class Scale { public int W, H; public double[] Reference; public double FlattenFwhm; }
 
     /// <summary>260920Cl 追加: スレッドごとの作業バッファ (投影先と box blur の作業用)</summary>
-    sealed class Work { public double[] Buf, W1, W2; public Work(int n) { Buf = new double[n]; W1 = new double[n]; W2 = new double[n]; } }
+    /// <summary>260920Cl 追加: スレッドごとの作業バッファ (投影先・box blur の作業用・使い回すプロジェクタ)。
+    /// Proj は幾何が変わるたび Rebuild するだけで、配列の確保はこの 1 回きり</summary>
+    sealed class Work
+    {
+        public double[] Buf, W1, W2;
+        public EbsdPatternProjector Proj;
+        public Work(Scale sc, EbsdDetectorGeometry geom)
+        {
+            int n = sc.W * sc.H;
+            Buf = new double[n]; W1 = new double[n]; W2 = new double[n];
+            Proj = new EbsdPatternProjector(geom, sc.W, sc.H);
+        }
+    }
 
     /// <summary>PC/DD と方位を較正する。結果は <see cref="EbsdDetectorGeometry.FromPatternCenter"/> で DetX/DetY/DetZ へ戻す。
     /// 260920Cl 全面改修 (作者指示): 粗 → 中 → フル解像度の多段、多点開始の並列化、シミュレーション側にも実測と同じ平坦化、収束判定の強化。
@@ -173,17 +186,22 @@ public static class EbsdGeometryCalibrator
             Interlocked.Increment(ref evalsDone);
             proj.Project(context.MasterPattern, rot, context.PositivePlane, context.NegativePlane, w.Buf, innerParallel);
             //260920Cl: 実測側が平坦化されているならシミュレーション側にも同じ高域通過を掛ける (これを欠くと ZNCC がモデル由来の背景勾配に引かれる)
-            if (sc.FlattenFwhm >= 1) EbsdPatternScorer.SubtractBoxBackground(w.Buf, w.W1, w.W2, sc.W, sc.H, sc.FlattenFwhm);
-            return -EbsdPatternScorer.Zncc(sc.Reference, w.Buf);
+            if (sc.FlattenFwhm >= 1) EbsdPatternScorer.SubtractBoxBackground(w.Buf, w.W1, w.W2, sc.W, sc.H, sc.FlattenFwhm, innerParallel); //260920Cl: 最終段は内部も並列
+            return -EbsdPatternScorer.ZnccSimd(sc.Reference, w.Buf, innerParallel); //260920Cl: SIMD 版。最終段は並列
         }
+        //260920Cl: 旧実装は評価ごとに new EbsdPatternProjector していた (フル解像度で 1 評価あたり 33 MB の確保)。バッファを使い回す
+        //旧: => ScoreWith(sc, w, new EbsdPatternProjector(MakeGeom(fu, fv, lnDd), sc.W, sc.H), rot, innerParallel);
         double ScoreAt(Scale sc, Work w, double fu, double fv, double lnDd, Matrix3D rot, bool innerParallel)
-            => ScoreWith(sc, w, new EbsdPatternProjector(MakeGeom(fu, fv, lnDd), sc.W, sc.H), rot, innerParallel);
+        {
+            w.Proj.Rebuild(MakeGeom(fu, fv, lnDd), innerParallel);
+            return ScoreWith(sc, w, w.Proj, rot, innerParallel);
+        }
 
         var coarse = scales[0];
         //260920Cl: 較正前後の ZNCC は**同じ解像度**で測る。段ごとに ZNCC の絶対値は変わる (細かいほど下がる) ので、
         //  旧: 開始値を粗い段、結果を最終段で測っており、改善しても悪化したように見えていた
         var finest = scales[^1];
-        double startZncc = -ScoreAt(finest, new Work(finest.W * finest.H), footU0, footV0, lnDd0, context.Rotation, true);
+        double startZncc = -ScoreAt(finest, new Work(finest, geom0), footU0, footV0, lnDd0, context.Rotation, true);
 
         //--- 1 開始点ぶんの較正 (交互法 → 方位仕上げ → 6 変数同時 (最終段は再起動付き))
         (double Zncc, double Fu, double Fv, double LnDd, Matrix3D Rot, int Rounds, bool Converged, double JointGain)
@@ -192,7 +210,7 @@ public static class EbsdGeometryCalibrator
             var sc = scales[Math.Min(stage, scales.Length - 1)];
             var (tol, xtol) = StageTolerance[Math.Min(stage, StageTolerance.Length - 1)];
             var (maxOri, maxGeo, maxJoint) = StageMaxEval[Math.Min(stage, StageMaxEval.Length - 1)];
-            var w = new Work(sc.W * sc.H);
+            var w = new Work(sc, geom0);
             var r0 = rot;
             int roundsUsed = 0; bool converged = false;
             double prevZncc = -ScoreAt(sc, w, fu, fv, lnDd, r0, innerParallel);

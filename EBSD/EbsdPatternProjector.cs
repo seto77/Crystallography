@@ -28,8 +28,22 @@ public sealed class EbsdPatternProjector
         Width = rasterW; Height = rasterH;
         //raysSample = new V3[rasterW * rasterH]; //260725Ch 変更前
         raysSample = new V3[checked(rasterW * rasterH)]; //260725Ch
-        //260724Cl (/simplify): 各ピクセル独立なので並列化 (幾何較正では評価毎に本コンストラクタが再構築されるため、逐次だと 1 Project 相当の逐次コストが毎評価に乗っていた)
-        Parallel.For(0, rasterH, r =>
+        Rebuild(geometry); //260920Cl: 視線の計算は Rebuild と共通化 (幾何較正が同じバッファを使い回せるようにするため)
+    }
+
+    /// <summary>260920Cl 追加: 同じラスターのまま検出器幾何だけ差し替えて視線を計算し直す。
+    /// 幾何較正は 1 評価ごとに幾何が変わるが、旧実装はそのたびにコンストラクタで V3[W×H] を確保していた
+    /// (フル解像度 1344×1024 では 1 評価あたり 33 MB。数千評価ぶんの GC 負荷が投影本体より重かった)。
+    /// バッファを使い回すことで確保をゼロにする。数値は従来と同一 (同じ式・同じ順序)</summary>
+    public void Rebuild(EbsdDetectorGeometry geometry, bool parallel = true)
+    {
+        ArgumentNullException.ThrowIfNull(geometry);
+        int rasterW = Width, rasterH = Height;
+        //260724Cl (/simplify): 各ピクセル独立なので並列化。260920Cl: 多点開始を並列に走らせるときは入れ子を避けるため parallel: false で呼ぶ
+        if (parallel) Parallel.For(0, rasterH, BuildRow);
+        else for (int r = 0; r < rasterH; r++) BuildRow(r);
+
+        void BuildRow(int r)
         {
             for (int c = 0; c < rasterW; c++)
             {
@@ -37,7 +51,7 @@ public sealed class EbsdPatternProjector
                 double row = (r + 0.5) / rasterH * geometry.HeightPx - 0.5;
                 raysSample[r * rasterW + c] = geometry.PixelToSampleDirection(col, row);
             }
-        });
+        }
     }
 
     /// <summary>公開投影APIの共通バッファ前提をホット画素ループの外で一度だけ検証する。260725Ch 追加</summary>
@@ -155,6 +169,8 @@ public sealed class EbsdPatternProjector
     /// <summary>回転 rotation (crystal→sample) のパターンを output (Width×Height) へ書き込む。posPlane/negPlane = MasterPattern.GetPlane の単一スライス。
     /// parallel=false で行ループを逐次実行 (辞書総当たりのような方位単位で並列化する呼び出し向け。小ラスターでは行並列のオーバーヘッドが支配的)。260724Cl シグネチャ変更 (parallel 追加)</summary>
     //260724Cl 旧: public void Project(MasterPattern mp, Matrix3D rotation, float[] posPlane, float[] negPlane, double[] output)
+    //260920Cl: 視線の計算をこのループへ融合する版も試したが、フル解像度の較正で 86.6 s → 93.5 s と遅くなったので採らない
+    //  (raysSample 33 MB の往復を省くより、ホットループに分岐と PixelToSampleDirection が入る分が上回る)。視線は Rebuild で別に作る
     public void Project(MasterPattern mp, Matrix3D rotation, float[] posPlane, float[] negPlane, double[] output, bool parallel = true)
     {
         //int gs = mp.GridSize; //260725Ch 変更前
@@ -356,15 +372,18 @@ public static class EbsdPatternScorer
     /// <summary>260920Cl 追加: data から自身の広域背景 (box blur 3 連 = ガウシアン近似、半値全幅 fwhm) を差し引く。
     /// 表示側の <see cref="ImageProcess.SubtractGaussianBackground"/> と同じ高域通過だが、直接畳み込みでなく O(1)/画素 の box 近似なので
     /// 1 評価ごとに掛ける較正でも実用になる (fwhm 100 px のガウシアンは 600 演算/画素、box3 は 25 演算/画素)。work1/work2 は data と同じ長さ</summary>
-    internal static void SubtractBoxBackground(double[] data, double[] work1, double[] work2, int w, int h, double fwhm)
+    //260920Cl: parallel=true で box パスを分割して並列化する。較正の最終段 (開始点 1 つ・フル解像度) では投影は並列なのに
+    //  背景差し引きだけ逐次だと、ここが Amdahl のボトルネックになる。辞書探索のように呼び出し側が既に並列なときは false (入れ子回避)
+    internal static void SubtractBoxBackground(double[] data, double[] work1, double[] work2, int w, int h, double fwhm, bool parallel = false)
     {
         if (!(fwhm >= 1)) { Array.Clear(data); return; } //ぼかし幅が 1 px 未満なら 原画像 − 原画像 = 0
-        Box3Seq(data, work1, work2, w, h, fwhm / 2.354820045);
-        for (int i = 0; i < data.Length; i++) data[i] -= work1[i];
+        Box3Seq(data, work1, work2, w, h, fwhm / 2.354820045, parallel);
+        if (parallel) Parallel.For(0, h, y => { for (int i = y * w, e = i + w; i < e; i++) data[i] -= work1[i]; });
+        else for (int i = 0; i < data.Length; i++) data[i] -= work1[i];
     }
 
     /// <summary>box blur 3 連 (ガウシアン分散一致近似、完全逐次)。src → dst (src は不変)。work は作業バッファ。260724Cl 追加</summary>
-    internal static void Box3Seq(double[] src, double[] dst, double[] work, int w, int h, double sigma) // 260920Cl: 幾何較正が 1 評価ごとに背景を引くため internal 化
+    internal static void Box3Seq(double[] src, double[] dst, double[] work, int w, int h, double sigma, bool parallel = false) // 260920Cl: internal 化 + 並列フラグ
     {
         int r = Math.Max(1, (int)Math.Round((Math.Sqrt(4 * sigma * sigma + 1) - 1) / 2)); //3 連の合成分散 3(w²−1)/12 = σ² となる box 幅
         //260725Cl: 境界正規化 1/n を位置別に事前計算し BoxPassSeq 内の毎画素除算 (~18 回/画素) を乗算化 (prof: box が前処理の 52%)
@@ -375,10 +394,65 @@ public static class EbsdPatternScorer
         for (int x = 0; x < w; x++) invX[x] = x >= r && x < w - r ? invMid : 1.0 / (Math.Min(x + r, w - 1) - Math.Max(x - r, 0) + 1);
         for (int y = 0; y < h; y++) invY[y] = y >= r && y < h - r ? invMid : 1.0 / (Math.Min(y + r, h - 1) - Math.Max(y - r, 0) + 1);
         //260725Cl: 縦パスの行アキュムレータ化で横パス出力の一時バッファが必要 (in-place 縦パス廃止)
+        if (parallel)
+        {   //260920Cl: 並列版は ThreadStatic のスクラッチが使えない (ワーカースレッドごとに別物になる) ので都度確保する
+            var tmpH = new double[w * h];
+            var ix = invX.ToArray(); var iy = invY.ToArray(); //ローカル関数へ Span は渡せない
+            BoxPassPar(src, dst, tmpH, w, h, r, ix, iy);
+            BoxPassPar(dst, work, tmpH, w, h, r, ix, iy);
+            BoxPassPar(work, dst, tmpH, w, h, r, ix, iy);
+            return;
+        }
         if (box3ScratchH == null || box3ScratchH.Length < w * h) box3ScratchH = new double[w * h];
         BoxPassSeq(src, dst, box3ScratchH, w, h, r, invX, invY);
         BoxPassSeq(dst, work, box3ScratchH, w, h, r, invX, invY);
         BoxPassSeq(work, dst, box3ScratchH, w, h, r, invX, invY);
+    }
+
+    /// <summary>260920Cl 追加: BoxPassSeq の並列版。横パスは行ごと、縦パスは列帯ごとに分ける
+    /// (縦パスは行アキュムレータを上から走らせるので y では割れないが、列で割れば各帯が独立)</summary>
+    static void BoxPassPar(double[] src, double[] dst, double[] tmpH, int w, int h, int radius, double[] invX, double[] invY)
+    {
+        Parallel.For(0, h, y => //横パス: src → tmpH (行内 running sum)
+        {
+            int row = y * w;
+            double sum = 0;
+            for (int x = 0; x <= Math.Min(radius, w - 1); x++) sum += src[row + x];
+            for (int x = 0; x < w; x++)
+            {
+                tmpH[row + x] = sum * invX[x];
+                int add = x + radius + 1, rem = x - radius;
+                if (add < w) sum += src[row + add];
+                if (rem >= 0) sum -= src[row + rem];
+            }
+        });
+        int bands = Math.Min(Environment.ProcessorCount, Math.Max(1, w / 32));
+        int bandWidth = (w + bands - 1) / bands;
+        Parallel.For(0, bands, b => //縦パス: tmpH → dst (列帯ごとに独立なアキュムレータ)
+        {
+            int x0 = b * bandWidth, x1 = Math.Min(w, x0 + bandWidth);
+            if (x0 >= x1) return;
+            var acc = new double[x1 - x0];
+            for (int y = 0; y <= Math.Min(radius, h - 1); y++)
+            {
+                int row = y * w;
+                for (int x = x0; x < x1; x++) acc[x - x0] += tmpH[row + x];
+            }
+            for (int y = 0; y < h; y++)
+            {
+                int row = y * w;
+                int addRow = (y + radius + 1) < h ? (y + radius + 1) * w : -1, remRow = (y - radius) >= 0 ? (y - radius) * w : -1;
+                double iv = invY[y];
+                for (int x = x0; x < x1; x++)
+                {
+                    double a = acc[x - x0];
+                    dst[row + x] = a * iv;
+                    if (addRow >= 0) a += tmpH[addRow + x];
+                    if (remRow >= 0) a -= tmpH[remRow + x];
+                    acc[x - x0] = a;
+                }
+            }
+        });
     }
 
     [ThreadStatic] static double[] box3ScratchH; //260725Cl: BoxPassSeq 横パス出力の一時 (スレッドローカル再利用)
@@ -476,6 +550,60 @@ public static class EbsdPatternScorer
         }
         double std = Math.Sqrt(var / pattern.Length);
         return std < 1E-12 ? 0 : dot / (pattern.Length * std);
+    }
+
+    /// <summary>260920Cl 追加: <see cref="Zncc"/> の SIMD 版。フル解像度 (1.4 M 画素) を 1 評価ごとに 2 周する幾何較正のための高速版。
+    /// 加算順が変わるため結果は ULP 程度ずれる。辞書探索の golden 順位を動かさないよう、既存の <see cref="Zncc"/> は残して
+    /// 較正だけがこちらを使う (同じ数式・同じ規格化)</summary>
+    //260920Cl: parallel=true で固定ブロック分割して並列化する (ブロック数は固定なので同じ入力なら常に同じ値 = 決定的)
+    public static double ZnccSimd(double[] normalizedRef, double[] pattern, bool parallel = false)
+    {
+        int n = pattern.Length, vc = Vector<double>.Count, i = 0;
+        if (parallel && n >= 1 << 16) return ZnccSimdParallel(normalizedRef, pattern);
+        double mean = SumSimd(pattern) / n;
+        var vm = new Vector<double>(mean);
+        Vector<double> vvar = Vector<double>.Zero, vdot = Vector<double>.Zero;
+        for (; i <= n - vc; i += vc)
+        {
+            var d = new Vector<double>(pattern, i) - vm;
+            vvar += d * d;
+            vdot += new Vector<double>(normalizedRef, i) * d;
+        }
+        double var = Vector.Sum(vvar), dot = Vector.Sum(vdot);
+        for (; i < n; i++) { double d = pattern[i] - mean; var += d * d; dot += normalizedRef[i] * d; }
+        double std = Math.Sqrt(var / n);
+        return std < 1E-12 ? 0 : dot / (n * std);
+    }
+
+    /// <summary>260920Cl 追加: ZnccSimd の並列版。ブロック数を固定して部分和を決まった順に畳み込むので、同じ入力なら常に同じ値</summary>
+    static double ZnccSimdParallel(double[] normalizedRef, double[] pattern)
+    {
+        int n = pattern.Length;
+        int blocks = Math.Min(Environment.ProcessorCount * 2, Math.Max(1, n / 8192));
+        int size = (n + blocks - 1) / blocks;
+        var sums = new double[blocks];
+        Parallel.For(0, blocks, b =>
+        {
+            int lo = b * size, hi = Math.Min(n, lo + size);
+            double s = 0;
+            for (int k = lo; k < hi; k++) s += pattern[k];
+            sums[b] = s;
+        });
+        double total = 0;
+        foreach (var v in sums) total += v;
+        double mean = total / n;
+        var vars = new double[blocks]; var dots = new double[blocks];
+        Parallel.For(0, blocks, b =>
+        {
+            int lo = b * size, hi = Math.Min(n, lo + size);
+            double va = 0, dt = 0;
+            for (int k = lo; k < hi; k++) { double d = pattern[k] - mean; va += d * d; dt += normalizedRef[k] * d; }
+            vars[b] = va; dots[b] = dt;
+        });
+        double var2 = 0, dot2 = 0;
+        for (int b = 0; b < blocks; b++) { var2 += vars[b]; dot2 += dots[b]; }
+        double std = Math.Sqrt(var2 / n);
+        return std < 1E-12 ? 0 : dot2 / (n * std);
     }
 
     /// <summary>
