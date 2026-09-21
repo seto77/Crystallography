@@ -172,15 +172,27 @@ public sealed class EbsdMonteCarloDistribution
 
     // 260718Cl: smpTilt 引数を削除。BSE の Vec は MC 内で試料傾斜を織り込んで lab 座標系で追跡され、検出器 (detY/detZ/detTilt も lab 座標系) への投影に試料傾斜は不要 (Codex 検証済: 適用すると二重計上)。
     // 260723Cl: 円形検出器 (半径 detR) → 矩形検出器 (半幅 halfWidth × 半高 halfHeight) + 中心 X オフセット (detX) へ変更。
-    // 旧シグネチャ: EbsdMonteCarloDistribution(bseList, beamEnergy, detTilt, detY, detZ, detR, energies, depths, binCount = 8)
+    // 旧シグネチャ (〜260921Cl): EbsdMonteCarloDistribution(bseList, beamEnergy, detTilt, detX, detY, detZ, halfWidth, halfHeight, energies, depths, binCount = 8, ...)
+    /// <summary>260921Cl シグネチャ変更 (作者指示): <b>検出器ではなく、試料表面側の半球全体をビニングする。</b>
+    /// <para>【なぜ】旧版は検出器に当たった電子だけを検出器面上の 8×8 に切り、外れた電子は捨てていた。そのため
+    /// 検出器より広い視野を表示すると、そこは全部「端のビンの外挿」で物理的な裏付けが無かった
+    /// (実測: 視野 683 mm のとき検出器はその 1/10。正本 §1.5.4)。半球を切れば視野をどれだけ広げても実データで埋まる。</para>
+    /// <para>【格子】MasterPattern と同じ <b>Rosca-Lambert 等積正方格子</b>。等積なので全ビンの立体角が等しく、
+    /// 極にも縁にも特異点が無い。既定 16×16 は、検出器 8×8 (立体角 ≈ 1.7 sr を 64 分割) と同程度の角度分解能で
+    /// 半球 (2π sr) を覆う数 (2π ÷ (1.7/64) ≈ 236 ≈ 15.4²)。</para>
+    /// <para>【座標系】bseList.Vec は lab 系なので X 軸まわりに −sampleTilt 回して試料系へ戻し、射出半球 (z &gt; 0) を切る。
+    /// 合成側 (<see cref="EbsdPatternComposer"/>) はまったく同じ写像を使う。⚠ 合成側の画素方向は射出方向の
+    /// **逆向き**なので、あちらでは符号を反転してからこの写像へ渡す (両者の式を突き合わせて数値で確認済)。</para>
+    /// <para>⚠ 検出器に依存しなくなったので、検出器幾何を変えても MC 分布を作り直す必要はない。</para>
+    /// <para>⚠ <see cref="ComposeGlobalWeightedPattern"/> の全ビン平均は「検出器に当たる電子の平均」から
+    /// 「射出半球全体の平均」へ意味が変わる。ZNCC 目的関数と E_c 校正 (正本 §2.7) はこの重みを使うので、
+    /// 旧値へ厳密に戻したいときは検出器の立体角で重み付けし直す必要がある。</para></summary>
     public EbsdMonteCarloDistribution(
         (double Depth, V3 Vec, double Energy)[] bseList,
         double beamEnergy,
-        double detTilt,
-        double detX, double detY, double detZ,
-        double halfWidth, double halfHeight,
+        double sampleTilt, //260921Cl 変更: detTilt/detX/detY/detZ/halfWidth/halfHeight を置き換え
         double[] energies, double[] depths,
-        int binCount = 8,
+        int binCount = 16, //260921Cl 変更 (旧 8): 半球を検出器 8×8 と同程度の角度分解能で覆う数
         double amorphousLayerNm = 0, // 260919Cl 追加: 表面非晶質層の厚さ [nm]。層内の源は変調なし成分、結晶内の深さは層厚を引く
         double energyWeightDeadKeV = double.NaN) // 260919Cl 追加 (試行): 蛍光体応答 φ(E)=max(0,E−E_dead) で電子を重み付け。NaN = 重み無し (従来)
     {
@@ -191,8 +203,7 @@ public sealed class EbsdMonteCarloDistribution
         if (binCount < 2) throw new ArgumentOutOfRangeException(nameof(binCount), "binCount must be at least 2.");
         if (energies.Length == 0) throw new ArgumentException("At least one energy is required.", nameof(energies));
         if (depths.Length == 0) throw new ArgumentException("At least one depth is required.", nameof(depths));
-        if (!(halfWidth > 0) || !double.IsFinite(halfWidth)) throw new ArgumentOutOfRangeException(nameof(halfWidth));
-        if (!(halfHeight > 0) || !double.IsFinite(halfHeight)) throw new ArgumentOutOfRangeException(nameof(halfHeight));
+        if (!double.IsFinite(sampleTilt)) throw new ArgumentOutOfRangeException(nameof(sampleTilt)); //260921Cl 変更 (旧: halfWidth/halfHeight の検証)
 
         BinCount = binCount;
         //260920Cl (/simplify2): E_dead がビームエネルギー以上だと全電子の φ が 0 になり、パターンが例外も警告も無く恒等的にゼロになる。
@@ -201,9 +212,10 @@ public sealed class EbsdMonteCarloDistribution
         EnergyWeightDeadKeV = useEnergyWeight ? energyWeightDeadKeV : double.NaN;
         double totalWeight = 0; // 260919Cl 追加: Σφ(E) (重み無しなら電子数)
 
-        var (sinDet, cosDet) = Math.SinCos(detTilt);
-        // double dNumer = -(detY * sinDet + detZ * cosDet); // 260723Cl 廃止: 旧交点係数 k=dNumer/dDenom は法線 (0,sinθ,+cosθ) の面を指し、detTilt=90° 以外で真の検出器面 (法線 n=(0,sinθ,-cosθ)) と一致しなかった
-        double lamDenom = detY * sinDet - detZ * cosDet; // 260718Cl 追加: py 逆写像のスケール分母 (= ±CameraLength2)。実在検出器では非ゼロ
+        //260921Cl 変更: 検出器面との交点ではなく、試料系での射出方向そのものでビニングする
+        //  旧: var (sinDet, cosDet) = Math.SinCos(detTilt); double lamDenom = detY * sinDet - detZ * cosDet;
+        var (sinSmp, cosSmp) = Math.SinCos(sampleTilt);
+        double binScale = binCount / (2.0 * MasterPattern.SquareLimit); //Lambert 正方 [−L, +L] → [0, binCount]
 
         var bins = new List<(double depth, double energy)>[binCount, binCount];
         for (int i = 0; i < binCount; i++)
@@ -224,35 +236,15 @@ public sealed class EbsdMonteCarloDistribution
         {
             //260920Cl (/simplify2): 重みの母数は全電子。検出器を外れる continue より前で積む (旧 binFraction の分母 bseList.Length と同義)
             totalWeight += useEnergyWeight ? Math.Max(0, energy - energyWeightDeadKeV) : 1.0;
-            // double dDenom = vec.Y * sinDet + vec.Z * cosDet;
-            // if (Math.Abs(dDenom) < 1e-15) continue;
-            // double k = dNumer / dDenom;
-            // if (k <= 0) continue; // 260723Cl 変更前: detTilt=90° でのみ正しい交点係数
-            // 260723Cl 変更: 交点係数を真の検出器面 (中心 C=(detX,-detY,-detZ)、法線 n=(0,sinθ,-cosθ): 幾何表示・Foot・CameraLength2 と同一) で計算。
-            //   k = (n・C)/(n・vec)。n・C = -lamDenom。detTilt=90° では旧式と同値
-            double nDotVec = vec.Y * sinDet - vec.Z * cosDet;
-            if (Math.Abs(nDotVec) < 1e-15) continue;
-            double k = -lamDenom / nDotVec;
-            if (k <= 0) continue;
-
-            // double px = k * vec.X / detR; // 260723Cl 変更前
-            // 260723Cl 変更: px も py と同じく消費側 (EbsdPatternComposer.BuildLookupTable / detNormX = -xm·(2w+1-width)/width) の厳密な逆写像へ。
-            //   消費側の視線 X は (ピクセル項) - detX で、検出器面ヒット位置 k·vec.X との対応から px = (detX - k·vec.X)/halfWidth。
-            //   旧式 (+k·vec.X/detR) は左右逆ビンを参照していたが、MC 分布が X 対称なため従来 (detX=0) は不可視だった。
-            double px = (detX - k * vec.X) / halfWidth;
-            // 260718Cl 変更: py を消費側 (EbsdPatternComposer.BuildLookupTable) の「画素→lab 方向」マップの厳密な逆写像で算出する。
-            //   旧 py=localY/detR は検出器面内 Y 接線 (cosDet,-sinDet) が消費側の (cosDet,+sinDet) と食い違い、
-            //   DetTilt≠90° で輝度ビンに foreshortening ずれ (検出器端で ~1 粗ビン) を生んでいた。
-            //   逆写像 py は消費側 detNormY に厳密一致し、DetTilt=90° では旧式と同値 (既定は完全に不変)。lambda=検出器中心線方向の射影スケール。
-            // double localY = cosDet * (k * vec.Y + detY) - sinDet * (k * vec.Z + detZ); double py = localY / detR; // 260718Cl 変更前
-            // double lambda = (vec.Y * sinDet - vec.Z * cosDet) / lamDenom; // 260723Cl 変更前 (分子は nDotVec と同値)
-            double lambda = nDotVec / lamDenom;
-            double py = ((vec.Y * cosDet + vec.Z * sinDet) / lambda - (detY * cosDet + detZ * sinDet)) / halfHeight; // 260723Cl: detR → halfHeight
-
-            if (!(px >= -1 && px <= 1) || !(py >= -1 && py <= 1)) continue; // 260718Cl: NaN/範囲外を棄却 (lambda≈0 → py→∞ も捕捉)
-
-            int bi = Math.Clamp((int)((px + 1) * 0.5 * binCount), 0, binCount - 1);
-            int bj = Math.Clamp((int)((1 - py) * 0.5 * binCount), 0, binCount - 1);
+            //260921Cl 変更: 検出器面との交点 (px, py) で 8×8 に切っていたのをやめ、試料系の射出方向を
+            //  Rosca-Lambert 等積正方格子へ写して半球を切る。旧コードは git 履歴 (260723Cl 版) を参照。
+            //  lab → 試料系: X 軸まわりに −sampleTilt。RotationX(−θ): y′ = y cosθ + z sinθ、z′ = −y sinθ + z cosθ
+            var (_, sy, sz) = LabToSample(vec.X, vec.Y, vec.Z, sinSmp, cosSmp);
+            if (!(sz > 0)) continue; //試料内部へ向かう方向 (物理的に射出しない)。NaN もここで落ちる
+            //⚠ 合成側とまったく同じ写像を使う (DirectionToBinCoords の doc)
+            var (fbx, fby) = DirectionToBinCoords(vec.X, sy, sz, binCount);
+            int bi = Math.Clamp((int)Math.Round(fbx), 0, binCount - 1);
+            int bj = Math.Clamp((int)Math.Round(fby), 0, binCount - 1);
             // binTotals[bi, bj]++; binEnergies[bi, bj].Add(energy); // 260919Cl 変更前
             double phi = useEnergyWeight ? Math.Max(0, energy - energyWeightDeadKeV) : 1.0; // 260919Cl 追加 (試行): 蛍光体の発光量 ∝ E − E_dead
             binTotals[bi, bj] += phi; binCounts[bi, bj]++; // 260919Cl 変更
@@ -583,6 +575,21 @@ public sealed class EbsdMonteCarloDistribution
 
         return (losses[idxLoss95], depths[idxDepth99]); // 260919Cl idxLoss80 → idxLoss95
     }
+
+    /// <summary>260921Cl 追加 (作者指示): <b>試料系の射出方向 → ビン座標</b>。ビン中心が整数、範囲は [−0.5, binCount−0.5]。
+    /// <para>⚠ <b>分布を作る側 (このクラスの ctor) と使う側 (<see cref="EbsdPatternComposer"/>) は必ずこれを共有する。</b>
+    /// 同じ式を 2 か所に書くと、片方だけ直したときに「絵はそれらしいが微妙にずれている」という見つけにくい壊れ方をする。</para>
+    /// <para>格子は MasterPattern と同じ Rosca-Lambert 等積正方格子。b (縦) は MasterPattern の行の向きに合わせて反転する。</para></summary>
+    public static (double bx, double by) DirectionToBinCoords(double sx, double sy, double sz, int binCount)
+    {
+        var (la, lb) = MasterPattern.SphereToRoscaLambertSquare(sx, sy, sz);
+        double scale = binCount / (2.0 * MasterPattern.SquareLimit);
+        return ((la + MasterPattern.SquareLimit) * scale - 0.5, (MasterPattern.SquareLimit - lb) * scale - 0.5);
+    }
+
+    /// <summary>260921Cl 追加: lab 系の射出方向を試料系へ戻す (X 軸まわりに −sampleTilt)。ctor と同じ変換を外からも使えるように。</summary>
+    public static (double x, double y, double z) LabToSample(double x, double y, double z, double sinSampleTilt, double cosSampleTilt)
+        => (x, y * cosSampleTilt + z * sinSampleTilt, -y * sinSampleTilt + z * cosSampleTilt);
 
     public static (double[] energies, double energyStart, double energyEnd, double energyStep,
                     double[] depths, double depthStart, double depthEnd, double depthStep)
