@@ -97,6 +97,7 @@ public sealed class KikuchiPotentialSnapshot
         var h = new HashCode();
         h.Add(c.A); h.Add(c.B); h.Add(c.C); h.Add(c.Alpha); h.Add(c.Beta); h.Add(c.Gamma);
         h.Add((int)BetheMethod.ElasticIonModel);
+        h.Add((int)BetheMethod.AbsorptionElasticModel); //260922Cl 追加: 吸収の弾性散乱因子の模型 (getU の虚部が変わるので snapshot を失効させる)
         foreach (var atoms in c.Atoms)
         {
             h.Add(atoms.AtomicNumber); h.Add(atoms.SubNumberElectron); h.Add(atoms.Occ);

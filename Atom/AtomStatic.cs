@@ -2906,6 +2906,14 @@ new(4.86738014,0.319974401,4.58872425,
         //  入れた   … FactorImaginary (局所・全立体角) と FactorImaginaryAnnular 2 本 = **吸収の本番経路すべて**
         //  入れない … ⚠ FactorImaginaryAnnularFlatEwald と FactorImaginaryAnnular2 は Gauss 和の直書きのまま。
         //             どちらも「未完成」「没?」で本番から呼ばれていないため。**復活させるときは必ずここも直すこと**
+        //
+        //【260922Cl 追加: TemariHybrid (BetheMethod.AbsorptionElasticModel、既定)】
+        //  中性原子の 0 ≤ s ≤ 6 Å⁻¹ を Temari dataset-factors v2.0.0 の第一原理 f_e に替える切替。s > 6 は上の Mott–Bethe tail のまま。
+        //  既定は TemariHybrid (作者決定 2026-09-22)。上の Peng→Mott–Bethe の二段構成は、イオン・Z = 87–98 と PengTail (旧挙動) で使われる。
+        //  根拠 = Temari の TDS 監査 (分岐 2): s > 6 の寄与は f″(0) の 1.5〜4.8 % あるが、tail の模型を替えた幅は 0.04〜0.43 %、
+        //  観測量への効きは 0.45 % 以下 ⇒ 6 以遠を Temari 由来にする必要は無い。PengTail との差は f″(0) の 0.06〜0.27 %。
+        //  既存の Peng→MB の smoothstep (1.5〜2.5) は、TemariHybrid では中性原子について使われない (s ≤ 6 が全部 Temari)。
+        //
         //  入れない … ⚠ **弾性散乱の実部** (BetheMethod.getU が呼ぶ es.Factor) は従来どおり純 Peng である。
         //             「Peng が s ≳ 2 Å⁻¹ で使えない」のは表の性質なので実部にも当てはまるが、実用的な反射は
         //             |g| ≤ 50 nm⁻¹ (s ≈ 0.25 Å⁻¹) で接続域に遠く届かず、変えると既存の全結果が動くため触っていない。
@@ -2918,6 +2926,9 @@ new(4.86738014,0.319974401,4.58872425,
 
         //⚠ 二乗版を別に置くのは、最頻経路 (純 Peng) から Math.Sqrt を消すため。const なのでコンパイル時に畳まれる
         private const double TailJoinLow2 = TailJoinLow * TailJoinLow, TailJoinHigh2 = TailJoinHigh * TailJoinHigh;
+
+        /// <summary>TemariHybrid で Temari の f_e を使う上限 s² [Å⁻²] (= <see cref="TemariSMaxAngstromInv"/>²)。260922Cl 追加</summary>
+        private const double TemariSMax2 = TemariSMaxAngstromInv * TemariSMaxAngstromInv;
 
         /// <summary>Mott–Bethe 係数を Å 規約にしたもの。f[Å] = 0.023934·(Z − f_x)/s²[Å⁻²]
         /// (<see cref="MottBetheMonopoleCoefficient"/> は s² が nm⁻²・f が nm の規約なので 1/10)</summary>
@@ -2943,6 +2954,16 @@ new(4.86738014,0.319974401,4.58872425,
         /// エントリは <see cref="Prms"/> が空で、そもそも <see cref="AttachTail"/> も呼ばれないので純 Peng 側 (= 0) へ落ちる。</remarks>
         internal double ElasticFactorWithTail(double s2, bool useTail = true)
         {
+            //260922Cl 追加: TemariHybrid (Temari の TDS 監査 分岐 2)。中性原子 (Valence = 0) の 0 ≤ s ≤ 6 Å⁻¹ だけ Temari の f_e [Å] に替える。
+            //  s > 6 は下の従来経路へ落ちる (s ≥ 2.5 なので純 Mott–Bethe)。s = 6 での値の跳び (≤ 0.041 %) は監査が許した形 (raw) なので合わせない。
+            //  ⚠ イオン (Valence ≠ 0) は従来どおり — Temari は「イオンはこの表からは導出できない」と明記している。
+            //  ⚠ AtomicNumber は AttachTail を呼ばれたエントリ (電子用の Peng と 8 Gaussian) だけが持つ。0 なら TemariScattering が null を返す。
+            //  ⚠ useTail = false (検証専用の入口) は純 Peng のまま。TemariFactor.Fe は s > 6 で例外を投げるので、s² ≤ 36 の判定を先に置く。
+            //  ⚠ s² は丸めで僅かに負になりうる (FactorImaginary の q0 − d) ので 0 へ寄せてから平方根を取る (Fe は負の s でも例外)。
+            if (useTail && Valence == 0 && s2 <= TemariSMax2 && BetheMethod.AbsorptionElasticModel == AbsorptionElasticModel.TemariHybrid
+                && TemariScattering(AtomicNumber) is { } temari)
+                return temari.Fe(s2 > 0 ? Math.Sqrt(s2) : 0);
+
             //純 Peng の側。ここが最頻 (前方散乱) なので Gauss 和だけで抜ける
             if (!useTail || s2 <= TailJoinLow2 || NeutralXray == null)
                 return PengSum(s2);

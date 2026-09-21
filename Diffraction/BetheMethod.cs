@@ -40,6 +40,20 @@ public enum ElasticIonModel
     IonFull,
 }
 
+/// <summary>
+/// 吸収 (TDS) の f″ の被積分関数に入る弾性散乱因子の模型 (260922Cl 追加)。弾性散乱の実部 (es.Factor = Peng) には影響しない。
+/// 根拠 = Temari の TDS 監査 (分岐 2)。手順と検証の記録は .project-guidance/ReciPro/ReciPro_TDS吸収hybrid改修.md。
+/// </summary>
+public enum AbsorptionElasticModel
+{
+    /// <summary>従来 (260811Cl〜): s ≤ 1.5 Å⁻¹ は Peng、2.5 以上は Mott–Bethe (WK の f_x を [0, Z] へ clamp)、その間は smoothstep。</summary>
+    PengTail,
+    /// <summary>中性原子 (Valence = 0、Z = 1–86) について 0 ≤ s ≤ 6 Å⁻¹ を Temari dataset-factors v2.0.0 の f_e に替え、
+    /// s > 6 は従来の Mott–Bethe tail のまま (接続は s = 6 で値を合わせない。跳び ≤ 0.041 %)。
+    /// イオンのエントリと Z = 87–98 は <see cref="PengTail"/> と同じ。</summary>
+    TemariHybrid,
+}
+
 /// <summary>Bethe法による動力学計算を提供するクラス。すべて、単位はnm</summary>
 //260807Cl 変更: class → partial class (旧: public class BetheMethod)。
 //ALCHEMI の方位ループは AccVoltage / Crystal / BaseRotation / getEigenMatrix (いずれも private) を
@@ -145,6 +159,15 @@ public partial class BetheMethod
     /// 計算せず表示だけ更新する経路 (SpotInfo 等) 向けには切替側で <see cref="ClearUCache"/> を呼ぶ。意味は <see cref="ElasticIonModel"/> enum 参照。
     /// </summary>
     public static ElasticIonModel ElasticIonModel { get => _elasticIonModel; set => _elasticIonModel = value; }
+
+    /// <summary>
+    /// 吸収 (TDS) の f″ の被積分関数に入る弾性散乱因子の模型 (260922Cl 追加, グローバル設定)。意味は <see cref="Crystallography.AbsorptionElasticModel"/> enum 参照。
+    /// 実体は <see cref="AtomStatic.ES"/> の ElasticFactorWithTail が読む。<see cref="ElasticIonModel"/> と同じく static で全結晶共有。
+    /// 動力学計算は開始時に uDictionary を Clear するので切替後も整合する。計算せず表示だけ更新する経路では切替側で <see cref="ClearUCache"/> を呼ぶこと。
+    /// 菊池のスナップショット (KikuchiProfileCalculator.ComputeCrystalHash) はこの値を内容ハッシュに含む。
+    /// 既定 = TemariHybrid (作者決定 2026-09-22。Temari の TDS 監査 分岐 2 で採用可と判定、手順書 §3 の検証済み)。旧挙動は PengTail で再現できる。
+    /// </summary>
+    public static AbsorptionElasticModel AbsorptionElasticModel { get; set; } = AbsorptionElasticModel.TemariHybrid;
 
     /// <summary>U のキャッシュ (uDictionary) を破棄する。260613Cl 追加: ElasticIonModel 切替後に再計算なしで表示を更新する経路向け。</summary>
     public void ClearUCache() => uDictionary.Clear();
