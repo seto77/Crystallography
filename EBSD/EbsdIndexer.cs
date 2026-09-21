@@ -30,11 +30,19 @@ public sealed class EbsdOrientationCandidate
 
     public string AssignmentText => string.Join(", ", Assignments.OrderBy(p => p.Key).Select(p => $"{p.Key}:({p.Value.H} {p.Value.K} {p.Value.L})"));
 
-    /// <summary>hkl のみの表示 (Radon 方位探索用: キーは強度順ランクでバンド番号でないため)。260724Cl 追加</summary>
     /// <summary>260921Cl 追加: 晶帯軸からの指数付け (EbsdZoneAxisIndexer) の結果なら true。
     /// Assignments の値は (h,k,l) ではなく [u,v,w] になり、表示の括弧も角括弧へ変わる</summary>
     public bool IsZoneAxis;
+    /// <summary>260921Cl 追加: この候補に付随する検出器幾何。方位と一緒に幾何も最適化した探索だけが入れる。null なら幾何は動かさない。
+    /// ⚠ **候補と別のリストで持たないこと。** 候補一覧を差し替えたときに古い幾何が残り、別の探索 (Radon 等) の候補を
+    /// 選んだ瞬間に無関係な幾何が黙って適用される (260921Cl に実際に起きた: buttonFindOrientation_Click が候補だけ差し替えていた)。</summary>
+    public EbsdDetectorGeometry Geometry;
 
+    /// <summary>260921Cl 追加: <see cref="Geometry"/> が元の幾何から動いた距離 [mm] (表示用)</summary>
+    public double GeometryShiftMm;
+
+    /// <summary>hkl のみの表示 (Radon 方位探索用: キーは強度順ランクでバンド番号でないため)。260724Cl 追加。
+    /// 260921Cl: 晶帯軸の結果なら角括弧 [u v w] にする</summary>
     public string HklText => string.Join(" ", Assignments.OrderBy(p => p.Key).Select(p =>
         IsZoneAxis ? $"[{p.Value.H} {p.Value.K} {p.Value.L}]" : $"({p.Value.H} {p.Value.K} {p.Value.L})"));
 }

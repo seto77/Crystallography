@@ -31,6 +31,7 @@ public sealed class EbsdZoneAxisSolution
     /// <summary>幾何を動かした量 (検出器中心 mm。動かしていなければ 0)</summary>
     public double GeometryShiftMm;
 
+    /// <summary>260921Cl 追加: 割当の表示文字列。「点番号 (1 始まり):[u v w]」を空白区切りで並べ、未割当の点は - になる</summary>
     public string AssignmentText => string.Join(" ", Assignments.Select((a, i) =>
         a is null ? $"{i + 1}:-" : $"{i + 1}:[{a.Value.U} {a.Value.V} {a.Value.W}]"));
 }
@@ -129,6 +130,13 @@ public static class EbsdZoneAxisIndexer
     /// <param name="crystal">VectorOfG_KikuchiLine を設定済みの結晶</param>
     /// <param name="toleranceDeg">角度の許容差。拾いの誤差 5 px は約 0.4° (カメラ長 35 mm・0.05 mm/px) なので既定 2°</param>
     /// <param name="refineGeometry">true で検出器中心 (DetX/DetY/DetZ) も同時に最適化する</param>
+    /// <param name="maxNodes">カタログに載せる晶帯軸の本数 (重み上位から)。± 展開するので実際の要素数は 2 倍</param>
+    /// <param name="maxCandidates">返す候補の最大数</param>
+    /// <param name="properSymmetries">結晶点群の proper 回転。重複候補の除去に使う。null なら素の misorientation で比べる</param>
+    /// <param name="maxIndex">カタログに載せる晶帯軸指数の上限。
+    ///   ⚠ <b>ここを緩めると偽解が上位に来る。</b> 高指数の軸はどんな点でも説明できてしまうため
+    ///   (実測で [10 -2 5] が割り当たった)。既定 4 より上げるときは必ずオーバーレイで目視確認すること</param>
+    /// <param name="cancel">中止トークン</param>
     public static List<EbsdZoneAxisSolution> Index(
         IReadOnlyList<EbsdZoneAxisPick> picks, EbsdDetectorGeometry geometry, Crystal crystal,
         double toleranceDeg = 2.0, int maxNodes = 300, int maxCandidates = 10,
@@ -190,20 +198,28 @@ public static class EbsdZoneAxisIndexer
         if (seedPairs.Count == 0) return [];
 
         var solutions = new List<EbsdZoneAxisSolution>();
+        var rotated = new V3[catalog.Count]; //260921Cl: Evaluate が使う作業バッファ (逐次呼び出しなので 1 本で足りる)
         foreach (var (i, j) in seedPairs)
         {
             cancel.ThrowIfCancellationRequested();
             double target = Angle(obs[i], obs[j]);
-            var listI = allowed[i] ?? Enumerable.Range(0, catalog.Count).ToList();
-            var listJ = allowed[j] ?? Enumerable.Range(0, catalog.Count).ToList();
-            foreach (int ca in listI)
-                foreach (int cb in listJ)
+            //260921Cl 変更: |角度 − target| ≤ tol は、cos が [0,π] で単調減少なので内積の窓で厳密に同値。
+            //  旧は Acos + sqrt×2 + 除算をカタログ対の総当たり (種ペア × catalog²) で回していた
+            //  (点 10 個・カタログ 600 本で 1.6e7 回)。Dir も obs も単位ベクトルなので長さの除算も要らない
+            double dotLo = Math.Cos(target + tol), dotHi = Math.Cos(target - tol);
+            //260921Cl 変更: 手入力が無いときは全カタログ。種ペアごとに List を作らず添字で回す
+            var listI = allowed[i]; var listJ = allowed[j];
+            int nI = listI?.Count ?? catalog.Count, nJ = listJ?.Count ?? catalog.Count;
+            for (int ti = 0; ti < nI; ti++)
+                for (int tj = 0; tj < nJ; tj++)
                 {
+                    int ca = listI is null ? ti : listI[ti], cb = listJ is null ? tj : listJ[tj];
                     if (ca == cb) continue;
-                    if (Math.Abs(Angle(catalog[ca].Dir, catalog[cb].Dir) - target) > tol) continue;
+                    double dt = V3.Dot(catalog[ca].Dir, catalog[cb].Dir);
+                    if (dt < dotLo || dt > dotHi) continue;
                     var r = EbsdIndexer.SolveWahba([(obs[i], catalog[ca].Dir, 1.0), (obs[j], catalog[cb].Dir, 1.0)]);
                     if (r == null) continue;
-                    var sol = Evaluate(r, obs, catalog, allowed, tol, maxWeight, geometry, picks);
+                    var sol = Evaluate(r, obs, catalog, allowed, tol, maxWeight, geometry, picks, rotated);
                     if (sol != null) solutions.Add(sol);
                 }
         }
@@ -228,7 +244,7 @@ public static class EbsdZoneAxisIndexer
                 if (eqs.Count < 2) break;
                 var r = EbsdIndexer.SolveWahba([.. eqs]);
                 if (r == null) break;
-                var next = Evaluate(r, obs, catalog, allowed, tol, maxWeight, geometry, picks);
+                var next = Evaluate(r, obs, catalog, allowed, tol, maxWeight, geometry, picks, rotated);
                 if (next == null || next.Score <= cur.Score) break;
                 cur = next;
             }
@@ -257,33 +273,35 @@ public static class EbsdZoneAxisIndexer
     }
 
     /// <summary>回転 r について全点を採点し、割当と残差を詰めた解を返す。手入力の指数に反すれば null。</summary>
+    /// <param name="rotated">回転済みカタログを書き込む作業バッファ (長さ = catalog.Count)。呼び出し側で 1 本確保して使い回す</param>
     static EbsdZoneAxisSolution Evaluate(Matrix3D r, V3[] obs, List<ZoneNode> catalog, List<int>[] allowed,
-        double tol, double maxWeight, EbsdDetectorGeometry geometry, IReadOnlyList<EbsdZoneAxisPick> picks)
+        double tol, double maxWeight, EbsdDetectorGeometry geometry, IReadOnlyList<EbsdZoneAxisPick> picks, V3[] rotated)
     {
         var assign = new (int U, int V, int W)?[obs.Length];
         double score = 0, sumSqDeg = 0;
         int assigned = 0;
+        //260921Cl 追加: 回転済みカタログを 1 回だけ作る。旧は拾った点の数だけ r * Dir を作り直していた
+        //  (点 6〜10 × カタログ 600 で、1 回の Evaluate に matvec が数千回。Evaluate 自体が種ペアの数だけ回る)
+        //  ⚠ バッファは呼び出し側から借りる。Evaluate は種ペア × 合致対の数だけ呼ばれるので、
+        //  ここで new すると 600 要素 × 数万回 = GB 級の Gen0 割当になる (260921Cl の /simplify2 で判明)
+        for (int c = 0; c < catalog.Count; c++) rotated[c] = r * catalog[c].Dir;
+        //最近傍は「角度が最小」= 「内積が最大」。obs もカタログ Dir も単位ベクトルで回転も長さを変えないので、
+        //  Angle() の Acos と 2 回の sqrt は選ぶだけなら不要。採用した 1 本にだけ Angle を掛けて従来と同じ値を使う
+        double cosTol = Math.Cos(tol);
         for (int k = 0; k < obs.Length; k++)
         {
-            var candidates = allowed[k] ?? null;
-            double bestAng = double.MaxValue; int bestC = -1;
-            if (candidates == null)
+            var candidates = allowed[k];
+            double bestDot = double.MinValue; int bestC = -1;
+            int n = candidates?.Count ?? catalog.Count;
+            for (int t = 0; t < n; t++)
             {
-                for (int c = 0; c < catalog.Count; c++)
-                {
-                    double a = Angle(obs[k], r * catalog[c].Dir);
-                    if (a < bestAng) { bestAng = a; bestC = c; }
-                }
+                int c = candidates is null ? t : candidates[t];
+                double d = V3.Dot(obs[k], rotated[c]);
+                if (d > bestDot) { bestDot = d; bestC = c; }
             }
-            else
-            {
-                foreach (int c in candidates)
-                {
-                    double a = Angle(obs[k], r * catalog[c].Dir);
-                    if (a < bestAng) { bestAng = a; bestC = c; }
-                }
-            }
-            if (bestC < 0 || bestAng > tol) continue;
+            if (bestC < 0 || bestDot < cosTol) continue;
+            double bestAng = Angle(obs[k], rotated[bestC]);
+            if (bestAng > tol) continue;
             assign[k] = catalog[bestC].Index;
             assigned++;
             double deg = bestAng * 180 / Math.PI;

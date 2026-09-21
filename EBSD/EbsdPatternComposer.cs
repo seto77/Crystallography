@@ -384,21 +384,31 @@ public sealed class EbsdPatternComposer
         return p;
     }
 
-    /// <summary>260920Cl 追加: A(E) をエネルギースライスごとに用意する。無効なとき、および全て 1 になるときは null を返す
-    /// (呼び出し側はホットループの分岐を丸ごと省ける)</summary>
-    private double[] BuildCoherenceFactors(MasterPattern mp)
+    /// <summary>260921Cl 追加: 損失依存のコントラスト係数 A(E) = exp(−(E0 − E)/E_c) をエネルギースライスごとに返す。
+    /// 全部が 1 とみなせる (= 実質無効) なら null を返し、呼び出し側がホットループの分岐ごと省けるようにする。
+    /// <para>⚠ <b>A(E) の式と E0 のフォールバック規約は、ここ 1 箇所だけに置くこと。</b>
+    /// 表示合成 (<see cref="ApplyWeightedModel"/> 系) と ZNCC の目的関数
+    /// (<see cref="EbsdMonteCarloDistribution.ComposeGlobalWeightedPattern"/>) が**同じ重み**を使うことが機能の前提で、
+    /// 260921Cl までは同じ式が 2 クラスに別々に書かれていた。片方だけ直すと、症状は
+    /// 「探索結果が実測と微妙に合わない」だけなので発見が非常に遅れる。
+    /// <see cref="MonteCarlo.ElementIonizationPotentialEv"/> を切り出したのと同じ理由。</para></summary>
+    internal static double[] CoherenceFactors(double[] energies, double beamEnergyKeV, double decayKeV)
     {
-        if (!(CoherenceLossDecayKeV > 0) || !double.IsFinite(CoherenceLossDecayKeV) || mp.Energies.Length == 0) return null;
-        double e0 = BeamEnergyKeV > 0 && double.IsFinite(BeamEnergyKeV) ? BeamEnergyKeV : mp.Energies.Max();
-        var a = new double[mp.Energies.Length];
+        if (!(decayKeV > 0) || !double.IsFinite(decayKeV) || energies.Length == 0) return null;
+        double e0 = beamEnergyKeV > 0 && double.IsFinite(beamEnergyKeV) ? beamEnergyKeV : energies.Max();
+        var a = new double[energies.Length];
         bool any = false;
         for (int i = 0; i < a.Length; i++)
         {
-            a[i] = Math.Exp(-Math.Max(0, e0 - mp.Energies[i]) / CoherenceLossDecayKeV);
+            a[i] = Math.Exp(-Math.Max(0, e0 - energies[i]) / decayKeV);
             if (a[i] < 1 - 1E-12) any = true;
         }
         return any ? a : null;
     }
+
+    /// <summary>260920Cl 追加 / 260921Cl 変更: インスタンスのプロパティ束縛を 1 箇所に閉じるだけの薄い層。
+    /// 式そのものは <see cref="CoherenceFactors"/> にある</summary>
+    private double[] BuildCoherenceFactors(MasterPattern mp) => CoherenceFactors(mp.Energies, BeamEnergyKeV, CoherenceLossDecayKeV);
 
     private (double[] pos, double[] neg) GetPlaneMeansCached(MasterPattern mp, EbsdMonteCarloDistribution dist, float[][] posPlanes, float[][] negPlanes, int dLen, double[] depthWidths)
     {
@@ -496,6 +506,12 @@ public sealed class EbsdPatternComposer
                         int hIdx0 = pIdx0[i3], hIdx1 = pIdx0[i3 + 1], hIdx2 = pIdx0[i3 + 2];
                         float hw0 = pWt0[i3], hw1 = pWt0[i3 + 1], hw2 = pWt0[i3 + 2];
                         for (int ei = 0; ei < eLen; ei++)
+                        {
+                            //260921Cl 変更: aE は ei にしか依らないので di ループの外へ出す (値は完全に同一)。
+                            //  旧は最内 (画素 × eLen × dLen) で毎回 null 判定していた
+                            double aE = cohA == null ? 1.0 : cohA[ei];
+                            //260921Cl: sphereMeans[ei] も ei にしか依らないので一緒に出す (aE を出したときの取りこぼし)
+                            double sMean = sphereMeans == null ? 0 : sphereMeans[ei];
                             for (int di = 0; di < dLen; di++)
                             {
                                 int wIdx = ei * dLen + di;
@@ -503,10 +519,10 @@ public sealed class EbsdPatternComposer
                                 if (weight < 1e-15) continue;
                                 var plane = posZ ? posPlanes[wIdx] : negPlanes[wIdx];//260718Cl 事前展開した配列を参照
                                 if (plane == null || plane.Length == 0) continue;
-                                double aE = cohA == null ? 1.0 : cohA[ei]; //260920Cl 追加: 損失依存のコントラスト係数 A(E)
                                 sum += weight * (hw0 * plane[hIdx0] + hw1 * plane[hIdx1] + hw2 * plane[hIdx2]) * aE; //260920Cl 変更: A(E) を末尾に掛ける (無効時は 1.0 なので丸めも含めて従来と同一) 
-                                if (fA > 0) sumMean += weight * sphereMeans[ei]; // 260919Cl 追加 / 260920Cl 変更: 半球平均 → 全球平均
+                                if (fA > 0) sumMean += weight * sMean; // 260919Cl 追加 / 260920Cl 変更: 半球平均 → 全球平均
                             }
+                        }
                     }
                     else // 正方格子
                     {
@@ -516,6 +532,12 @@ public sealed class EbsdPatternComposer
                         float mpW0 = 1 - mpFw, mpW1 = mpFw;
                         float mpFh1 = 1 - mpFh;
                         for (int ei = 0; ei < eLen; ei++)
+                        {
+                            //260921Cl 変更: aE は ei にしか依らないので di ループの外へ出す (値は完全に同一)。
+                            //  旧は最内 (画素 × eLen × dLen) で毎回 null 判定していた
+                            double aE = cohA == null ? 1.0 : cohA[ei];
+                            //260921Cl: sphereMeans[ei] も ei にしか依らないので一緒に出す (aE を出したときの取りこぼし)
+                            double sMean = sphereMeans == null ? 0 : sphereMeans[ei];
                             for (int di = 0; di < dLen; di++)
                             {
                                 int wIdx = ei * dLen + di;
@@ -524,10 +546,10 @@ public sealed class EbsdPatternComposer
                                 var plane = posZ ? posPlanes[wIdx] : negPlanes[wIdx];//260718Cl 事前展開した配列を参照
                                 if (plane == null || plane.Length == 0) continue;
                                 double intensity = (mpW0 * plane[idx] + mpW1 * plane[idx + 1]) * mpFh1 + (mpW0 * plane[idx + gs] + mpW1 * plane[idx + gs + 1]) * mpFh;
-                                double aE = cohA == null ? 1.0 : cohA[ei]; //260920Cl 追加: 損失依存のコントラスト係数 A(E)
                                 sum += weight * intensity * aE; //260920Cl 変更: A(E) を末尾に掛ける (無効時は 1.0 なので丸めも含めて従来と同一) 
-                                if (fA > 0) sumMean += weight * sphereMeans[ei]; // 260919Cl 追加 / 260920Cl 変更: 半球平均 → 全球平均
+                                if (fA > 0) sumMean += weight * sMean; // 260919Cl 追加 / 260920Cl 変更: 半球平均 → 全球平均
                             }
+                        }
                     }
                     // pVal0[i] = sum; // 260919Cl 変更前
                     //260920Cl 変更: A(E) で失った分を台座として足し戻す (総量保存)。A(E) 無効時は 0 なので従来と数値が一致する。
@@ -712,6 +734,12 @@ public sealed class EbsdPatternComposer
                         int hIdx0 = pIdx0[i3], hIdx1 = pIdx0[i3 + 1], hIdx2 = pIdx0[i3 + 2];
                         float hw0 = pWt0[i3], hw1 = pWt0[i3 + 1], hw2 = pWt0[i3 + 2];
                         for (int ei = 0; ei < eLen; ei++)
+                        {
+                            //260921Cl 変更: aE は ei にしか依らないので di ループの外へ出す (値は完全に同一)。
+                            //  旧は最内 (画素 × eLen × dLen) で毎回 null 判定していた
+                            double aE = cohA == null ? 1.0 : cohA[ei];
+                            //260921Cl: sphereMeans[ei] も ei にしか依らないので一緒に出す (aE を出したときの取りこぼし)
+                            double sMean = sphereMeans == null ? 0 : sphereMeans[ei];
                             for (int di = 0; di < dLen; di++)
                             {
                                 int wIdx = ei * dLen + di;
@@ -721,10 +749,10 @@ public sealed class EbsdPatternComposer
                                 if (planeScaleFactor < 1e-30) continue;
                                 var plane = posZ ? posPlanes[wIdx] : negPlanes[wIdx];//260718Cl 事前展開した配列を参照
                                 if (plane == null || plane.Length == 0) continue;
-                                double aE = cohA == null ? 1.0 : cohA[ei]; //260920Cl 追加: 損失依存のコントラスト係数 A(E)
                                 sum += weight * (hw0 * plane[hIdx0] + hw1 * plane[hIdx1] + hw2 * plane[hIdx2]) * planeScaleFactor * aE; //260920Cl 変更: A(E) を末尾に掛ける (無効時は 1.0 なので丸めも含めて従来と同一) 
-                                if (fA > 0) sumMean += weight * sphereMeans[ei] * planeScaleFactor; // 260919Cl 追加 / 260920Cl 変更: 半球平均 → 全球平均
+                                if (fA > 0) sumMean += weight * sMean * planeScaleFactor; // 260919Cl 追加 / 260920Cl 変更: 半球平均 → 全球平均
                             }
+                        }
                     }
                     else
                     {
@@ -734,6 +762,12 @@ public sealed class EbsdPatternComposer
                         float mpW0 = 1 - mpFw, mpW1 = mpFw;
                         float mpFh1 = 1 - mpFh;
                         for (int ei = 0; ei < eLen; ei++)
+                        {
+                            //260921Cl 変更: aE は ei にしか依らないので di ループの外へ出す (値は完全に同一)。
+                            //  旧は最内 (画素 × eLen × dLen) で毎回 null 判定していた
+                            double aE = cohA == null ? 1.0 : cohA[ei];
+                            //260921Cl: sphereMeans[ei] も ei にしか依らないので一緒に出す (aE を出したときの取りこぼし)
+                            double sMean = sphereMeans == null ? 0 : sphereMeans[ei];
                             for (int di = 0; di < dLen; di++)
                             {
                                 int wIdx = ei * dLen + di;
@@ -746,10 +780,10 @@ public sealed class EbsdPatternComposer
                                 if (plane == null || plane.Length == 0) continue;
                                 double intensity = (mpW0 * plane[idx] + mpW1 * plane[idx + 1]) * mpFh1
                                                  + (mpW0 * plane[idx + gs] + mpW1 * plane[idx + gs + 1]) * mpFh;
-                                double aE = cohA == null ? 1.0 : cohA[ei]; //260920Cl 追加: 損失依存のコントラスト係数 A(E)
                                 sum += weight * intensity * planeScaleFactor * aE; //260920Cl 変更: A(E) を末尾に掛ける (無効時は 1.0 なので丸めも含めて従来と同一) 
-                                if (fA > 0) sumMean += weight * sphereMeans[ei] * planeScaleFactor; // 260919Cl 追加 / 260920Cl 変更: 半球平均 → 全球平均
+                                if (fA > 0) sumMean += weight * sMean * planeScaleFactor; // 260919Cl 追加 / 260920Cl 変更: 半球平均 → 全球平均
                             }
+                        }
                     }
                     // pVal0[i] = sum; // 260919Cl 変更前
                     //260920Cl 変更: A(E) で失った分を台座として足し戻す (総量保存)。A(E) 無効時は 0 なので従来と数値が一致する。
@@ -906,6 +940,12 @@ public sealed class EbsdPatternComposer
                         int hIdx0 = pIdx0[i3], hIdx1 = pIdx0[i3 + 1], hIdx2 = pIdx0[i3 + 2];
                         float hw0 = pWt0[i3], hw1 = pWt0[i3 + 1], hw2 = pWt0[i3 + 2];
                         for (int ei = 0; ei < eLen; ei++)
+                        {
+                            //260921Cl 変更: aE は ei にしか依らないので di ループの外へ出す (値は完全に同一)。
+                            //  旧は最内 (画素 × eLen × dLen) で毎回 null 判定していた
+                            double aE = cohA == null ? 1.0 : cohA[ei];
+                            //260921Cl: sphereMeans[ei] も ei にしか依らないので一緒に出す (aE を出したときの取りこぼし)
+                            double sMean = sphereMeans == null ? 0 : sphereMeans[ei];
                             for (int di = 0; di < dLen; di++)
                             {
                                 int wIdx = ei * dLen + di;
@@ -917,10 +957,10 @@ public sealed class EbsdPatternComposer
                                 double intensity = hw0 * plane[hIdx0] + hw1 * plane[hIdx1] + hw2 * plane[hIdx2];
                                 if (planePrevious != null && planePrevious.Length > 0)
                                     intensity -= hw0 * planePrevious[hIdx0] + hw1 * planePrevious[hIdx1] + hw2 * planePrevious[hIdx2];
-                                double aE = cohA == null ? 1.0 : cohA[ei]; //260920Cl 追加: 損失依存のコントラスト係数 A(E)
                                 sum += weight * Math.Max(0.0, intensity) / depthWidths[di] * aE; //260920Cl 変更: A(E) を末尾に掛ける (無効時は 1.0 なので丸めも含めて従来と同一) //260726Cl: 区間平均 ΔM/Δt
-                                if (fA > 0) sumMean += weight * sphereMeans[ei]; // 260919Cl 追加 / 260920Cl 変更: 半球平均 → 全球平均 (平均は既に /Δt 済み)
+                                if (fA > 0) sumMean += weight * sMean; // 260919Cl 追加 / 260920Cl 変更: 半球平均 → 全球平均 (平均は既に /Δt 済み)
                             }
+                        }
                     }
                     else
                     {
@@ -930,6 +970,12 @@ public sealed class EbsdPatternComposer
                         float mpW0 = 1 - mpFw, mpW1 = mpFw;
                         float mpFh1 = 1 - mpFh;
                         for (int ei = 0; ei < eLen; ei++)
+                        {
+                            //260921Cl 変更: aE は ei にしか依らないので di ループの外へ出す (値は完全に同一)。
+                            //  旧は最内 (画素 × eLen × dLen) で毎回 null 判定していた
+                            double aE = cohA == null ? 1.0 : cohA[ei];
+                            //260921Cl: sphereMeans[ei] も ei にしか依らないので一緒に出す (aE を出したときの取りこぼし)
+                            double sMean = sphereMeans == null ? 0 : sphereMeans[ei];
                             for (int di = 0; di < dLen; di++)
                             {
                                 int wIdx = ei * dLen + di;
@@ -944,10 +990,10 @@ public sealed class EbsdPatternComposer
                                 if (planePrevious != null && planePrevious.Length > 0)
                                     intensity -= (mpW0 * planePrevious[idx] + mpW1 * planePrevious[idx + 1]) * mpFh1
                                              + (mpW0 * planePrevious[idx + gs] + mpW1 * planePrevious[idx + gs + 1]) * mpFh;
-                                double aE = cohA == null ? 1.0 : cohA[ei]; //260920Cl 追加: 損失依存のコントラスト係数 A(E)
                                 sum += weight * Math.Max(0.0, intensity) / depthWidths[di] * aE; //260920Cl 変更: A(E) を末尾に掛ける (無効時は 1.0 なので丸めも含めて従来と同一) //260726Cl: 区間平均 ΔM/Δt
-                                if (fA > 0) sumMean += weight * sphereMeans[ei]; // 260919Cl 追加 / 260920Cl 変更: 半球平均 → 全球平均 (平均は既に /Δt 済み)
+                                if (fA > 0) sumMean += weight * sMean; // 260919Cl 追加 / 260920Cl 変更: 半球平均 → 全球平均 (平均は既に /Δt 済み)
                             }
+                        }
                     }
                     // pVal0[i] = sum; // 260919Cl 変更前
                     //260920Cl 変更: A(E) で失った分を台座として足し戻す (総量保存)。A(E) 無効時は 0 なので従来と数値が一致する。

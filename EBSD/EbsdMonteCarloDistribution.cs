@@ -76,15 +76,15 @@ public sealed class EbsdMonteCarloDistribution
                 for (int k = 0; k < wG.Length && k < bw.Length; k++) wG[k] += bw[k];
             }
         //260920Cl 追加: エネルギースライスごとに A(E) を掛ける。直後に総和で正規化するので、重みの規約 (総和 1) は保たれる
-        if (coherenceLossDecayKeV > 0 && double.IsFinite(coherenceLossDecayKeV) && eLen > 0)
-        {
-            double e0 = beamEnergyKeV > 0 && double.IsFinite(beamEnergyKeV) ? beamEnergyKeV : mp.Energies.Max();
+        //260921Cl 変更: 式を EbsdPatternComposer.CoherenceFactors に一本化 (表示合成と同じ重みであることが機能の前提なので、
+        //  同じ式を 2 クラスに置かない)。全部が 1 のときは null が返るが、直後に正規化するので掛けても掛けなくても同じ
+        var cohA = EbsdPatternComposer.CoherenceFactors(mp.Energies, beamEnergyKeV, coherenceLossDecayKeV);
+        if (cohA != null)
             for (int ei = 0; ei < eLen; ei++)
             {
-                double a = Math.Exp(-Math.Max(0, e0 - mp.Energies[ei]) / coherenceLossDecayKeV);
+                double a = cohA[ei];
                 for (int di = 0; di < dLen; di++) wG[ei * dLen + di] *= a;
             }
-        }
         double wSum = 0;
         foreach (var v in wG) wSum += v;
         if (wSum > 0) for (int k = 0; k < wG.Length; k++) wG[k] /= wSum;
