@@ -16,11 +16,61 @@ public sealed class EbsdMonteCarloDistribution
     /// <summary>260919Cl 追加 (試行): 電子ごとの蛍光体応答重み φ(E) = max(0, E − E_dead) [keV] の E_dead。NaN なら重み無し (従来 = 1 本 1 票)</summary>
     public double EnergyWeightDeadKeV { get; }
 
-    /// <summary>ビンごとの正規化重み。BinWeights[binI, binJ] は double[energyCount * depthCount]。 // (260327Ch)</summary>
+    /// <summary>ビンごとの正規化重み。BinWeights[binI, binJ] は double[energyCount * depthCount]。 // (260327Ch)
+    /// <para>⚠ 260921Cl: 深さ写像の改修 (A2) 以降は、<b>ビン中心の射出方向 <see cref="BinCenterMu"/> で経路長へ換算した近似</b>。
+    /// 表示合成 (<see cref="EbsdPatternComposer"/>) は画素ごとの μ で <see cref="FillPathLengthWeights"/> を呼ぶのでこの配列を使わない。
+    /// 残しているのは全ビン平均を取る大域的な消費者 (A(E) の Ā・ZNCC 用の大域合成・診断ツール) のため。
+    /// 密度標本 × 区間幅 (右端則)、各エネルギーで条件付き正規化、ビン内総和 1 (電子の無いビンは 0)。</para></summary>
     public double[,][] BinWeights { get; }
 
-    /// <summary>model 2 用。detector bin の absolute 強度を保った depth-slice 重み。260325Ch 追加</summary>
+    /// <summary>model 2 用。detector bin の absolute 強度を保った depth-slice 重み。260325Ch 追加
+    /// <para>⚠ 260921Cl: <see cref="BinWeights"/> と同じくビン中心の μ で換算した近似。区間質量、各エネルギーで条件付き正規化、ビン内総和 = <see cref="BinFraction"/>。</para></summary>
     public double[,][] BinAbsoluteSliceWeights { get; }
+
+    /// <summary>260921Cl 追加 (深さ写像 A2): ビンごとの当てはめの状態。退避の分岐が 10 nm / 10⁶ nm / 一様重み と散らばっていたのを 1 つにまとめた。</summary>
+    public enum BinFitState
+    {
+        /// <summary>ビンの電子からエネルギー分布と λ(E) を当てはめた</summary>
+        Fitted,
+        /// <summary>エネルギー分布はビンから、λ(E) は全ビン合算から (結晶内の源が 10 本未満、または λ の有効標本が無い)</summary>
+        GlobalLambda,
+        /// <summary>ビンの電子が 10 本未満なので、エネルギー分布も λ(E) も全ビン合算から</summary>
+        Global,
+        /// <summary>全ビン合算でも λ の有効標本が無い。深さ一様 (λ = <see cref="UniformDepthLambdaNm"/>) で代用</summary>
+        NoDepthData,
+    }
+
+    /// <summary>260921Cl 追加 (深さ写像 A2): 深さの情報が無いときの代用 λ [nm]。事実上の深さ一様 (旧コードの 1E6 と同じ値)。</summary>
+    public const double UniformDepthLambdaNm = 1E6;
+
+    /// <summary>260921Cl 追加 (深さ写像 A2): ビンごとの当てはめの状態。</summary>
+    public BinFitState[,] BinFitStates { get; }
+
+    /// <summary>260921Cl 追加 (深さ写像 A2): ビンごとの λ_d(E) [nm]。源の<b>垂直深さ</b>を指数分布とみなしたときの平均で、
+    /// エネルギー格子ごとに正値化済み ([1, <see cref="UniformDepthLambdaNm"/>] にクランプ)。
+    /// 経路長への換算 λ_t = λ_d / μ は使う側が画素ごとに行う (<see cref="FillPathLengthWeights"/>)。</summary>
+    public double[,][] BinLambdaNm { get; }
+
+    /// <summary>260921Cl 追加 (深さ写像 A2): ビンごとの射出エネルギー分布 G(E) (エネルギー格子上、総和 1)。電子の無いビンにも全体の分布を入れてある。</summary>
+    public double[,][] BinEnergyDistribution { get; }
+
+    /// <summary>260921Cl 追加 (深さ写像 A2): ビンの重み割合 F = ビンの Σφ / 全電子の Σφ (model 2 の絶対スケール)。</summary>
+    public double[,] BinFraction { get; }
+
+    /// <summary>260921Cl 追加 (深さ写像 A2): ビン中心の射出方向の μ = cos χ (試料系の z 成分、0 &lt; μ ≤ 1)。</summary>
+    public double[,] BinCenterMu { get; }
+
+    /// <summary>260921Cl 追加 (深さ写像 A2): この分布を作ったエネルギー格子 [keV] (コピー)。<see cref="MatchesGridOf"/> が値まで比べるのに使う。</summary>
+    public double[] Energies { get; }
+
+    /// <summary>260921Cl 追加 (深さ写像 A2): この分布を作った深さ格子 [nm] (コピー)。<b>出射方向に沿った経路長</b>の格子
+    /// (マスターパターンは接球面近似で、方向ごとに等価表面法線 = −出射方向なので)。</summary>
+    public double[] Depths { get; }
+
+    //260921Cl 追加 (深さ写像 A2): 合成器のホットループ用の平坦配列 (添字 b = bi·BinCount + bj、エネルギーは b·eLen + ei)
+    internal double[] FlatEnergyDistribution { get; }
+    internal double[] FlatLambdaNm { get; }
+    internal double[] FlatFraction { get; }
 
     /// <summary>260919Cl 追加: 表面非晶質層の厚さ [nm] (0 = 無し)。輸送は結晶と同じ組成・密度で計算し、層内に源を持つ電子だけを「変調なし」に振り分ける。</summary>
     public double AmorphousLayerNm { get; }
@@ -43,9 +93,23 @@ public sealed class EbsdMonteCarloDistribution
     /// (<see cref="MatchesGridOf"/>)。</summary>
     public int DepthCount { get; }
 
-    /// <summary>重み配列の (energy × depth) 格子が <paramref name="mp"/> と一致するか。260727Cl 追加</summary>
+    /// <summary>重み配列の (energy × depth) 格子が <paramref name="mp"/> と一致するか。260727Cl 追加
+    /// <para>260921Cl 変更 (深さ写像 A2): 長さだけでなく<b>値</b>まで比べる。重みは格子の値 (深さ t と区間幅) から作るので、
+    /// 同じ点数でも値の違う格子を通すと、例外も警告も無く別の深さの重みで合成してしまう。
+    /// 許容差は相対 1e-9 (UI の開始・刻みから作り直した格子の足し算誤差は 1e-14 程度)。</para></summary>
+    //旧: public bool MatchesGridOf(MasterPattern mp)
+    //旧:     => mp != null && mp.Energies.Length == EnergyCount && mp.Depths.Length == DepthCount;
     public bool MatchesGridOf(MasterPattern mp)
-        => mp != null && mp.Energies.Length == EnergyCount && mp.Depths.Length == DepthCount;
+        => mp != null && SameGrid(mp.Energies, Energies) && SameGrid(mp.Depths, Depths);
+
+    /// <summary>260921Cl 追加: 2 つの格子が同じ長さで、各値が相対 1e-9 以内で一致するか。</summary>
+    static bool SameGrid(double[] a, double[] b)
+    {
+        if (a == null || b == null || a.Length != b.Length) return false;
+        for (int i = 0; i < a.Length; i++)
+            if (!(Math.Abs(a[i] - b[i]) <= 1E-9 * Math.Max(1.0, Math.Abs(b[i])))) return false; //NaN もここで落ちる
+        return true;
+    }
 
     /// <summary>
     /// MasterPattern の全 (energy, depth) スライスを、この MC 分布の全ビン平均重みで微分合成した 1 枚 (pos/neg 半球) を返す。260724Cl 追加。
@@ -266,20 +330,49 @@ public sealed class EbsdMonteCarloDistribution
         int eLen = energies.Length, dLen = depths.Length;
         EnergyCount = eLen; DepthCount = dLen; // 260727Cl 追加: 消費側が格子一致を検査できるようにする
 
+        //260921Cl 追加 (深さ写像 A2): ビンの当てはめは「パラメータ (G(E), λ_d(E), F)」として持ち、重みは経路長へ換算してから作る。
+        //  【なぜ】MC の源深さ d は傾斜試料表面からの**垂直深さ**だが、マスターパターンの深さ格子 t は接球面近似の
+        //  **出射方向に沿った経路長**で、t = d/μ (μ = cos χ)。旧版は d をそのまま t として使い、経路長を
+        //  最大 4 倍 (検出器下端 χ ≈ 75°) 過小評価していた (正本: .project-guidance/ReciPro/ReciPro_EBSD深さ写像_改修計画.md)。
+        //  λ はビンごとに垂直深さで当てはめ、μ での換算は使う側が画素ごとに行う (A2)。ここではビン中心の μ で換算した
+        //  互換用の重み配列 (BinWeights / BinAbsoluteSliceWeights) も作る。
+        Energies = [.. energies]; Depths = [.. depths]; //呼び出し側が配列を書き換えても分布の意味が変わらないようにコピー
+        var depthWidths = MasterPattern.ComputeDepthIntervals(depths);
+        BinFitStates = new BinFitState[binCount, binCount];
+        BinLambdaNm = new double[binCount, binCount][];
+        BinEnergyDistribution = new double[binCount, binCount][];
+        BinFraction = new double[binCount, binCount];
+        BinCenterMu = new double[binCount, binCount];
+        int nBins = binCount * binCount;
+        FlatEnergyDistribution = new double[nBins * eLen];
+        FlatLambdaNm = new double[nBins * eLen];
+        FlatFraction = new double[nBins];
+
         // 260602Cl 変更: 64 ビンは互いに独立 (distinct な BinWeights[bi,bj]/BinAbsoluteSliceWeights[bi,bj] へ書く) なので
         //   Parallel.For 化。bins への集約 (上の foreach) は逐次のまま、ここはフィット段だけ並列化する。
         // 260919Cl 追加: 全ビン合算の λ(E) 多項式。結晶内の源が 10 本未満のビン (厚い非晶質層・検出器端) で使う
-        bool hasGlobalLambda = allCrystalline.Count >= 10;
-        double gla = 1E6, glb = 0, glc = 0; // λ→∞ = 深さ一様 (合算でも足りないときのフォールバック)
-        if (hasGlobalLambda) FitLambdaFromData(allCrystalline, energies, out gla, out glb, out glc);
+        //260921Cl 変更 (深さ写像 A2): 合算の当てはめが「有効な標本ゼロ」で失敗したときは 10 nm を黙って使わず、深さ一様 (NoDepthData) と明示する
+        //旧: bool hasGlobalLambda = allCrystalline.Count >= 10;
+        //旧: double gla = 1E6, glb = 0, glc = 0; // λ→∞ = 深さ一様 (合算でも足りないときのフォールバック)
+        //旧: if (hasGlobalLambda) FitLambdaFromData(allCrystalline, energies, out gla, out glb, out glc);
+        double gla = UniformDepthLambdaNm, glb = 0, glc = 0; // λ→∞ = 深さ一様 (合算でも足りないときのフォールバック)
+        bool hasGlobalLambda = allCrystalline.Count >= 10 && FitLambdaFromData(allCrystalline, energies, out gla, out glb, out glc);
+        if (!hasGlobalLambda) (gla, glb, glc) = (UniformDepthLambdaNm, 0, 0);
+        var globalLambda = EvaluateLambda(energies, gla, glb, glc);
+        //260921Cl 追加 (深さ写像 A2): 全電子のエネルギー分布 (電子 10 本未満のビンの退避先。旧版はそのビンを (E, 深さ) 一様にしていた)
+        var energyGroups = new List<double>[nBins]; var weightGroups = useEnergyWeight ? new List<double>[nBins] : null;
+        for (int b = 0; b < nBins; b++) { energyGroups[b] = binEnergies[b / binCount, b % binCount]; if (weightGroups != null) weightGroups[b] = binEnergyWeights[b / binCount, b % binCount]; }
+        var globalEnergy = NormalizeToUnitSum(ComputeEnergyGaussian(energyGroups, energies, weightGroups));
         // 260919Cl 追加: 合算 λ(E) の深さ重み (エネルギー因子 1)。合成器で非晶質源の基準強度 ⟨M⟩(e) を作るのに使う
-        if (amorphousLayerNm > 0) // (/simplify) 非晶質層が無ければ使われないので作らない
-        {
-            var ones = new double[eLen]; Array.Fill(ones, 1.0);
-            GlobalDepthWeights = new double[eLen * dLen]; GlobalDepthSliceWeights = new double[eLen * dLen];
-            FillBinWeights(GlobalDepthWeights, energies, depths, ones, gla, glb, glc, useSliceMass: false, totalScale: 1.0);
-            FillBinWeights(GlobalDepthSliceWeights, energies, depths, ones, gla, glb, glc, useSliceMass: true, totalScale: 1.0);
-        }
+        //260921Cl 変更 (深さ写像 A2): 全ビン合算の λ ではなく、各ビンの (μ_b で換算した) 条件付き深さ分布を F_b で混ぜたものにする (下の Parallel.For の後)。
+        //  全 (E, 深さ) を一括正規化してから混ぜると、有限の深さ範囲で捕まえられる割合がビンごとに違うせいでビン間の比が変わる (Codex 指摘)
+        //旧: if (amorphousLayerNm > 0) // (/simplify) 非晶質層が無ければ使われないので作らない
+        //旧: {
+        //旧:     var ones = new double[eLen]; Array.Fill(ones, 1.0);
+        //旧:     GlobalDepthWeights = new double[eLen * dLen]; GlobalDepthSliceWeights = new double[eLen * dLen];
+        //旧:     FillBinWeights(GlobalDepthWeights, energies, depths, ones, gla, glb, glc, useSliceMass: false, totalScale: 1.0);
+        //旧:     FillBinWeights(GlobalDepthSliceWeights, energies, depths, ones, gla, glb, glc, useSliceMass: true, totalScale: 1.0);
+        //旧: }
         Parallel.For(0, binCount * binCount, (int idx) =>
         {
             int bi = idx / binCount, bj = idx % binCount;
@@ -292,27 +385,167 @@ public sealed class EbsdMonteCarloDistribution
             double binFraction = totalWeight > 0 ? binTotal / totalWeight : 0.0; // 260919Cl 変更: 重みの総量はビンの全電子の Σφ (非晶質分は合成時に fA で振り分ける)
             BinAmorphousFraction[bi, bj] = binTotal > 0 ? amorphousCounts[bi, bj] / binTotal : 0.0; // 260919Cl 追加
 
-            // if (binData.Count < 10) // 260919Cl 変更前: 結晶内の源が 10 本未満だと一様フォールバック (0 本なら重みゼロ)。厚い非晶質層で隣接ビンと重みの作り方が変わり 8×8 のブロック状ムラになった
-            if (binCounts[bi, bj] < 10) // 260919Cl 変更: ビンの全電子が 10 本未満のときだけ一様フォールバック (判定は本数、重みではない)
+            //260921Cl 変更 (深さ写像 A2): 一様フォールバックをやめ、パラメータを当てはめる (足りなければ全ビン合算へ退避) → ビン中心の μ で重みにする
+            //旧: if (binCounts[bi, bj] < 10) // 260919Cl 変更: ビンの全電子が 10 本未満のときだけ一様フォールバック (判定は本数、重みではない)
+            //旧: {
+            //旧:     double uniform = binTotal > 0 ? 1.0 / (eLen * dLen) : 0.0; // 260919Cl 変更: binData.Count → binTotal (全電子が層内でも重みを持つ)
+            //旧:     Array.Fill(weights, uniform);
+            //旧:     double absoluteUniform = binTotal > 0 ? binFraction / (eLen * dLen) : 0.0; // (260325Ch) 260919Cl binData.Count → binTotal
+            //旧:     Array.Fill(absoluteSliceWeights, absoluteUniform);
+            //旧: }
+            //旧: else
+            //旧: {
+            //旧:     FitBinDistribution(binData, binEnergies[bi, bj], useEnergyWeight ? binEnergyWeights[bi, bj] : null, energies, depths, weights, absoluteSliceWeights, binFraction, hasGlobalLambda, gla, glb, glc); // 260919Cl 変更: エネルギーは全電子 (重み付き)、λ は結晶内の源 (少なければ全ビン合算)
+            //旧: }
+            double[] energyDistribution, lambda;
+            BinFitState state;
+            if (binCounts[bi, bj] < 10)
             {
-                double uniform = binTotal > 0 ? 1.0 / (eLen * dLen) : 0.0; // 260919Cl 変更: binData.Count → binTotal (全電子が層内でも重みを持つ)
-                Array.Fill(weights, uniform);
-
-                double absoluteUniform = binTotal > 0 ? binFraction / (eLen * dLen) : 0.0; // (260325Ch) 260919Cl binData.Count → binTotal
-                Array.Fill(absoluteSliceWeights, absoluteUniform);
+                energyDistribution = globalEnergy; lambda = globalLambda;
+                state = hasGlobalLambda ? BinFitState.Global : BinFitState.NoDepthData;
             }
             else
             {
-                // FitBinDistribution(binData, beamEnergy, energies, depths, weights); // (260325Ch) 旧実装
-                // FitBinDistribution(binData, beamEnergy, energies, depths, absoluteSliceWeights, useSliceMass: true, totalScale: binFraction); // 260602Cl 変更前: 同一 binData に 2 回呼び meanE/sigma/gE/lambda を二重計算
-                // FitBinDistribution(binData, beamEnergy, energies, depths, weights, absoluteSliceWeights, binFraction); // 260602Cl: 共通 fit から weights と absoluteSliceWeights を両方埋める // 260919Cl 変更前
-                // FitBinDistribution(binData, binEnergies[bi, bj], energies, depths, weights, absoluteSliceWeights, binFraction, hasGlobalLambda, gla, glb, glc); // 260919Cl 変更前
-                FitBinDistribution(binData, binEnergies[bi, bj], useEnergyWeight ? binEnergyWeights[bi, bj] : null, energies, depths, weights, absoluteSliceWeights, binFraction, hasGlobalLambda, gla, glb, glc); // 260919Cl 変更: エネルギーは全電子 (重み付き)、λ は結晶内の源 (少なければ全ビン合算)
+                energyDistribution = NormalizeToUnitSum(ComputeEnergyGaussian([binEnergies[bi, bj]], energies, useEnergyWeight ? [binEnergyWeights[bi, bj]] : null)); // 260919Cl: エネルギーは全電子 (重み付き)
+                if (binData.Count >= 10 && FitLambdaFromData(binData, energies, out double la, out double lb, out double lc)) // 260919Cl: λ は結晶内の源
+                {
+                    lambda = EvaluateLambda(energies, la, lb, lc); state = BinFitState.Fitted;
+                }
+                else
+                {
+                    lambda = globalLambda; state = hasGlobalLambda ? BinFitState.GlobalLambda : BinFitState.NoDepthData;
+                }
+            }
+            double mu = LambertBinCenterMu(bi, bj, binCount);
+            BinFitStates[bi, bj] = state; BinEnergyDistribution[bi, bj] = energyDistribution; BinLambdaNm[bi, bj] = lambda;
+            BinFraction[bi, bj] = binFraction; BinCenterMu[bi, bj] = mu;
+            Array.Copy(energyDistribution, 0, FlatEnergyDistribution, idx * eLen, eLen);
+            Array.Copy(lambda, 0, FlatLambdaNm, idx * eLen, eLen);
+            FlatFraction[idx] = binFraction;
+
+            //互換用の重み (ビン中心 μ の近似)。電子の無いビンは旧版どおり 0
+            if (binTotal > 0)
+            {
+                var scaled = new double[eLen];
+                FillPathLengthWeights(weights, energyDistribution, lambda, mu, depths, depthWidths, sliceMass: false); //総和 1
+                for (int ei = 0; ei < eLen; ei++) scaled[ei] = binFraction * energyDistribution[ei];
+                FillPathLengthWeights(absoluteSliceWeights, scaled, lambda, mu, depths, depthWidths, sliceMass: true); //総和 F
             }
 
             BinWeights[bi, bj] = weights;
             BinAbsoluteSliceWeights[bi, bj] = absoluteSliceWeights; // (260325Ch)
         });
+
+        //260921Cl 追加 (深さ写像 A2): 非晶質層の基準強度用の深さ重み = Σ_b F_b·G_b(E)·p_b(t|E) (ビン中心 μ で換算)。
+        //  消費側 (EbsdPatternComposer.CollapseToEnergyReference) がエネルギーごとに正規化するので、結果は
+        //  「エネルギー E の電子全体 (全ビンを電子数で混ぜたもの) の、経路長の条件付き分布」になる。
+        //  G_b(E) がビンごとに違うので、F_b だけで混ぜたものとは違う (Codex 指摘でコメントを訂正)
+        if (amorphousLayerNm > 0) // (/simplify) 非晶質層が無ければ使われないので作らない
+        {
+            GlobalDepthWeights = new double[eLen * dLen]; GlobalDepthSliceWeights = new double[eLen * dLen];
+            for (int bi = 0; bi < binCount; bi++)
+                for (int bj = 0; bj < binCount; bj++)
+                {
+                    double f = BinFraction[bi, bj];
+                    if (!(f > 0)) continue;
+                    var bw = BinWeights[bi, bj]; var bs = BinAbsoluteSliceWeights[bi, bj];
+                    for (int k = 0; k < GlobalDepthWeights.Length; k++) { GlobalDepthWeights[k] += f * bw[k]; GlobalDepthSliceWeights[k] += bs[k]; }
+                }
+        }
+    }
+
+    /// <summary>260921Cl 追加 (深さ写像 A2): 源の深さ分布を<b>出射方向の経路長</b>へ換算して、(エネルギー × 深さ) の重みを w へ書く。
+    /// <para>垂直深さ d を平均 λ_d(E) の指数分布とみなすと、経路長 t = d/μ も指数分布で平均 λ_t = λ_d/μ。
+    /// 減衰率 α = μ/λ_d なので、<b>指数の引数だけでなく密度の係数も μ 倍になる</b> (ここでは各エネルギーで正規化するので係数は消える)。</para>
+    /// <para>・<paramref name="sliceMass"/> = true (model 2): 区間質量 P(t_{d−1} &lt; t &lt; t_d) = e^{−α t_{d−1}}·(1 − e^{−α Δt_d})。
+    ///   Δt が小さい・μ → 0 のときの桁落ちを避けるため、α Δt が小さいときは (1 − e^{−x}) を級数で評価する。</para>
+    /// <para>・false (model 0/1): 密度標本 × 区間幅 α e^{−α t_d}·Δt_d (右端則。不等間隔の格子でも区間の重みが正しくなる)。</para>
+    /// <para>どちらも<b>エネルギーごとに条件付き正規化</b>してから <paramref name="energyWeight"/>[e] を掛ける。
+    /// つまり有限の深さ範囲 (最後の格子点 T) を超える尾部は同じエネルギーの中で配り直され、エネルギー分布は変えない
+    /// (旧版は全 (E, 深さ) を一括で正規化していたので、尾部の長い低エネルギーの比が格子の打ち切りで削れていた)。
+    /// 結果の総和は Σ_e energyWeight[e]。</para>
+    /// <para>表示合成 (<see cref="EbsdPatternComposer"/>) は画素の μ で、互換用の <see cref="BinWeights"/> 等はビン中心の μ でこれを呼ぶ。</para></summary>
+    /// <param name="w">出力 (長さ eLen·dLen、添字 ei·dLen + di)</param>
+    /// <param name="energyWeight">エネルギーごとの重み (長さ eLen、非負)</param>
+    /// <param name="lambdaNm">垂直深さの平均 λ_d(E) [nm] (長さ eLen、正)</param>
+    /// <param name="mu">出射方向の cos χ (0 &lt; μ ≤ 1)</param>
+    /// <param name="depths">経路長の格子 t_d [nm] (単調増加、t₀ = 0 は暗黙)</param>
+    /// <param name="depthWidths">区間幅 Δt_d (<see cref="MasterPattern.ComputeDepthIntervals"/>)</param>
+    /// <param name="sliceMass">true = 区間質量 (model 2)、false = 密度 × 区間幅 (model 0/1)</param>
+    public static void FillPathLengthWeights(Span<double> w, ReadOnlySpan<double> energyWeight, ReadOnlySpan<double> lambdaNm,
+        double mu, ReadOnlySpan<double> depths, ReadOnlySpan<double> depthWidths, bool sliceMass)
+    {
+        int eLen = energyWeight.Length, dLen = depths.Length;
+        for (int ei = 0; ei < eLen; ei++)
+        {
+            var row = w.Slice(ei * dLen, dLen);
+            double ew = energyWeight[ei];
+            if (!(ew > 0)) { row.Clear(); continue; }
+            double alpha = mu / lambdaNm[ei]; //経路長の減衰率 [1/nm] (λ_t = λ_d/μ)
+            double sum = 0;
+            if (sliceMass)
+            {
+                double tPrev = 0, ePrev = 1; //t₀ = 0、e^{−α·0} = 1
+                for (int di = 0; di < dLen; di++)
+                {
+                    double t = depths[di], x = alpha * (t - tPrev);
+                    double eCur = Math.Exp(-alpha * t);
+                    //1 − e^{−x} の桁落ち対策: x が小さいときは級数 x − x²/2 + x³/6 − x⁴/24 (打ち切り誤差は相対 x⁴/120、x = 1e-4 で 1e-18)。
+                    //  x > 1e-4 の差分 e_prev − e_cur は相対 1e-16/x ≲ 1e-12 の丸めで済む
+                    double m = x > 1E-4 ? ePrev - eCur : ePrev * x * (1 - x * (0.5 - x * (1.0 / 6 - x / 24)));
+                    row[di] = m; sum += m;
+                    tPrev = t; ePrev = eCur;
+                }
+            }
+            else
+            {
+                //e^{−α t} を先頭の点で割って、α t が大きいときのアンダーフローで全部 0 になるのを防ぐ (正規化で消える)
+                double t0 = depths[0];
+                for (int di = 0; di < dLen; di++)
+                {
+                    double m = Math.Exp(-alpha * (depths[di] - t0)) * depthWidths[di];
+                    row[di] = m; sum += m;
+                }
+            }
+            if (sum > 0 && double.IsFinite(sum))
+            {
+                double s = ew / sum;
+                for (int di = 0; di < dLen; di++) row[di] *= s;
+            }
+            else { row.Clear(); row[0] = ew; } //到達しないはず (α が NaN など)。質量は捨てずに最浅スライスへ
+        }
+    }
+
+    /// <summary>260921Cl 追加 (深さ写像 A2): λ(E) = la + lb·E + lc·E² をエネルギー格子で評価し、[1, UniformDepthLambdaNm] nm に正値化する (旧 FillBinWeights の下限 1 nm と同じ規約)。</summary>
+    static double[] EvaluateLambda(double[] energies, double la, double lb, double lc)
+    {
+        var l = new double[energies.Length];
+        for (int ei = 0; ei < l.Length; ei++)
+        {
+            double e = energies[ei], v = la + lb * e + lc * e * e;
+            l[ei] = double.IsFinite(v) ? Math.Clamp(v, 1.0, UniformDepthLambdaNm) : UniformDepthLambdaNm;
+        }
+        return l;
+    }
+
+    /// <summary>260921Cl 追加: 総和 1 に正規化した新しい配列を返す (総和が 0 なら一様)。</summary>
+    static double[] NormalizeToUnitSum(double[] v)
+    {
+        double s = 0; foreach (var x in v) s += x;
+        var o = new double[v.Length];
+        if (s > 0 && double.IsFinite(s)) for (int i = 0; i < v.Length; i++) o[i] = v[i] / s;
+        else Array.Fill(o, 1.0 / Math.Max(1, v.Length));
+        return o;
+    }
+
+    /// <summary>260921Cl 追加 (深さ写像 A2): ビン (bi, bj) の中心の射出方向の μ = cos χ。<see cref="DirectionToBinCoords"/> の逆 (ビン中心が整数座標)。</summary>
+    public static double LambertBinCenterMu(int bi, int bj, int binCount)
+    {
+        double scale = binCount / (2.0 * MasterPattern.SquareLimit);
+        double la = (bi + 0.5) / scale - MasterPattern.SquareLimit, lb = MasterPattern.SquareLimit - (bj + 0.5) / scale;
+        var v = MasterPattern.RoscaLambertToSphereSquare(la, lb, MasterPattern.Hemisphere.PositiveZ);
+        double len = Math.Sqrt(v.X * v.X + v.Y * v.Y + v.Z * v.Z);
+        return len > 0 ? Math.Clamp(v.Z / len, 1E-6, 1.0) : 1.0;
     }
 
     // 260602Cl 変更: weights と absoluteSliceWeights を 1 回の共通 fit から両方埋める形へ統合。
@@ -322,43 +555,65 @@ public sealed class EbsdMonteCarloDistribution
     //   weights の書き込み (Stage2) のみ 2 種類行う。物理的な値は旧 2 回呼びと厳密一致。
     // 旧シグネチャ: FitBinDistribution(data, beamEnergy, energies, depths, weights, bool useSliceMass=false, double totalScale=1.0)
     // private static void FitBinDistribution(List<(double depth, double energy)> data, double beamEnergy, double[] energies, double[] depths, double[] weights, double[] absoluteSliceWeights, double binFraction) // 260919Cl 変更前のシグネチャ
-    /// <summary>260919Cl 変更: エネルギー分布は非晶質層内の源も含む全電子 (allEnergies) から、λ(E) は結晶内の源 (data) から作る。
-    /// 結晶内の源が 10 本未満なら全ビン合算の λ(E) (hasGlobalLambda) を使い、それも無ければ深さ一様 (λ→∞)。
-    /// 旧 Stage1 の本体は ComputeEnergyGaussian / FitLambdaFromData へ切り出した (中身は同じ)。</summary>
-    private static void FitBinDistribution(
-        List<(double depth, double energy)> data, List<double> allEnergies, List<double> allWeights, // 260919Cl 追加: allWeights (null なら等重み)
-        double[] energies, double[] depths, // 260919Cl (/simplify2) 未使用だった beamEnergy を除去
-        double[] weights,             // useSliceMass=false, totalScale=1.0 相当
-        double[] absoluteSliceWeights, // useSliceMass=true,  totalScale=binFraction 相当
-        double binFraction, bool hasGlobalLambda, double gla, double glb, double glc)
-    {
-        if (allEnergies.Count == 0) return;
-        var gE = ComputeEnergyGaussian(allEnergies, energies, allWeights); // 260919Cl 変更: 重み付き
-        double la = gla, lb = glb, lc = glc;
-        if (data.Count >= 10) FitLambdaFromData(data, energies, out la, out lb, out lc);
-        else if (!hasGlobalLambda) { la = 1E6; lb = 0; lc = 0; }
-        FillBinWeights(weights, energies, depths, gE, la, lb, lc, useSliceMass: false, totalScale: 1.0);
-        FillBinWeights(absoluteSliceWeights, energies, depths, gE, la, lb, lc, useSliceMass: true, totalScale: binFraction);
-    }
+    //260921Cl 削除 (深さ写像 A2): ctor が当てはめ (ComputeEnergyGaussian / FitLambdaFromData) と重み作り (FillPathLengthWeights) を直接呼ぶ形にしたので未使用。
+    ///// <summary>260919Cl 変更: エネルギー分布は非晶質層内の源も含む全電子 (allEnergies) から、λ(E) は結晶内の源 (data) から作る。
+    ///// 結晶内の源が 10 本未満なら全ビン合算の λ(E) (hasGlobalLambda) を使い、それも無ければ深さ一様 (λ→∞)。
+    ///// 旧 Stage1 の本体は ComputeEnergyGaussian / FitLambdaFromData へ切り出した (中身は同じ)。</summary>
+    //private static void FitBinDistribution(
+    //    List<(double depth, double energy)> data, List<double> allEnergies, List<double> allWeights, // 260919Cl 追加: allWeights (null なら等重み)
+    //    double[] energies, double[] depths, // 260919Cl (/simplify2) 未使用だった beamEnergy を除去
+    //    double[] weights,             // useSliceMass=false, totalScale=1.0 相当
+    //    double[] absoluteSliceWeights, // useSliceMass=true,  totalScale=binFraction 相当
+    //    double binFraction, bool hasGlobalLambda, double gla, double glb, double glc)
+    //{
+    //    if (allEnergies.Count == 0) return;
+    //    var gE = ComputeEnergyGaussian(allEnergies, energies, allWeights); // 260919Cl 変更: 重み付き
+    //    double la = gla, lb = glb, lc = glc;
+    //    if (data.Count >= 10) FitLambdaFromData(data, energies, out la, out lb, out lc);
+    //    else if (!hasGlobalLambda) { la = 1E6; lb = 0; lc = 0; }
+    //    FillBinWeights(weights, energies, depths, gE, la, lb, lc, useSliceMass: false, totalScale: 1.0);
+    //    FillBinWeights(absoluteSliceWeights, energies, depths, gE, la, lb, lc, useSliceMass: true, totalScale: binFraction);
+    //}
 
-    /// <summary>260919Cl 追加 (旧 FitBinDistribution Stage1 前半): 電子のエネルギー分布を左右非対称ガウシアンで近似し、energies 格子上の重み gE を返す。</summary>
+    /// <summary>260919Cl 追加 (旧 FitBinDistribution Stage1 前半): 電子のエネルギー分布を左右非対称ガウシアンで近似し、energies 格子上の重み gE を返す。
+    /// <para>260921Cl 変更 (深さ写像 A2): 複数の電子リスト (グループ) をまとめて当てはめられるようにした。全ビン合算の分布 (疎なビンの退避先) を
+    /// 1 本のリストへ連結せずに作るため (1000 万本の MC で 160 MB の一時配列を避ける)。ビン単体は 1 要素のグループで呼ぶ。</para></summary>
     // private static double[] ComputeEnergyGaussian(List<double> electronEnergies, double[] energies) // 260919Cl 変更前のシグネチャ
-    private static double[] ComputeEnergyGaussian(List<double> electronEnergies, double[] energies, List<double> electronWeights = null) // 260919Cl 変更: 重み付き平均・片側分散 (weights=null なら従来と同値)
+    //旧: private static double[] ComputeEnergyGaussian(List<double> electronEnergies, double[] energies, List<double> electronWeights = null) // 260919Cl 変更: 重み付き平均・片側分散 (weights=null なら従来と同値)
+    private static double[] ComputeEnergyGaussian(IReadOnlyList<List<double>> energyGroups, double[] energies, IReadOnlyList<List<double>> weightGroups = null) // 260921Cl 変更: グループ化
     {
         int eLen = energies.Length;
-        int count = electronEnergies.Count;
-        double sumE = 0, sumW = 0;
-        for (int i = 0; i < count; i++) { double w = electronWeights == null ? 1.0 : electronWeights[i]; sumE += w * electronEnergies[i]; sumW += w; }
-        double meanE = sumW > 0 ? sumE / sumW : electronEnergies[0];
+        double sumE = 0, sumW = 0, firstE = double.NaN;
+        for (int g = 0; g < energyGroups.Count; g++)
+        {
+            var es = energyGroups[g]; var ws = weightGroups?[g];
+            for (int i = 0; i < es.Count; i++) { double w = ws == null ? 1.0 : ws[i]; sumE += w * es[i]; sumW += w; if (double.IsNaN(firstE)) firstE = es[i]; }
+        }
+        if (double.IsNaN(firstE)) return new double[eLen]; //電子が 1 本も無い (呼び出し側は総和 0 を一様へ正規化する)
+        double meanE = sumW > 0 ? sumE / sumW : firstE;
 
         double varL = 0, varR = 0, wL = 0, wR = 0;
         int nL = 0, nR = 0;
-        for (int i = 0; i < count; i++)
+        for (int g = 0; g < energyGroups.Count; g++)
         {
-            double e = electronEnergies[i], w = electronWeights == null ? 1.0 : electronWeights[i];
-            if (e < meanE) { varL += w * (e - meanE) * (e - meanE); wL += w; nL++; }
-            else { varR += w * (e - meanE) * (e - meanE); wR += w; nR++; }
+            var es = energyGroups[g]; var ws = weightGroups?[g];
+            for (int i = 0; i < es.Count; i++)
+            {
+                double e = es[i], w = ws == null ? 1.0 : ws[i];
+                if (e < meanE) { varL += w * (e - meanE) * (e - meanE); wL += w; nL++; }
+                else { varR += w * (e - meanE) * (e - meanE); wR += w; nR++; }
+            }
         }
+        //旧 (単一リスト版): int count = electronEnergies.Count; double sumE = 0, sumW = 0;
+        //旧: for (int i = 0; i < count; i++) { double w = electronWeights == null ? 1.0 : electronWeights[i]; sumE += w * electronEnergies[i]; sumW += w; }
+        //旧: double meanE = sumW > 0 ? sumE / sumW : electronEnergies[0];
+        //旧: double varL = 0, varR = 0, wL = 0, wR = 0; int nL = 0, nR = 0;
+        //旧: for (int i = 0; i < count; i++)
+        //旧: {
+        //旧:     double e = electronEnergies[i], w = electronWeights == null ? 1.0 : electronWeights[i];
+        //旧:     if (e < meanE) { varL += w * (e - meanE) * (e - meanE); wL += w; nL++; }
+        //旧:     else { varR += w * (e - meanE) * (e - meanE); wR += w; nR++; }
+        //旧: }
         double sigmaL = nL > 1 && wL > 0 ? Math.Sqrt(varL / wL) : 0.5;
         double sigmaR = nR > 1 && wR > 0 ? Math.Sqrt(varR / wR) : 0.5;
         double Ep = meanE;
@@ -380,8 +635,11 @@ public sealed class EbsdMonteCarloDistribution
         return gE;
     }
 
-    /// <summary>260919Cl 追加 (旧 FitBinDistribution Stage1 後半): エネルギー格子ごとの平均深さから λ(E) の 2 次多項式 la + lb·E + lc·E² を作る。</summary>
-    private static void FitLambdaFromData(List<(double depth, double energy)> data, double[] energies, out double la, out double lb, out double lc)
+    /// <summary>260919Cl 追加 (旧 FitBinDistribution Stage1 後半): エネルギー格子ごとの平均深さから λ(E) の 2 次多項式 la + lb·E + lc·E² を作る。
+    /// <para>260921Cl 変更 (深さ写像 A2): 当てはめの成否を返す。有効なエネルギー窓 (電子 4 本以上) が 1 つも無いとき false
+    /// (旧版はこのとき黙って λ = 10 nm を返していた)。深さはすべて<b>垂直深さ</b>のまま扱う (経路長への換算は使う側)。</para></summary>
+    //旧: private static void FitLambdaFromData(List<(double depth, double energy)> data, double[] energies, out double la, out double lb, out double lc)
+    private static bool FitLambdaFromData(List<(double depth, double energy)> data, double[] energies, out double la, out double lb, out double lc)
     {
         int eLen = energies.Length;
         double eStep = eLen > 1 ? Math.Abs(energies[0] - energies[^1]) / (eLen - 1) : 1.0;
@@ -435,58 +693,62 @@ public sealed class EbsdMonteCarloDistribution
         for (int ei = 0; ei < eLen; ei++)
             lambdaPerEnergy[ei] = depthCountPerEnergy[ei] > 3 ? Math.Max(1.0, depthSumPerEnergy[ei] / depthCountPerEnergy[ei]) : -1;
 
-        FitLambdaPolynomial(energies, lambdaPerEnergy, out la, out lb, out lc);
+        //旧: FitLambdaPolynomial(energies, lambdaPerEnergy, out la, out lb, out lc);
+        return FitLambdaPolynomial(energies, lambdaPerEnergy, out la, out lb, out lc); //260921Cl 変更: 成否を返す
     }
 
-    /// <summary>
-    /// 260602Cl 追加: 共通 fit パラメータ (gE, lambda 多項式 la/lb/lc) から 1 つの weights 配列を埋める。
-    /// useSliceMass=false: 連続深さ重み g(E)·exp(-z/λ)/λ。
-    /// useSliceMass=true : depth slice 区間質量 g(E)·(exp(-z_prev/λ) - exp(-z/λ))。
-    /// 旧 FitBinDistribution の weights 書き込み部 (Stage2) をそのまま切り出したもの。(260919Cl: 分割時に誤って消した summary を復元)
-    /// </summary>
-    private static void FillBinWeights(
-        double[] weights, double[] energies, double[] depths, double[] gE,
-        double la, double lb, double lc, bool useSliceMass, double totalScale)
-    {
-        int eLen = energies.Length, dLen = depths.Length;
-        double totalWeight = 0;
-        for (int ei = 0; ei < eLen; ei++)
-        {
-            double lambda = la + lb * energies[ei] + lc * energies[ei] * energies[ei];
-            if (lambda < 1.0) lambda = 1.0;
-            double invLambda = 1.0 / lambda; // 260327Cl: 除算を事前計算
-
-            // 260327Cl: useSliceMass 時、隣接スライスで Exp 値を再利用
-            if (useSliceMass)
-            {
-                double expPrev = 1.0; // di==0 の lowerDepth=0 → exp(0)=1
-                for (int di = 0; di < dLen; di++)
-                {
-                    double expCur = Math.Exp(-depths[di] * invLambda);
-                    double w = gE[ei] * (expPrev - expCur); // (260325Ch) model 2 は depth slice 区間質量
-                    weights[ei * dLen + di] = w;
-                    totalWeight += w;
-                    expPrev = expCur; // 260327Cl: 次スライスの lowerDepth 用にキャッシュ
-                }
-            }
-            else
-            {
-                for (int di = 0; di < dLen; di++)
-                {
-                    double w = gE[ei] * Math.Exp(-depths[di] * invLambda) * invLambda;
-                    weights[ei * dLen + di] = w;
-                    totalWeight += w;
-                }
-            }
-        }
-
-        if (totalWeight > 0)
-            for (int k = 0; k < weights.Length; k++)
-                weights[k] = weights[k] / totalWeight * totalScale; // (260325Ch)
-    }
+    //260921Cl 削除 (深さ写像 A2): 重みは FillPathLengthWeights (経路長へ換算・エネルギーごとの条件付き正規化) で作るので未使用
+    ///// <summary>
+    ///// 260602Cl 追加: 共通 fit パラメータ (gE, lambda 多項式 la/lb/lc) から 1 つの weights 配列を埋める。
+    ///// useSliceMass=false: 連続深さ重み g(E)·exp(-z/λ)/λ。
+    ///// useSliceMass=true : depth slice 区間質量 g(E)·(exp(-z_prev/λ) - exp(-z/λ))。
+    ///// 旧 FitBinDistribution の weights 書き込み部 (Stage2) をそのまま切り出したもの。(260919Cl: 分割時に誤って消した summary を復元)
+    ///// </summary>
+    //private static void FillBinWeights(
+    //    double[] weights, double[] energies, double[] depths, double[] gE,
+    //    double la, double lb, double lc, bool useSliceMass, double totalScale)
+    //{
+    //    int eLen = energies.Length, dLen = depths.Length;
+    //    double totalWeight = 0;
+    //    for (int ei = 0; ei < eLen; ei++)
+    //    {
+    //        double lambda = la + lb * energies[ei] + lc * energies[ei] * energies[ei];
+    //        if (lambda < 1.0) lambda = 1.0;
+    //        double invLambda = 1.0 / lambda; // 260327Cl: 除算を事前計算
+    //
+    //        // 260327Cl: useSliceMass 時、隣接スライスで Exp 値を再利用
+    //        if (useSliceMass)
+    //        {
+    //            double expPrev = 1.0; // di==0 の lowerDepth=0 → exp(0)=1
+    //            for (int di = 0; di < dLen; di++)
+    //            {
+    //                double expCur = Math.Exp(-depths[di] * invLambda);
+    //                double w = gE[ei] * (expPrev - expCur); // (260325Ch) model 2 は depth slice 区間質量
+    //                weights[ei * dLen + di] = w;
+    //                totalWeight += w;
+    //                expPrev = expCur; // 260327Cl: 次スライスの lowerDepth 用にキャッシュ
+    //            }
+    //        }
+    //        else
+    //        {
+    //            for (int di = 0; di < dLen; di++)
+    //            {
+    //                double w = gE[ei] * Math.Exp(-depths[di] * invLambda) * invLambda;
+    //                weights[ei * dLen + di] = w;
+    //                totalWeight += w;
+    //            }
+    //        }
+    //    }
+    //
+    //    if (totalWeight > 0)
+    //        for (int k = 0; k < weights.Length; k++)
+    //            weights[k] = weights[k] / totalWeight * totalScale; // (260325Ch)
+    //}
 
     // 260327Cl: List<double> を固定長配列に置き換えて GC 圧力を軽減
-    private static void FitLambdaPolynomial(double[] energies, double[] lambdaValues, out double a, out double b, out double c)
+    //260921Cl 変更 (深さ写像 A2): 成否を返す。有効な点が 1 つも無いときは false (旧版は λ = 10 nm という根拠の無い値を返していた)
+    //旧: private static void FitLambdaPolynomial(double[] energies, double[] lambdaValues, out double a, out double b, out double c)
+    private static bool FitLambdaPolynomial(double[] energies, double[] lambdaValues, out double a, out double b, out double c)
     {
         int validCount = 0;
         for (int i = 0; i < energies.Length; i++)
@@ -494,8 +756,10 @@ public sealed class EbsdMonteCarloDistribution
 
         if (validCount == 0)
         {
-            a = 10; b = 0; c = 0;
-            return;
+            //旧: a = 10; b = 0; c = 0;
+            //旧: return;
+            a = UniformDepthLambdaNm; b = 0; c = 0;
+            return false;
         }
 
         var validE = new double[validCount];
@@ -512,7 +776,7 @@ public sealed class EbsdMonteCarloDistribution
         if (validCount == 1)
         {
             a = validL[0]; b = 0; c = 0;
-            return;
+            return true; //260921Cl 旧: return;
         }
         if (validCount == 2)
         {
@@ -520,7 +784,7 @@ public sealed class EbsdMonteCarloDistribution
             b = (l1 - l0) / (e1 - e0);
             a = l0 - b * e0;
             c = 0;
-            return;
+            return true; //260921Cl 旧: return;
         }
 
         int n = validCount;
@@ -538,13 +802,14 @@ public sealed class EbsdMonteCarloDistribution
         if (Math.Abs(det) < 1e-30)
         {
             a = r0 / s0; b = 0; c = 0;
-            return;
+            return true; //260921Cl 旧: return;
         }
 
         double invDet = 1.0 / det;
         a = ((s2 * s4 - s3 * s3) * r0 + (s2 * s3 - s1 * s4) * r1 + (s1 * s3 - s2 * s2) * r2) * invDet;
         b = ((s2 * s3 - s1 * s4) * r0 + (s0 * s4 - s2 * s2) * r1 + (s1 * s2 - s0 * s3) * r2) * invDet;
         c = ((s1 * s3 - s2 * s2) * r0 + (s1 * s2 - s0 * s3) * r1 + (s0 * s2 - s1 * s1) * r2) * invDet;
+        return true; //260921Cl 追加
     }
 
     // public static (double energyLoss80, double depth99) ComputeRangesFromMC( // 260919Cl 変更前: エネルギー損失は 80 パーセンタイル
@@ -589,10 +854,68 @@ public sealed class EbsdMonteCarloDistribution
         return ((la + MasterPattern.SquareLimit) * scale - 0.5, (MasterPattern.SquareLimit - lb) * scale - 0.5);
     }
 
+    /// <summary>260921Cl 追加 (深さ写像 A2): 不等間隔の深さ格子の既定の形状パラメータ β (<see cref="ComputeGridFromRanges"/>)。
+    /// Si 20 kV (Si004 の幾何) で T ≈ 170 nm のとき、最浅の区間 ≈ 1.4 nm (旧・等間隔の 1.56 nm と同程度)、最深 ≈ 10 nm。</summary>
+    public const double DefaultDepthGridBeta = 2.0;
+
+    /// <summary>260921Cl 追加 (深さ写像 A2): 検出器を渡さないとき、経路長の上限 T の統計に入れる射出方向の下限 μ (= cos 78.5°)。</summary>
+    public const double MinMuWithoutDetector = 0.2;
+
+    /// <summary>260921Cl 追加 (深さ写像 A2): マスターパターンの深さ格子の上限 T [nm] = <b>経路長</b> t = (d − a)/μ の <paramref name="quantile"/> 分位点。
+    /// <para>マスターパターンは接球面近似なので深さ格子は出射方向に沿った経路長。MC の源深さ d は垂直深さなので、
+    /// 旧版のように垂直深さの 99 % 点を上限にすると、斜めに出る電子の経路が格子に収まらない
+    /// (Si 20 kV・Si004 の幾何で、垂直深さの 99 % = 62 nm に対し、検出器に当たる電子の経路長の 99 % = 105 nm、99.9 % = 163 nm。
+    /// 画像下端は 1/μ = 4.7)。上限を超えた分は画素ごとに同じエネルギーの中で配り直される (FillPathLengthWeights) ので、
+    /// T は十分な余裕を持って取る。</para>
+    /// <para>統計に入れるのは、結晶内に源を持つ (d ≥ a) 射出電子のうち、<paramref name="detector"/> を渡したときは<b>検出器画像に当たるもの</b>、
+    /// 渡さないときは μ ≥ <see cref="MinMuWithoutDetector"/> のもの。該当が無いときは垂直深さの 99 % 点 / 0.5。</para>
+    /// <para>⚠ 表示の視野を検出器より広げると、T が足りない方向 (μ の小さい方向) が出る。そこは近似 (尾部の配り直し) になる。</para></summary>
+    public static double ComputePathLengthUpperBound((double Depth, V3 Vec, double Energy)[] bseList, double sampleTilt,
+        EbsdDetectorGeometry detector = null, double amorphousLayerNm = 0, double quantile = 0.999)
+    {
+        if (bseList == null || bseList.Length == 0) return 50.0;
+        double a = amorphousLayerNm > 0 && double.IsFinite(amorphousLayerNm) ? amorphousLayerNm : 0;
+        var (sinSmp, cosSmp) = Math.SinCos(sampleTilt);
+        var paths = new List<double>(bseList.Length / 2);
+        var normals = new List<double>(bseList.Length);
+        foreach (var (depth, vec, _) in bseList)
+        {
+            if (!(depth >= a)) continue; //非晶質層内の源は変調なし成分なので格子に関係しない (NaN もここで落ちる)
+            double d = depth - a;
+            normals.Add(d);
+            //lab → 試料系 (ctor と同じ回転)
+            double sy = vec.Y * cosSmp + vec.Z * sinSmp, sz = -vec.Y * sinSmp + vec.Z * cosSmp;
+            double len = Math.Sqrt(vec.X * vec.X + sy * sy + sz * sz);
+            if (!(sz > 0) || !(len > 0)) continue;
+            double mu = sz / len;
+            if (detector != null)
+            {
+                var pix = detector.SampleDirectionToPixel(new V3(vec.X, sy, sz));
+                if (pix is not { } p || p.Col < -0.5 || p.Col > detector.WidthPx - 0.5 || p.Row < -0.5 || p.Row > detector.HeightPx - 0.5) continue; //画像の外
+            }
+            else if (mu < MinMuWithoutDetector) continue;
+            paths.Add(d / mu);
+        }
+        if (paths.Count == 0)
+        {
+            if (normals.Count == 0) return 50.0;
+            var nArr = normals.ToArray();
+            int k = Math.Min((int)(nArr.Length * 0.99), nArr.Length - 1);
+            QuickSelect.Execute(nArr.AsSpan(), k, static (x, y) => x.CompareTo(y));
+            return Math.Max(1.0, nArr[k] / 0.5);
+        }
+        var arr = paths.ToArray();
+        int idx = Math.Clamp((int)(arr.Length * quantile), 0, arr.Length - 1);
+        QuickSelect.Execute(arr.AsSpan(), idx, static (x, y) => x.CompareTo(y));
+        return Math.Max(1.0, arr[idx]);
+    }
+
     public static (double[] energies, double energyStart, double energyEnd, double energyStep,
                     double[] depths, double depthStart, double depthEnd, double depthStep)
         // ComputeGridFromRanges(double beamEnergy, double energyLoss80, double depth99) // 260919Cl 変更前
-        ComputeGridFromRanges(double beamEnergy, double energyLoss95, double depth99) // 260919Cl 変更: 第 2 引数は 95 パーセンタイルのエネルギー損失
+        //260921Cl シグネチャ変更 (深さ写像 A2): 深さ格子の形状パラメータ β を追加。第 3 引数は経路長の上限 T として使う (ComputePathLengthUpperBound)
+        //旧: ComputeGridFromRanges(double beamEnergy, double energyLoss95, double depth99) // 260919Cl 変更: 第 2 引数は 95 パーセンタイルのエネルギー損失
+        ComputeGridFromRanges(double beamEnergy, double energyLoss95, double depth99, double depthGridBeta = DefaultDepthGridBeta)
     {
         // int numEnergyLevels = 8; // 260919Cl 変更前
         int numEnergyLevels = 16; // 260919Cl 変更: 8 → 16 段
@@ -608,6 +931,13 @@ public sealed class EbsdMonteCarloDistribution
         var energies = energyList.ToArray();
 
         int maxDepthDivisions = 40;
+        //260921Cl 追加 (深さ写像 A2): β > 0 なら不等間隔 (浅い側を細かく、深い側を幾何級数的に粗く) の 40 点。β ≤ 0 は旧来の等間隔 (以下のコードそのまま)
+        if (depthGridBeta > 0 && double.IsFinite(depthGridBeta))
+        {
+            var g = BuildGeometricDepthGrid(depth99, maxDepthDivisions, depthGridBeta);
+            return (energies, energyStart, energyEnd, energyStep,
+                    g, g[0], g[^1], g[0]); //depthStep は最初の区間幅 (UI の目安表示用。格子そのものは配列で持ち回すこと)
+        }
         double depthStep = Math.Max(0.01, Math.Round(depth99 / maxDepthDivisions * 100) / 100.0); // (260326Ch)
         double depthStart = depthStep;
         double depthEnd = Math.Max(depthStep, Math.Round(depth99 * 100) / 100.0); // (260326Ch)
@@ -620,5 +950,37 @@ public sealed class EbsdMonteCarloDistribution
 
         return (energies, energyStart, energyEnd, energyStep,
                 depths, depthStart, depthEnd, depthStep);
+    }
+
+    /// <summary>260921Cl 追加 (深さ写像 A2): 経路長の不等間隔格子 t_i = T·expm1(β i/N)/expm1(β)、i = 1…N (t₀ = 0 は暗黙)。
+    /// <para>・β → 0 の極限は等間隔 T·i/N。β が大きいほど浅い側が細かい。区間幅は i とともに単調に増える (ゼロ幅は作らない)。</para>
+    /// <para>・T は有効数字 2 桁へ切り上げる (MC の乱数で分位点が揺れても格子が変わりにくくし、マスターパターンのキャッシュを効かせるため。
+    ///   切り上げなので経路長の被覆は減らない)。各点は 0.001 nm に丸め、狭義単調増加を保証する。</para>
+    /// <para>【なぜ不等間隔か】経路長の分布は浅い側に集中する (Si 20 kV で中央値 16 nm、99.9 % 点 163 nm) が、
+    /// 下端の画素 (1/μ ≈ 4.7) では 100 nm を超える経路も効く。40 点のまま上限を 3 倍に広げると等間隔では浅い側が 3 倍粗くなる。
+    /// マスターパターンは深さ点数に比例してメモリを食う (grid 512 で 40 点 ≈ 1.3 GB) ので点数は増やさない (Codex 推奨 (b))。</para></summary>
+    public static double[] BuildGeometricDepthGrid(double upperBoundNm, int count, double beta)
+    {
+        if (count < 1) throw new ArgumentOutOfRangeException(nameof(count));
+        double T = RoundUpToTwoSignificantDigits(Math.Max(upperBoundNm, 0.01));
+        var g = new double[count];
+        double denom = beta > 1E-9 ? Math.Exp(beta) - 1 : 0;
+        for (int i = 1; i <= count; i++)
+        {
+            double f = beta > 1E-9 ? (Math.Exp(beta * i / count) - 1) / denom : (double)i / count;
+            double v = Math.Round(T * f * 1000) / 1000.0;
+            if (i > 1 && !(v > g[i - 2])) v = g[i - 2] + 0.001; //丸めで重なったら 0.001 nm だけずらす (ゼロ幅区間を作らない)
+            g[i - 1] = v;
+        }
+        g[count - 1] = Math.Max(g[count - 1], T); //最後の点はちょうど T
+        return g;
+    }
+
+    /// <summary>260921Cl 追加: 正の値を有効数字 2 桁へ切り上げる (例 162.6 → 170、58.6 → 59、0.123 → 0.13)。</summary>
+    static double RoundUpToTwoSignificantDigits(double v)
+    {
+        if (!(v > 0) || !double.IsFinite(v)) return v;
+        double p = Math.Pow(10, Math.Floor(Math.Log10(v)) - 1);
+        return Math.Ceiling(v / p - 1E-9) * p;
     }
 }

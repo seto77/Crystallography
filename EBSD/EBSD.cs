@@ -474,18 +474,33 @@ public sealed class MasterPattern
     /// 等間隔グリッドでは全体が定数倍になるだけだが、不等間隔・絶対単位ではスライス間の重み比が変わる。
     /// 幅が 0 以下になる異常な深さ列では 1 を返し、従来どおり割らない動作にする。
     /// </summary>
-    public double[] DepthIntervals
+    //260921Cl 変更: 本体を ComputeDepthIntervals へ移し、MC 分布 (EbsdMonteCarloDistribution) の重み作りと同じ定義を共有する
+    //旧: public double[] DepthIntervals
+    //旧: {
+    //旧:     get
+    //旧:     {
+    //旧:         var widths = new double[Depths.Length];
+    //旧:         for (int j = 0; j < Depths.Length; j++)
+    //旧:         {
+    //旧:             double width = j == 0 ? Depths[0] : Depths[j] - Depths[j - 1];
+    //旧:             widths[j] = width > 0 && double.IsFinite(width) ? width : 1;
+    //旧:         }
+    //旧:         return widths;
+    //旧:     }
+    //旧: }
+    public double[] DepthIntervals => ComputeDepthIntervals(Depths);
+
+    /// <summary>260921Cl 追加: 深さ格子 t_j の区間幅 Δt_j (t₀ = 0 は暗黙、j = 0 は t_0 そのもの)。幅が 0 以下・非有限なら 1。
+    /// <see cref="DepthIntervals"/> と MC 分布の重み作りが同じ定義を使うための共有関数。</summary>
+    public static double[] ComputeDepthIntervals(double[] depths)
     {
-        get
+        var widths = new double[depths.Length];
+        for (int j = 0; j < depths.Length; j++)
         {
-            var widths = new double[Depths.Length];
-            for (int j = 0; j < Depths.Length; j++)
-            {
-                double width = j == 0 ? Depths[0] : Depths[j] - Depths[j - 1];
-                widths[j] = width > 0 && double.IsFinite(width) ? width : 1;
-            }
-            return widths;
+            double width = j == 0 ? depths[0] : depths[j] - depths[j - 1];
+            widths[j] = width > 0 && double.IsFinite(width) ? width : 1;
         }
+        return widths;
     }
 
     /// <summary> MasterPattern 本体を初期化する。 </summary>

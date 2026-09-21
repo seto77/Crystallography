@@ -431,49 +431,104 @@ public sealed class EbsdPatternComposer
     ExitRay CreateExitRay(in EbsdRasterView view) => new(view.XMirror, view.DetX, yCoeffPy, zCoeffPy, yConst, zConst);
 
     /// <summary>260921Cl 追加 (/simplify): 合成ループの作業領域。Parallel.For の localInit で worker ごとに 1 個だけ作る。</summary>
-    sealed class BinScratch(int nSlices)
+    //260921Cl 変更 (深さ写像 A2): 重み配列の内挿 (C, Bw) をやめ、パラメータの内挿用に N(E)・λ(E) を持たせる
+    //旧: sealed class BinScratch(int nSlices)
+    //旧: {
+    //旧:     public readonly double[] Wv = new double[nSlices];
+    //旧:     public readonly double[] C = new double[16];
+    //旧:     public readonly double[][] Bw = new double[16][];
+    //旧: }
+    sealed class BinScratch(int nSlices, int eLen)
     {
         public readonly double[] Wv = new double[nSlices];
-        public readonly double[] C = new double[16];
-        public readonly double[][] Bw = new double[16][];
+        /// <summary>内挿したエネルギー重み N(E) = Σ ω·G_b(E)</summary>
+        public readonly double[] NE = new double[eLen];
+        /// <summary>内挿した λ_d(E) (N で重み付けした平均)</summary>
+        public readonly double[] LamE = new double[eLen];
     }
 
-    /// <summary>260921Cl 追加 (/simplify): ビン座標 (bx, by) の 4×4 タップを集め、係数 c と重み配列 bw を 16 個ずつ埋める。
-    /// 並びは x が速い (t = x + 4y) = 旧コードの c00, c10, c20, c30, c01, … と同じ順。
-    /// scalarField を渡すと同じ係数で内挿した値を返す (非晶質割合 fA 用。null なら 0)。</summary>
-    static double GatherBinTaps(double[,][] field, double[,] scalarField, double bx, double by, int binCount, double[][] bw, double[] c)
+    /// <summary>260921Cl 追加 (深さ写像 A2): 画素の重みベクトル (エネルギー × 深さ) を、MC のビンパラメータを 4×4 タップで内挿して作る。
+    /// 戻り値は同じ重み ω で平均した非晶質割合 fA (amorphousFraction が null、または電子のあるタップが無ければ 0)。
+    /// <para>【何が変わったか】旧版はビンごとの<b>重み配列そのもの</b>を内挿していた。ところが MC の源深さはビンの中で
+    /// <b>垂直深さ</b>として当てはめてあり、マスターパターンの深さ格子は<b>出射方向の経路長</b> (t = d/μ) なので、
+    /// 画素の μ で換算しないと使えない。16×16 の射出半球ビン 1 個の中でも χ は ~11° 動くので (検出器下端では
+    /// 1/μ が 2.4 → 4 と変わる)、ビン中心の μ で換算した配列を内挿するのではなく、パラメータを内挿してから
+    /// <b>画素の μ で</b> <see cref="EbsdMonteCarloDistribution.FillPathLengthWeights"/> を呼ぶ。</para>
+    /// <para>【内挿の重み】タップ t の重みは ω_t = c_t·s_b。model 2 (absolute) は s_b = F_b (電子の割合) なので、
+    /// N(E) = Σ ω·G_b(E) は電子数の混合になり、総和は旧版の Σ c·F_b と同じ。model 0/1 は s_b = [F_b &gt; 0] で、
+    /// 総和は旧版の「電子のあるビンの係数の和」と同じ (各ビンの重みは総和 1、空ビンは 0)。
+    /// λ(E) は N で重み付けした平均 (指数の混合を平均で代表させる近似)。電子の無いビンは ω = 0 なので隣へ漏れない。</para>
+    /// <para>⚠ 旧版とは μ = 1 でも一致しない (重みの内挿とパラメータの内挿は非線形の分だけ違う)。</para></summary>
+    static double EvaluatePathLengthWeights(EbsdMonteCarloDistribution dist, double bx, double by, double mu, bool absolute, bool sliceMass,
+        double[] depths, double[] depthWidths, BinScratch s, int eLen, int nSlices, double[,] amorphousFraction)
     {
+        int binCount = dist.BinCount;
         BinSplineTaps(bx, binCount, out int x0, out int x1, out int x2, out int x3, out double qx0, out double qx1, out double qx2, out double qx3);
         BinSplineTaps(by, binCount, out int y0, out int y1, out int y2, out int y3, out double qy0, out double qy1, out double qy2, out double qy3);
-        double s = 0;
-        Put(0, x0, y0, qx0 * qy0); Put(1, x1, y0, qx1 * qy0); Put(2, x2, y0, qx2 * qy0); Put(3, x3, y0, qx3 * qy0);
-        Put(4, x0, y1, qx0 * qy1); Put(5, x1, y1, qx1 * qy1); Put(6, x2, y1, qx2 * qy1); Put(7, x3, y1, qx3 * qy1);
-        Put(8, x0, y2, qx0 * qy2); Put(9, x1, y2, qx1 * qy2); Put(10, x2, y2, qx2 * qy2); Put(11, x3, y2, qx3 * qy2);
-        Put(12, x0, y3, qx0 * qy3); Put(13, x1, y3, qx1 * qy3); Put(14, x2, y3, qx2 * qy3); Put(15, x3, y3, qx3 * qy3);
-        return s;
-
-        void Put(int t, int ix, int iy, double ct)
-        {
-            c[t] = ct; bw[t] = field[ix, iy];
-            if (scalarField != null) s += ct * scalarField[ix, iy];
-        }
+        Span<int> xs = [x0, x1, x2, x3], ys = [y0, y1, y2, y3];
+        Span<double> qx = [qx0, qx1, qx2, qx3], qy = [qy0, qy1, qy2, qy3];
+        var n = s.NE.AsSpan(0, eLen); var lam = s.LamE.AsSpan(0, eLen);
+        n.Clear(); lam.Clear();
+        var flatG = dist.FlatEnergyDistribution; var flatL = dist.FlatLambdaNm; var flatF = dist.FlatFraction;
+        //260921Cl (Codex 指摘): 非晶質割合も強度と同じ重み ω で平均する (旧: fA = Σ c·fA_b)。
+        //  旧式では電子の無い空ビン (fA_b = 0) が隣にあるだけで fA が下がり、全部が非晶質の領域でも結晶の変調が戻った。
+        //  model 2 では電子数で重み付けした割合 (= その画素へ来る電子のうち層内に源を持つものの割合) になる
+        double fANum = 0, omegaSum = 0;
+        for (int ty = 0; ty < 4; ty++) //並びは旧 GatherBinTaps と同じ (x が速い)
+            for (int tx = 0; tx < 4; tx++)
+            {
+                double c = qx[tx] * qy[ty];
+                int ix = xs[tx], iy = ys[ty], b = ix * binCount + iy;
+                double f = flatF[b];
+                double omega = c * (absolute ? f : (f > 0 ? 1.0 : 0.0));
+                if (!(omega > 0)) continue;
+                if (amorphousFraction != null) fANum += omega * amorphousFraction[ix, iy];
+                omegaSum += omega;
+                int o = b * eLen;
+                for (int e = 0; e < eLen; e++) { double g = omega * flatG[o + e]; n[e] += g; lam[e] += g * flatL[o + e]; }
+            }
+        for (int e = 0; e < eLen; e++) lam[e] = n[e] > 0 ? lam[e] / n[e] : EbsdMonteCarloDistribution.UniformDepthLambdaNm;
+        EbsdMonteCarloDistribution.FillPathLengthWeights(s.Wv.AsSpan(0, nSlices), n, lam, mu, depths, depthWidths, sliceMass);
+        return omegaSum > 0 ? fANum / omegaSum : 0;
     }
 
-    /// <summary>260921Cl 追加 (/simplify): 画素の重みベクトル wv[k] = Σ_t c[t]·bw[t][k] (t = 0..15 の順)。
-    /// <para>⚠ 足す順が旧コードの 16 項和と同じなので出力はビット一致する
-    /// (リファクタ前後で <c>tools/EbsdProfileFit --golden-compose</c> の 12 通りのハッシュが一致することを確認)。
-    /// ⚠ FMA や SIMD に置き換えると丸めが変わってビット一致しなくなる (それ自体は誤差 1 ulp 程度で害は無いが、検証の物差しを失う)。</para></summary>
-    static void EvaluateBinWeights(double[][] bw, double[] c, double[] wv, int n)
-    {
-        var w = wv.AsSpan(0, n);
-        w.Clear();
-        for (int t = 0; t < 16; t++)
-        {
-            var b = bw[t].AsSpan(0, n);
-            double ct = c[t];
-            for (int k = 0; k < w.Length; k++) w[k] += ct * b[k];
-        }
-    }
+    //260921Cl 削除 (深さ写像 A2): 重み配列の内挿は EvaluatePathLengthWeights (パラメータを内挿して画素の μ で換算) に置き換えたので未使用。
+    ///// <summary>260921Cl 追加 (/simplify): ビン座標 (bx, by) の 4×4 タップを集め、係数 c と重み配列 bw を 16 個ずつ埋める。
+    ///// 並びは x が速い (t = x + 4y) = 旧コードの c00, c10, c20, c30, c01, … と同じ順。
+    ///// scalarField を渡すと同じ係数で内挿した値を返す (非晶質割合 fA 用。null なら 0)。</summary>
+    //static double GatherBinTaps(double[,][] field, double[,] scalarField, double bx, double by, int binCount, double[][] bw, double[] c)
+    //{
+    //    BinSplineTaps(bx, binCount, out int x0, out int x1, out int x2, out int x3, out double qx0, out double qx1, out double qx2, out double qx3);
+    //    BinSplineTaps(by, binCount, out int y0, out int y1, out int y2, out int y3, out double qy0, out double qy1, out double qy2, out double qy3);
+    //    double s = 0;
+    //    Put(0, x0, y0, qx0 * qy0); Put(1, x1, y0, qx1 * qy0); Put(2, x2, y0, qx2 * qy0); Put(3, x3, y0, qx3 * qy0);
+    //    Put(4, x0, y1, qx0 * qy1); Put(5, x1, y1, qx1 * qy1); Put(6, x2, y1, qx2 * qy1); Put(7, x3, y1, qx3 * qy1);
+    //    Put(8, x0, y2, qx0 * qy2); Put(9, x1, y2, qx1 * qy2); Put(10, x2, y2, qx2 * qy2); Put(11, x3, y2, qx3 * qy2);
+    //    Put(12, x0, y3, qx0 * qy3); Put(13, x1, y3, qx1 * qy3); Put(14, x2, y3, qx2 * qy3); Put(15, x3, y3, qx3 * qy3);
+    //    return s;
+    //
+    //    void Put(int t, int ix, int iy, double ct)
+    //    {
+    //        c[t] = ct; bw[t] = field[ix, iy];
+    //        if (scalarField != null) s += ct * scalarField[ix, iy];
+    //    }
+    //}
+    //
+    ///// <summary>260921Cl 追加 (/simplify): 画素の重みベクトル wv[k] = Σ_t c[t]·bw[t][k] (t = 0..15 の順)。
+    ///// <para>⚠ 足す順が旧コードの 16 項和と同じなので出力はビット一致する
+    ///// (リファクタ前後で <c>tools/EbsdProfileFit --golden-compose</c> の 12 通りのハッシュが一致することを確認)。
+    ///// ⚠ FMA や SIMD に置き換えると丸めが変わってビット一致しなくなる (それ自体は誤差 1 ulp 程度で害は無いが、検証の物差しを失う)。</para></summary>
+    //static void EvaluateBinWeights(double[][] bw, double[] c, double[] wv, int n)
+    //{
+    //    var w = wv.AsSpan(0, n);
+    //    w.Clear();
+    //    for (int t = 0; t < 16; t++)
+    //    {
+    //        var b = bw[t].AsSpan(0, n);
+    //        double ct = c[t];
+    //        for (int k = 0; k < w.Length; k++) w[k] += ct * b[k];
+    //    }
+    //}
 
     /// <summary>260921Cl 追加 (/simplify): A(E) 有効時の 4 つの累算器と合成式を 1 か所に (旧: 3 モデルに複製)。
     /// W = その画素・スライスの実効重み、M̄ = 平面ごとの全球方向平均、A = A(E)。
@@ -534,7 +589,10 @@ public sealed class EbsdPatternComposer
             {
                 int k = ei * dLen + di;
                 double w = g[k] / nb;
-                if (differential) w /= depthWidths[di]; //model 2 は区間平均 ΔM/Δt に合わせる
+                //260921Cl 削除 (深さ写像 A2、Codex 指摘): Ā は「電子の割合」なので区間質量のまま集計する。Δt で割ると
+                //  不等間隔の深さ格子で、同じ区間を細分しただけで Ā が変わってしまう (等間隔なら定数倍で消えるので従来と同じ)。
+                //  応答 ΔM/Δt の割り算は画素側の sum と平面平均でそのまま行っている。
+                //旧: if (differential) w /= depthWidths[di]; //model 2 は区間平均 ΔM/Δt に合わせる
                 if (planeScaleFactors != null) w *= (uint)k < (uint)planeScaleFactors.Length ? planeScaleFactors[k] : 0.0; //model 1 の規格化係数
                 num += w * cohA[ei];
                 den += w;
@@ -601,7 +659,10 @@ public sealed class EbsdPatternComposer
         //260921Cl 変更 (旧: double halfW = view.HalfWidth, halfH = view.HalfHeight;)
         //  ビン座標は検出器の正規化座標ではなく試料系の射出方向から作る。画素 → 射出方向の規約は ExitRay 1 か所 (/simplify)
         var ray = CreateExitRay(view);
-        var binField = dist.BinWeights; //260921Cl (/simplify)
+        //var binField = dist.BinWeights; //260921Cl (/simplify) //260921Cl 変更前 (深さ写像 A2)
+        //260921Cl 変更 (深さ写像 A2): 重み配列ではなくビンのパラメータを内挿し、画素の μ で経路長へ換算する (EvaluatePathLengthWeights の doc)
+        const bool absoluteWeights = false, sliceMassWeights = false; //model 0/1: 密度 × 区間幅、電子のあるビンは総和 1
+        var depthGrid = mp.Depths; var depthGridWidths = mp.DepthIntervals;
         int nSlices = eLen * dLen; //260921Cl (/simplify)
         var (posPlanes, negPlanes) = GetAllPlanes(mp, eLen, dLen);//260718Cl
         var amorphousFraction = dist.BinAmorphousFraction; // 260919Cl 追加: 表面非晶質層に源を持つ電子の割合 (ビンごと)
@@ -630,7 +691,7 @@ public sealed class EbsdPatternComposer
             var pIdx0 = pIdx; var pWt0 = pWt; var pPosZ0 = pPosZ; var pVal0 = pVal;
             var isHexGrid = lookupGridType == MasterPattern.Types.Hexagonal; // 260331Cl
 
-            Parallel.For(0, height, () => new BinScratch(nSlices), (h, _, scratch) => //260921Cl (/simplify): 作業領域は worker ごとに 1 個
+            Parallel.For(0, height, () => new BinScratch(nSlices, eLen), (h, _, scratch) => //260921Cl (/simplify): 作業領域は worker ごとに 1 個 (260921Cl 深さ写像 A2: eLen を追加)
             {
                 //260921Cl 変更 (作者指示): 検出器面の正規化座標ではなく、**試料系の射出方向**を
                 //  Rosca-Lambert 等積正方格子へ写してビン座標にする (分布側とまったく同じ写像)。
@@ -651,8 +712,11 @@ public sealed class EbsdPatternComposer
                     var (bx, by) = EbsdMonteCarloDistribution.DirectionToBinCoords(ox, oy, oz, binCount);
                     //260921Cl (/simplify): 4×4 タップの収集・非晶質割合の内挿・重みベクトルの評価を共通化
                     //  (旧: 16 個の係数 c<x><y> と 16 本の bw<x><y> と 16 項和を、3 モデル × 六方/正方の 6 か所に複製していた)
-                    double fA = GatherBinTaps(binField, hasAmorphous ? amorphousFraction : null, bx, by, binCount, scratch.Bw, scratch.C); // 260919Cl 非晶質源の割合
-                    EvaluateBinWeights(scratch.Bw, scratch.C, scratch.Wv, nSlices);
+                    //double fA = GatherBinTaps(binField, hasAmorphous ? amorphousFraction : null, bx, by, binCount, scratch.Bw, scratch.C); // 260919Cl 非晶質源の割合 //260921Cl 変更前 (深さ写像 A2)
+                    //EvaluateBinWeights(scratch.Bw, scratch.C, scratch.Wv, nSlices); //260921Cl 変更前 (深さ写像 A2)
+                    //260921Cl 変更 (深さ写像 A2): 画素の出射方向の μ = cos χ で、垂直深さの分布を経路長の分布へ換算して重みを作る
+                    double mu = oz / Math.Sqrt(ox * ox + oy * oy + oz * oz);
+                    double fA = EvaluatePathLengthWeights(dist, bx, by, mu, absoluteWeights, sliceMassWeights, depthGrid, depthGridWidths, scratch, eLen, nSlices, hasAmorphous ? amorphousFraction : null); // 260919Cl 非晶質源の割合
                     var wv = scratch.Wv;
 
                     // ルックアップテーブルからマスターパターン補間パラメータ取得
@@ -846,7 +910,10 @@ public sealed class EbsdPatternComposer
         //260921Cl 変更 (旧: double halfW = view.HalfWidth, halfH = view.HalfHeight;)
         //  ビン座標は検出器の正規化座標ではなく試料系の射出方向から作る。画素 → 射出方向の規約は ExitRay 1 か所 (/simplify)
         var ray = CreateExitRay(view);
-        var binField = dist.BinWeights; //260921Cl (/simplify)
+        //var binField = dist.BinWeights; //260921Cl (/simplify) //260921Cl 変更前 (深さ写像 A2)
+        //260921Cl 変更 (深さ写像 A2): 重み配列ではなくビンのパラメータを内挿し、画素の μ で経路長へ換算する (EvaluatePathLengthWeights の doc)
+        const bool absoluteWeights = false, sliceMassWeights = false; //model 0/1: 密度 × 区間幅、電子のあるビンは総和 1
+        var depthGrid = mp.Depths; var depthGridWidths = mp.DepthIntervals;
         int nSlices = eLen * dLen; //260921Cl (/simplify)
         EnsureGlobalNormalizationFactorsModel1(mp); //260726Cl: 呼び出し側の Ensure 忘れを構造的に不可能にする (係数はキャッシュ済みなら再計算しない)
         var planeScaleFactors = globalNormalizationFactors;
@@ -876,7 +943,7 @@ public sealed class EbsdPatternComposer
             var pIdx0 = pIdx; var pWt0 = pWt; var pPosZ0 = pPosZ; var pVal0 = pVal;
             var isHexGrid = lookupGridType == MasterPattern.Types.Hexagonal; // 260331Cl
 
-            Parallel.For(0, height, () => new BinScratch(nSlices), (h, _, scratch) => //260921Cl (/simplify): 作業領域は worker ごとに 1 個
+            Parallel.For(0, height, () => new BinScratch(nSlices, eLen), (h, _, scratch) => //260921Cl (/simplify): 作業領域は worker ごとに 1 個 (260921Cl 深さ写像 A2: eLen を追加)
             {
                 //260921Cl 変更 (作者指示): 検出器面の正規化座標ではなく、**試料系の射出方向**を
                 //  Rosca-Lambert 等積正方格子へ写してビン座標にする (分布側とまったく同じ写像)。
@@ -896,8 +963,11 @@ public sealed class EbsdPatternComposer
                     var (bx, by) = EbsdMonteCarloDistribution.DirectionToBinCoords(ox, oy, oz, binCount);
                     //260921Cl (/simplify): 4×4 タップの収集・非晶質割合の内挿・重みベクトルの評価を共通化
                     //  (旧: 16 個の係数 c<x><y> と 16 本の bw<x><y> と 16 項和を、3 モデル × 六方/正方の 6 か所に複製していた)
-                    double fA = GatherBinTaps(binField, hasAmorphous ? amorphousFraction : null, bx, by, binCount, scratch.Bw, scratch.C); // 260919Cl 非晶質源の割合
-                    EvaluateBinWeights(scratch.Bw, scratch.C, scratch.Wv, nSlices);
+                    //double fA = GatherBinTaps(binField, hasAmorphous ? amorphousFraction : null, bx, by, binCount, scratch.Bw, scratch.C); // 260919Cl 非晶質源の割合 //260921Cl 変更前 (深さ写像 A2)
+                    //EvaluateBinWeights(scratch.Bw, scratch.C, scratch.Wv, nSlices); //260921Cl 変更前 (深さ写像 A2)
+                    //260921Cl 変更 (深さ写像 A2): 画素の出射方向の μ = cos χ で、垂直深さの分布を経路長の分布へ換算して重みを作る
+                    double mu = oz / Math.Sqrt(ox * ox + oy * oy + oz * oz);
+                    double fA = EvaluatePathLengthWeights(dist, bx, by, mu, absoluteWeights, sliceMassWeights, depthGrid, depthGridWidths, scratch, eLen, nSlices, hasAmorphous ? amorphousFraction : null); // 260919Cl 非晶質源の割合
                     var wv = scratch.Wv;
                     bool posZ = pPosZ0[i];
 
@@ -1062,7 +1132,10 @@ public sealed class EbsdPatternComposer
         //260921Cl 変更 (旧: double halfW = view.HalfWidth, halfH = view.HalfHeight;)
         //  ビン座標は検出器の正規化座標ではなく試料系の射出方向から作る。画素 → 射出方向の規約は ExitRay 1 か所 (/simplify)
         var ray = CreateExitRay(view);
-        var binField = dist.BinAbsoluteSliceWeights; //260921Cl (/simplify)
+        //var binField = dist.BinAbsoluteSliceWeights; //260921Cl (/simplify) //260921Cl 変更前 (深さ写像 A2)
+        //260921Cl 変更 (深さ写像 A2): 重み配列ではなくビンのパラメータを内挿し、画素の μ で経路長へ換算する (EvaluatePathLengthWeights の doc)
+        const bool absoluteWeights = true, sliceMassWeights = true; //model 2: 区間質量、総和は電子の割合 F
+        var depthGrid = mp.Depths; var depthGridWidths = mp.DepthIntervals;
         int nSlices = eLen * dLen; //260921Cl (/simplify)
         var (posPlanes, negPlanes) = GetAllPlanes(mp, eLen, dLen);//260718Cl
         var amorphousFraction = dist.BinAmorphousFraction; // 260919Cl 追加: 表面非晶質層に源を持つ電子の割合 (ビンごと)
@@ -1094,7 +1167,7 @@ public sealed class EbsdPatternComposer
             var pIdx0 = pIdx; var pWt0 = pWt; var pPosZ0 = pPosZ; var pVal0 = pVal;
             var isHexGrid = lookupGridType == MasterPattern.Types.Hexagonal; // 260331Cl
 
-            Parallel.For(0, height, () => new BinScratch(nSlices), (h, _, scratch) => //260921Cl (/simplify): 作業領域は worker ごとに 1 個
+            Parallel.For(0, height, () => new BinScratch(nSlices, eLen), (h, _, scratch) => //260921Cl (/simplify): 作業領域は worker ごとに 1 個 (260921Cl 深さ写像 A2: eLen を追加)
             {
                 //260921Cl 変更 (作者指示): 検出器面の正規化座標ではなく、**試料系の射出方向**を
                 //  Rosca-Lambert 等積正方格子へ写してビン座標にする (分布側とまったく同じ写像)。
@@ -1114,8 +1187,11 @@ public sealed class EbsdPatternComposer
                     var (bx, by) = EbsdMonteCarloDistribution.DirectionToBinCoords(ox, oy, oz, binCount);
                     //260921Cl (/simplify): 4×4 タップの収集・非晶質割合の内挿・重みベクトルの評価を共通化
                     //  (旧: 16 個の係数 c<x><y> と 16 本の bw<x><y> と 16 項和を、3 モデル × 六方/正方の 6 か所に複製していた)
-                    double fA = GatherBinTaps(binField, hasAmorphous ? amorphousFraction : null, bx, by, binCount, scratch.Bw, scratch.C); // 260919Cl 非晶質源の割合
-                    EvaluateBinWeights(scratch.Bw, scratch.C, scratch.Wv, nSlices);
+                    //double fA = GatherBinTaps(binField, hasAmorphous ? amorphousFraction : null, bx, by, binCount, scratch.Bw, scratch.C); // 260919Cl 非晶質源の割合 //260921Cl 変更前 (深さ写像 A2)
+                    //EvaluateBinWeights(scratch.Bw, scratch.C, scratch.Wv, nSlices); //260921Cl 変更前 (深さ写像 A2)
+                    //260921Cl 変更 (深さ写像 A2): 画素の出射方向の μ = cos χ で、垂直深さの分布を経路長の分布へ換算して重みを作る
+                    double mu = oz / Math.Sqrt(ox * ox + oy * oy + oz * oz);
+                    double fA = EvaluatePathLengthWeights(dist, bx, by, mu, absoluteWeights, sliceMassWeights, depthGrid, depthGridWidths, scratch, eLen, nSlices, hasAmorphous ? amorphousFraction : null); // 260919Cl 非晶質源の割合
                     var wv = scratch.Wv;
                     bool posZ = pPosZ0[i];
 
@@ -1146,7 +1222,9 @@ public sealed class EbsdPatternComposer
                                 if (planePrevious != null && planePrevious.Length > 0)
                                     intensity -= hw0 * planePrevious[hIdx0] + hw1 * planePrevious[hIdx1] + hw2 * planePrevious[hIdx2];
                                 sum += weight * Math.Max(0.0, intensity) / depthWidths[di] * aE; //260920Cl 変更: A(E) を末尾に掛ける (無効時は 1.0 なので丸めも含めて従来と同一) //260726Cl: 区間平均 ΔM/Δt
-                                if (hasA) acc.Add(weight / depthWidths[di], weight * planeMeans[wIdx], aE); //260921Cl 追加 (planeMeans は既に /Δt 済みなので m = weight·M̄)
+                                //if (hasA) acc.Add(weight / depthWidths[di], weight * planeMeans[wIdx], aE); //260921Cl 追加 (planeMeans は既に /Δt 済みなので m = weight·M̄) //260921Cl 変更前 (深さ写像 A2)
+                                //260921Cl 変更 (深さ写像 A2、Codex 指摘): W は区間質量のまま (Δt で割ると不等間隔格子で Ā·W/SA が格子の切り方に依存する。等間隔なら従来と同じ)
+                                if (hasA) acc.Add(weight, weight * planeMeans[wIdx], aE); //planeMeans は既に /Δt 済みなので m = weight·M̄
                                 if (fA > 0) sumMean += weight * sMean; // 260919Cl 追加 / 260920Cl 変更: 半球平均 → 全球平均 (平均は既に /Δt 済み)
                             }
                         }
@@ -1179,7 +1257,9 @@ public sealed class EbsdPatternComposer
                                     intensity -= (mpW0 * planePrevious[idx] + mpW1 * planePrevious[idx + 1]) * mpFh1
                                              + (mpW0 * planePrevious[idx + gs] + mpW1 * planePrevious[idx + gs + 1]) * mpFh;
                                 sum += weight * Math.Max(0.0, intensity) / depthWidths[di] * aE; //260920Cl 変更: A(E) を末尾に掛ける (無効時は 1.0 なので丸めも含めて従来と同一) //260726Cl: 区間平均 ΔM/Δt
-                                if (hasA) acc.Add(weight / depthWidths[di], weight * planeMeans[wIdx], aE); //260921Cl 追加 (planeMeans は既に /Δt 済みなので m = weight·M̄)
+                                //if (hasA) acc.Add(weight / depthWidths[di], weight * planeMeans[wIdx], aE); //260921Cl 追加 (planeMeans は既に /Δt 済みなので m = weight·M̄) //260921Cl 変更前 (深さ写像 A2)
+                                //260921Cl 変更 (深さ写像 A2、Codex 指摘): W は区間質量のまま (Δt で割ると不等間隔格子で Ā·W/SA が格子の切り方に依存する。等間隔なら従来と同じ)
+                                if (hasA) acc.Add(weight, weight * planeMeans[wIdx], aE); //planeMeans は既に /Δt 済みなので m = weight·M̄
                                 if (fA > 0) sumMean += weight * sMean; // 260919Cl 追加 / 260920Cl 変更: 半球平均 → 全球平均 (平均は既に /Δt 済み)
                             }
                         }
