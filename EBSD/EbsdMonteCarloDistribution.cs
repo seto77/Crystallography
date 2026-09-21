@@ -49,7 +49,8 @@ public sealed class EbsdMonteCarloDistribution
 
     /// <summary>
     /// MasterPattern の全 (energy, depth) スライスを、この MC 分布の全ビン平均重みで微分合成した 1 枚 (pos/neg 半球) を返す。260724Cl 追加。
-    /// EbsdPatternComposer の表示合成 (ApplyWeightedModel2 = absolute MC × differential master) のグローバル近似で、位置依存重みを検出器全体で平均している。 //260727Cl: 移設に伴い参照先を訂正
+    /// EbsdPatternComposer の表示合成 (ApplyWeightedModel2 = absolute MC × differential master) のグローバル近似で、位置依存重みを全ビンで平均している。 //260727Cl: 移設に伴い参照先を訂正
+    /// ⚠ 260921Cl: ビニングが検出器から射出半球へ変わったので、この平均は「検出器に当たる電子」ではなく「射出半球全体」の平均になった (ctor の doc)。
     /// ZNCC 方位照合 (複合ランク・幾何較正) 用の実測に忠実なシミュレーションパターン。単一スライスより実測との相関が上がることをベンチで確認済み。
     /// </summary>
     //260920Cl シグネチャ変更 (作者指示): 損失依存のコントラスト係数 A(E) = exp(−(E0 − E)/E_c) を掛けられるようにした。
@@ -196,7 +197,7 @@ public sealed class EbsdMonteCarloDistribution
         double amorphousLayerNm = 0, // 260919Cl 追加: 表面非晶質層の厚さ [nm]。層内の源は変調なし成分、結晶内の深さは層厚を引く
         double energyWeightDeadKeV = double.NaN) // 260919Cl 追加 (試行): 蛍光体応答 φ(E)=max(0,E−E_dead) で電子を重み付け。NaN = 重み無し (従来)
     {
-        //260725Ch: 下流の bilinear bin 補間は常に隣接 2×2 ビンと非空の energy/depth 軸を前提とする
+        //260725Ch: 下流のビン補間は非空の energy/depth 軸を前提とする (260921Cl: 補間は 4×4 の 3 次 B スプライン。添字は端でクランプするので binCount ≥ 2 でよい)
         ArgumentNullException.ThrowIfNull(bseList);
         ArgumentNullException.ThrowIfNull(energies);
         ArgumentNullException.ThrowIfNull(depths);
@@ -215,7 +216,6 @@ public sealed class EbsdMonteCarloDistribution
         //260921Cl 変更: 検出器面との交点ではなく、試料系での射出方向そのものでビニングする
         //  旧: var (sinDet, cosDet) = Math.SinCos(detTilt); double lamDenom = detY * sinDet - detZ * cosDet;
         var (sinSmp, cosSmp) = Math.SinCos(sampleTilt);
-        double binScale = binCount / (2.0 * MasterPattern.SquareLimit); //Lambert 正方 [−L, +L] → [0, binCount]
 
         var bins = new List<(double depth, double energy)>[binCount, binCount];
         for (int i = 0; i < binCount; i++)
@@ -239,7 +239,9 @@ public sealed class EbsdMonteCarloDistribution
             //260921Cl 変更: 検出器面との交点 (px, py) で 8×8 に切っていたのをやめ、試料系の射出方向を
             //  Rosca-Lambert 等積正方格子へ写して半球を切る。旧コードは git 履歴 (260723Cl 版) を参照。
             //  lab → 試料系: X 軸まわりに −sampleTilt。RotationX(−θ): y′ = y cosθ + z sinθ、z′ = −y sinθ + z cosθ
-            var (_, sy, sz) = LabToSample(vec.X, vec.Y, vec.Z, sinSmp, cosSmp);
+            //lab → 試料系 = EbsdDetectorGeometry.LabToSample と同じ回転 (X 軸まわり、y′ = c·y + s·z、z′ = −s·y + c·z)。
+            //  (/simplify: 一時的に公開ヘルパーにしていたが、呼び出しがここ 1 か所だけで同名の既存メソッドと紛らわしいので戻した)
+            double sy = vec.Y * cosSmp + vec.Z * sinSmp, sz = -vec.Y * sinSmp + vec.Z * cosSmp;
             if (!(sz > 0)) continue; //試料内部へ向かう方向 (物理的に射出しない)。NaN もここで落ちる
             //⚠ 合成側とまったく同じ写像を使う (DirectionToBinCoords の doc)
             var (fbx, fby) = DirectionToBinCoords(vec.X, sy, sz, binCount);
@@ -586,10 +588,6 @@ public sealed class EbsdMonteCarloDistribution
         double scale = binCount / (2.0 * MasterPattern.SquareLimit);
         return ((la + MasterPattern.SquareLimit) * scale - 0.5, (MasterPattern.SquareLimit - lb) * scale - 0.5);
     }
-
-    /// <summary>260921Cl 追加: lab 系の射出方向を試料系へ戻す (X 軸まわりに −sampleTilt)。ctor と同じ変換を外からも使えるように。</summary>
-    public static (double x, double y, double z) LabToSample(double x, double y, double z, double sinSampleTilt, double cosSampleTilt)
-        => (x, y * cosSampleTilt + z * sinSampleTilt, -y * sinSampleTilt + z * cosSampleTilt);
 
     public static (double[] energies, double energyStart, double energyEnd, double energyStep,
                     double[] depths, double depthStart, double depthEnd, double depthStep)

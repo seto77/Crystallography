@@ -8,7 +8,9 @@ namespace Crystallography;
 /// <summary>
 /// ラスター (width×height) のピクセル中心を表示パターン座標 (mm、検出器中心基準) へ写す係数と、検出器の物理サイズ。260726Cl 追加。
 /// px_view = (2w+1-width)·ScaleW + OffX、py_view = (2h+1-height)·ScaleH + OffY (OffX/OffY = 表示のパン量)。
-/// HalfWidth/HalfHeight は検出器の物理半幅・半高 (mm) で、MC ビン補間の正規化 (検出器外は端ビンへ外挿) に使う。
+/// HalfWidth/HalfHeight は検出器の物理半幅・半高 (mm)。
+/// ⚠ 260921Cl: MC のビニングを検出器から射出半球へ移したので、合成器はもうこれを使わない (旧: MC ビン補間の正規化と、検出器外の端ビン外挿)。
+///   検出器の立体角でビンを重み付けし直す (ComposeGlobalWeightedPattern を「検出器に当たる電子の平均」へ戻す) ときに要る値なので残してある。
 /// XMirror は左右反転トグル (±1)、DetX は検出器中心の X オフセット (mm)。
 /// </summary>
 public readonly record struct EbsdRasterView(
@@ -385,16 +387,13 @@ public sealed class EbsdPatternComposer
     /// (Forsterite 20 kV・E_c = 0.7 keV の実測で、背景平坦化後の rms が 11.6 倍小さくなる)。
     /// 重み場由来の模様は A(E) の有無にかかわらず同じ振幅で存在するが、表示が min/max で自動伸張されるため、
     /// コントラストが潰れたぶんだけ前に出る。**A(E) は模様を作るのではなく、露出させる。**</para>
-    /// <para>【端の扱い】⚠ <b>b 自体をクランプしてはいけない。</b> b を止めると画面座標での傾きがそこで折れ、
-    /// 高域通過がそれを線にする (260921Cl に一度これで枠状の線を作った)。正しくは <b>添字だけをクランプする</b> =
-    /// 制御点を端で複製する、という B スプライン標準の境界条件。こうすると</para>
-    /// <para>・重みは標準基底のままなので <b>必ず非負</b>。⚠ 制御点を 1 次外挿する版も試したが、端で重みが負になり、
-    ///   合成側の weight ≤ 0 読み飛ばしと合わさって<b>検出器の外の明るさが壊れた</b> (視野を検出器の 10 倍に広げると露呈)。</para>
-    /// <para>・複製した制御点の上でもやはり B スプラインなので <b>C2 のまま</b>。検出器の外でも折れ目が出ない。</para>
-    /// <para>・代償は端の 1 ビンぶんで場が平らに寄ること。1 次の厳密再現は内部だけで成り立つ。</para>
-    /// <para>実測 (同一 MC データ・背景のみ・平坦化後 rms/平均。全体 / 検出器内): <b>添字クランプ 0.145 / 0.187 %</b>、
-    /// 1 次外挿 0.285 / 0.138 %、Smoothstep 0.549 / 0.718 %。検出器内だけなら 1 次外挿がわずかに良いが、
-    /// 上記の非負性が壊れるので採らない。</para></summary>
+    /// <para>【端の扱い】添字だけをクランプする (= 制御点を端で複製する、B スプライン標準の境界条件)。重みは標準基底のままなので
+    /// <b>必ず非負</b>、しかも複製した制御点の上でもやはり B スプラインなので <b>C2 のまま</b>。代償は端の 1 ビンで場が平らに寄ること。
+    /// 射出半球をビニングする現行 (260921Cl) では、試料表面より上の方向は b ∈ [−0.5, binCount−0.5] に収まるので、
+    /// この処理が効くのは地平線の近くだけ (地平線より下の画素は合成側で 0 にしている)。b の ±3 丸めは NaN・極端な値への保険。</para>
+    /// <para>⚠ 検出器ビニングだった頃の教訓 (再び検出器を切るときのために残す): <b>b 自体をクランプしてはいけない</b>
+    /// (画面座標での傾きがそこで折れて枠状の線になった)。<b>制御点の 1 次外挿もいけない</b> (端で重みが負になり、
+    /// 合成側の weight ≤ 0 読み飛ばしと合わさって検出器の外の明るさが 42 % 暗くなった)。</para></summary>
     static void BinSplineTaps(double b, int binCount, out int i0, out int i1, out int i2, out int i3,
         out double w0, out double w1, out double w2, out double w3)
     {
@@ -414,6 +413,79 @@ public sealed class EbsdPatternComposer
         w3 = inv6 * t3;
         i0 = Math.Clamp(i - 1, 0, last); i1 = Math.Clamp(i, 0, last);
         i2 = Math.Clamp(i + 1, 0, last); i3 = Math.Clamp(i + 2, 0, last);
+    }
+
+    /// <summary>260921Cl 追加 (/simplify): 画素 → 試料系の<b>射出方向</b>。3 つの合成モデルで共有する (符号規約はここ 1 か所)。
+    /// <para>⚠ <see cref="BuildLookupTable"/> が作る画素方向 (結晶回転を掛ける前) は射出方向の<b>逆向き</b>なので、ここで符号を反転している。
+    /// 合成器の向きを +lab へ戻すと検出器交点が求まらず、−lab にすると旧・検出器ビニングの (px, py) が厳密に一致することを
+    /// 両者の式を突き合わせて数値で確認した。tilt 係数 (<see cref="UpdateTiltCoefficients"/>) は試料傾斜も畳み込み済みなので、
+    /// 結果はそのまま試料系 = <see cref="EbsdMonteCarloDistribution.DirectionToBinCoords"/> に渡せる座標系になる。</para></summary>
+    readonly struct ExitRay(double xMirror, double detX, double yCoeff, double zCoeff, double yConst, double zConst)
+    {
+        public double X(double pxView) => xMirror * pxView + detX;
+        public double Y(double pyView) => -(yCoeff * pyView + yConst);
+        public double Z(double pyView) => -(zCoeff * pyView + zConst);
+    }
+
+    /// <summary>260921Cl 追加 (/simplify): 現在の tilt 係数と視野から <see cref="ExitRay"/> を作る。</summary>
+    ExitRay CreateExitRay(in EbsdRasterView view) => new(view.XMirror, view.DetX, yCoeffPy, zCoeffPy, yConst, zConst);
+
+    /// <summary>260921Cl 追加 (/simplify): 合成ループの作業領域。Parallel.For の localInit で worker ごとに 1 個だけ作る。</summary>
+    sealed class BinScratch(int nSlices)
+    {
+        public readonly double[] Wv = new double[nSlices];
+        public readonly double[] C = new double[16];
+        public readonly double[][] Bw = new double[16][];
+    }
+
+    /// <summary>260921Cl 追加 (/simplify): ビン座標 (bx, by) の 4×4 タップを集め、係数 c と重み配列 bw を 16 個ずつ埋める。
+    /// 並びは x が速い (t = x + 4y) = 旧コードの c00, c10, c20, c30, c01, … と同じ順。
+    /// scalarField を渡すと同じ係数で内挿した値を返す (非晶質割合 fA 用。null なら 0)。</summary>
+    static double GatherBinTaps(double[,][] field, double[,] scalarField, double bx, double by, int binCount, double[][] bw, double[] c)
+    {
+        BinSplineTaps(bx, binCount, out int x0, out int x1, out int x2, out int x3, out double qx0, out double qx1, out double qx2, out double qx3);
+        BinSplineTaps(by, binCount, out int y0, out int y1, out int y2, out int y3, out double qy0, out double qy1, out double qy2, out double qy3);
+        double s = 0;
+        Put(0, x0, y0, qx0 * qy0); Put(1, x1, y0, qx1 * qy0); Put(2, x2, y0, qx2 * qy0); Put(3, x3, y0, qx3 * qy0);
+        Put(4, x0, y1, qx0 * qy1); Put(5, x1, y1, qx1 * qy1); Put(6, x2, y1, qx2 * qy1); Put(7, x3, y1, qx3 * qy1);
+        Put(8, x0, y2, qx0 * qy2); Put(9, x1, y2, qx1 * qy2); Put(10, x2, y2, qx2 * qy2); Put(11, x3, y2, qx3 * qy2);
+        Put(12, x0, y3, qx0 * qy3); Put(13, x1, y3, qx1 * qy3); Put(14, x2, y3, qx2 * qy3); Put(15, x3, y3, qx3 * qy3);
+        return s;
+
+        void Put(int t, int ix, int iy, double ct)
+        {
+            c[t] = ct; bw[t] = field[ix, iy];
+            if (scalarField != null) s += ct * scalarField[ix, iy];
+        }
+    }
+
+    /// <summary>260921Cl 追加 (/simplify): 画素の重みベクトル wv[k] = Σ_t c[t]·bw[t][k] (t = 0..15 の順)。
+    /// <para>⚠ 足す順が旧コードの 16 項和と同じなので出力はビット一致する
+    /// (リファクタ前後で <c>tools/EbsdProfileFit --golden-compose</c> の 12 通りのハッシュが一致することを確認)。
+    /// ⚠ FMA や SIMD に置き換えると丸めが変わってビット一致しなくなる (それ自体は誤差 1 ulp 程度で害は無いが、検証の物差しを失う)。</para></summary>
+    static void EvaluateBinWeights(double[][] bw, double[] c, double[] wv, int n)
+    {
+        var w = wv.AsSpan(0, n);
+        w.Clear();
+        for (int t = 0; t < 16; t++)
+        {
+            var b = bw[t].AsSpan(0, n);
+            double ct = c[t];
+            for (int k = 0; k < w.Length; k++) w[k] += ct * b[k];
+        }
+    }
+
+    /// <summary>260921Cl 追加 (/simplify): A(E) 有効時の 4 つの累算器と合成式を 1 か所に (旧: 3 モデルに複製)。
+    /// W = その画素・スライスの実効重み、M̄ = 平面ごとの全球方向平均、A = A(E)。
+    /// Dc = Σ W·M̄ (= A(E) 無効時の明るさ)、MbarA = Σ W·A·M̄、W = Σ W、SA = Σ W·A。
+    /// 合成式 V = Σ W·M̄ + Ā·(Σ W)·(⟨I⟩_A − ⟨M̄⟩_A) の意味は <see cref="MeanCoherentFraction"/> の doc。</summary>
+    struct CohAccum
+    {
+        public double Dc, MbarA, W, SA;
+        /// <param name="w">実効重み W</param><param name="m">W·M̄ (model 2 では weight·M̄。M̄ が既に /Δt 済みのため)</param><param name="aE">A(E)</param>
+        public void Add(double w, double m, double aE) { Dc += m; MbarA += m * aE; W += w; SA += w * aE; }
+        /// <param name="sum">Σ W·A·I</param><param name="meanCohFraction">Ā</param>
+        public readonly double Combine(double sum, double meanCohFraction) => SA > 1e-300 ? Dc + meanCohFraction * W / SA * (sum - MbarA) : Dc;
     }
 
     /// <summary>260921Cl 変更 (作者報告: Forsterite で A(E) を入れるとブロードな暗線が複数出る): 全ビン平均の「コヒーレント割合」
@@ -438,10 +510,13 @@ public sealed class EbsdPatternComposer
     /// 出てきてしまい、忠実な表現になっていないため。</para>
     /// <para>【方向平均】半球ごとの平均をそのまま使うと赤道で段差が出るので、両半球の平均 = 全球平均を使う</para></summary>
     //旧シグネチャ: static double IncoherentPedestal(EbsdMonteCarloDistribution dist, double[] cohA, double[] posMeans, double[] negMeans, int eLen, int dLen, bool differential, double[] depthWidths, double[] planeScaleFactors)
+    //260921Cl (/simplify) シグネチャ変更: differential は depthWidths != null から決まる (GetPlaneMeansCached と同じ規約) ので引数から外した
+    //旧: static double MeanCoherentFraction(EbsdMonteCarloDistribution dist, double[] cohA, int eLen, int dLen, bool differential, double[] depthWidths, double[] planeScaleFactors)
     static double MeanCoherentFraction(EbsdMonteCarloDistribution dist, double[] cohA,
-        int eLen, int dLen, bool differential, double[] depthWidths, double[] planeScaleFactors)
+        int eLen, int dLen, double[] depthWidths, double[] planeScaleFactors)
     {
         if (cohA == null) return 1; //A(E) 無効 (呼び出し側は使わない)
+        bool differential = depthWidths != null; //model 2 (区間平均 ΔM/Δt と絶対スライス重み) かどうか
         var g = new double[eLen * dLen];
         int nb = 0;
         for (int bi = 0; bi < dist.BinCount; bi++)
@@ -459,7 +534,7 @@ public sealed class EbsdPatternComposer
             {
                 int k = ei * dLen + di;
                 double w = g[k] / nb;
-                if (differential && depthWidths != null) w /= depthWidths[di]; //model 2 は区間平均 ΔM/Δt に合わせる
+                if (differential) w /= depthWidths[di]; //model 2 は区間平均 ΔM/Δt に合わせる
                 if (planeScaleFactors != null) w *= (uint)k < (uint)planeScaleFactors.Length ? planeScaleFactors[k] : 0.0; //model 1 の規格化係数
                 num += w * cohA[ei];
                 den += w;
@@ -524,9 +599,10 @@ public sealed class EbsdPatternComposer
         int binCount = dist.BinCount, gs = lookupGridSize;
         double scaleW = view.ScaleW, scaleH = view.ScaleH, viewOffX = view.OffX, viewOffY = view.OffY; // 260724Cl 追加: ラスター=視野全体化に伴い、検出器正規化±1 は物理位置から算出
         //260921Cl 変更 (旧: double halfW = view.HalfWidth, halfH = view.HalfHeight;)
-        //  ビン座標は検出器の正規化座標ではなく試料系の射出方向から作るので、必要なのは tilt 係数と Lambert のスケール。
-        double yCoeffLocal = yCoeffPy, zCoeffLocal = zCoeffPy, yConstLocal = yConst, zConstLocal = zConst;
-        double detXLocal = view.DetX;
+        //  ビン座標は検出器の正規化座標ではなく試料系の射出方向から作る。画素 → 射出方向の規約は ExitRay 1 か所 (/simplify)
+        var ray = CreateExitRay(view);
+        var binField = dist.BinWeights; //260921Cl (/simplify)
+        int nSlices = eLen * dLen; //260921Cl (/simplify)
         var (posPlanes, negPlanes) = GetAllPlanes(mp, eLen, dLen);//260718Cl
         var amorphousFraction = dist.BinAmorphousFraction; // 260919Cl 追加: 表面非晶質層に源を持つ電子の割合 (ビンごと)
         bool hasAmorphous = dist.HasAmorphousLayer; // 260919Cl 追加 (/simplify: 層が無ければ fA の双線形補間も省く)
@@ -540,8 +616,8 @@ public sealed class EbsdPatternComposer
         double[] sphereMeans = null;
         if (posMeans != null) { sphereMeans = new double[posMeans.Length]; for (int q = 0; q < sphereMeans.Length; q++) sphereMeans[q] = 0.5 * (posMeans[q] + negMeans[q]); }
         //double incoherentPedestal = IncoherentPedestal(dist, cohA, posMeans, negMeans, eLen, dLen, false, null, null); //260920Cl 追加 //260921Cl 変更前
-        double meanCohFraction = MeanCoherentFraction(dist, cohA, eLen, dLen, false, null, null); //260921Cl 変更: 定数の台座 → 全面共通のコントラスト減衰 Ā (理由は MeanCoherentFraction の doc)
-        bool hasA = cohA != null; var planeMeansLocal = planeMeans; //260921Cl 追加: ワーカーから読む用 (A(E) 有効なら planeMeans は必ず非 null)
+        double meanCohFraction = MeanCoherentFraction(dist, cohA, eLen, dLen, null, null); //260921Cl 変更: 定数の台座 → 全面共通のコントラスト減衰 Ā (理由は MeanCoherentFraction の doc)
+        bool hasA = cohA != null; //260921Cl 追加 (/simplify: 旧 planeMeansLocal は planeMeans の単なる別名だったので削除)
 
         //Array.Clear(values); //260725Ch: 下の Parallel.For が全画素を必ず代入するため、描画前の全配列ゼロクリアは不要
 
@@ -554,18 +630,15 @@ public sealed class EbsdPatternComposer
             var pIdx0 = pIdx; var pWt0 = pWt; var pPosZ0 = pPosZ; var pVal0 = pVal;
             var isHexGrid = lookupGridType == MasterPattern.Types.Hexagonal; // 260331Cl
 
-            Parallel.For(0, height, h =>
+            Parallel.For(0, height, () => new BinScratch(nSlices), (h, _, scratch) => //260921Cl (/simplify): 作業領域は worker ごとに 1 個
             {
                 //260921Cl 変更 (作者指示): 検出器面の正規化座標ではなく、**試料系の射出方向**を
                 //  Rosca-Lambert 等積正方格子へ写してビン座標にする (分布側とまったく同じ写像)。
                 //  旧: double detNormY = ((2h+1-height)*scaleH + viewOffY)/halfH; double by = (1 - detNormY)*0.5*binCount - 0.5;
-                //  ⚠ ここで作る (sdx, sdy, sdz) は BuildLookupTable と同じ「合成器の向き」で、射出方向の**逆**。
-                //    だから Lambert へ渡すときに符号を反転する (両者の式を突き合わせて数値で確認済)。
                 double pyView = (2.0 * h + 1 - height) * scaleH + viewOffY;
-                double oy = -(yCoeffLocal * pyView + yConstLocal); //射出方向の Y (試料系)
-                double oz = -(zCoeffLocal * pyView + zConstLocal); //射出方向の Z (試料系)
+                double oy = ray.Y(pyView), oz = ray.Z(pyView); //射出方向の Y, Z (試料系)。規約は ExitRay の doc
                 //試料表面より下へ向かう方向には電子が出てこない。oz は h だけで決まるので行ごとに落とす
-                if (!(oz > 0)) { for (int w = 0; w < width; w++) pVal0[h * width + w] = 0; return; }
+                if (!(oz > 0)) { for (int w = 0; w < width; w++) pVal0[h * width + w] = 0; return scratch; }
 
                 for (int w = 0; w < width; w++)
                 {
@@ -573,29 +646,14 @@ public sealed class EbsdPatternComposer
 
                     //260921Cl 変更: 旧 double detNormX = -xm * ((2w+1-width)*scaleW + viewOffX)/halfW; double bx = (detNormX + 1)*0.5*binCount - 0.5;
                     double pxView = (2.0 * w + 1 - width) * scaleW + viewOffX;
-                    double ox = xm * pxView + detXLocal; //= -(-xm*pxView - DetX)。射出方向の X (試料系)
+                    double ox = ray.X(pxView);
                     //⚠ 分布を作る側とまったく同じ写像を使う (EbsdMonteCarloDistribution.DirectionToBinCoords の doc)
                     var (bx, by) = EbsdMonteCarloDistribution.DirectionToBinCoords(ox, oy, oz, binCount);
-                    BinSplineTaps(bx, binCount, out int bi0, out int bi1, out int bi2, out int bi3, out double qx0, out double qx1, out double qx2, out double qx3);
-                    BinSplineTaps(by, binCount, out int bj0, out int bj1, out int bj2, out int bj3, out double qy0, out double qy1, out double qy2, out double qy3);
-
-                    // ビン重みの補間係数 (x 4 タップ × y 4 タップ)。c<x><y>
-                    //旧: double c00 = (1 - fx) * (1 - fy), c10 = fx * (1 - fy), c01 = (1 - fx) * fy, c11 = fx * fy; //260921Cl 変更前
-                    double c00 = qx0 * qy0, c10 = qx1 * qy0, c20 = qx2 * qy0, c30 = qx3 * qy0;
-                    double c01 = qx0 * qy1, c11 = qx1 * qy1, c21 = qx2 * qy1, c31 = qx3 * qy1;
-                    double c02 = qx0 * qy2, c12 = qx1 * qy2, c22 = qx2 * qy2, c32 = qx3 * qy2;
-                    double c03 = qx0 * qy3, c13 = qx1 * qy3, c23 = qx2 * qy3, c33 = qx3 * qy3;
-                    double fA = hasAmorphous // 260919Cl 追加: 非晶質源の割合 / 260921Cl 4 タップ化
-                        ? c00 * amorphousFraction[bi0, bj0] + c10 * amorphousFraction[bi1, bj0] + c20 * amorphousFraction[bi2, bj0] + c30 * amorphousFraction[bi3, bj0]
-                        + c01 * amorphousFraction[bi0, bj1] + c11 * amorphousFraction[bi1, bj1] + c21 * amorphousFraction[bi2, bj1] + c31 * amorphousFraction[bi3, bj1]
-                        + c02 * amorphousFraction[bi0, bj2] + c12 * amorphousFraction[bi1, bj2] + c22 * amorphousFraction[bi2, bj2] + c32 * amorphousFraction[bi3, bj2]
-                        + c03 * amorphousFraction[bi0, bj3] + c13 * amorphousFraction[bi1, bj3] + c23 * amorphousFraction[bi2, bj3] + c33 * amorphousFraction[bi3, bj3] : 0;
-
-                    //260921Cl 変更: 2x2 → 3x3 (2 次 B スプライン)
-                    var bw00 = dist.BinWeights[bi0, bj0]; var bw10 = dist.BinWeights[bi1, bj0]; var bw20 = dist.BinWeights[bi2, bj0]; var bw30 = dist.BinWeights[bi3, bj0];
-                    var bw01 = dist.BinWeights[bi0, bj1]; var bw11 = dist.BinWeights[bi1, bj1]; var bw21 = dist.BinWeights[bi2, bj1]; var bw31 = dist.BinWeights[bi3, bj1];
-                    var bw02 = dist.BinWeights[bi0, bj2]; var bw12 = dist.BinWeights[bi1, bj2]; var bw22 = dist.BinWeights[bi2, bj2]; var bw32 = dist.BinWeights[bi3, bj2];
-                    var bw03 = dist.BinWeights[bi0, bj3]; var bw13 = dist.BinWeights[bi1, bj3]; var bw23 = dist.BinWeights[bi2, bj3]; var bw33 = dist.BinWeights[bi3, bj3];
+                    //260921Cl (/simplify): 4×4 タップの収集・非晶質割合の内挿・重みベクトルの評価を共通化
+                    //  (旧: 16 個の係数 c<x><y> と 16 本の bw<x><y> と 16 項和を、3 モデル × 六方/正方の 6 か所に複製していた)
+                    double fA = GatherBinTaps(binField, hasAmorphous ? amorphousFraction : null, bx, by, binCount, scratch.Bw, scratch.C); // 260919Cl 非晶質源の割合
+                    EvaluateBinWeights(scratch.Bw, scratch.C, scratch.Wv, nSlices);
+                    var wv = scratch.Wv;
 
                     // ルックアップテーブルからマスターパターン補間パラメータ取得
                     bool posZ = pPosZ0[i];
@@ -603,9 +661,7 @@ public sealed class EbsdPatternComposer
                     // 全エネルギー・深さで加重合計
                     double sum = 0;
                     double sumMean = 0; // 260919Cl 追加: 非晶質源 (変調なし) 用の方向平均強度
-                    //260921Cl 追加: A(E) 有効時だけ使う累算器 (W = この画素の実効重み、M̄ = 平面ごとの全球方向平均)。
-                    //  dcSum = Σ W·M̄ (= A(E) 無効時の明るさ)、mbarA = Σ W·A·M̄、wTot = Σ W、sA = Σ W·A
-                    double dcSum = 0, mbarA = 0, wTot = 0, sA = 0;
+                    var acc = new CohAccum(); //260921Cl 追加: A(E) 有効時だけ使う累算器 (意味は CohAccum の doc)
 
                     if (isHexGrid) // 260331Cl: 六方格子
                     {
@@ -622,15 +678,12 @@ public sealed class EbsdPatternComposer
                             for (int di = 0; di < dLen; di++)
                             {
                                 int wIdx = ei * dLen + di;
-                                double weight = c00 * bw00[wIdx] + c10 * bw10[wIdx] + c20 * bw20[wIdx] + c30 * bw30[wIdx]
-                                              + c01 * bw01[wIdx] + c11 * bw11[wIdx] + c21 * bw21[wIdx] + c31 * bw31[wIdx]
-                                              + c02 * bw02[wIdx] + c12 * bw12[wIdx] + c22 * bw22[wIdx] + c32 * bw32[wIdx]
-                                              + c03 * bw03[wIdx] + c13 * bw13[wIdx] + c23 * bw23[wIdx] + c33 * bw33[wIdx];
+                                double weight = wv[wIdx]; //260921Cl (/simplify): 旧 16 項和は EvaluateBinWeights で画素ごとに 1 回だけ評価
                                 if (weight < 1e-15) continue;
                                 var plane = posZ ? posPlanes[wIdx] : negPlanes[wIdx];//260718Cl 事前展開した配列を参照
                                 if (plane == null || plane.Length == 0) continue;
                                 sum += weight * (hw0 * plane[hIdx0] + hw1 * plane[hIdx1] + hw2 * plane[hIdx2]) * aE; //260920Cl 変更: A(E) を末尾に掛ける (無効時は 1.0 なので丸めも含めて従来と同一) 
-                                if (hasA) { double m = weight * planeMeansLocal[wIdx]; dcSum += m; mbarA += m * aE; wTot += weight; sA += weight * aE; } //260921Cl 追加
+                                if (hasA) acc.Add(weight, weight * planeMeans[wIdx], aE); //260921Cl 追加
                                 if (fA > 0) sumMean += weight * sMean; // 260919Cl 追加 / 260920Cl 変更: 半球平均 → 全球平均
                             }
                         }
@@ -652,16 +705,13 @@ public sealed class EbsdPatternComposer
                             for (int di = 0; di < dLen; di++)
                             {
                                 int wIdx = ei * dLen + di;
-                                double weight = c00 * bw00[wIdx] + c10 * bw10[wIdx] + c20 * bw20[wIdx] + c30 * bw30[wIdx]
-                                              + c01 * bw01[wIdx] + c11 * bw11[wIdx] + c21 * bw21[wIdx] + c31 * bw31[wIdx]
-                                              + c02 * bw02[wIdx] + c12 * bw12[wIdx] + c22 * bw22[wIdx] + c32 * bw32[wIdx]
-                                              + c03 * bw03[wIdx] + c13 * bw13[wIdx] + c23 * bw23[wIdx] + c33 * bw33[wIdx];
+                                double weight = wv[wIdx]; //260921Cl (/simplify): 旧 16 項和は EvaluateBinWeights で画素ごとに 1 回だけ評価
                                 if (weight < 1e-15) continue;
                                 var plane = posZ ? posPlanes[wIdx] : negPlanes[wIdx];//260718Cl 事前展開した配列を参照
                                 if (plane == null || plane.Length == 0) continue;
                                 double intensity = (mpW0 * plane[idx] + mpW1 * plane[idx + 1]) * mpFh1 + (mpW0 * plane[idx + gs] + mpW1 * plane[idx + gs + 1]) * mpFh;
                                 sum += weight * intensity * aE; //260920Cl 変更: A(E) を末尾に掛ける (無効時は 1.0 なので丸めも含めて従来と同一) 
-                                if (hasA) { double m = weight * planeMeansLocal[wIdx]; dcSum += m; mbarA += m * aE; wTot += weight; sA += weight * aE; } //260921Cl 追加
+                                if (hasA) acc.Add(weight, weight * planeMeans[wIdx], aE); //260921Cl 追加
                                 if (fA > 0) sumMean += weight * sMean; // 260919Cl 追加 / 260920Cl 変更: 半球平均 → 全球平均
                             }
                         }
@@ -673,10 +723,11 @@ public sealed class EbsdPatternComposer
                     //260921Cl 変更: 定数の台座では Σ W·A の面内ムラが明るさに残り、8×8 のビン格子がブロードな暗線になった。
                     //  V = Σ W·M̄ + Ā·(Σ W)·(⟨I⟩_A − ⟨M̄⟩_A) へ。第 1 項は A(E) 無効時の明るさそのもの、第 2 項は正規化済み。
                     //  A(E) 無効時は従来どおり sum をそのまま使うので、丸めも含めて数値が一致する。詳細は MeanCoherentFraction の doc
-                    double coherentSum = hasA ? (sA > 1e-300 ? dcSum + meanCohFraction * wTot / sA * (sum - mbarA) : dcSum) : sum; //260921Cl
+                    double coherentSum = hasA ? acc.Combine(sum, meanCohFraction) : sum; //260921Cl (/simplify: 式は CohAccum.Combine に 1 か所)
                     pVal0[i] = fA > 0 ? (1 - fA) * coherentSum + fA * sumMean : coherentSum; // 260919Cl 変更: 非晶質層内の源は方向平均 (変調なし) で寄与
                 }
-            });
+                return scratch;
+            }, _ => { });
         }
     }
     #endregion
@@ -793,9 +844,10 @@ public sealed class EbsdPatternComposer
         var gs = lookupGridSize;
         double scaleW = view.ScaleW, scaleH = view.ScaleH, viewOffX = view.OffX, viewOffY = view.OffY; // 260724Cl 追加
         //260921Cl 変更 (旧: double halfW = view.HalfWidth, halfH = view.HalfHeight;)
-        //  ビン座標は検出器の正規化座標ではなく試料系の射出方向から作るので、必要なのは tilt 係数と Lambert のスケール。
-        double yCoeffLocal = yCoeffPy, zCoeffLocal = zCoeffPy, yConstLocal = yConst, zConstLocal = zConst;
-        double detXLocal = view.DetX;
+        //  ビン座標は検出器の正規化座標ではなく試料系の射出方向から作る。画素 → 射出方向の規約は ExitRay 1 か所 (/simplify)
+        var ray = CreateExitRay(view);
+        var binField = dist.BinWeights; //260921Cl (/simplify)
+        int nSlices = eLen * dLen; //260921Cl (/simplify)
         EnsureGlobalNormalizationFactorsModel1(mp); //260726Cl: 呼び出し側の Ensure 忘れを構造的に不可能にする (係数はキャッシュ済みなら再計算しない)
         var planeScaleFactors = globalNormalizationFactors;
         var (posPlanes, negPlanes) = GetAllPlanes(mp, eLen, dLen);//260718Cl
@@ -811,8 +863,8 @@ public sealed class EbsdPatternComposer
         double[] sphereMeans = null;
         if (posMeans != null) { sphereMeans = new double[posMeans.Length]; for (int q = 0; q < sphereMeans.Length; q++) sphereMeans[q] = 0.5 * (posMeans[q] + negMeans[q]); }
         //double incoherentPedestal = IncoherentPedestal(dist, cohA, posMeans, negMeans, eLen, dLen, false, null, planeScaleFactors); //260920Cl 追加 //260921Cl 変更前
-        double meanCohFraction = MeanCoherentFraction(dist, cohA, eLen, dLen, false, null, planeScaleFactors); //260921Cl 変更: 定数の台座 → 全面共通のコントラスト減衰 Ā (理由は MeanCoherentFraction の doc)
-        bool hasA = cohA != null; var planeMeansLocal = planeMeans; //260921Cl 追加: ワーカーから読む用 (A(E) 有効なら planeMeans は必ず非 null)
+        double meanCohFraction = MeanCoherentFraction(dist, cohA, eLen, dLen, null, planeScaleFactors); //260921Cl 変更: 定数の台座 → 全面共通のコントラスト減衰 Ā (理由は MeanCoherentFraction の doc)
+        bool hasA = cohA != null; //260921Cl 追加 (/simplify: 旧 planeMeansLocal は planeMeans の単なる別名だったので削除)
 
         //Array.Clear(values); //260725Ch: 全画素上書きのため不要
 
@@ -824,53 +876,34 @@ public sealed class EbsdPatternComposer
             var pIdx0 = pIdx; var pWt0 = pWt; var pPosZ0 = pPosZ; var pVal0 = pVal;
             var isHexGrid = lookupGridType == MasterPattern.Types.Hexagonal; // 260331Cl
 
-            Parallel.For(0, height, h =>
+            Parallel.For(0, height, () => new BinScratch(nSlices), (h, _, scratch) => //260921Cl (/simplify): 作業領域は worker ごとに 1 個
             {
                 //260921Cl 変更 (作者指示): 検出器面の正規化座標ではなく、**試料系の射出方向**を
                 //  Rosca-Lambert 等積正方格子へ写してビン座標にする (分布側とまったく同じ写像)。
                 //  旧: double detNormY = ((2h+1-height)*scaleH + viewOffY)/halfH; double by = (1 - detNormY)*0.5*binCount - 0.5;
-                //  ⚠ ここで作る (sdx, sdy, sdz) は BuildLookupTable と同じ「合成器の向き」で、射出方向の**逆**。
-                //    だから Lambert へ渡すときに符号を反転する (両者の式を突き合わせて数値で確認済)。
                 double pyView = (2.0 * h + 1 - height) * scaleH + viewOffY;
-                double oy = -(yCoeffLocal * pyView + yConstLocal); //射出方向の Y (試料系)
-                double oz = -(zCoeffLocal * pyView + zConstLocal); //射出方向の Z (試料系)
+                double oy = ray.Y(pyView), oz = ray.Z(pyView); //射出方向の Y, Z (試料系)。規約は ExitRay の doc
                 //試料表面より下へ向かう方向には電子が出てこない。oz は h だけで決まるので行ごとに落とす
-                if (!(oz > 0)) { for (int w = 0; w < width; w++) pVal0[h * width + w] = 0; return; }
+                if (!(oz > 0)) { for (int w = 0; w < width; w++) pVal0[h * width + w] = 0; return scratch; }
 
                 for (int w = 0; w < width; w++)
                 {
                     int i = h * width + w;
                     //260921Cl 変更: 旧 double detNormX = -xm * ((2w+1-width)*scaleW + viewOffX)/halfW; double bx = (detNormX + 1)*0.5*binCount - 0.5;
                     double pxView = (2.0 * w + 1 - width) * scaleW + viewOffX;
-                    double ox = xm * pxView + detXLocal; //= -(-xm*pxView - DetX)。射出方向の X (試料系)
+                    double ox = ray.X(pxView);
                     //⚠ 分布を作る側とまったく同じ写像を使う (EbsdMonteCarloDistribution.DirectionToBinCoords の doc)
                     var (bx, by) = EbsdMonteCarloDistribution.DirectionToBinCoords(ox, oy, oz, binCount);
-                    BinSplineTaps(bx, binCount, out int bi0, out int bi1, out int bi2, out int bi3, out double qx0, out double qx1, out double qx2, out double qx3);
-                    BinSplineTaps(by, binCount, out int bj0, out int bj1, out int bj2, out int bj3, out double qy0, out double qy1, out double qy2, out double qy3);
-
-                    //旧: double c00 = (1 - fx) * (1 - fy), c10 = fx * (1 - fy), c01 = (1 - fx) * fy, c11 = fx * fy; //260921Cl 変更前
-                    double c00 = qx0 * qy0, c10 = qx1 * qy0, c20 = qx2 * qy0, c30 = qx3 * qy0;
-                    double c01 = qx0 * qy1, c11 = qx1 * qy1, c21 = qx2 * qy1, c31 = qx3 * qy1;
-                    double c02 = qx0 * qy2, c12 = qx1 * qy2, c22 = qx2 * qy2, c32 = qx3 * qy2;
-                    double c03 = qx0 * qy3, c13 = qx1 * qy3, c23 = qx2 * qy3, c33 = qx3 * qy3;
-                    double fA = hasAmorphous // 260919Cl 追加: 非晶質源の割合 / 260921Cl 4 タップ化
-                        ? c00 * amorphousFraction[bi0, bj0] + c10 * amorphousFraction[bi1, bj0] + c20 * amorphousFraction[bi2, bj0] + c30 * amorphousFraction[bi3, bj0]
-                        + c01 * amorphousFraction[bi0, bj1] + c11 * amorphousFraction[bi1, bj1] + c21 * amorphousFraction[bi2, bj1] + c31 * amorphousFraction[bi3, bj1]
-                        + c02 * amorphousFraction[bi0, bj2] + c12 * amorphousFraction[bi1, bj2] + c22 * amorphousFraction[bi2, bj2] + c32 * amorphousFraction[bi3, bj2]
-                        + c03 * amorphousFraction[bi0, bj3] + c13 * amorphousFraction[bi1, bj3] + c23 * amorphousFraction[bi2, bj3] + c33 * amorphousFraction[bi3, bj3] : 0;
-
-                    //260921Cl 変更: 2x2 → 3x3 (2 次 B スプライン)
-                    double[] bw00 = dist.BinWeights[bi0, bj0], bw10 = dist.BinWeights[bi1, bj0], bw20 = dist.BinWeights[bi2, bj0], bw30 = dist.BinWeights[bi3, bj0];
-                    double[] bw01 = dist.BinWeights[bi0, bj1], bw11 = dist.BinWeights[bi1, bj1], bw21 = dist.BinWeights[bi2, bj1], bw31 = dist.BinWeights[bi3, bj1];
-                    double[] bw02 = dist.BinWeights[bi0, bj2], bw12 = dist.BinWeights[bi1, bj2], bw22 = dist.BinWeights[bi2, bj2], bw32 = dist.BinWeights[bi3, bj2];
-                    double[] bw03 = dist.BinWeights[bi0, bj3], bw13 = dist.BinWeights[bi1, bj3], bw23 = dist.BinWeights[bi2, bj3], bw33 = dist.BinWeights[bi3, bj3];
+                    //260921Cl (/simplify): 4×4 タップの収集・非晶質割合の内挿・重みベクトルの評価を共通化
+                    //  (旧: 16 個の係数 c<x><y> と 16 本の bw<x><y> と 16 項和を、3 モデル × 六方/正方の 6 か所に複製していた)
+                    double fA = GatherBinTaps(binField, hasAmorphous ? amorphousFraction : null, bx, by, binCount, scratch.Bw, scratch.C); // 260919Cl 非晶質源の割合
+                    EvaluateBinWeights(scratch.Bw, scratch.C, scratch.Wv, nSlices);
+                    var wv = scratch.Wv;
                     bool posZ = pPosZ0[i];
 
                     double sum = 0;
                     double sumMean = 0; // 260919Cl 追加: 非晶質源 (変調なし) 用の方向平均強度
-                    //260921Cl 追加: A(E) 有効時だけ使う累算器 (W = この画素の実効重み、M̄ = 平面ごとの全球方向平均)。
-                    //  dcSum = Σ W·M̄ (= A(E) 無効時の明るさ)、mbarA = Σ W·A·M̄、wTot = Σ W、sA = Σ W·A
-                    double dcSum = 0, mbarA = 0, wTot = 0, sA = 0;
+                    var acc = new CohAccum(); //260921Cl 追加: A(E) 有効時だけ使う累算器 (意味は CohAccum の doc)
                     if (isHexGrid) // 260331Cl
                     {
                         int i3 = i * 3;
@@ -886,17 +919,14 @@ public sealed class EbsdPatternComposer
                             for (int di = 0; di < dLen; di++)
                             {
                                 int wIdx = ei * dLen + di;
-                                double weight = c00 * bw00[wIdx] + c10 * bw10[wIdx] + c20 * bw20[wIdx] + c30 * bw30[wIdx]
-                                              + c01 * bw01[wIdx] + c11 * bw11[wIdx] + c21 * bw21[wIdx] + c31 * bw31[wIdx]
-                                              + c02 * bw02[wIdx] + c12 * bw12[wIdx] + c22 * bw22[wIdx] + c32 * bw32[wIdx]
-                                              + c03 * bw03[wIdx] + c13 * bw13[wIdx] + c23 * bw23[wIdx] + c33 * bw33[wIdx];
+                                double weight = wv[wIdx]; //260921Cl (/simplify): 旧 16 項和は EvaluateBinWeights で画素ごとに 1 回だけ評価
                                 if (weight < 1e-15) continue;
                                 double planeScaleFactor = (uint)wIdx < (uint)planeScaleFactors.Length ? planeScaleFactors[wIdx] : 0.0;
                                 if (planeScaleFactor < 1e-30) continue;
                                 var plane = posZ ? posPlanes[wIdx] : negPlanes[wIdx];//260718Cl 事前展開した配列を参照
                                 if (plane == null || plane.Length == 0) continue;
                                 sum += weight * (hw0 * plane[hIdx0] + hw1 * plane[hIdx1] + hw2 * plane[hIdx2]) * planeScaleFactor * aE; //260920Cl 変更: A(E) を末尾に掛ける (無効時は 1.0 なので丸めも含めて従来と同一) 
-                                if (hasA) { double W = weight * planeScaleFactor, m = W * planeMeansLocal[wIdx]; dcSum += m; mbarA += m * aE; wTot += W; sA += W * aE; } //260921Cl 追加
+                                if (hasA) { double W = weight * planeScaleFactor; acc.Add(W, W * planeMeans[wIdx], aE); } //260921Cl 追加
                                 if (fA > 0) sumMean += weight * sMean * planeScaleFactor; // 260919Cl 追加 / 260920Cl 変更: 半球平均 → 全球平均
                             }
                         }
@@ -918,10 +948,7 @@ public sealed class EbsdPatternComposer
                             for (int di = 0; di < dLen; di++)
                             {
                                 int wIdx = ei * dLen + di;
-                                double weight = c00 * bw00[wIdx] + c10 * bw10[wIdx] + c20 * bw20[wIdx] + c30 * bw30[wIdx]
-                                              + c01 * bw01[wIdx] + c11 * bw11[wIdx] + c21 * bw21[wIdx] + c31 * bw31[wIdx]
-                                              + c02 * bw02[wIdx] + c12 * bw12[wIdx] + c22 * bw22[wIdx] + c32 * bw32[wIdx]
-                                              + c03 * bw03[wIdx] + c13 * bw13[wIdx] + c23 * bw23[wIdx] + c33 * bw33[wIdx];
+                                double weight = wv[wIdx]; //260921Cl (/simplify): 旧 16 項和は EvaluateBinWeights で画素ごとに 1 回だけ評価
                                 if (weight < 1e-15) continue;
                                 double planeScaleFactor = (uint)wIdx < (uint)planeScaleFactors.Length ? planeScaleFactors[wIdx] : 0.0;
                                 if (planeScaleFactor < 1e-30) continue;
@@ -930,7 +957,7 @@ public sealed class EbsdPatternComposer
                                 double intensity = (mpW0 * plane[idx] + mpW1 * plane[idx + 1]) * mpFh1
                                                  + (mpW0 * plane[idx + gs] + mpW1 * plane[idx + gs + 1]) * mpFh;
                                 sum += weight * intensity * planeScaleFactor * aE; //260920Cl 変更: A(E) を末尾に掛ける (無効時は 1.0 なので丸めも含めて従来と同一) 
-                                if (hasA) { double W = weight * planeScaleFactor, m = W * planeMeansLocal[wIdx]; dcSum += m; mbarA += m * aE; wTot += W; sA += W * aE; } //260921Cl 追加
+                                if (hasA) { double W = weight * planeScaleFactor; acc.Add(W, W * planeMeans[wIdx], aE); } //260921Cl 追加
                                 if (fA > 0) sumMean += weight * sMean * planeScaleFactor; // 260919Cl 追加 / 260920Cl 変更: 半球平均 → 全球平均
                             }
                         }
@@ -942,10 +969,11 @@ public sealed class EbsdPatternComposer
                     //260921Cl 変更: 定数の台座では Σ W·A の面内ムラが明るさに残り、8×8 のビン格子がブロードな暗線になった。
                     //  V = Σ W·M̄ + Ā·(Σ W)·(⟨I⟩_A − ⟨M̄⟩_A) へ。第 1 項は A(E) 無効時の明るさそのもの、第 2 項は正規化済み。
                     //  A(E) 無効時は従来どおり sum をそのまま使うので、丸めも含めて数値が一致する。詳細は MeanCoherentFraction の doc
-                    double coherentSum = hasA ? (sA > 1e-300 ? dcSum + meanCohFraction * wTot / sA * (sum - mbarA) : dcSum) : sum; //260921Cl
+                    double coherentSum = hasA ? acc.Combine(sum, meanCohFraction) : sum; //260921Cl (/simplify: 式は CohAccum.Combine に 1 か所)
                     pVal0[i] = fA > 0 ? (1 - fA) * coherentSum + fA * sumMean : coherentSum; // 260919Cl 変更: 非晶質層内の源は方向平均 (変調なし) で寄与
                 }
-            });
+                return scratch;
+            }, _ => { });
         }
     }
     #endregion
@@ -1032,9 +1060,10 @@ public sealed class EbsdPatternComposer
         var gs = lookupGridSize;
         double scaleW = view.ScaleW, scaleH = view.ScaleH, viewOffX = view.OffX, viewOffY = view.OffY; // 260724Cl 追加
         //260921Cl 変更 (旧: double halfW = view.HalfWidth, halfH = view.HalfHeight;)
-        //  ビン座標は検出器の正規化座標ではなく試料系の射出方向から作るので、必要なのは tilt 係数と Lambert のスケール。
-        double yCoeffLocal = yCoeffPy, zCoeffLocal = zCoeffPy, yConstLocal = yConst, zConstLocal = zConst;
-        double detXLocal = view.DetX;
+        //  ビン座標は検出器の正規化座標ではなく試料系の射出方向から作る。画素 → 射出方向の規約は ExitRay 1 か所 (/simplify)
+        var ray = CreateExitRay(view);
+        var binField = dist.BinAbsoluteSliceWeights; //260921Cl (/simplify)
+        int nSlices = eLen * dLen; //260921Cl (/simplify)
         var (posPlanes, negPlanes) = GetAllPlanes(mp, eLen, dLen);//260718Cl
         var amorphousFraction = dist.BinAmorphousFraction; // 260919Cl 追加: 表面非晶質層に源を持つ電子の割合 (ビンごと)
         bool hasAmorphous = dist.HasAmorphousLayer; // 260919Cl 追加 (/simplify: 層が無ければ fA の双線形補間も省く)
@@ -1052,8 +1081,8 @@ public sealed class EbsdPatternComposer
         double[] sphereMeans = null;
         if (posMeans != null) { sphereMeans = new double[posMeans.Length]; for (int q = 0; q < sphereMeans.Length; q++) sphereMeans[q] = 0.5 * (posMeans[q] + negMeans[q]); }
         //double incoherentPedestal = IncoherentPedestal(dist, cohA, posMeans, negMeans, eLen, dLen, true, depthWidths, null); //260920Cl 追加 //260921Cl 変更前
-        double meanCohFraction = MeanCoherentFraction(dist, cohA, eLen, dLen, true, depthWidths, null); //260921Cl 変更: 定数の台座 → 全面共通のコントラスト減衰 Ā (理由は MeanCoherentFraction の doc)
-        bool hasA = cohA != null; var planeMeansLocal = planeMeans; //260921Cl 追加: ワーカーから読む用 (A(E) 有効なら planeMeans は必ず非 null)
+        double meanCohFraction = MeanCoherentFraction(dist, cohA, eLen, dLen, depthWidths, null); //260921Cl 変更: 定数の台座 → 全面共通のコントラスト減衰 Ā (理由は MeanCoherentFraction の doc)
+        bool hasA = cohA != null; //260921Cl 追加 (/simplify: 旧 planeMeansLocal は planeMeans の単なる別名だったので削除)
 
         //Array.Clear(values); //260725Ch: 全画素上書きのため不要
 
@@ -1065,53 +1094,34 @@ public sealed class EbsdPatternComposer
             var pIdx0 = pIdx; var pWt0 = pWt; var pPosZ0 = pPosZ; var pVal0 = pVal;
             var isHexGrid = lookupGridType == MasterPattern.Types.Hexagonal; // 260331Cl
 
-            Parallel.For(0, height, h =>
+            Parallel.For(0, height, () => new BinScratch(nSlices), (h, _, scratch) => //260921Cl (/simplify): 作業領域は worker ごとに 1 個
             {
                 //260921Cl 変更 (作者指示): 検出器面の正規化座標ではなく、**試料系の射出方向**を
                 //  Rosca-Lambert 等積正方格子へ写してビン座標にする (分布側とまったく同じ写像)。
                 //  旧: double detNormY = ((2h+1-height)*scaleH + viewOffY)/halfH; double by = (1 - detNormY)*0.5*binCount - 0.5;
-                //  ⚠ ここで作る (sdx, sdy, sdz) は BuildLookupTable と同じ「合成器の向き」で、射出方向の**逆**。
-                //    だから Lambert へ渡すときに符号を反転する (両者の式を突き合わせて数値で確認済)。
                 double pyView = (2.0 * h + 1 - height) * scaleH + viewOffY;
-                double oy = -(yCoeffLocal * pyView + yConstLocal); //射出方向の Y (試料系)
-                double oz = -(zCoeffLocal * pyView + zConstLocal); //射出方向の Z (試料系)
+                double oy = ray.Y(pyView), oz = ray.Z(pyView); //射出方向の Y, Z (試料系)。規約は ExitRay の doc
                 //試料表面より下へ向かう方向には電子が出てこない。oz は h だけで決まるので行ごとに落とす
-                if (!(oz > 0)) { for (int w = 0; w < width; w++) pVal0[h * width + w] = 0; return; }
+                if (!(oz > 0)) { for (int w = 0; w < width; w++) pVal0[h * width + w] = 0; return scratch; }
 
                 for (int w = 0; w < width; w++)
                 {
                     int i = h * width + w;
                     //260921Cl 変更: 旧 double detNormX = -xm * ((2w+1-width)*scaleW + viewOffX)/halfW; double bx = (detNormX + 1)*0.5*binCount - 0.5;
                     double pxView = (2.0 * w + 1 - width) * scaleW + viewOffX;
-                    double ox = xm * pxView + detXLocal; //= -(-xm*pxView - DetX)。射出方向の X (試料系)
+                    double ox = ray.X(pxView);
                     //⚠ 分布を作る側とまったく同じ写像を使う (EbsdMonteCarloDistribution.DirectionToBinCoords の doc)
                     var (bx, by) = EbsdMonteCarloDistribution.DirectionToBinCoords(ox, oy, oz, binCount);
-                    BinSplineTaps(bx, binCount, out int bi0, out int bi1, out int bi2, out int bi3, out double qx0, out double qx1, out double qx2, out double qx3);
-                    BinSplineTaps(by, binCount, out int bj0, out int bj1, out int bj2, out int bj3, out double qy0, out double qy1, out double qy2, out double qy3);
-
-                    //旧: double c00 = (1 - fx) * (1 - fy), c10 = fx * (1 - fy), c01 = (1 - fx) * fy, c11 = fx * fy; //260921Cl 変更前
-                    double c00 = qx0 * qy0, c10 = qx1 * qy0, c20 = qx2 * qy0, c30 = qx3 * qy0;
-                    double c01 = qx0 * qy1, c11 = qx1 * qy1, c21 = qx2 * qy1, c31 = qx3 * qy1;
-                    double c02 = qx0 * qy2, c12 = qx1 * qy2, c22 = qx2 * qy2, c32 = qx3 * qy2;
-                    double c03 = qx0 * qy3, c13 = qx1 * qy3, c23 = qx2 * qy3, c33 = qx3 * qy3;
-                    double fA = hasAmorphous // 260919Cl 追加: 非晶質源の割合 / 260921Cl 4 タップ化
-                        ? c00 * amorphousFraction[bi0, bj0] + c10 * amorphousFraction[bi1, bj0] + c20 * amorphousFraction[bi2, bj0] + c30 * amorphousFraction[bi3, bj0]
-                        + c01 * amorphousFraction[bi0, bj1] + c11 * amorphousFraction[bi1, bj1] + c21 * amorphousFraction[bi2, bj1] + c31 * amorphousFraction[bi3, bj1]
-                        + c02 * amorphousFraction[bi0, bj2] + c12 * amorphousFraction[bi1, bj2] + c22 * amorphousFraction[bi2, bj2] + c32 * amorphousFraction[bi3, bj2]
-                        + c03 * amorphousFraction[bi0, bj3] + c13 * amorphousFraction[bi1, bj3] + c23 * amorphousFraction[bi2, bj3] + c33 * amorphousFraction[bi3, bj3] : 0;
-
-                    //260921Cl 変更: 2x2 → 3x3 (2 次 B スプライン)
-                    double[] bw00 = dist.BinAbsoluteSliceWeights[bi0, bj0], bw10 = dist.BinAbsoluteSliceWeights[bi1, bj0], bw20 = dist.BinAbsoluteSliceWeights[bi2, bj0], bw30 = dist.BinAbsoluteSliceWeights[bi3, bj0];
-                    double[] bw01 = dist.BinAbsoluteSliceWeights[bi0, bj1], bw11 = dist.BinAbsoluteSliceWeights[bi1, bj1], bw21 = dist.BinAbsoluteSliceWeights[bi2, bj1], bw31 = dist.BinAbsoluteSliceWeights[bi3, bj1];
-                    double[] bw02 = dist.BinAbsoluteSliceWeights[bi0, bj2], bw12 = dist.BinAbsoluteSliceWeights[bi1, bj2], bw22 = dist.BinAbsoluteSliceWeights[bi2, bj2], bw32 = dist.BinAbsoluteSliceWeights[bi3, bj2];
-                    double[] bw03 = dist.BinAbsoluteSliceWeights[bi0, bj3], bw13 = dist.BinAbsoluteSliceWeights[bi1, bj3], bw23 = dist.BinAbsoluteSliceWeights[bi2, bj3], bw33 = dist.BinAbsoluteSliceWeights[bi3, bj3];
+                    //260921Cl (/simplify): 4×4 タップの収集・非晶質割合の内挿・重みベクトルの評価を共通化
+                    //  (旧: 16 個の係数 c<x><y> と 16 本の bw<x><y> と 16 項和を、3 モデル × 六方/正方の 6 か所に複製していた)
+                    double fA = GatherBinTaps(binField, hasAmorphous ? amorphousFraction : null, bx, by, binCount, scratch.Bw, scratch.C); // 260919Cl 非晶質源の割合
+                    EvaluateBinWeights(scratch.Bw, scratch.C, scratch.Wv, nSlices);
+                    var wv = scratch.Wv;
                     bool posZ = pPosZ0[i];
 
                     double sum = 0;
                     double sumMean = 0; // 260919Cl 追加: 非晶質源 (変調なし) 用の方向平均強度
-                    //260921Cl 追加: A(E) 有効時だけ使う累算器 (W = この画素の実効重み、M̄ = 平面ごとの全球方向平均)。
-                    //  dcSum = Σ W·M̄ (= A(E) 無効時の明るさ)、mbarA = Σ W·A·M̄、wTot = Σ W、sA = Σ W·A
-                    double dcSum = 0, mbarA = 0, wTot = 0, sA = 0;
+                    var acc = new CohAccum(); //260921Cl 追加: A(E) 有効時だけ使う累算器 (意味は CohAccum の doc)
                     if (isHexGrid) // 260331Cl
                     {
                         int i3 = i * 3;
@@ -1127,10 +1137,7 @@ public sealed class EbsdPatternComposer
                             for (int di = 0; di < dLen; di++)
                             {
                                 int wIdx = ei * dLen + di;
-                                double weight = c00 * bw00[wIdx] + c10 * bw10[wIdx] + c20 * bw20[wIdx] + c30 * bw30[wIdx]
-                                              + c01 * bw01[wIdx] + c11 * bw11[wIdx] + c21 * bw21[wIdx] + c31 * bw31[wIdx]
-                                              + c02 * bw02[wIdx] + c12 * bw12[wIdx] + c22 * bw22[wIdx] + c32 * bw32[wIdx]
-                                              + c03 * bw03[wIdx] + c13 * bw13[wIdx] + c23 * bw23[wIdx] + c33 * bw33[wIdx];
+                                double weight = wv[wIdx]; //260921Cl (/simplify): 旧 16 項和は EvaluateBinWeights で画素ごとに 1 回だけ評価
                                 if (weight < 1e-15) continue;
                                 var plane = posZ ? posPlanes[wIdx] : negPlanes[wIdx];//260718Cl 事前展開した配列を参照
                                 if (plane == null || plane.Length == 0) continue;
@@ -1139,7 +1146,7 @@ public sealed class EbsdPatternComposer
                                 if (planePrevious != null && planePrevious.Length > 0)
                                     intensity -= hw0 * planePrevious[hIdx0] + hw1 * planePrevious[hIdx1] + hw2 * planePrevious[hIdx2];
                                 sum += weight * Math.Max(0.0, intensity) / depthWidths[di] * aE; //260920Cl 変更: A(E) を末尾に掛ける (無効時は 1.0 なので丸めも含めて従来と同一) //260726Cl: 区間平均 ΔM/Δt
-                                if (hasA) { double W = weight / depthWidths[di], m = weight * planeMeansLocal[wIdx]; dcSum += m; mbarA += m * aE; wTot += W; sA += W * aE; } //260921Cl 追加 (planeMeans は既に /Δt 済みなので m = weight·M̄)
+                                if (hasA) acc.Add(weight / depthWidths[di], weight * planeMeans[wIdx], aE); //260921Cl 追加 (planeMeans は既に /Δt 済みなので m = weight·M̄)
                                 if (fA > 0) sumMean += weight * sMean; // 260919Cl 追加 / 260920Cl 変更: 半球平均 → 全球平均 (平均は既に /Δt 済み)
                             }
                         }
@@ -1161,10 +1168,7 @@ public sealed class EbsdPatternComposer
                             for (int di = 0; di < dLen; di++)
                             {
                                 int wIdx = ei * dLen + di;
-                                double weight = c00 * bw00[wIdx] + c10 * bw10[wIdx] + c20 * bw20[wIdx] + c30 * bw30[wIdx]
-                                              + c01 * bw01[wIdx] + c11 * bw11[wIdx] + c21 * bw21[wIdx] + c31 * bw31[wIdx]
-                                              + c02 * bw02[wIdx] + c12 * bw12[wIdx] + c22 * bw22[wIdx] + c32 * bw32[wIdx]
-                                              + c03 * bw03[wIdx] + c13 * bw13[wIdx] + c23 * bw23[wIdx] + c33 * bw33[wIdx];
+                                double weight = wv[wIdx]; //260921Cl (/simplify): 旧 16 項和は EvaluateBinWeights で画素ごとに 1 回だけ評価
                                 if (weight < 1e-15) continue;
                                 var plane = posZ ? posPlanes[wIdx] : negPlanes[wIdx];//260718Cl 事前展開した配列を参照
                                 if (plane == null || plane.Length == 0) continue;
@@ -1175,7 +1179,7 @@ public sealed class EbsdPatternComposer
                                     intensity -= (mpW0 * planePrevious[idx] + mpW1 * planePrevious[idx + 1]) * mpFh1
                                              + (mpW0 * planePrevious[idx + gs] + mpW1 * planePrevious[idx + gs + 1]) * mpFh;
                                 sum += weight * Math.Max(0.0, intensity) / depthWidths[di] * aE; //260920Cl 変更: A(E) を末尾に掛ける (無効時は 1.0 なので丸めも含めて従来と同一) //260726Cl: 区間平均 ΔM/Δt
-                                if (hasA) { double W = weight / depthWidths[di], m = weight * planeMeansLocal[wIdx]; dcSum += m; mbarA += m * aE; wTot += W; sA += W * aE; } //260921Cl 追加 (planeMeans は既に /Δt 済みなので m = weight·M̄)
+                                if (hasA) acc.Add(weight / depthWidths[di], weight * planeMeans[wIdx], aE); //260921Cl 追加 (planeMeans は既に /Δt 済みなので m = weight·M̄)
                                 if (fA > 0) sumMean += weight * sMean; // 260919Cl 追加 / 260920Cl 変更: 半球平均 → 全球平均 (平均は既に /Δt 済み)
                             }
                         }
@@ -1187,10 +1191,11 @@ public sealed class EbsdPatternComposer
                     //260921Cl 変更: 定数の台座では Σ W·A の面内ムラが明るさに残り、8×8 のビン格子がブロードな暗線になった。
                     //  V = Σ W·M̄ + Ā·(Σ W)·(⟨I⟩_A − ⟨M̄⟩_A) へ。第 1 項は A(E) 無効時の明るさそのもの、第 2 項は正規化済み。
                     //  A(E) 無効時は従来どおり sum をそのまま使うので、丸めも含めて数値が一致する。詳細は MeanCoherentFraction の doc
-                    double coherentSum = hasA ? (sA > 1e-300 ? dcSum + meanCohFraction * wTot / sA * (sum - mbarA) : dcSum) : sum; //260921Cl
+                    double coherentSum = hasA ? acc.Combine(sum, meanCohFraction) : sum; //260921Cl (/simplify: 式は CohAccum.Combine に 1 か所)
                     pVal0[i] = fA > 0 ? (1 - fA) * coherentSum + fA * sumMean : coherentSum; // 260919Cl 変更: 非晶質層内の源は方向平均 (変調なし) で寄与
                 }
-            });
+                return scratch;
+            }, _ => { });
         }
     }
     #endregion
