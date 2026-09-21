@@ -492,6 +492,52 @@ public sealed class EbsdPatternComposer
         return omegaSum > 0 ? fANum / omegaSum : 0;
     }
 
+    /// <summary>260921Cl 追加 (深さ写像 A2、段階 4): <b>検出器の画素で平均した</b> model 2 の重み (エネルギー × 深さの区間質量、長さ eLen·dLen)。
+    /// <see cref="EbsdMonteCarloDistribution.ComposeGlobalWeightedPattern"/> に渡すと、ZNCC 照合・E_c 較正用の 1 枚の合成が
+    /// 「射出半球全体の平均」ではなく「この検出器画像の画素平均」になる。
+    /// <para>【なぜ】A2 以降の重みは画素の μ で経路長へ換算するので方向に強く依存する。半球全体で平均すると、検出器が見ない
+    /// 表面すれすれ (μ → 0、経路の長い) 方向まで混ざる。各画素の重みは表示合成 (<see cref="ApplyWeightedModel2"/>) と
+    /// 同じ <see cref="EvaluatePathLengthWeights"/> で作るので、この平均は表示合成の重みの画素平均そのもの (F も 1 回だけ入る)。
+    /// 試料表面より下を向く画素 (表示合成でも 0) は寄与 0 として分母に数える。</para>
+    /// <para>⚠ それでも「重みを平均してから 1 枚の球へ縮約して投影」する近似は残る (重みもマスターの応答も画素方向に依存するため)。
+    /// E_c の最終較正は画素ごとの合成で行うこと (Codex 指摘)。これは ZNCC の探索用の近似。</para></summary>
+    /// <param name="stride">画素を間引く間隔 (1 で全画素)。重みは画素間でなめらかなので 4 程度で十分。</param>
+    public static double[] ComputeDetectorAverageSliceWeights(EbsdMonteCarloDistribution dist, EbsdDetectorGeometry detector, int stride = 4)
+    {
+        ArgumentNullException.ThrowIfNull(dist);
+        ArgumentNullException.ThrowIfNull(detector);
+        if (stride < 1) throw new ArgumentOutOfRangeException(nameof(stride));
+        int eLen = dist.EnergyCount, dLen = dist.DepthCount, nSlices = eLen * dLen, binCount = dist.BinCount;
+        var depths = dist.Depths; var widths = MasterPattern.ComputeDepthIntervals(depths);
+        int rows = (detector.HeightPx + stride - 1) / stride;
+        //行ごとに合計してから行の順に足す (並列の足し順で結果が揺れないように。E_c の測定を再現できるようにするため)
+        var rowSums = new double[rows][]; var rowCounts = new long[rows];
+        Parallel.For(0, rows, () => new BinScratch(nSlices, eLen), (ri, _, scratch) =>
+        {
+            int row = ri * stride;
+            var sum = new double[nSlices]; long n = 0;
+            for (int col = 0; col < detector.WidthPx; col += stride)
+            {
+                var v = detector.PixelToSampleDirection(col, row); //視線 = 射出の逆 (EbsdDetectorGeometry の doc)
+                double sx = -v.X, sy = -v.Y, sz = -v.Z;
+                n++; //260921Cl (Codex 指摘): 地平線より下の画素も数える (寄与 0)。表示合成のその画素の値も 0 なので、平均の定義を画素ごとの合成と揃える
+                if (!(sz > 0)) continue; //試料表面より下へ向かう方向には電子が出てこない
+                double mu = sz / Math.Sqrt(sx * sx + sy * sy + sz * sz);
+                var (bx, by) = EbsdMonteCarloDistribution.DirectionToBinCoords(sx, sy, sz, binCount);
+                EvaluatePathLengthWeights(dist, bx, by, mu, absolute: true, sliceMass: true, depths, widths, scratch, eLen, nSlices, null);
+                var wv = scratch.Wv;
+                for (int k = 0; k < nSlices; k++) sum[k] += wv[k];
+            }
+            rowSums[ri] = sum; rowCounts[ri] = n;
+            return scratch;
+        }, _ => { });
+        var total = new double[nSlices];
+        long count = 0;
+        for (int ri = 0; ri < rows; ri++) { for (int k = 0; k < nSlices; k++) total[k] += rowSums[ri][k]; count += rowCounts[ri]; }
+        if (count > 0) for (int k = 0; k < nSlices; k++) total[k] /= count;
+        return total;
+    }
+
     //260921Cl 削除 (深さ写像 A2): 重み配列の内挿は EvaluatePathLengthWeights (パラメータを内挿して画素の μ で換算) に置き換えたので未使用。
     ///// <summary>260921Cl 追加 (/simplify): ビン座標 (bx, by) の 4×4 タップを集め、係数 c と重み配列 bw を 16 個ずつ埋める。
     ///// 並びは x が速い (t = x + 4y) = 旧コードの c00, c10, c20, c30, c01, … と同じ順。

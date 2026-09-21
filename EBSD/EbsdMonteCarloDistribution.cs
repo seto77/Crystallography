@@ -121,7 +121,13 @@ public sealed class EbsdMonteCarloDistribution
     //  表示合成 (EbsdPatternComposer.CoherenceLossDecayKeV) と同じ重みにしないと、ZNCC の目的関数だけ別のパターンを見ることになる。
     //  ⚠ここでは (1 − A) の平坦な台座を足していない。ZNCC は画像全体への定数加算・定数倍に不変なので、方向に依らない成分は結果を変えないため。
     //旧: public (float[] Pos, float[] Neg) ComposeGlobalWeightedPattern(MasterPattern mp)
-    public (float[] Pos, float[] Neg) ComposeGlobalWeightedPattern(MasterPattern mp, double beamEnergyKeV = double.NaN, double coherenceLossDecayKeV = double.NaN)
+    //260921Cl シグネチャ変更 (深さ写像 A2、段階 4): 大域の重みを外から渡せるようにした。
+    //  EbsdPatternComposer.ComputeDetectorAverageSliceWeights (検出器画像の画素平均) を渡すのが本命。
+    //  null なら従来どおり全ビンの BinAbsoluteSliceWeights (ビン中心の μ で換算) を射出半球全体で足したもの
+    //  (A2 以降は検出器が見ない表面すれすれの方向の長い経路まで混ざるので、検出器があるときは渡すこと)。
+    //旧: public (float[] Pos, float[] Neg) ComposeGlobalWeightedPattern(MasterPattern mp, double beamEnergyKeV = double.NaN, double coherenceLossDecayKeV = double.NaN)
+    public (float[] Pos, float[] Neg) ComposeGlobalWeightedPattern(MasterPattern mp, double beamEnergyKeV = double.NaN, double coherenceLossDecayKeV = double.NaN,
+        double[] sliceWeights = null)
     {
         ArgumentNullException.ThrowIfNull(mp); //260725Ch: null を後段の不明瞭な参照例外にしない
         if (mp.GridSize < 2) throw new ArgumentException("MasterPattern.GridSize must be at least 2.", nameof(mp)); //260725Ch
@@ -133,6 +139,12 @@ public sealed class EbsdMonteCarloDistribution
                 $"The MC distribution grid ({EnergyCount} energies x {DepthCount} depths) does not match the MasterPattern ({mp.Energies.Length} x {mp.Depths.Length}).", nameof(mp));
         int eLen = mp.Energies.Length, dLen = mp.Depths.Length;
         var wG = new double[eLen * dLen];
+        if (sliceWeights != null) //260921Cl 追加: 外から渡された大域の重み (検出器平均)
+        {
+            if (sliceWeights.Length != wG.Length) throw new ArgumentException($"sliceWeights must have {wG.Length} elements (energies x depths).", nameof(sliceWeights));
+            Array.Copy(sliceWeights, wG, wG.Length);
+        }
+        else
         for (int bi = 0; bi < BinCount; bi++)
             for (int bj = 0; bj < BinCount; bj++)
             {
