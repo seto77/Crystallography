@@ -1,14 +1,15 @@
 ﻿using System;
 using System.Collections.Generic;
-using System.Threading.Tasks; // 260602Cl: Parallel.For (64 ビンフィットの並列化)
+using System.Threading.Tasks; // 260602Cl: Parallel.For (ビンごとのフィットの並列化。260921Cl: 旧 64 ビン → 射出半球 18×18)
 using V3 = OpenTK.Mathematics.Vector3d;
 
 namespace Crystallography;
 
 /// <summary>
-/// モンテカルロ BSE シミュレーション結果から、検出器の 8×8 ビン毎に
+/// モンテカルロ BSE シミュレーション結果から、ビン毎に
 /// エネルギー・深さの重み分布 w(E, z) = g(E) × h(z|E) をフィッティングし、
 /// 任意のピクセル位置で重みを返すクラス。260325Cl 追加
+/// <para>260921Cl: ビンは検出器面の 8×8 ではなく、試料表面側の射出半球全体の Lambert 等積ディスク 18×18 (ctor の doc)。</para>
 /// </summary>
 public sealed class EbsdMonteCarloDistribution
 {
@@ -19,11 +20,12 @@ public sealed class EbsdMonteCarloDistribution
     /// <summary>ビンごとの正規化重み。BinWeights[binI, binJ] は double[energyCount * depthCount]。 // (260327Ch)
     /// <para>⚠ 260921Cl: 深さ写像の改修 (A2) 以降は、<b>ビン中心の射出方向 <see cref="BinCenterMu"/> で経路長へ換算した近似</b>。
     /// 表示合成 (<see cref="EbsdPatternComposer"/>) は画素ごとの μ で <see cref="FillPathLengthWeights"/> を呼ぶのでこの配列を使わない。
-    /// 残しているのは全ビン平均を取る大域的な消費者 (A(E) の Ā・ZNCC 用の大域合成・診断ツール) のため。
+    /// 残しているのは全ビン平均を取る大域的な消費者 (ZNCC 用の大域合成で重みを渡さないとき・非晶質層の基準強度 <see cref="GlobalDepthWeights"/>・診断ツール) のため。
+    /// (260921Cl: A(E) の Ā は検出器面で画素ごとに重みを作って平均するようになったので、もう使わない)
     /// 密度標本 × 区間幅 (右端則)、各エネルギーで条件付き正規化、ビン内総和 1 (電子の無いビンは 0)。</para></summary>
     public double[,][] BinWeights { get; }
 
-    /// <summary>model 2 用。detector bin の absolute 強度を保った depth-slice 重み。260325Ch 追加
+    /// <summary>model 2 用。ビンの absolute 強度を保った depth-slice 重み。260325Ch 追加 (260921Cl: 旧 detector bin → 射出半球のビン)
     /// <para>⚠ 260921Cl: <see cref="BinWeights"/> と同じくビン中心の μ で換算した近似。区間質量、各エネルギーで条件付き正規化、ビン内総和 = <see cref="BinFraction"/>。</para></summary>
     public double[,][] BinAbsoluteSliceWeights { get; }
 
@@ -68,9 +70,18 @@ public sealed class EbsdMonteCarloDistribution
     public double[] Depths { get; }
 
     //260921Cl 追加 (深さ写像 A2): 合成器のホットループ用の平坦配列 (添字 b = bi·BinCount + bj、エネルギーは b·eLen + ei)
+    //260921Cl 変更 (Lambert 等積ディスク): これらは合成器が 3 次 B スプラインで内挿する「場」。Bin* (測ったまま) とは縁のビンで違う:
+    //  被覆率 ≥ MinBinCoverage のビンは測った値 (F だけは被覆率で割って「ビン全面あたり」にする)、
+    //  それ未満 (円板の外を含む) のビンは内側の隣から延長した値 (ExtendFieldOutward)。
     internal double[] FlatEnergyDistribution { get; }
     internal double[] FlatLambdaNm { get; }
     internal double[] FlatFraction { get; }
+    /// <summary>260921Cl 追加: 非晶質割合の場 (<see cref="BinAmorphousFraction"/> を縁で延長したもの)。</summary>
+    internal double[] FlatAmorphousFraction { get; }
+
+    /// <summary>260921Cl 追加 (Lambert 等積ディスク): 各ビンの面積のうち射出半球の円板に入る割合 (0..1)。内側は 1、円板の外は 0。
+    /// <see cref="BinFraction"/> は電子の割合そのもの (総和 1) なので、縁のビンでは被覆率のぶん小さい。</summary>
+    public double[,] BinCoverage { get; }
 
     /// <summary>260919Cl 追加: 表面非晶質層の厚さ [nm] (0 = 無し)。輸送は結晶と同じ組成・密度で計算し、層内に源を持つ電子だけを「変調なし」に振り分ける。</summary>
     public double AmorphousLayerNm { get; }
@@ -114,7 +125,8 @@ public sealed class EbsdMonteCarloDistribution
     /// <summary>
     /// MasterPattern の全 (energy, depth) スライスを、この MC 分布の全ビン平均重みで微分合成した 1 枚 (pos/neg 半球) を返す。260724Cl 追加。
     /// EbsdPatternComposer の表示合成 (ApplyWeightedModel2 = absolute MC × differential master) のグローバル近似で、位置依存重みを全ビンで平均している。 //260727Cl: 移設に伴い参照先を訂正
-    /// ⚠ 260921Cl: ビニングが検出器から射出半球へ変わったので、この平均は「検出器に当たる電子」ではなく「射出半球全体」の平均になった (ctor の doc)。
+    /// ⚠ 260921Cl: ビニングが検出器から射出半球へ変わったので、sliceWeights を渡さないときのこの平均は「検出器に当たる電子」ではなく「射出半球全体」の平均。
+    /// 検出器があるときは <see cref="EbsdPatternComposer.ComputeDetectorAverageSliceWeights"/> (画素の立体角で重み付けした検出器平均) を渡すこと。
     /// ZNCC 方位照合 (複合ランク・幾何較正) 用の実測に忠実なシミュレーションパターン。単一スライスより実測との相関が上がることをベンチで確認済み。
     /// </summary>
     //260920Cl シグネチャ変更 (作者指示): 損失依存のコントラスト係数 A(E) = exp(−(E0 − E)/E_c) を掛けられるようにした。
@@ -248,28 +260,47 @@ public sealed class EbsdMonteCarloDistribution
     }
 
     // 260718Cl: smpTilt 引数を削除。BSE の Vec は MC 内で試料傾斜を織り込んで lab 座標系で追跡され、検出器 (detY/detZ/detTilt も lab 座標系) への投影に試料傾斜は不要 (Codex 検証済: 適用すると二重計上)。
+    //   ⚠ 260921Cl: sampleTilt を別の目的で再導入した。射出方向を lab 系から試料系へ戻して射出半球を切るためで、検出器への投影には使っていない
+    //   (二重計上の問題は起きない。lab 系の Vec を 1 回だけ試料系へ回している)。
     // 260723Cl: 円形検出器 (半径 detR) → 矩形検出器 (半幅 halfWidth × 半高 halfHeight) + 中心 X オフセット (detX) へ変更。
     // 旧シグネチャ (〜260921Cl): EbsdMonteCarloDistribution(bseList, beamEnergy, detTilt, detX, detY, detZ, halfWidth, halfHeight, energies, depths, binCount = 8, ...)
     /// <summary>260921Cl シグネチャ変更 (作者指示): <b>検出器ではなく、試料表面側の半球全体をビニングする。</b>
     /// <para>【なぜ】旧版は検出器に当たった電子だけを検出器面上の 8×8 に切り、外れた電子は捨てていた。そのため
     /// 検出器より広い視野を表示すると、そこは全部「端のビンの外挿」で物理的な裏付けが無かった
     /// (実測: 視野 683 mm のとき検出器はその 1/10。正本 §1.5.4)。半球を切れば視野をどれだけ広げても実データで埋まる。</para>
-    /// <para>【格子】MasterPattern と同じ <b>Rosca-Lambert 等積正方格子</b>。等積なので全ビンの立体角が等しく、
-    /// 極にも縁にも特異点が無い。既定 16×16 は、検出器 8×8 (立体角 ≈ 1.7 sr を 64 分割) と同程度の角度分解能で
-    /// 半球 (2π sr) を覆う数 (2π ÷ (1.7/64) ≈ 236 ≈ 15.4²)。</para>
+    /// <para>【格子】260921Cl 変更: <b>Lambert 等積ディスク</b> (<see cref="DirectionToBinCoords"/>) を正方形ごと binCount × binCount に切る。
+    /// 等積なので円板の内側のビンは立体角が等しく (8/binCount² sr)、射出半球の上で写像が C∞ (極にも折れ目にも特異点が無い)。
+    /// (旧: MasterPattern と同じ Rosca-Lambert 等積正方格子。対角線で C0 なので画面に X 字の折れ目が出た。理由は DirectionToBinCoords の doc)
+    /// 既定 18×18 は、旧 16×16 (半球 2π sr を 256 分割) とビン 1 個の立体角がほぼ同じ (8/324 = 0.0247 sr、旧 0.0245 sr) = 統計の質が同じ数。
+    /// 検出器 8×8 (立体角 ≈ 1.7 sr を 64 分割) とも同程度の角度分解能。</para>
+    /// <para>【縁のビン】円板は正方形を覆わないので、縁のビンは一部しか射出半球に掛からない (<see cref="BinCoverage"/>)。
+    /// 合成器が内挿する「場」(Flat* 配列) では、被覆率 ≥ <see cref="MinBinCoverage"/> のビンは F を被覆率で割って「ビン全面あたり」にし
+    /// (そうしないと地平線の近くが被覆率のぶん暗くなる)、それ未満のビン (円板の外を含む) は内側の隣から延長する
+    /// (空のままだと 4×4 タップが 0 を拾い、やはり地平線の近くが暗くなる。被覆の小さいビンは電子が少なく重心もずれるので使わない)。
+    /// Bin* の公開配列は測ったまま (<see cref="BinFraction"/> の総和は 1) で、半球全体の和を取る消費者はそちらを使う。</para>
     /// <para>【座標系】bseList.Vec は lab 系なので X 軸まわりに −sampleTilt 回して試料系へ戻し、射出半球 (z &gt; 0) を切る。
     /// 合成側 (<see cref="EbsdPatternComposer"/>) はまったく同じ写像を使う。⚠ 合成側の画素方向は射出方向の
     /// **逆向き**なので、あちらでは符号を反転してからこの写像へ渡す (両者の式を突き合わせて数値で確認済)。</para>
     /// <para>⚠ 検出器に依存しなくなったので、検出器幾何を変えても MC 分布を作り直す必要はない。</para>
-    /// <para>⚠ <see cref="ComposeGlobalWeightedPattern"/> の全ビン平均は「検出器に当たる電子の平均」から
-    /// 「射出半球全体の平均」へ意味が変わる。ZNCC 目的関数と E_c 校正 (正本 §2.7) はこの重みを使うので、
-    /// 旧値へ厳密に戻したいときは検出器の立体角で重み付けし直す必要がある。</para></summary>
+    /// <para>⚠ 全ビンの和 (<see cref="ComposeGlobalWeightedPattern"/> に重みを渡さないとき) は「射出半球全体の平均」。
+    /// 検出器に当たる電子の平均が欲しいときは <see cref="EbsdPatternComposer.ComputeDetectorAverageSliceWeights"/> を渡す
+    /// (画素ごとに検出器の立体角で重み付けしてある)。</para></summary>
+    /// <param name="bseList">MC の後方散乱電子 (源の垂直深さ [nm]、射出方向 (lab 系)、射出エネルギー [keV])</param>
+    /// <param name="beamEnergy">入射エネルギー [keV]</param>
+    /// <param name="sampleTilt">260921Cl: <b>bseList を作ったときの</b>試料傾斜 [rad]。射出方向を lab 系から試料系へ戻すのに使うので、
+    /// UI の現在値ではなく MC を回したときの値を渡すこと (FormEBSD の bsesSampleTilt)。</param>
+    /// <param name="energies">MasterPattern のエネルギー格子 [keV] (降順)</param>
+    /// <param name="depths">MasterPattern の深さ格子 [nm] (出射方向の経路長、単調増加)</param>
+    /// <param name="binCount">1 辺のビン数 (既定 18)</param>
+    /// <param name="amorphousLayerNm">表面非晶質層の厚さ [nm] (0 = 無し)</param>
+    /// <param name="energyWeightDeadKeV">蛍光体応答 φ(E) = max(0, E − E_dead) の E_dead [keV]。NaN なら 1 本 1 票</param>
     public EbsdMonteCarloDistribution(
         (double Depth, V3 Vec, double Energy)[] bseList,
         double beamEnergy,
         double sampleTilt, //260921Cl 変更: detTilt/detX/detY/detZ/halfWidth/halfHeight を置き換え
         double[] energies, double[] depths,
-        int binCount = 16, //260921Cl 変更 (旧 8): 半球を検出器 8×8 と同程度の角度分解能で覆う数
+        //int binCount = 16, //260921Cl 変更 (旧 8): 半球を検出器 8×8 と同程度の角度分解能で覆う数 //260921Cl 変更前 (Rosca-Lambert 正方格子)
+        int binCount = 18, //260921Cl 変更 (Lambert 等積ディスク): 旧 16×16 とビン 1 個の立体角が同じ数
         double amorphousLayerNm = 0, // 260919Cl 追加: 表面非晶質層の厚さ [nm]。層内の源は変調なし成分、結晶内の深さは層厚を引く
         double energyWeightDeadKeV = double.NaN) // 260919Cl 追加 (試行): 蛍光体応答 φ(E)=max(0,E−E_dead) で電子を重み付け。NaN = 重み無し (従来)
     {
@@ -324,13 +355,31 @@ public sealed class EbsdMonteCarloDistribution
         {
             var (depth, vec, energy) = bseList[n];
             binOf[n] = -1;
-            //260920Cl (/simplify2): 重みの母数は全電子。検出器を外れる continue より前で積む (旧 binFraction の分母 bseList.Length と同義)
+            //260920Cl (/simplify2): 重みの母数は全電子。射出しない電子を落とす continue より前で積む (旧 binFraction の分母 bseList.Length と同義)
+            //  (260921Cl: 旧・検出器ビニングでは「検出器を外れる continue」より前、の意味だった)
             totalWeight += useEnergyWeight ? Math.Max(0, energy - energyWeightDeadKeV) : 1.0;
             //260921Cl 変更: 検出器面との交点 (px, py) で 8×8 に切っていたのをやめ、試料系の射出方向を
-            //  Rosca-Lambert 等積正方格子へ写して半球を切る。旧コードは git 履歴 (260723Cl 版) を参照。
-            //  lab → 試料系: X 軸まわりに −sampleTilt。RotationX(−θ): y′ = y cosθ + z sinθ、z′ = −y sinθ + z cosθ
-            //lab → 試料系 = EbsdDetectorGeometry.LabToSample と同じ回転 (X 軸まわり、y′ = c·y + s·z、z′ = −s·y + c·z)。
+            //  射出半球の等積格子へ写して半球を切る (旧 7f27fa5: Rosca-Lambert 等積正方格子、現: Lambert 等積ディスク。DirectionToBinCoords の doc)。
+            //  旧コード (260718Cl / 260723Cl、検出器面との交点) は下にコメントで残す (/simplify2 で復元)。
+            //  lab → 試料系 = EbsdDetectorGeometry.LabToSample と同じ回転: X 軸まわりに −sampleTilt、y′ = c·y + s·z、z′ = −s·y + c·z (c = cos、s = sin)。
             //  (/simplify: 一時的に公開ヘルパーにしていたが、呼び出しがここ 1 か所だけで同名の既存メソッドと紛らわしいので戻した)
+            //旧 (260723Cl 版、検出器面との交点で 8×8 に切る):
+            //    // 260723Cl 変更: 交点係数を真の検出器面 (中心 C=(detX,-detY,-detZ)、法線 n=(0,sinθ,-cosθ): 幾何表示・Foot・CameraLength2 と同一) で計算。
+            //    //   k = (n・C)/(n・vec)。n・C = -lamDenom。detTilt=90° では旧式と同値
+            //    double nDotVec = vec.Y * sinDet - vec.Z * cosDet;
+            //    if (Math.Abs(nDotVec) < 1e-15) continue;
+            //    double k = -lamDenom / nDotVec;
+            //    if (k <= 0) continue;
+            //    // 260723Cl 変更: px も py と同じく消費側 (EbsdPatternComposer.BuildLookupTable / detNormX = -xm·(2w+1-width)/width) の厳密な逆写像へ。
+            //    //   消費側の視線 X は (ピクセル項) - detX で、検出器面ヒット位置 k·vec.X との対応から px = (detX - k·vec.X)/halfWidth。
+            //    double px = (detX - k * vec.X) / halfWidth;
+            //    // 260718Cl 変更: py を消費側 (EbsdPatternComposer.BuildLookupTable) の「画素→lab 方向」マップの厳密な逆写像で算出する。
+            //    //   逆写像 py は消費側 detNormY に厳密一致し、DetTilt=90° では旧式と同値。lambda=検出器中心線方向の射影スケール。
+            //    double lambda = nDotVec / lamDenom;
+            //    double py = ((vec.Y * cosDet + vec.Z * sinDet) / lambda - (detY * cosDet + detZ * sinDet)) / halfHeight; // 260723Cl: detR → halfHeight
+            //    if (!(px >= -1 && px <= 1) || !(py >= -1 && py <= 1)) continue; // 260718Cl: NaN/範囲外を棄却 (lambda≈0 → py→∞ も捕捉)
+            //    int bi = Math.Clamp((int)((px + 1) * 0.5 * binCount), 0, binCount - 1);
+            //    int bj = Math.Clamp((int)((1 - py) * 0.5 * binCount), 0, binCount - 1);
             double sy = vec.Y * cosSmp + vec.Z * sinSmp, sz = -vec.Y * sinSmp + vec.Z * cosSmp;
             if (!(sz > 0)) continue; //試料内部へ向かう方向 (物理的に射出しない)。NaN もここで落ちる
             //⚠ 合成側とまったく同じ写像を使う (DirectionToBinCoords の doc)
@@ -384,9 +433,9 @@ public sealed class EbsdMonteCarloDistribution
         FlatLambdaNm = new double[nBins * eLen];
         FlatFraction = new double[nBins];
 
-        // 260602Cl 変更: 64 ビンは互いに独立 (distinct な BinWeights[bi,bj]/BinAbsoluteSliceWeights[bi,bj] へ書く) なので
-        //   Parallel.For 化。bins への集約 (上の foreach) は逐次のまま、ここはフィット段だけ並列化する。
-        // 260919Cl 追加: 全ビン合算の λ(E) 多項式。結晶内の源が 10 本未満のビン (厚い非晶質層・検出器端) で使う
+        // 260602Cl 変更: 各ビン (当時 64、260921Cl: 18×18) は互いに独立 (distinct な BinWeights[bi,bj]/BinAbsoluteSliceWeights[bi,bj] へ書く) なので
+        //   Parallel.For 化。電子の集約 (上の 1・2 パス目) は逐次のまま、ここはフィット段だけ並列化する。
+        // 260919Cl 追加: 全ビン合算の λ(E) 多項式。結晶内の源が 10 本未満のビン (厚い非晶質層・射出半球の縁。旧: 検出器端) で使う
         //260921Cl 変更 (深さ写像 A2): 合算の当てはめが「有効な標本ゼロ」で失敗したときは 10 nm を黙って使わず、深さ一様 (NoDepthData) と明示する
         //旧: bool hasGlobalLambda = allCrystalline.Count >= 10;
         //旧: double gla = 1E6, glb = 0, glc = 0; // λ→∞ = 深さ一様 (合算でも足りないときのフォールバック)
@@ -475,6 +524,18 @@ public sealed class EbsdMonteCarloDistribution
             BinWeights[bi, bj] = weights;
             BinAbsoluteSliceWeights[bi, bj] = absoluteSliceWeights; // (260325Ch)
         });
+
+        //260921Cl 追加 (Lambert 等積ディスク): 合成器が内挿する場の縁の処理 (ctor の doc【縁のビン】)
+        BinCoverage = ComputeDiskCoverage(binCount);
+        FlatAmorphousFraction = new double[nBins];
+        var measured = new bool[nBins];
+        for (int b = 0; b < nBins; b++)
+        {
+            double cov = BinCoverage[b / binCount, b % binCount];
+            FlatAmorphousFraction[b] = BinAmorphousFraction[b / binCount, b % binCount];
+            if (cov >= MinBinCoverage) { measured[b] = true; FlatFraction[b] /= cov; } //ビン全面あたりの割合 (内側のビンは cov = 1 で不変)
+        }
+        ExtendFieldOutward(measured, binCount, eLen, FlatFraction, FlatAmorphousFraction, FlatEnergyDistribution, FlatLambdaNm);
 
         //260921Cl 追加 (深さ写像 A2): 非晶質層の基準強度用の深さ重み = Σ_b F_b·G_b(E)·p_b(t|E) (ビン中心 μ で換算)。
         //  消費側 (EbsdPatternComposer.CollapseToEnergyReference) がエネルギーごとに正規化するので、結果は
@@ -578,14 +639,108 @@ public sealed class EbsdMonteCarloDistribution
         return o;
     }
 
-    /// <summary>260921Cl 追加 (深さ写像 A2): ビン (bi, bj) の中心の射出方向の μ = cos χ。<see cref="DirectionToBinCoords"/> の逆 (ビン中心が整数座標)。</summary>
+    /// <summary>260921Cl 追加 (深さ写像 A2): ビン (bi, bj) の中心の射出方向の μ = cos χ。<see cref="DirectionToBinCoords"/> の逆 (ビン中心が整数座標)。
+    /// <para>260921Cl 変更 (Lambert 等積ディスク): 円板上の点 (X, Y) では μ = 1 − (X² + Y²)/2。円板の外にある中心 (縁のビン) は 1E-6 へ丸める。</para></summary>
     public static double LambertBinCenterMu(int bi, int bj, int binCount)
     {
-        double scale = binCount / (2.0 * MasterPattern.SquareLimit);
-        double la = (bi + 0.5) / scale - MasterPattern.SquareLimit, lb = MasterPattern.SquareLimit - (bj + 0.5) / scale;
-        var v = MasterPattern.RoscaLambertToSphereSquare(la, lb, MasterPattern.Hemisphere.PositiveZ);
-        double len = Math.Sqrt(v.X * v.X + v.Y * v.Y + v.Z * v.Z);
-        return len > 0 ? Math.Clamp(v.Z / len, 1E-6, 1.0) : 1.0;
+        //260921Cl 変更前 (Rosca-Lambert 正方写像):
+        //double scale = binCount / (2.0 * MasterPattern.SquareLimit);
+        //double la = (bi + 0.5) / scale - MasterPattern.SquareLimit, lb = MasterPattern.SquareLimit - (bj + 0.5) / scale;
+        //var v = MasterPattern.RoscaLambertToSphereSquare(la, lb, MasterPattern.Hemisphere.PositiveZ);
+        //double len = Math.Sqrt(v.X * v.X + v.Y * v.Y + v.Z * v.Z);
+        //return len > 0 ? Math.Clamp(v.Z / len, 1E-6, 1.0) : 1.0;
+        var (x, y) = BinCenterOnDisk(bi, bj, binCount);
+        return Math.Clamp(1 - (x * x + y * y) / 2, 1E-6, 1.0);
+    }
+
+    /// <summary>260921Cl 追加: ビン (bi, bj) の中心の、Lambert 等積ディスク上の座標 (X, Y)。<see cref="DirectionToBinCoords"/> の逆。</summary>
+    static (double X, double Y) BinCenterOnDisk(int bi, int bj, int binCount)
+    {
+        double cell = 2 * DiskRadius / binCount;
+        return ((bi + 0.5) * cell - DiskRadius, DiskRadius - (bj + 0.5) * cell);
+    }
+
+    /// <summary>260921Cl 追加 (Lambert 等積ディスク): 場の値を持たないビン (known = false) を、値を持つビンから外へ向かって 1 層ずつ延長する。
+    /// <para>各層では、まだ値を持たないビンのうち 8 近傍に値を持つビンがあるものを、その近傍の重み付き平均 (辺で接するもの 1、角で接するもの 1/2) で埋める。
+    /// 1 層ぶんを全部計算してから値ありにする (層の中の走査順に結果が依らない)。全ビンが埋まるか、進めなくなったら終わる。</para>
+    /// <para>平均なので値は非負のまま、G(E) は総和 1 のまま。延長した値は B スプラインの 4×4 タップが円板の外まで届いたときの
+    /// 制御点としてだけ使われる (内挿した場は円板の内側でしか評価しない)。</para></summary>
+    static void ExtendFieldOutward(bool[] known, int binCount, int eLen, double[] fraction, double[] amorphous, double[] energyDist, double[] lambdaNm)
+    {
+        int nBins = binCount * binCount;
+        var eBuf = new double[eLen]; var lBuf = new double[eLen];
+        var pending = new List<(int b, double f, double a, double[] g, double[] l)>();
+        while (true)
+        {
+            pending.Clear();
+            for (int b = 0; b < nBins; b++)
+            {
+                if (known[b]) continue;
+                int bi = b / binCount, bj = b % binCount;
+                double wSum = 0, f = 0, a = 0;
+                Array.Clear(eBuf); Array.Clear(lBuf);
+                for (int di = -1; di <= 1; di++)
+                    for (int dj = -1; dj <= 1; dj++)
+                    {
+                        int ni = bi + di, nj = bj + dj;
+                        if ((di == 0 && dj == 0) || (uint)ni >= (uint)binCount || (uint)nj >= (uint)binCount) continue;
+                        int nb = ni * binCount + nj;
+                        if (!known[nb]) continue;
+                        double w = di != 0 && dj != 0 ? 0.5 : 1.0;
+                        wSum += w; f += w * fraction[nb]; a += w * amorphous[nb];
+                        for (int e = 0; e < eLen; e++) { eBuf[e] += w * energyDist[nb * eLen + e]; lBuf[e] += w * lambdaNm[nb * eLen + e]; }
+                    }
+                if (!(wSum > 0)) continue;
+                var g = new double[eLen]; var l = new double[eLen];
+                for (int e = 0; e < eLen; e++) { g[e] = eBuf[e] / wSum; l[e] = lBuf[e] / wSum; }
+                pending.Add((b, f / wSum, a / wSum, g, l));
+            }
+            if (pending.Count == 0) return;
+            foreach (var (b, f, a, g, l) in pending)
+            {
+                fraction[b] = f; amorphous[b] = a; known[b] = true;
+                Array.Copy(g, 0, energyDist, b * eLen, eLen); Array.Copy(l, 0, lambdaNm, b * eLen, eLen);
+            }
+        }
+    }
+
+    /// <summary>260921Cl 追加: 射出半球の Lambert 等積ディスクの半径 √2 (地平線 z = 0 の像)。</summary>
+    public const double DiskRadius = 1.4142135623730951;
+
+    /// <summary>260921Cl 追加: 合成器が内挿する場で、ビンの電子を<b>そのまま使う</b>のに要る被覆率 (ビンの面積のうち射出半球の円板に入る割合) の下限。
+    /// これ未満の縁のビンは電子が少なく、しかも電子の重心がビン中心から大きくずれるので、内側の隣から延長した値で置き換える (ctor の doc)。
+    /// 0.5 は「ビン中心がほぼ円板の内側にある」に相当する。</summary>
+    public const double MinBinCoverage = 0.5;
+
+    /// <summary>260921Cl 追加: 各ビンの面積のうち、射出半球の円板 (X² + Y² ≤ 2) に入る割合 (0..1)。ビンを 64×64 の点で標本化して数える。
+    /// 完全に内側・外側のビンは角の判定だけで決める。</summary>
+    static double[,] ComputeDiskCoverage(int binCount)
+    {
+        const int sub = 64;
+        const double r2 = DiskRadius * DiskRadius;
+        double cell = 2 * DiskRadius / binCount;
+        var c = new double[binCount, binCount];
+        for (int bi = 0; bi < binCount; bi++)
+            for (int bj = 0; bj < binCount; bj++)
+            {
+                double x0 = bi * cell - DiskRadius, x1 = x0 + cell, y1 = DiskRadius - bj * cell, y0 = y1 - cell;
+                double farX = Math.Max(Math.Abs(x0), Math.Abs(x1)), farY = Math.Max(Math.Abs(y0), Math.Abs(y1));
+                double nearX = x0 > 0 ? x0 : x1 < 0 ? -x1 : 0, nearY = y0 > 0 ? y0 : y1 < 0 ? -y1 : 0;
+                if (farX * farX + farY * farY <= r2) { c[bi, bj] = 1; continue; } //いちばん遠い角も円板の中
+                if (nearX * nearX + nearY * nearY >= r2) continue; //いちばん近い点も円板の外
+                int inside = 0;
+                for (int u = 0; u < sub; u++)
+                {
+                    double x = x0 + (u + 0.5) * cell / sub;
+                    for (int v = 0; v < sub; v++)
+                    {
+                        double y = y0 + (v + 0.5) * cell / sub;
+                        if (x * x + y * y <= r2) inside++;
+                    }
+                }
+                c[bi, bj] = inside / (double)(sub * sub);
+            }
+        return c;
     }
 
     // 260602Cl 変更: weights と absoluteSliceWeights を 1 回の共通 fit から両方埋める形へ統合。
@@ -965,12 +1120,30 @@ public sealed class EbsdMonteCarloDistribution
     /// <summary>260921Cl 追加 (作者指示): <b>試料系の射出方向 → ビン座標</b>。ビン中心が整数、範囲は [−0.5, binCount−0.5]。
     /// <para>⚠ <b>分布を作る側 (このクラスの ctor) と使う側 (<see cref="EbsdPatternComposer"/>) は必ずこれを共有する。</b>
     /// 同じ式を 2 か所に書くと、片方だけ直したときに「絵はそれらしいが微妙にずれている」という見つけにくい壊れ方をする。</para>
-    /// <para>格子は MasterPattern と同じ Rosca-Lambert 等積正方格子。b (縦) は MasterPattern の行の向きに合わせて反転する。</para></summary>
+    /// <para>260921Cl 変更 (作者判断): 格子は <b>Lambert 等積ディスク</b> (X, Y) = √(2/(1+z))·(x, y) を正方形 [−√2, √2]² ごと
+    /// binCount × binCount に切ったもの。射出半球は半径 √2 の円板に写る (面積 2π = 立体角、ヤコビアン 1)。b (縦) は Y と逆向き (旧版と同じ向き)。</para>
+    /// <para>【なぜ Rosca-Lambert 正方写像をやめたか】あちらは円板を正方形へ写す段が区分的で、<b>対角線 |x| = |y| で C0</b>
+    /// (区分が切り替わり、方向についての 1 階微分が跳ぶ)。ビンの内挿は (a, b) 空間では C2 でも、画面の方向で見ると
+    /// 対角線で折れ、背景平坦化 (≈ ∇²) が<b>試料法線の投影点を通る X 字の暗線</b>にした
+    /// (実測: 背景成分だけを取り出して平坦化した像で、予測した対角線上の平均が −0.30 %、近傍 +0.03 %、全体 rms 0.12 %)。
+    /// Lambert 等積ディスクは射出半球の上で C∞ なので、この種の折れ目が原理的に出ない。代わりに円板が正方形を覆わないので、
+    /// 縁のビンは一部しか掛からない (<see cref="BinCoverage"/>。扱いは ctor の doc)。</para>
+    /// <para>⚠ 前提: sz &gt; 0 (試料表面より上)。sz ≤ −|s| では 0 除算になる。入力は正規化していなくてよい。</para></summary>
+    /// <param name="sx">試料系の射出方向 x (正規化不要)</param>
+    /// <param name="sy">試料系の射出方向 y</param>
+    /// <param name="sz">試料系の射出方向 z (試料法線、&gt; 0)</param>
+    /// <param name="binCount">1 辺のビン数</param>
+    /// <returns>ビン座標 (bx, by)。ビン中心が整数で、円板の内側は [−0.5, binCount − 0.5] に入る</returns>
     public static (double bx, double by) DirectionToBinCoords(double sx, double sy, double sz, int binCount)
     {
-        var (la, lb) = MasterPattern.SphereToRoscaLambertSquare(sx, sy, sz);
-        double scale = binCount / (2.0 * MasterPattern.SquareLimit);
-        return ((la + MasterPattern.SquareLimit) * scale - 0.5, (MasterPattern.SquareLimit - lb) * scale - 0.5);
+        //260921Cl 変更前 (Rosca-Lambert 正方写像。対角線で C0):
+        //var (la, lb) = MasterPattern.SphereToRoscaLambertSquare(sx, sy, sz);
+        //double scale = binCount / (2.0 * MasterPattern.SquareLimit);
+        //return ((la + MasterPattern.SquareLimit) * scale - 0.5, (MasterPattern.SquareLimit - lb) * scale - 0.5);
+        double len = Math.Sqrt(sx * sx + sy * sy + sz * sz);
+        double k = Math.Sqrt(2 / (len * (len + sz))); //= √(2/(1+z))/|s| (z = sz/|s|)。X = k·sx、Y = k·sy
+        double scale = binCount / (2 * DiskRadius);
+        return ((sx * k + DiskRadius) * scale - 0.5, (DiskRadius - sy * k) * scale - 0.5);
     }
 
     /// <summary>260921Cl 追加 (深さ写像 A2): 不等間隔の深さ格子の既定の形状パラメータ β (<see cref="ComputeGridFromRanges"/>)。
