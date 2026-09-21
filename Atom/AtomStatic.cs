@@ -7570,7 +7570,8 @@ new(4.86738014,0.319974401,4.58872425,
             AtomicNumber = z;
             // Temari の interpolation_contract。⚠ PCHIP / linear / natural / smoothing はいずれも契約が禁じている
             splineFx = new TemariSpline(s, fx, TemariSpline.End.Clamped, TemariSpline.End.NotAKnot, leftValue: 0.0);
-            splineFe = new TemariSpline(t, fe, TemariSpline.End.NotAKnot, TemariSpline.End.NotAKnot);
+            //splineFe = new TemariSpline(t, fe, TemariSpline.End.NotAKnot, TemariSpline.End.NotAKnot); // 260922Cl 変更前
+            splineFe = new TemariSpline(t, fe, TemariSpline.End.NotAKnot, TemariSpline.End.NotAKnot, onSquaredGrid: true); // 260922Cl: 節点 t = s² (区間の見当付け用)
         }
 
         private static double Guard(double s)
@@ -7604,11 +7605,20 @@ new(4.86738014,0.319974401,4.58872425,
 
         private readonly double[] x, y, m;
 
-        public TemariSpline(double[] x, double[] y, End left, End right, double leftValue = 0.0, double rightValue = 0.0)
+        /// <summary>260922Cl 追加: 区間の見当付け。節点は s について等間隔 (s_i = s_max·i/(n−1)) なので、
+        /// 節点が s のとき i ≈ xq/Δs、t = s² のとき i ≈ √xq/Δs で区間が O(1) で分かる (<see cref="Evaluate"/> 参照)。</summary>
+        private readonly bool onSquaredGrid;
+        private readonly double invStep;
+
+        //public TemariSpline(double[] x, double[] y, End left, End right, double leftValue = 0.0, double rightValue = 0.0) // 260922Cl 変更前
+        /// <param name="onSquaredGrid">260922Cl 追加: 節点が t = s² (f_e) なら true、s (f_x) なら false。区間の見当付けにだけ使い、選ぶ区間と値は変わらない</param>
+        public TemariSpline(double[] x, double[] y, End left, End right, double leftValue = 0.0, double rightValue = 0.0, bool onSquaredGrid = false)
         {
             this.x = x;
             this.y = y;
             m = Slopes(x, y, left, right, leftValue, rightValue);
+            this.onSquaredGrid = onSquaredGrid;
+            invStep = (x.Length - 1) / TemariSMaxAngstromInv;
         }
 
         private static double[] Slopes(double[] x, double[] y, End left, End right, double leftValue, double rightValue)
@@ -7662,15 +7672,24 @@ new(4.86738014,0.319974401,4.58872425,
         /// <summary>xq での値。区間の選び方も Hermite 基底の評価順も参照実装と同一。</summary>
         public double Evaluate(double xq)
         {
-            int lo = 0, hi = x.Length;                                    // Python の bisect_right
-            while (lo < hi)
-            {
-                int mid = (lo + hi) >> 1;
-                if (xq < x[mid]) hi = mid; else lo = mid + 1;
-            }
-            int i = lo - 1;
-            if (i < 0) i = 0;
-            if (i > x.Length - 2) i = x.Length - 2;
+            //260922Cl 変更: 区間を 2 分探索 (bisect_right、約 13 段) から「等間隔の s からの見当 + 前後の詰め」へ。
+            //  吸収の f″ (TemariHybrid) の被積分関数は s が毎回変わるので、2 分探索の分岐が当たらず 1 評価 ~20 ns 余分に掛かり、
+            //  ポテンシャル行列 1 枚が約 2 倍になっていた (BDN AbsorptionPotentialBenchmark.PotentialMatrixNumeric)。
+            //  ⚠ 選ぶ区間は bisect_right と同一: x[i] ≤ xq < x[i+1] を満たす唯一の i (端は [0, n−2] へ clamp)。見当が丸めで 1 ずれても
+            //  下の 2 本の while が正す。Hermite の評価は触っていないので**値はビット同一** (全 86 元素 × 15 万点の Fx/Fe で照合済み)。
+            //int lo = 0, hi = x.Length;                                    // Python の bisect_right
+            //while (lo < hi)
+            //{
+            //    int mid = (lo + hi) >> 1;
+            //    if (xq < x[mid]) hi = mid; else lo = mid + 1;
+            //}
+            //int i = lo - 1;
+            //if (i < 0) i = 0;
+            //if (i > x.Length - 2) i = x.Length - 2;
+            double guess = (onSquaredGrid ? Math.Sqrt(xq) : xq) * invStep;
+            int i = guess >= x.Length - 2 ? x.Length - 2 : guess > 0 ? (int)guess : 0;//NaN はここで 0 (呼び出し側の Guard が弾くので来ない)
+            while (i > 0 && xq < x[i]) i--;
+            while (i < x.Length - 2 && xq >= x[i + 1]) i++;
 
             double h = x[i + 1] - x[i];
             double t = (xq - x[i]) / h;
