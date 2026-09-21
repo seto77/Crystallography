@@ -127,6 +127,7 @@ public partial class BetheMethod
     /// <summary>260919Cl 追加 (試行): 局所後方散乱源 Σσ_n|ψ(r_n)|² を実空間で幅 σ [nm] の等方 Gaussian にぼかす
     /// (源行列 U_gh = Σσ_n e^{2πi(h−g)·r_n} に exp(−2π²σ²|g−h|²) を掛け、TDS 行列経路 (2π/k)ψ†Uψ で評価)。
     /// NaN = 従来 (点源、S = B†diag(σ)B 経路)。0 = 行列経路で点源 (同値性の確認用)。
+    /// 260922Cl 訂正: 点源の S は Bᵀdiag(σ)conj(B) (B†diag(σ)B はその複素共役で、ネイティブがこの誤った式で実装されていた)。
     /// 仮説: 表面近くの最後のイベントの多くは運動量移行 s の小さい小角散乱で、源は ~1/(2πs) に広がり 1s 状態 (0.2 Å) を分解できない。
     /// σ ≈ 0.5〜1 Å で晶帯軸だけが選択的に暗くなり、バンド変調が残るなら仮説を支持する。</summary>
     public static double SourceSmearingSigmaNm { get; set; } = double.NaN;
@@ -741,6 +742,7 @@ public partial class BetheMethod
 
     /// <summary>260919Cl 追加 (試行): 局所源を幅 sigmaNm の Gaussian でぼかした源行列 U_gh = (1/tdsCoeff)·Σ_n σ_n e^{2πi(h−g)·r_n}·exp(−2π²σ²|g−h|²)。
     /// TDS 行列経路 tdsCoeff·ψ†Uψ に渡すと、σ=0 で局所源 S = B†diag(σ)B と同値 (U_gh の並びは CreateMasterPatternMuBack と同じ column-major、row=g, col=h)。
+    /// 260922Cl 訂正: 局所源の S は Bᵀdiag(σ)conj(B)。旧来この同値性が成り立って見えたのは、ネイティブの局所源と TDS 行列経路が同じ形 (転置) で誤っていたため。
     /// |g−h| は ReciPro の逆格子 (1/d、2π 無し) [1/nm] なので Gaussian の Fourier 変換は exp(−2π²σ²q²) (DW 因子 exp(−B s²), s=q/2, B=8π²⟨u²⟩ と同形)。</summary>
     private Complex[] CreateSmearedLocalSourceMatrix(Beam[] beams, (double x, double y, double z)[] atomArray, double[] sigmaArray, double tdsCoeff, double sigmaNm)
     {
@@ -978,7 +980,7 @@ public partial class BetheMethod
     /// だけで決まり検出器方向に依存しないため、beamsPreliminary の段階で
     /// 事前計算してキャッシュし、全検出器方向で再利用する。
     ///
-    /// β と S の計算は行列積として定式化でき (B = P·C·diag(α), S = B†·diag(σ)·B)、
+    /// β と S の計算は行列積として定式化でき (B = P·C·diag(α), S = B†·diag(σ)·B ← 260922Cl 訂正: 正しくは S = Bᵀ·diag(σ)·conj(B))、
     /// ネイティブの Eigen ライブラリの BLAS ルーチンで高速に実行される。
     /// </summary>
     /// <param name="sender"></param>
@@ -1874,7 +1876,8 @@ public partial class BetheMethod
         //
         // 行列積としての解釈:
         //   B[n,j] = β_n^(j) = Σ_g P[n,g] × C[g,j] × α_j
-        //   S = B† diag(σ) B
+        //   S = B† diag(σ) B // 260922Cl 訂正: これは S の複素共役 (= 転置)。正しくは下の行。ネイティブ版がこの式で実装されていて強度を誤っていた (Temari の監査で発覚)
+        //   S = Bᵀ diag(σ) conj(B)   (260922Cl)
         //   ネイティブ版ではこの行列積を Eigen の BLAS で高速に計算する。
         //
         // メモリ最適化:
@@ -1902,6 +1905,7 @@ public partial class BetheMethod
             // S に蓄積: S_{jj'} += σ_n × β_n^(j) × conj(β_n^(j'))
             // S は Hermitian (S_{jj'} = conj(S_{j'j})) だが、
             // 最終的に Tr(S·F) の実部だけを使うので、全要素を計算して問題ない。
+            // 260922Cl 訂正: 使うのは Σ_jj' S_jj' F_jj' = Tr(S·Fᵀ) (添字をそろえた和)。Tr(S·F) = Σ S_jj' F_j'j ではない (S, F とも Hermitian なので両者は一般に異なる)
             for (int j = 0; j < bLen; j++)
             {
                 var bj = betaN[j];
@@ -2047,13 +2051,16 @@ public partial class BetheMethod
     /// STEM-HAADF で検証済みの手法 (tc†·U'·tc の深さ積分) と同じ行列形式を用いる。
     ///
     /// 【計算式】
-    ///   I_TDS(t) = coeff × Re{ Σ_{jj'} M_{jj'} × F_{jj'}(t) }
+    ///   I_TDS(t) = coeff × Re{ Σ_{jj'} M_{jj'} × F_{jj'}(t) }   ← 260922Cl 訂正: 誤り。正しくは F_{j'j}(t) (下記)
+    ///   I_TDS(t) = coeff × Re{ Σ_{jj'} M_{jj'} × F_{j'j}(t) }   (260922Cl)
     ///
     /// ここで:
     ///   M_{jj'} = α_j* × [C† · U'_back · C]_{jj'} × α_{j'}
     ///   F_{jj'}(t) = [exp(λ_{jj'} t) - 1] / λ_{jj'}   ← コヒーレント信号と同じ F 行列
     ///   λ_{jj'} = 2πi (γ_j - conj(γ_{j'}))
     ///   coeff = 2π / k_vac
+    /// 260922Cl: ψ†Uψ = Σ_jj' conj(α_j e^{2πiγ_j z}) (C†UC)_jj' α_j' e^{2πiγ_j' z} の指数は 2πi(γ_j' − conj γ_j) = λ_{j'j}。
+    ///   旧実装は λ_{jj'} と組んでいて (Tr(M·Fᵀ) の代わりに Tr(M·F))、ネイティブの _EBSDSolverWithTDS も同じ誤りだった (Temari の監査で発覚)。
     ///
     /// U'_back は後方散乱半球の TDS 散乱行列:
     ///   U'_back[i,j] = getU(kV, g_i - g_j, null, π/2, π).Imag.Conjugate()
@@ -2108,7 +2115,7 @@ public partial class BetheMethod
                 }
             }
 
-            // Step 3: I_TDS(t) = Re{ Σ_{jj'} M_{jj'} × F_{jj'}(t) }  — O(bLen² × tLen)
+            // Step 3: I_TDS(t) = Re{ Σ_{jj'} M_{jj'} × F_{j'j}(t) }  — O(bLen² × tLen)  (260922Cl 修正: 旧 F_{jj'})
             for (int t = 0; t < tLen; t++)
             {
                 double thick = thicknesses[t];
@@ -2118,7 +2125,8 @@ public partial class BetheMethod
                     var gammaJ = eigenValues[j];
                     for (int jp = 0; jp < bLen; jp++)
                     {
-                        var lam = TwoPiI * (gammaJ - eigenValues[jp].Conjugate());
+                        // var lam = TwoPiI * (gammaJ - eigenValues[jp].Conjugate()); // 260922Cl 変更前 (λ_{jj'})
+                        var lam = TwoPiI * (eigenValues[jp] - gammaJ.Conjugate()); // 260922Cl 修正: λ_{j'j}
                         var F = lam.MagnitudeSquared() < 1e-30 ? thick : (Exp(lam * thick) - One) / lam;
                         sum += M[j * bLen + jp] * F;
                     }
