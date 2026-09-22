@@ -42,6 +42,12 @@
     <None Remove="OpenTK.dll.config" />
   </ItemGroup>
 
+  <!-- 260922Cl 追加: EBSD の菊池源の定義を研究する tools/EbsdSourceStudy (公開リポ外のローカルツール) に、
+       MonteCarlo の事象ループの部品 (輸送パラメータ・角度サンプラ・熱散漫判定) だけを見せる。本番の挙動には影響しない。 -->
+  <ItemGroup>
+    <InternalsVisibleTo Include="EbsdSourceStudy" />
+  </ItemGroup>
+
   <!-- 260604Cl: NIST elastic PCHIP データ。旧 96 個の生成 .cs (ushort[][]/float[][] コレクション式) を
        Brotli 圧縮バイナリリソースへ集約。実行時は NistElasticPchipResource が元素単位で展開 (ビット完全等価)。 -->
   <ItemGroup>

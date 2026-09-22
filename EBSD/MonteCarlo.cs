@@ -116,7 +116,7 @@ public class MonteCarlo
 
 
 
-    private readonly Random Rnd = Random.Shared;
+    internal readonly Random Rnd = Random.Shared; //260922Cl private → internal (tools/EbsdSourceStudy の源定義の研究用。本番の挙動は不変)
     /// <summary>平均原子番号 (混合物の場合は重み付き平均) </summary>
     public readonly double Z;
     /// <summary>平均原子量 (g/mol) </summary>
@@ -298,7 +298,7 @@ public class MonteCarlo
     /// <param name="InverseTotalRate">260603Cl 全散乱レートの逆数 1/TotalRate [nm]。ステップ長 s = -ln(R)·InverseTotalRate でホットループ内の除算を乗算に置換</param>
     /// <param name="ElasticProbability">260401Cl 散乱イベントが弾性である確率 = ElasticRate / TotalRate。ホットループ内の乗算を除去</param>
     /// <param name="NearestNistElasticEnergyIndex">260401Cl NIST エネルギー点 (260603Cl 111 点に拡張) 上の最近傍インデックス。ホットループ内の Math.Log を事前計算で除去</param>
-    private readonly record struct TransportParameters( // (260331Ch) 1 ステップで使う輸送パラメータをまとめて扱う
+    internal readonly record struct TransportParameters( //260922Cl private → internal (tools/EbsdSourceStudy の源定義の研究用。本番の挙動は不変) // (260331Ch) 1 ステップで使う輸送パラメータをまとめて扱う
         double ScreeningParameter, double ElasticCrossSectionNm2, double ElasticMeanFreePathNm, double StoppingPowerKevPerNm, double InelasticMeanFreePathNm, double MeanInelasticLossKev,
         // double TotalRate, double ElasticProbability, int NearestNistElasticEnergyIndex); // 260401Cl 追加: ホットループの除算・Math.Log を排除 // 260603Cl 旧シグネチャ
         double TotalRate, double InverseTotalRate, double ElasticProbability, int NearestNistElasticEnergyIndex); // 260603Cl 追加: InverseTotalRate でステップ長の除算を排除
@@ -824,7 +824,7 @@ public class MonteCarlo
     /// 範囲外は理論上発生しないが、保険として末尾要素にクランプする (都度計算フォールバックは ref で返せないため)。
     /// ビン丸めは値版 GetTransportParameters と同じ Math.Round を使い、旧挙動とビット単位で同一の輸送パラメータを返す。
     /// </summary>
-    private ref readonly TransportParameters GetTransportParametersRef(double kev) // 260603Cl 追加
+    internal ref readonly TransportParameters GetTransportParametersRef(double kev) // 260603Cl 追加
     {
         int energyEv = (int)Math.Round(kev * 1000.0); // 260603Cl 値版と同一丸め (物理不変を厳密に保つ)
         if ((uint)energyEv >= (uint)TransportParameterCache.Length)
@@ -901,7 +901,7 @@ public class MonteCarlo
     /// なければ Screened Rutherford の解析式 cosθ = 1 - 2αR/(1+α-R) (R: 一様乱数) でサンプリング。
     /// </summary>
     // private double SampleElasticScatteringCosTheta(double kev, double α) // 260401Cl 旧シグネチャ
-    private double SampleElasticScatteringCosTheta(double kev, double α, int nistEnergyIndex) // 260401Cl nistEnergyIndex 追加
+    internal double SampleElasticScatteringCosTheta(double kev, double α, int nistEnergyIndex) // 260401Cl nistEnergyIndex 追加
     {
         if (ElasticScatteringModel == ElasticScatteringModels.MottNistSampler2023 &&
             TrySampleMottElasticCosTheta(kev, nistEnergyIndex, out var cosTheta)) // 260401Cl
@@ -1163,7 +1163,7 @@ public class MonteCarlo
     /// x &gt; 20 は確率 1 (乱数を省く)、x &lt; 0.03 は 1−e^{−x} ≈ x(1−x/2) (相対誤差 1.5e-4 未満) で Exp を省く。
     /// </summary>
     [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
-    private bool IsThermalDiffuseElasticEvent(double e, double cosθ)
+    internal bool IsThermalDiffuseElasticEvent(double e, double cosθ)
     {
         double x = MeanDebyeWallerBNm2 * UniversalConstants.Convert.EnergyToElectronWaveNumberSquared(e) * (1 - cosθ);
         if (x > 20) return true;
@@ -1192,7 +1192,7 @@ public class MonteCarlo
         return 1.0 - Math.Log(1 + thetaQ2 / thetaE2) / Math.Log(1 + thetaC2 / thetaE2);
     }
 
-    private double SampleInelasticLossKev(double currentKev, double meanLossKev)
+    internal double SampleInelasticLossKev(double currentKev, double meanLossKev)
     {
         if (!(meanLossKev > 0))
             return 0.0;
