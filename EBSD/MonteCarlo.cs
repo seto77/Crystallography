@@ -86,6 +86,19 @@ public class MonteCarlo
         /// 「最後の非弾性散乱後のエネルギー」の分布解析に最適。計算コストは DiscreteMeanLoss よりやや大きい。
         /// </summary>
         DiscreteBulkDiimfpApproximation, // 260331Cl コメント追加
+
+        /// <summary>
+        /// 260922Cl 追加: 離散非弾性散乱モデル (価電子の拡張 Drude + 内殻)。事象の発生率 1/λ_in (TPP-2M) と平均損失 S·λ_in は
+        /// <see cref="DiscreteBulkDiimfpApproximation"/> と同じで、<b>1 事象の損失分布の形</b>だけを物理的にしたもの。
+        /// <para>価電子: 単極の拡張 Drude 損失関数 Im[−1/ε(q,ω)] = ω_p²γω/((ω²−ω_q²)²+γ²ω²)、ω_q = ω_p + q²/2 (原子単位、ω_p = TPP の E_p、γ = 4 eV) を
+        /// q で積分した DIIMFP (Bethe ridge = 価電子の二体衝突の尾まで含む)。Si 20 keV で λ_vb 30.5 nm、平均 30 eV、プラズモン付近 (E_p ± 5 eV) が 67 %。</para>
+        /// <para>内殻: 吸収端が <see cref="InelasticLocalizedLossEv"/> 以上の副殻 (Bote–Salvat)。副殻は Bote–Salvat の電離断面積の比で選び、
+        /// 損失は吸収端 B〜E/2 で ∝ ω⁻²。内殻を選ぶ割合は 1 事象の平均損失が S·λ_in になるように決める (Si 20 keV で 11.7 %、
+        /// Vos &amp; Winkelmann 2019 表 1 の 12.0 % と独立に一致)。</para>
+        /// <para>旧モデルとの違い (Si 20 keV): 旧はプラズモン成分の重みが 0 に飽和し 30 eV 以上が 85 %、平均が目標の 0.89、負の損失 0.65 %。
+        /// 検討の経緯は .project-guidance/ReciPro/ReciPro_EBSD_密度行列定式化_案d.md §2.4。</para>
+        /// </summary>
+        DiscreteDrudeValenceInnerShell,
     }
     #endregion
 
@@ -195,6 +208,10 @@ public class MonteCarlo
     private readonly MottElasticMixtureEntry[] MottElasticMixtureCache = [];
     /// <summary>(260331Ch) 軽量な bulk DIIMFP 近似 sampler cache</summary>
     private readonly BulkLossSamplerEntry[] BulkLossSamplerCache = [];
+    /// <summary>260922Cl 追加: <see cref="InelasticScatteringModels.DiscreteDrudeValenceInnerShell"/> の損失サンプラー (対数等間隔のエネルギー点ごと)</summary>
+    private readonly DrudeLossSamplerEntry[] DrudeLossSamplerCache = [];
+    /// <summary>260922Cl 追加: <see cref="DrudeLossSamplerCache"/> のエネルギー点 [keV] (昇順、対数等間隔)</summary>
+    private readonly double[] DrudeLossSamplerEnergiesKev = [];
     #region お蔵入り // (260401Ch) generated / external の source flag 比較経路は配布版では使わない
     // /// <summary>260401Ch generated / external / auto の sampler source flag。MC ベンチで圧縮版と元テーブルを比較するために使う</summary>
     // public readonly ElasticSamplerDataSources ElasticSamplerDataSource;
@@ -414,6 +431,8 @@ public class MonteCarlo
         MottElasticMixtureCache = BuildMottElasticMixtureCache(); // (260331Ch)
         TransportParameterCache = BuildTransportParameterCache(); // (260331Ch)
         BulkLossSamplerCache = BuildBulkLossSamplerCache(); // (260331Ch) 簡易 bulk DIIMFP sampler
+        if (InelasticScatteringModel == InelasticScatteringModels.DiscreteDrudeValenceInnerShell) //260922Cl 追加
+            (DrudeLossSamplerEnergiesKev, DrudeLossSamplerCache) = BuildDrudeLossSamplerCache();
     }
 
     /// <summary>混合物の各元素の原子番号と重みから、TPP-2M に使う平均価電子数 Nv を重み付き平均で求める。
@@ -733,6 +752,155 @@ public class MonteCarlo
 
     private static double Clamp01(double value)
         => Math.Clamp(value, 0.0, 1.0);
+
+    /// <summary>260922Cl 追加: <see cref="InelasticScatteringModels.DiscreteDrudeValenceInnerShell"/> の 1 エネルギー点ぶんのサンプラー。</summary>
+    private sealed class DrudeLossSamplerEntry(double[] valenceLossEv, double[] valenceCdf, double[] shellEdgeEv, double[] shellCdf, double coreProbability, double omegaMaxEv)
+    {
+        /// <summary>価電子の損失の区間境界 [eV] (対数等間隔、長さ = ValenceCdf.Length + 1)</summary>
+        public readonly double[] ValenceLossEv = valenceLossEv;
+        /// <summary>価電子の損失の累積確率 (区間ごと、末尾 = 1)</summary>
+        public readonly double[] ValenceCdf = valenceCdf;
+        /// <summary>内殻の副殻の吸収端 [eV]</summary>
+        public readonly double[] ShellEdgeEv = shellEdgeEv;
+        /// <summary>副殻の累積確率 (数密度 × Bote–Salvat の電離断面積の比、末尾 = 1)。内殻が無ければ空</summary>
+        public readonly double[] ShellCdf = shellCdf;
+        /// <summary>1 事象が内殻である確率 (1 事象の平均損失 = S·λ_in になるように決めた値)</summary>
+        public readonly double CoreProbability = coreProbability;
+        /// <summary>損失の上限 E/2 [eV]</summary>
+        public readonly double OmegaMaxEv = omegaMaxEv;
+    }
+
+    /// <summary>260922Cl 追加: DiscreteDrudeValenceInnerShell の価電子の減衰幅 γ [eV] (Si のプラズモンの幅 3〜5 eV の中央。3/5 eV でも λ_vb・30 eV 以上の割合の変化は ±5 % 程度)</summary>
+    private const double DrudeDampingEv = 4.0;
+
+    /// <summary>260922Cl 追加: DiscreteDrudeValenceInnerShell のサンプラーを、対数等間隔の 16 エネルギー点 (max(打ち切り, 0.5 keV)〜E0) で作る。
+    /// 内殻の副殻は吸収端が <see cref="InelasticLocalizedLossEv"/> 以上のもの (それ未満は価電子として Drude 側が担う)。
+    /// 組成が無いときは平均 Z を丸めた単体元素とみなす。</summary>
+    private (double[] energiesKev, DrudeLossSamplerEntry[] entries) BuildDrudeLossSamplerCache()
+    {
+        const int energyCount = 16;
+        double eMax = InitialKev, eMin = Math.Min(Math.Max(ThresholdKev, 0.5), eMax);
+        var energies = new double[energyCount];
+        for (int i = 0; i < energyCount; i++) energies[i] = eMin * Math.Pow(eMax / eMin, i / (energyCount - 1.0));
+        energies[^1] = eMax;
+
+        var shells = new List<(int z, int subshell, double edgeEv, double numberDensity)>();
+        var species = new List<(int z, double n)>();
+        if (ElasticComponents.Length > 0) foreach (var s in ElasticComponents) species.Add((s.AtomicNumber, s.NumberDensityPerNm3));
+        else species.Add(((int)Math.Round(Z), 1.0));
+        foreach (var (zi, ni) in species)
+        {
+            if (zi < 1 || zi > 99 || !(ni > 0)) continue;
+            for (int ss = 1; ss <= BoteSalvat.SubshellCount(zi); ss++)
+            {
+                double edge = BoteSalvat.EdgeEv(zi, ss);
+                if (edge >= InelasticLocalizedLossEv) shells.Add((zi, ss, edge, ni));
+            }
+        }
+
+        var entries = new DrudeLossSamplerEntry[energyCount];
+        System.Threading.Tasks.Parallel.For(0, energyCount, i =>
+        {
+            double eEv = energies[i] * 1000, omegaMax = eEv / 2;
+            var (edges, cdfV, meanV) = DrudeValenceDiimfp(eEv, TppPlasmaEnergyEv, DrudeDampingEv);
+            //副殻の重み = 数密度 × 電離断面積 (Bote–Salvat)。E/2 が吸収端以下の副殻は除く。損失は [B, E/2] で ∝ ω⁻² (平均 ln(ω_max/B)/(1/B − 1/ω_max))
+            var shellEdges = new List<double>(); var shellW = new List<double>(); double meanCoreNum = 0, wSum = 0;
+            foreach (var s in shells)
+            {
+                if (!(omegaMax > s.edgeEv * 1.01)) continue;
+                double w = s.numberDensity * BoteSalvat.SigmaCm2(s.z, s.subshell, eEv);
+                if (!(w > 0)) continue;
+                shellEdges.Add(s.edgeEv); shellW.Add(w);
+                meanCoreNum += w * Math.Log(omegaMax / s.edgeEv) / (1 / s.edgeEv - 1 / omegaMax); wSum += w;
+            }
+            double pCore = 0; var shellCdf = new double[wSum > 0 ? shellW.Count : 0];
+            if (wSum > 0)
+            {
+                double meanCore = meanCoreNum / wSum, target = GetTransportParametersRef(energies[i]).MeanInelasticLossKev * 1000;
+                pCore = meanCore > meanV && target > 0 ? Clamp01((target - meanV) / (meanCore - meanV)) : 0;
+                double c = 0;
+                for (int k = 0; k < shellCdf.Length; k++) { c += shellW[k] / wSum; shellCdf[k] = c; }
+                shellCdf[^1] = 1;
+            }
+            entries[i] = new DrudeLossSamplerEntry(edges, cdfV, [.. shellEdges], shellCdf, pCore, omegaMax);
+        });
+        return (energies, entries);
+    }
+
+    /// <summary>260922Cl 追加: 価電子の拡張 Drude 模型の DIIMFP を、ω の対数等間隔の区間 (0.5 eV〜E/2、600 区間) ごとに積分して
+    /// 区間境界・累積確率・平均損失を返す。dλ⁻¹/dω = 1/(π a0 T) ∫_{q−}^{q+} (dq/q) Im[−1/ε(q,ω)] (原子単位)、
+    /// Im[−1/ε] = ω_p²γω/((ω²−ω_q²)²+γ²ω²)、ω_q = ω_p + q²/2、T = mv²/2、q± = k(E) ± k(E−ω) (相対論的運動量)。
+    /// ω ≥ 10 E_p では Bethe ridge の Lorentzian が q 格子より細くなるので、ridge を解析的に積分した ω_p²/(4Tω(ω−ω_p)) (価電子の二体衝突) を使う。</summary>
+    internal static (double[] edgesEv, double[] cdf, double meanEv) DrudeValenceDiimfp(double energyEv, double epEv, double gammaEv)
+    {
+        const double Ha = 27.211386, a0Nm = 0.0529177, mc2 = 510998.95, hbarcEvNm = 197.32698;
+        const int nw = 600, nq = 2000;
+        double wp = epEv / Ha, g = gammaEv / Ha;
+        double gam = 1 + energyEv / mc2, T = 0.5 * mc2 * (1 - 1 / (gam * gam)) / Ha;
+        double K(double eEv) => Math.Sqrt(eEv * (eEv + 2 * mc2)) / hbarcEvNm * a0Nm; //相対論的運動量 [1/a0]
+        double k0 = K(energyEv), wMin = 0.5, wMax = energyEv / 2, ridgeFromEv = 10 * epEv;
+        var edges = new double[nw + 1];
+        for (int i = 0; i <= nw; i++) edges[i] = wMin * Math.Pow(wMax / wMin, (double)i / nw);
+        var cdf = new double[nw]; double sum = 0, mom = 0;
+        for (int i = 0; i < nw; i++)
+        {
+            double wEv = Math.Sqrt(edges[i] * edges[i + 1]), w = wEv / Ha, dens;
+            if (wEv >= ridgeFromEv) dens = wp * wp / (4 * T * w * (w - wp));
+            else
+            {
+                double k1 = K(energyEv - wEv), lqm = Math.Log(k0 - k1), lqp = Math.Log(k0 + k1), h = (lqp - lqm) / nq, s = 0;
+                for (int j = 0; j <= nq; j++)
+                {
+                    double q = Math.Exp(lqm + j * h), wq = wp + 0.5 * q * q, d = w * w - wq * wq;
+                    s += (j == 0 || j == nq ? 0.5 : 1) * wp * wp * g * w / (d * d + g * g * w * w);
+                }
+                dens = s * h / (Math.PI * T);
+            }
+            double r = dens * (edges[i + 1] - edges[i]) / Ha; //区間の相対確率
+            sum += r; mom += r * wEv; cdf[i] = sum;
+        }
+        for (int i = 0; i < nw; i++) cdf[i] /= sum;
+        cdf[^1] = 1;
+        return (edges, cdf, mom / sum);
+    }
+
+    /// <summary>260922Cl 追加: DiscreteDrudeValenceInnerShell の 1 事象の損失 [keV] (対数で最も近いエネルギー点のサンプラーを使う)。</summary>
+    private double SampleDrudeLossKev(double currentKev, double meanLossKev)
+    {
+        var energies = DrudeLossSamplerEnergiesKev;
+        if (energies.Length == 0) return meanLossKev;
+        int i = Array.BinarySearch(energies, currentKev);
+        if (i < 0)
+        {
+            i = ~i;
+            if (i >= energies.Length) i = energies.Length - 1;
+            else if (i > 0 && currentKev * currentKev < energies[i - 1] * energies[i]) i--; //対数の中点で振り分け
+        }
+        var entry = DrudeLossSamplerCache[i];
+        double lossEv;
+        if (entry.ShellCdf.Length > 0 && Rnd.NextDouble() < entry.CoreProbability)
+        {
+            int s = LowerBound(entry.ShellCdf, Rnd.NextDouble());
+            double b = entry.ShellEdgeEv[s], wMax = Math.Max(entry.OmegaMaxEv, b), u = Rnd.NextDouble();
+            lossEv = 1 / (1 / b - u * (1 / b - 1 / wMax)); //[B, ω_max] で ∝ ω⁻² の逆関数
+        }
+        else
+        {
+            double u = Rnd.NextDouble();
+            int j = LowerBound(entry.ValenceCdf, u);
+            double c0 = j > 0 ? entry.ValenceCdf[j - 1] : 0, c1 = entry.ValenceCdf[j], f = c1 > c0 ? (u - c0) / (c1 - c0) : 0.5;
+            lossEv = entry.ValenceLossEv[j] * Math.Pow(entry.ValenceLossEv[j + 1] / entry.ValenceLossEv[j], f); //区間内は対数で内挿 (必ず区間内 = 正)
+        }
+        return Math.Min(lossEv * 0.001, currentKev);
+    }
+
+    /// <summary>260922Cl 追加: 昇順の累積確率 cdf で cdf[k] ≥ u となる最小の k</summary>
+    private static int LowerBound(double[] cdf, double u)
+    {
+        int k = Array.BinarySearch(cdf, u);
+        if (k < 0) k = ~k;
+        return Math.Min(k, cdf.Length - 1);
+    }
 
     /// <summary>指定エネルギーでの弾性散乱パラメータ (遮蔽パラメータ α, 断面積 σ [nm²], 平均自由行程 λ [nm], 阻止能 dE/ds [keV/nm]) を返す。</summary>
     public (double ScreeningParameter, double CrossSection, double MeanFreePath, double StoppingPower) GetParameters(double kev)
@@ -1202,6 +1370,7 @@ public class MonteCarlo
             InelasticScatteringModels.DiscreteMeanLoss => meanLossKev,
             // 260401Cl DiscreteExponentialLoss の分岐を除去
             InelasticScatteringModels.DiscreteBulkDiimfpApproximation => SampleBulkLossKev(currentKev, meanLossKev),
+            InelasticScatteringModels.DiscreteDrudeValenceInnerShell => SampleDrudeLossKev(currentKev, meanLossKev), //260922Cl 追加
             _ => 0.0,
         };
         return Math.Min(lossKev, currentKev);
