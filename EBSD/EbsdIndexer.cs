@@ -27,6 +27,9 @@ public sealed class EbsdOrientationCandidate
 
     /// <summary>ZNCC (Phase 3 で充填。未計算は NaN)</summary>
     public double Zncc = double.NaN;
+    /// <summary>260922Cl 追加: 候補の方位と幾何から軽量に較正したあとの ZNCC (<see cref="EbsdSearchOptions.CalibrateTopCandidates"/>)。
+    /// 較正していない候補は NaN。候補どうしは同じ解像度で測るので比べられる</summary>
+    public double CalibratedZncc = double.NaN;
 
     public string AssignmentText => string.Join(", ", Assignments.OrderBy(p => p.Key).Select(p => $"{p.Key}:({p.Value.H} {p.Value.K} {p.Value.L})"));
 
@@ -342,14 +345,24 @@ public static class EbsdIndexer
 
     //260724Cl (/simplify): MultiplySample (行列×ベクトルの手書き展開) は既存の Matrix3D×Vector3d 演算子 (Matrix.cs、FMA 使用) の再実装だったため削除
 
-    /// <summary>2 つの回転行列間の misorientation 角 (deg、対称考慮なし)</summary>
-    public static double MisorientationDeg(Matrix3D r1, Matrix3D r2)
+    /// <summary>2 つの回転行列間の misorientation 角 (deg)。</summary>
+    /// <param name="properSymmetries">260921Cl 追加: 結晶点群の proper 回転 (<see cref="EbsdDictionaryIndexer.GetProperRotations"/>、crystal Cartesian 系)。
+    ///   渡すと r2·S の最小をとる (対称等価な方位を同一とみなす)。null なら対称考慮なし (従来の動作)</param>
+    //旧シグネチャ: public static double MisorientationDeg(Matrix3D r1, Matrix3D r2)
+    public static double MisorientationDeg(Matrix3D r1, Matrix3D r2, Matrix3D[] properSymmetries = null)
     {
         //trace(R1ᵀ·R2)
-        double tr = r1.E11 * r2.E11 + r1.E21 * r2.E21 + r1.E31 * r2.E31
-                  + r1.E12 * r2.E12 + r1.E22 * r2.E22 + r1.E32 * r2.E32
-                  + r1.E13 * r2.E13 + r1.E23 * r2.E23 + r1.E33 * r2.E33;
-        return Math.Acos(Math.Clamp((tr - 1) / 2, -1, 1)) * 180 / Math.PI;
+        static double Angle(in Matrix3D r1, in Matrix3D r2)
+        {
+            double tr = r1.E11 * r2.E11 + r1.E21 * r2.E21 + r1.E31 * r2.E31
+                      + r1.E12 * r2.E12 + r1.E22 * r2.E22 + r1.E32 * r2.E32
+                      + r1.E13 * r2.E13 + r1.E23 * r2.E23 + r1.E33 * r2.E33;
+            return Math.Acos(Math.Clamp((tr - 1) / 2, -1, 1)) * 180 / Math.PI;
+        }
+        double best = Angle(r1, r2);
+        if (properSymmetries != null)
+            foreach (var s in properSymmetries) best = Math.Min(best, Angle(r1, r2 * s));
+        return best;
     }
 
     static readonly double GoldenAngle = Math.PI * (3 - Math.Sqrt(5)); //260725Cl 追加 (FibonacciSphereRotation 用)

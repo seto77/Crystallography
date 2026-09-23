@@ -187,8 +187,12 @@ public static class EbsdGeometryCalibrator
     /// <param name="detectorHeightMm">検出器の物理高さ (mm)</param>
     /// <param name="cancel">中止トークン</param>
     /// <param name="progress">進捗 (0-1) と段の名前。ワーカースレッドから呼ばれるので受け手側でマーシャリングすること</param>
+    /// <param name="startCount">260922Cl 追加: 多点開始の点数 (既定 = <see cref="StartCount"/>)。1 なら context の幾何と方位から 1 回だけ</param>
+    /// <param name="maxStages">260922Cl 追加: 使う解像度の段数 (0 = 全段)。方位探索の候補の順位付けでは粗い段だけで足りる</param>
+    //旧シグネチャ: public static EbsdCalibrationResult Run(EbsdMatchingContext context, double detectorWidthMm, double detectorHeightMm,
+    //    CancellationToken cancel = default, Action<double, string> progress = null)
     public static EbsdCalibrationResult Run(EbsdMatchingContext context, double detectorWidthMm, double detectorHeightMm,
-        CancellationToken cancel = default, Action<double, string> progress = null)
+        CancellationToken cancel = default, Action<double, string> progress = null, int startCount = StartCount, int maxStages = 0)
     {
         ArgumentNullException.ThrowIfNull(context);
         if (!(detectorWidthMm > 0) || !double.IsFinite(detectorWidthMm)) throw new ArgumentOutOfRangeException(nameof(detectorWidthMm));
@@ -204,6 +208,8 @@ public static class EbsdGeometryCalibrator
         //--- 比較スケールを作る。DisplayReference (フル解像度の表示値) があればそれを段ごとに縮小 + 正規化する。
         //    無ければ旧来どおり context.Reference (縮小 + 強制背景除算済み) の 1 段だけで動く
         var scales = BuildScales(context);
+        if (maxStages > 0 && scales.Length > maxStages) scales = scales[..maxStages]; //260922Cl 追加
+        var startOffsets = StartOffsets[..Math.Clamp(startCount, 1, StartOffsets.Length)]; //260922Cl 追加 ([0] は context の幾何そのもの)
 
         EbsdDetectorGeometry MakeGeom(double u, double v, double ld)
         {
@@ -304,15 +310,15 @@ public static class EbsdGeometryCalibrator
         }
 
         //--- 段 0: 粗い解像度で多点開始 (並列)。1 点が独立なので Parallel.For し、内側の投影は逐次にする
-        var runs = new (double Zncc, double Fu, double Fv, double LnDd, Matrix3D Rot, int Rounds, bool Converged, double JointGain)[StartOffsets.Length];
+        var runs = new (double Zncc, double Fu, double Fv, double LnDd, Matrix3D Rot, int Rounds, bool Converged, double JointGain)[startOffsets.Length];
         int completed = 0;
-        progress?.Invoke(0, $"stage 1/{scales.Length}: {StartOffsets.Length} starts at {coarse.W}x{coarse.H}");
-        Parallel.For(0, StartOffsets.Length, new ParallelOptions { CancellationToken = cancel }, i =>
+        progress?.Invoke(0, $"stage 1/{scales.Length}: {startOffsets.Length} starts at {coarse.W}x{coarse.H}");
+        Parallel.For(0, startOffsets.Length, new ParallelOptions { CancellationToken = cancel }, i =>
         {
-            var (ou, ov, od) = StartOffsets[i];
+            var (ou, ov, od) = startOffsets[i];
             runs[i] = RunFrom(0, footU0 + ou * physW * StartSpreadPc, footV0 + ov * physH * StartSpreadPc, lnDd0 + od * StartSpreadLnDd, context.Rotation, false);
             int done = Interlocked.Increment(ref completed);
-            progress?.Invoke(0.5 * done / StartOffsets.Length, $"stage 1/{scales.Length}: {done}/{StartOffsets.Length} starts");
+            progress?.Invoke(0.5 * done / startOffsets.Length, $"stage 1/{scales.Length}: {done}/{startOffsets.Length} starts");
         });
 
         //--- 診断値 (幾何がどこまで決まっているか) は多点開始を行ったこの段で測る
@@ -354,7 +360,7 @@ public static class EbsdGeometryCalibrator
 
         return new EbsdCalibrationResult(bestRun.Rot, bestRun.Fu, bestRun.Fv, Math.Exp(bestRun.LnDd), bestRun.Zncc, startZncc,
             evalTotal, bestRun.Rounds, bestRun.Converged, bestRun.JointGain,
-            StartOffsets.Length, bestIndex, coarseBest - worstZncc, near.Length,
+            startOffsets.Length, bestIndex, coarseBest - worstZncc, near.Length,
             flatU, flatV, flatDd);
     }
 

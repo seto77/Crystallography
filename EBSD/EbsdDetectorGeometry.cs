@@ -68,6 +68,11 @@ public sealed class EbsdDetectorGeometry
         (sinSmp, cosSmp) = Math.SinCos(sampleTilt);
     }
 
+    /// <summary>260922Cl 追加: 検出器中心パラメータ (DetX, DetY, DetZ) を dx, dy, dz [mm] だけずらした幾何を返す (他は同じ)。
+    /// 方位探索で検出器幾何も一緒に探すとき (<see cref="EbsdSearchOptions.ZSearchRangeMm"/>) や、ハーネスで幾何を振るときに使う</summary>
+    public EbsdDetectorGeometry WithOffset(double dx, double dy, double dz)
+        => new(DetTilt, DetX + dx, DetY + dy, DetZ + dz, PixelSize, WidthPx, HeightPx, XMirror, SampleTilt);
+
     /// <summary>ピクセル (col,row) の中心 (col+0.5, row+0.5) → 画像中心基準の表示 mm 座標 (u,v)</summary>
     public (double u, double v) PixelToMm(double col, double row)
         => ((col + 0.5 - WidthPx / 2.0) * PixelSize, (row + 0.5 - HeightPx / 2.0) * PixelSize);

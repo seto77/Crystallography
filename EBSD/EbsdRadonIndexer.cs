@@ -339,7 +339,24 @@ public static class EbsdRadonIndexer
         double saturateCap = 0, double weightExponent = 0.5,
         System.Threading.CancellationToken cancel = default,
         //260725Cl 追加: 粗探索の進捗 (0-1) を通知する。null で従来どおり無通知。ワーカースレッドから呼ばれるので受け手側でマーシャリングすること
-        Action<double> progress = null)
+        Action<double> progress = null,
+        //260922Cl 追加: 検出器 Z (DetZ) も同時に探す範囲 [mm] (±)。0 で従来どおり幾何固定。刻み zStepMm が 0 なら粗探索の ρ 膨張幅から決める。
+        //  EBSD では試料をポールピースぎりぎりまで寄せるので DetZ は観察ごとに ±10 mm 程度動く (作者談)。DetTilt = 90° なら DetZ は
+        //  検出器面内の平行移動 = 投影像の平行移動で、実測 (Forsterite Ol002) では dz = ±5 mm で方位が 4〜8° 補償回転し、±10 mm で完全に外れた
+        double zSearchRangeMm = 0, double zStepMm = 0,
+        //260922Cl 追加: 精密化で検出器の X (横の平行移動) と Y (カメラ長) も ±この範囲 [mm] で動かす。0 で動かさない。
+        //  X・Y の誤差 (±2〜3 mm) を方位の回転で補ってしまい、Z 探索だけではトップが 3〜12° ずれた (実測 Ol002) ため
+        double xyRefineRangeMm = 0,
+        //260922Cl 追加: 粗探索の ρ 膨張幅に足す、検出器幾何の不確かさ [mm]。X (横の平行移動) と Y (カメラ長) が同時に数 mm ずれると、
+        //  粗探索の予測線が膨張幅を超えて外れ、正解の方位が候補に入らない (実測 Ol002: dx = dy = −3 mm)。0 で従来どおり
+        double coarseGeometryToleranceMm = 0,
+        //260922Cl 追加: 検出器 X (DetX) も粗探索の格子で探す範囲 [mm] (±)。X は Z と同じく検出器面内の平行移動 (DetTilt = 90° のとき)。
+        //  X が 3 mm ずれたままだと Z をどう動かしても正解の方位の点数が上がらず、偽の解と区別できなかった (実測 Ol002: dx = dy = −3 mm)
+        double xSearchRangeMm = 0, double xStepMm = 0,
+        //260922Cl 追加: 粗探索の格子から精密化へ回すシードの上限 (旧: 52 固定)。合成データで、正解の方位の点数がトップより高いのに
+        //  シードに入らず取りこぼす例があった (幾何のずれなし・ノイズなしでも 10 方位中 2 件)
+        int maxGridSeeds = 52)
+    //旧シグネチャ: ...(..., System.Threading.CancellationToken cancel = default, Action<double> progress = null)
     {
         //260725Ch: 0候補指定が1候補を返す等の不明瞭な挙動と、除算・配列長の不正前提を入口で拒否
         ArgumentNullException.ThrowIfNull(map);
@@ -363,7 +380,36 @@ public static class EbsdRadonIndexer
         double halfStepRad = coarseStepDeg / 2 * Math.PI / 180;
         int dilRho = Math.Max(3, (int)Math.Ceiling(Math.Sqrt(map.WorkW * map.WorkW + map.WorkH * map.WorkH) * 0.7 * halfStepRad));
         int dilTheta = Math.Max(2, (int)Math.Ceiling(coarseStepDeg / 2 / map.ThetaStepDeg));
+        int dilRhoBase = dilRho; //260922Cl: Z の刻みは回転の離散化ぶんの膨張だけから決める (幾何の不確かさの上乗せ分は含めない)
+        if (!(coarseGeometryToleranceMm >= 0) || !double.IsFinite(coarseGeometryToleranceMm)) throw new ArgumentOutOfRangeException(nameof(coarseGeometryToleranceMm));
+        dilRho += (int)Math.Ceiling(coarseGeometryToleranceMm / geometry.PixelSize * map.Scale); //260922Cl 追加
         var dilatedMap = map.BuildDilated(dilTheta, dilRho); //260725Cl: 可変フィールド共有をやめ、この Index 呼び出し専用の不変ビューを受け取る
+
+        //260922Cl 追加: 検出器 Z の探索格子。刻みの既定は ρ 膨張幅 (work px) を検出器 mm へ戻した量 = 膨張マップが吸収できる予測線の平行移動
+        if (!(zSearchRangeMm >= 0) || !double.IsFinite(zSearchRangeMm)) throw new ArgumentOutOfRangeException(nameof(zSearchRangeMm));
+        if (!(zStepMm >= 0) || !double.IsFinite(zStepMm)) throw new ArgumentOutOfRangeException(nameof(zStepMm));
+        if (!(xyRefineRangeMm >= 0) || !double.IsFinite(xyRefineRangeMm)) throw new ArgumentOutOfRangeException(nameof(xyRefineRangeMm));
+        double zStep = zStepMm > 0 ? zStepMm : Math.Max(0.5, dilRhoBase / map.Scale * geometry.PixelSize);
+        const int MaxZPoints = 201; //格子点の上限 (範囲 / 刻みが極端でも計算量を抑える)
+        if (zSearchRangeMm > 0 && 2 * zSearchRangeMm / zStep + 1 > MaxZPoints) zStep = 2 * zSearchRangeMm / (MaxZPoints - 1);
+        if (!(xSearchRangeMm >= 0) || !double.IsFinite(xSearchRangeMm)) throw new ArgumentOutOfRangeException(nameof(xSearchRangeMm));
+        if (!(xStepMm >= 0) || !double.IsFinite(xStepMm)) throw new ArgumentOutOfRangeException(nameof(xStepMm));
+        //範囲が刻みの倍数でないとき (範囲 < 刻み も含む) は端点も入れる。入れないと範囲 1 mm・刻み 1.6 mm で格子が {0} だけになり、探索が黙って無効になる (Codex 指摘)
+        static List<double> Grid1D(double range, double step)
+        {
+            var list = new List<double> { 0 };
+            if (!(range > 0)) return list;
+            for (double v = step; v <= range + 1E-9; v += step) { list.Add(v); list.Add(-v); }
+            if (list.Max() < range - 1E-9) { list.Add(range); list.Add(-range); }
+            return list;
+        }
+        var zList = Grid1D(zSearchRangeMm, zStep);
+        var xList = Grid1D(xSearchRangeMm, xStepMm > 0 ? xStepMm : zStep); //既定は Z と同じ刻み (どちらも面内の平行移動)
+        //(X, Z) の格子。[0] は元の幾何 (0, 0)
+        var gOffsets = (from x in xList from z in zList select (X: x, Z: z)).ToList();
+        int nZ = gOffsets.Count;
+        var zGeoms = gOffsets.Select(o => o.X == 0 && o.Z == 0 ? geometry : geometry.WithOffset(o.X, 0, o.Z)).ToArray();
+        bool searchZ = zList.Count > 1, searchX = xList.Count > 1;
 
         #region 粗探索: Fibonacci 球面 × 面内回転のグリッドを膨張マップで採点
         int nSphere = Math.Max(64, (int)(4 * Math.PI / (coarseStepDeg * Math.PI / 180 * (coarseStepDeg * Math.PI / 180))));
@@ -385,7 +431,8 @@ public static class EbsdRadonIndexer
         double sinSmp = Math.Sin(geometry.SampleTilt), cosSmp = Math.Cos(geometry.SampleTilt);
         double rhoLimit = map.RhoOffset - 2;
 
-        var survivors = new List<(double S, int Di, int Pi)>();
+        //var survivors = new List<(double S, int Di, int Pi)>(); //260922Cl 変更前
+        var survivors = new List<(double S, int Di, int Pi, int Zi)>(); //260922Cl: Z の格子番号も持つ
         var lockObj = new object();
         int coarseDone = 0; //260725Cl: 進捗通知用 (粗探索が総時間の大半)
         const int keepPerMerge = 600;
@@ -393,7 +440,8 @@ public static class EbsdRadonIndexer
 
         //System.Threading.Tasks.Parallel.For(0, nSphere, //260725Ch 変更前
         System.Threading.Tasks.Parallel.For(0, nSphere, parallelOptions, //260725Ch
-            () => new List<(double S, int Di, int Pi)>(),
+            //() => new List<(double S, int Di, int Pi)>(), //260922Cl 変更前
+            () => new List<(double S, int Di, int Pi, int Zi)>(),
             (di, _, local) =>
             {
                 cancel.ThrowIfCancellationRequested();
@@ -420,13 +468,14 @@ public static class EbsdRadonIndexer
                         r20 = -uy * s; r21 = ux * s; r22 = c;
                     }
                 }
+                //260922Cl 変更: 検出器 Z の格子 (zGeoms) を内側に回す。面法線の検出器上の向き (a, b, θ) は Z に依らないので方位ごとに 1 回だけ計算し、
+                //  Z ごとに変わるのは中心との内積 c (= ρ) だけ。nZ = 1 (Z 探索なし) では旧実装と同じ演算順で同じ値になる。
+                //  旧実装 (geometry.Center 1 つ) は下にコメントで残す
                 var accTh = new double[nc]; var accRho = new double[nc]; //260724Cl: 同一評価内の予測線排他バッファ (強度降順に採用)
+                var nLx = new double[nc]; var nLy = new double[nc]; var nLz = new double[nc]; var nNorm = new double[nc]; var nTh = new double[nc];
                 for (int pi = 0; pi < nPhi; pi++)
                 {
-                    //var (sinP, cosP) = Math.SinCos(pi * 2 * Math.PI / nPhi); //260725Ch 変更前
                     double sinP = sinPhi[pi], cosP = cosPhi[pi]; //260725Ch
-                    double num = 0, den = 0, wSum = 0, w2Sum = 0;
-                    int nAcc = 0;
                     for (int k = 0; k < nc; k++)
                     {
                         //g_s = R0·Rz(φ)·d
@@ -436,32 +485,82 @@ public static class EbsdRadonIndexer
                         double gz = r20 * dx + r21 * dy + r22 * dz;
                         //sample → lab (Rx(SmpTilt) の逆 = SampleToLab)
                         double lx = gx, ly = cosSmp * gy - sinSmp * gz, lz = sinSmp * gy + cosSmp * gz;
-                        //lab 法線 → 検出器線 (θ, ρ_work)
-                        double aMm = xm * lx, bMm = ly * ey.Y + lz * ey.Z, cMm = lx * center.X + ly * center.Y + lz * center.Z;
-                        double norm = Math.Sqrt(aMm * aMm + bMm * bMm);
-                        if (norm < 1E-9) continue; //バンド面がほぼ視軸に垂直 (線が無限遠)
-                        double rhoWork = -cMm / (pix * norm) * map.Scale;
-                        if (Math.Abs(rhoWork) > rhoLimit) continue; //検出器と交差しない
-                        //260724Cl: 近接予測線の排他 (カタログは強度降順 → 先着=強い方を採用)。二重得点防止
-                        var (thF, rhoF) = FoldLine(Math.Atan2(bMm, aMm) * 180 / Math.PI, rhoWork);
-                        bool dup = false;
-                        for (int j = 0; j < nAcc; j++)
-                            if (SameLine(thF, rhoF, accTh[j], accRho[j], 2, 5)) { dup = true; break; }
-                        if (dup) continue;
-                        accTh[nAcc] = thF; accRho[nAcc] = rhoF; nAcc++;
-                        double w = nw[k];
-                        //260724Cl: 証拠飽和 (正側 ψ(z)=cap·tanh(z/cap)、負側 max(z,−1)) — 少数強リッジの支配抑制 (Codex 裁定 260724)。cap=0 で旧動作
-                        //(視野隅の希薄線の過剰ペナルティを floor) //260725Cl (/simplify): 手書き分岐 → Saturate へ一元化 (厳密段と同一式)
-                        num += w * Saturate(dilatedMap.SampleNearest(thF, rhoF) - mu0, sigma0, saturateCap); //260725Cl: map.SampleDilatedNearest → 不変ビュー
-                        wSum += w; w2Sum += w * w;
+                        double aMm = xm * lx, bMm = ly * ey.Y + lz * ey.Z;
+                        nLx[k] = lx; nLy[k] = ly; nLz[k] = lz;
+                        nNorm[k] = Math.Sqrt(aMm * aMm + bMm * bMm);
+                        nTh[k] = Math.Atan2(bMm, aMm) * 180 / Math.PI;
                     }
-                    if (w2Sum <= 0) continue;
-                    double nEff = wSum * wSum / w2Sum;
-                    if (nEff < 4) continue; //有効バンド数下限 (少数バンド方位の上振れ防止、Codex 裁定 Q1)
-                    den = Math.Sqrt(w2Sum) * (saturateCap > 0 ? 1 : sigma0); //260724Cl: 飽和時は num が z 単位 (σ₀ 正規化済)。旧: den = Math.Sqrt(w2Sum) * sigma0
-                    double score = num / den;
-                    local.Add((score, di, pi));
+                    for (int zi = 0; zi < nZ; zi++)
+                    {
+                        var zc = zGeoms[zi].Center;
+                        double num = 0, den = 0, wSum = 0, w2Sum = 0;
+                        int nAcc = 0;
+                        for (int k = 0; k < nc; k++)
+                        {
+                            double norm = nNorm[k];
+                            if (norm < 1E-9) continue; //バンド面がほぼ視軸に垂直 (線が無限遠)
+                            double cMm = nLx[k] * zc.X + nLy[k] * zc.Y + nLz[k] * zc.Z;
+                            double rhoWork = -cMm / (pix * norm) * map.Scale;
+                            if (Math.Abs(rhoWork) > rhoLimit) continue; //検出器と交差しない
+                            var (thF, rhoF) = FoldLine(nTh[k], rhoWork);
+                            bool dup = false;
+                            for (int j = 0; j < nAcc; j++)
+                                if (SameLine(thF, rhoF, accTh[j], accRho[j], 2, 5)) { dup = true; break; }
+                            if (dup) continue;
+                            accTh[nAcc] = thF; accRho[nAcc] = rhoF; nAcc++;
+                            double w = nw[k];
+                            num += w * Saturate(dilatedMap.SampleNearest(thF, rhoF) - mu0, sigma0, saturateCap);
+                            wSum += w; w2Sum += w * w;
+                        }
+                        if (w2Sum <= 0) continue;
+                        double nEff = wSum * wSum / w2Sum;
+                        if (nEff < 4) continue; //有効バンド数下限 (少数バンド方位の上振れ防止、Codex 裁定 Q1)
+                        den = Math.Sqrt(w2Sum) * (saturateCap > 0 ? 1 : sigma0);
+                        local.Add((num / den, di, pi, zi));
+                    }
                 }
+                //旧: var accTh = new double[nc]; var accRho = new double[nc]; //260724Cl: 同一評価内の予測線排他バッファ (強度降順に採用)
+                //旧: for (int pi = 0; pi < nPhi; pi++)
+                //旧: {
+                //旧: //var (sinP, cosP) = Math.SinCos(pi * 2 * Math.PI / nPhi); //260725Ch 変更前
+                //旧: double sinP = sinPhi[pi], cosP = cosPhi[pi]; //260725Ch
+                //旧: double num = 0, den = 0, wSum = 0, w2Sum = 0;
+                //旧: int nAcc = 0;
+                //旧: for (int k = 0; k < nc; k++)
+                //旧: {
+                //旧: //g_s = R0·Rz(φ)·d
+                //旧: double dx = ndx[k] * cosP - ndy[k] * sinP, dy = ndx[k] * sinP + ndy[k] * cosP, dz = ndz[k];
+                //旧: double gx = r00 * dx + r01 * dy + r02 * dz;
+                //旧: double gy = r10 * dx + r11 * dy + r12 * dz;
+                //旧: double gz = r20 * dx + r21 * dy + r22 * dz;
+                //旧: //sample → lab (Rx(SmpTilt) の逆 = SampleToLab)
+                //旧: double lx = gx, ly = cosSmp * gy - sinSmp * gz, lz = sinSmp * gy + cosSmp * gz;
+                //旧: //lab 法線 → 検出器線 (θ, ρ_work)
+                //旧: double aMm = xm * lx, bMm = ly * ey.Y + lz * ey.Z, cMm = lx * center.X + ly * center.Y + lz * center.Z;
+                //旧: double norm = Math.Sqrt(aMm * aMm + bMm * bMm);
+                //旧: if (norm < 1E-9) continue; //バンド面がほぼ視軸に垂直 (線が無限遠)
+                //旧: double rhoWork = -cMm / (pix * norm) * map.Scale;
+                //旧: if (Math.Abs(rhoWork) > rhoLimit) continue; //検出器と交差しない
+                //旧: //260724Cl: 近接予測線の排他 (カタログは強度降順 → 先着=強い方を採用)。二重得点防止
+                //旧: var (thF, rhoF) = FoldLine(Math.Atan2(bMm, aMm) * 180 / Math.PI, rhoWork);
+                //旧: bool dup = false;
+                //旧: for (int j = 0; j < nAcc; j++)
+                //旧: if (SameLine(thF, rhoF, accTh[j], accRho[j], 2, 5)) { dup = true; break; }
+                //旧: if (dup) continue;
+                //旧: accTh[nAcc] = thF; accRho[nAcc] = rhoF; nAcc++;
+                //旧: double w = nw[k];
+                //旧: //260724Cl: 証拠飽和 (正側 ψ(z)=cap·tanh(z/cap)、負側 max(z,−1)) — 少数強リッジの支配抑制 (Codex 裁定 260724)。cap=0 で旧動作
+                //旧: //(視野隅の希薄線の過剰ペナルティを floor) //260725Cl (/simplify): 手書き分岐 → Saturate へ一元化 (厳密段と同一式)
+                //旧: num += w * Saturate(dilatedMap.SampleNearest(thF, rhoF) - mu0, sigma0, saturateCap); //260725Cl: map.SampleDilatedNearest → 不変ビュー
+                //旧: wSum += w; w2Sum += w * w;
+                //旧: }
+                //旧: if (w2Sum <= 0) continue;
+                //旧: double nEff = wSum * wSum / w2Sum;
+                //旧: if (nEff < 4) continue; //有効バンド数下限 (少数バンド方位の上振れ防止、Codex 裁定 Q1)
+                //旧: den = Math.Sqrt(w2Sum) * (saturateCap > 0 ? 1 : sigma0); //260724Cl: 飽和時は num が z 単位 (σ₀ 正規化済)。旧: den = Math.Sqrt(w2Sum) * sigma0
+                //旧: double score = num / den;
+                //旧: local.Add((score, di, pi));
+                //旧: }
                 if (local.Count > keepPerMerge * 4)
                 {
                     local.Sort((a, b) => b.S.CompareTo(a.S));
@@ -484,7 +583,8 @@ public static class EbsdRadonIndexer
         Matrix3D SeedRotation(int di, int pi)
             => EbsdIndexer.FibonacciSphereRotation(di, nSphere) * Matrix3D.Rot(new V3(0, 0, 1), pi * 2 * Math.PI / nPhi);
 
-        var seeds = new List<(double S, Matrix3D R)>();
+        //var seeds = new List<(double S, Matrix3D R)>(); //260922Cl 変更前
+        var seeds = new List<(double S, Matrix3D R, double X, double Z)>(); //260922Cl: シードごとの検出器 X・Z のずれ [mm] も持つ
 
         //260724Cl: ① pair-angle シード — 証拠マップの内部ピーク線を擬似バンドとして旧 pair-angle+Kabsch 指数付けに掛ける。
         //グリッド+NM だけではリッジ (θ 幅 ~1°) への到達精度が不足し、真の方位が z 最適値まで到達できないことを
@@ -499,36 +599,87 @@ public static class EbsdRadonIndexer
                 CenterAnchors = [(geometry.WidthPx / 2.0, geometry.HeightPx / 2.0)],
                 EdgePoints = [], CenterQuality = 1, WidthQuality = 0,
             }).ToList();
-            foreach (var c in EbsdIndexer.Index(pseudo, geometry, refl, waveLength, maxCandidates: 12, cancel: cancel))
-                seeds.Add((double.MaxValue, c.Rotation));
+            //foreach (var c in EbsdIndexer.Index(pseudo, geometry, refl, waveLength, maxCandidates: 12, cancel: cancel))
+            //    seeds.Add((double.MaxValue, c.Rotation)); //260922Cl 変更前
+            //260922Cl 変更: 線 → 面法線の変換はパターン中心に依るので、Z の格子点ごとに掛ける (ピーク線そのものは幾何に依らない)
+            for (int zi = 0; zi < nZ; zi++)
+                foreach (var c in EbsdIndexer.Index(pseudo, zGeoms[zi], refl, waveLength, maxCandidates: 12, cancel: cancel))
+                    seeds.Add((double.MaxValue, c.Rotation, gOffsets[zi].X, gOffsets[zi].Z));
         }
 
         //② SO(3) 粗グリッドの生存者 (ピーク抽出漏れ・擬似バンド不足時の保険)
+        //260922Cl 変更: 方位が近くても Z が別の格子点なら別のシードとする。グリッド由来のシード数の上限 (旧: 全体で 52) は据え置き
+        int gridSeeds = 0;
         foreach (var s in survivors)
         {
             var r = SeedRotation(s.Di, s.Pi);
-            if (seeds.All(x => EbsdIndexer.MisorientationDeg(x.R, r) > coarseStepDeg * 0.8))
-                seeds.Add((s.S, r));
-            if (seeds.Count >= 52) break;
+            var (x0g, z) = gOffsets[s.Zi];
+            //if (seeds.All(x => EbsdIndexer.MisorientationDeg(x.R, r) > coarseStepDeg * 0.8)) //260922Cl 変更前
+            //    seeds.Add((s.S, r));
+            //if (seeds.Count >= 52) break;
+            if (seeds.All(q => Math.Abs(q.Z - z) > zStep * 0.5 || Math.Abs(q.X - x0g) > zStep * 0.5 || EbsdIndexer.MisorientationDeg(q.R, r) > coarseStepDeg * 0.8))
+            { seeds.Add((s.S, r, x0g, z)); gridSeeds++; }
+            if (searchZ || searchX ? gridSeeds >= maxGridSeeds : seeds.Count >= maxGridSeeds) break; //幾何を探さないときは旧と同じ (シード全体で maxGridSeeds、既定 52)
         }
 
         //厳密スコア (bilinear・全ノード・非膨張・近接予測線の排他込み)。Parallel から呼ばれるため排他バッファはローカル確保
         //260724Cl: 本体を ScoreExactCore へ抽出 (公開 ScoreOrientation と共用のため。旧インライン実装は ScoreExactCore に移動)
-        double ScoreExact(Matrix3D rot) => ScoreExactCore(map, geometry, catalog, rot, saturateCap);
+        //double ScoreExact(Matrix3D rot) => ScoreExactCore(map, geometry, catalog, rot, saturateCap); //260922Cl 変更前
+        //260922Cl 変更: Z のずれ z [mm] の幾何で採点する。探索範囲 (+刻み) の外は採らない
+        double ScoreExact(Matrix3D rot, double dx, double dy, double z)
+            => dx == 0 && dy == 0 && z == 0 ? ScoreExactCore(map, geometry, catalog, rot, saturateCap)
+             : Math.Abs(z) > zSearchRangeMm + (searchZ ? zStep : 0) || Math.Abs(dx) > Math.Max(xyRefineRangeMm, searchX ? xSearchRangeMm + zStep : 0) || Math.Abs(dy) > xyRefineRangeMm ? double.MinValue
+             : ScoreExactCore(map, geometry.WithOffset(dx, dy, z), catalog, rot, saturateCap);
+        bool fitXY = xyRefineRangeMm > 0;
 
         //260725Cl (/simplify): ローカル Perturb は EbsdIndexer.PerturbRotation へ統合 (EbsdDictionaryIndexer・FormEBSD 側と 3 重複していた。式・演算順は同一)
         //旧: static Matrix3D Perturb(Matrix3D r0, double wxDeg, double wyDeg, double wzDeg) { ...(ω を rad 化し Rot(ω̂,|ω|)·r0)... }
 
-        var refined = new (double S, Matrix3D R)[seeds.Count];
+        //var refined = new (double S, Matrix3D R)[seeds.Count]; //260922Cl 変更前
+        var refined = new (double S, Matrix3D R, double Dx, double Dy, double Z)[seeds.Count];
         //System.Threading.Tasks.Parallel.For(0, seeds.Count, si => //260725Ch 変更前
         System.Threading.Tasks.Parallel.For(0, seeds.Count, parallelOptions, si => //260725Ch
         {
             cancel.ThrowIfCancellationRequested();
             var r0 = seeds[si].R;
-            double Obj(double[] v) => -ScoreExact(EbsdIndexer.PerturbRotation(r0, v[0], v[1], v[2]));
-            var (b1, _, _) = EbsdPatternScorer.NelderMead(Obj, [0, 0, 0], [coarseStepDeg * 0.5, coarseStepDeg * 0.5, coarseStepDeg * 0.5], 120);
-            var (b2, v2, _) = EbsdPatternScorer.NelderMead(Obj, b1, [0.4, 0.4, 0.4], 80);
-            refined[si] = (-v2, EbsdIndexer.PerturbRotation(r0, b2[0], b2[1], b2[2]));
+            //260922Cl 変更: Z も探すときは (回転 3 + Z 1) の 4 次元で精密化する。探さないときは旧と同じ 3 次元・同じ手順
+            //旧: double Obj(double[] v) => -ScoreExact(EbsdIndexer.PerturbRotation(r0, v[0], v[1], v[2]));
+            //旧: var (b1, _, _) = EbsdPatternScorer.NelderMead(Obj, [0, 0, 0], [coarseStepDeg * 0.5, coarseStepDeg * 0.5, coarseStepDeg * 0.5], 120);
+            //旧: var (b2, v2, _) = EbsdPatternScorer.NelderMead(Obj, b1, [0.4, 0.4, 0.4], 80);
+            //旧: refined[si] = (-v2, EbsdIndexer.PerturbRotation(r0, b2[0], b2[1], b2[2]));
+            double z0 = seeds[si].Z, x0 = seeds[si].X;
+            bool fitX = fitXY || searchX, fitY = fitXY;
+            if (!searchZ && !fitX && !fitY)
+            {
+                double Obj(double[] v) => -ScoreExact(EbsdIndexer.PerturbRotation(r0, v[0], v[1], v[2]), 0, 0, 0);
+                var (b1, _, _) = EbsdPatternScorer.NelderMead(Obj, [0, 0, 0], [coarseStepDeg * 0.5, coarseStepDeg * 0.5, coarseStepDeg * 0.5], 120);
+                var (b2, v2, _) = EbsdPatternScorer.NelderMead(Obj, b1, [0.4, 0.4, 0.4], 80);
+                refined[si] = (-v2, EbsdIndexer.PerturbRotation(r0, b2[0], b2[1], b2[2]), 0, 0, 0);
+            }
+            else
+            {
+                //回転 3 + (Z) + (X) + (Y) の可変次元。v の並び: [ωx, ωy, ωz, (dz), (dx), (dy)]
+                int iz = searchZ ? 3 : -1;
+                int ix = fitX ? 3 + (searchZ ? 1 : 0) : -1;
+                int iy = fitY ? 3 + (searchZ ? 1 : 0) + (fitX ? 1 : 0) : -1;
+                int dim = 3 + (searchZ ? 1 : 0) + (fitX ? 1 : 0) + (fitY ? 1 : 0);
+                double Z(double[] v) => z0 + (iz >= 0 ? v[iz] : 0);
+                double X(double[] v) => x0 + (ix >= 0 ? v[ix] : 0);
+                double Y(double[] v) => iy >= 0 ? v[iy] : 0;
+                double ObjG(double[] v) => -ScoreExact(EbsdIndexer.PerturbRotation(r0, v[0], v[1], v[2]), X(v), Y(v), Z(v));
+                double[] Steps(double rot, double zs, double xys)
+                {
+                    var st = new double[dim]; st[0] = st[1] = st[2] = rot;
+                    if (iz >= 0) st[iz] = zs;
+                    if (ix >= 0) st[ix] = searchX ? zs : xys;
+                    if (iy >= 0) st[iy] = xys;
+                    return st;
+                }
+                double xyStep = Math.Max(0.25, xyRefineRangeMm * 0.3);
+                var (b1, _, _) = EbsdPatternScorer.NelderMead(ObjG, new double[dim], Steps(coarseStepDeg * 0.5, zStep * 0.5, xyStep), 60 * dim);
+                var (b2, v2, _) = EbsdPatternScorer.NelderMead(ObjG, b1, Steps(0.4, zStep * 0.25, xyStep * 0.5), 40 * dim);
+                refined[si] = (-v2, EbsdIndexer.PerturbRotation(r0, b2[0], b2[1], b2[2]), X(b2), Y(b2), Z(b2));
+            }
         });
         #endregion
 
@@ -550,20 +701,32 @@ public static class EbsdRadonIndexer
         }
 
         var result = new List<EbsdOrientationCandidate>();
-        foreach (var (s, r) in refined.OrderByDescending(x => x.S))
+        //foreach (var (s, r) in refined.OrderByDescending(x => x.S)) //260922Cl 変更前
+        foreach (var (s, r, dxBest, dyBest, zBest) in refined.OrderByDescending(x => x.S))
         {
             cancel.ThrowIfCancellationRequested();
-            if (s == double.MinValue || result.Any(c => Equivalent(c.Rotation, r))) continue;
+            //260922Cl 変更 (Codex 指摘): 幾何が違えば予測線も違うので、Z (X, Y) が違う候補は方位が等価でも別に残す
+            //if (s == double.MinValue || result.Any(c => Equivalent(c.Rotation, r))) continue;
+            if (s == double.MinValue || result.Any(c => Equivalent(c.Rotation, r)
+                && Math.Abs((c.Geometry?.DetZ ?? geometry.DetZ) - (geometry.DetZ + zBest)) < zStep
+                && Math.Abs((c.Geometry?.DetX ?? geometry.DetX) - (geometry.DetX + dxBest)) < 0.5
+                && Math.Abs((c.Geometry?.DetY ?? geometry.DetY) - (geometry.DetY + dyBest)) < 0.5)) continue;
 
             //強い証拠を持つノード (z ≥ 3) を情報として列挙 (スコアと同じ近接排他を適用)
             var cand = new EbsdOrientationCandidate { Rotation = r, Score = s, AngularRmsDeg = double.NaN };
+            //260922Cl 追加: Z も探したときは候補ごとの幾何を持たせる (行を選ぶと FormEBSD が検出器中心に反映する)
+            bool movedGeom = searchZ || searchX || fitXY;
+            var cg = movedGeom ? geometry.WithOffset(dxBest, dyBest, zBest) : geometry;
+            if (movedGeom) { cand.Geometry = cg; cand.GeometryShiftMm = Math.Sqrt(dxBest * dxBest + dyBest * dyBest + zBest * zBest); }
+            var cc = cg.Center; //260922Cl: 下の強いバンドの列挙もその幾何で行う
             int inView = 0, nAcc2 = 0;
             var acc2Th = new double[catalog.Count]; var acc2Rho = new double[catalog.Count];
             var strong = new List<(double Z, (int H, int K, int L) Hkl)>();
             foreach (var node in catalog)
             {
                 var gl = geometry.SampleToLab(r * node.Dir);
-                double aMm = xm * gl.X, bMm = gl.Y * ey.Y + gl.Z * ey.Z, cMm = gl.X * center.X + gl.Y * center.Y + gl.Z * center.Z;
+                //double aMm = xm * gl.X, bMm = gl.Y * ey.Y + gl.Z * ey.Z, cMm = gl.X * center.X + gl.Y * center.Y + gl.Z * center.Z; //260922Cl 変更前
+                double aMm = xm * gl.X, bMm = gl.Y * ey.Y + gl.Z * ey.Z, cMm = gl.X * cc.X + gl.Y * cc.Y + gl.Z * cc.Z;
                 double norm = Math.Sqrt(aMm * aMm + bMm * bMm);
                 if (norm < 1E-9) continue;
                 double rhoWork = -cMm / (pix * norm) * map.Scale;
