@@ -16,6 +16,9 @@ public sealed class EbsdMonteCarloDistribution
     public int BinCount { get; }
     /// <summary>260919Cl 追加 (試行): 電子ごとの蛍光体応答重み φ(E) = max(0, E − E_dead) [keV] の E_dead。NaN なら重み無し (従来 = 1 本 1 票)</summary>
     public double EnergyWeightDeadKeV { get; }
+    /// <summary>260922Cl 追加 (作者指示): エネルギーフィルター。射出エネルギーがこの値 [keV] 以下の電子は像に寄与させない
+    /// (検出器の前に理想的な高域通過のエネルギーフィルターを置いたのと同じ)。NaN なら無し (従来)</summary>
+    public double EnergyFilterMinKeV { get; }
 
     /// <summary>ビンごとの正規化重み。BinWeights[binI, binJ] は double[energyCount * depthCount]。 // (260327Ch)
     /// <para>⚠ 260921Cl: 深さ写像の改修 (A2) 以降は、<b>ビン中心の射出方向 <see cref="BinCenterMu"/> で経路長へ換算した近似</b>。
@@ -52,6 +55,11 @@ public sealed class EbsdMonteCarloDistribution
     /// エネルギー格子ごとに正値化済み ([1, <see cref="UniformDepthLambdaNm"/>] にクランプ)。
     /// 経路長への換算 λ_t = λ_d / μ は使う側が画素ごとに行う (<see cref="FillPathLengthWeights"/>)。</summary>
     public double[,][] BinLambdaNm { get; }
+
+    /// <summary>260923Cl 追加: Bloch 波の平均吸収長 λ_abs(E) [nm] (エネルギー格子上、経路長)。null なら深さの重みの補正なし。
+    /// 源の深さを「最後のコヒーレンス破壊事象」で取るモード (dec) で、MC の生存確率とマスターパターンの平均吸収の二重計上を
+    /// 取り除くために <see cref="FillPathLengthWeights"/> へ渡す (ctor の doc)。</summary>
+    public double[] AbsorptionLengthNm { get; }
 
     /// <summary>260921Cl 追加 (深さ写像 A2): ビンごとの射出エネルギー分布 G(E) (エネルギー格子上、総和 1)。電子の無いビンにも全体の分布を入れてある。</summary>
     public double[,][] BinEnergyDistribution { get; }
@@ -294,6 +302,8 @@ public sealed class EbsdMonteCarloDistribution
     /// <param name="binCount">1 辺のビン数 (既定 18)</param>
     /// <param name="amorphousLayerNm">表面非晶質層の厚さ [nm] (0 = 無し)</param>
     /// <param name="energyWeightDeadKeV">蛍光体応答 φ(E) = max(0, E − E_dead) の E_dead [keV]。NaN なら 1 本 1 票</param>
+    /// <param name="energyFilterMinKeV">260922Cl 追加: エネルギーフィルター [keV]。E ≤ この値の電子は重み 0 (φ に掛ける)。
+    /// 当てはめた格子上のエネルギー分布も、スライスの幅のうちこの値を超える割合だけ残す。NaN または 0 以下なら無し</param>
     public EbsdMonteCarloDistribution(
         (double Depth, V3 Vec, double Energy)[] bseList,
         double beamEnergy,
@@ -302,8 +312,20 @@ public sealed class EbsdMonteCarloDistribution
         //int binCount = 16, //260921Cl 変更 (旧 8): 半球を検出器 8×8 と同程度の角度分解能で覆う数 //260921Cl 変更前 (Rosca-Lambert 正方格子)
         int binCount = 18, //260921Cl 変更 (Lambert 等積ディスク): 旧 16×16 とビン 1 個の立体角が同じ数
         double amorphousLayerNm = 0, // 260919Cl 追加: 表面非晶質層の厚さ [nm]。層内の源は変調なし成分、結晶内の深さは層厚を引く
-        double energyWeightDeadKeV = double.NaN) // 260919Cl 追加 (試行): 蛍光体応答 φ(E)=max(0,E−E_dead) で電子を重み付け。NaN = 重み無し (従来)
+        //double energyWeightDeadKeV = double.NaN) // 260919Cl 追加 (試行): 蛍光体応答 φ(E)=max(0,E−E_dead) で電子を重み付け。NaN = 重み無し (従来) //260922Cl 変更前
+        double energyWeightDeadKeV = double.NaN, // 260919Cl 追加 (試行): 蛍光体応答 φ(E)=max(0,E−E_dead) で電子を重み付け。NaN = 重み無し (従来)
+        //double energyFilterMinKeV = double.NaN) // 260922Cl 追加 (作者指示): エネルギーフィルター。E ≤ この値の電子は像に寄与させない。NaN = 無し //260923Cl 変更前
+        double energyFilterMinKeV = double.NaN, // 260922Cl 追加 (作者指示): エネルギーフィルター。E ≤ この値の電子は像に寄与させない。NaN = 無し
+        double[] absorptionLengthNm = null) // 260923Cl 追加: Bloch 波の平均吸収長 λ_abs(E) [nm] (energies と同じ長さ、経路長)。null = 補正なし (下の AbsorptionLengthNm)
     {
+        //260923Cl 追加 (案 d §2.2 の「生存確率の二重計上」): 源の深さを「最後のコヒーレンス破壊事象」(熱散漫も含む) で取ると、
+        //  MC の深さ分布は「源の生まれた密度 × 表面まで次の破壊事象が起きない確率」で、掛けるマスターパターンは表面から深さ t まで
+        //  の熱散漫の平均吸収 exp(−t/λ_abs) を既に含む。同じ熱散漫の生存が 2 回掛かるので、λ_abs(E) を渡したときは深さの重みを
+        //  exp(+t/λ_abs) 倍して MC 側の分を取り除く (= 「最後の事象の密度 × 平均吸収を抜いた Bloch 強度」)。源を「最後の非弾性」で
+        //  取る既定モードでは MC の生存は非弾性だけで Bloch の熱散漫吸収とは別物なので渡さない (従来どおり)。
+        if (absorptionLengthNm != null && absorptionLengthNm.Length != energies.Length)
+            throw new ArgumentException("absorptionLengthNm must have the same length as energies.", nameof(absorptionLengthNm));
+        AbsorptionLengthNm = absorptionLengthNm;
         //260725Ch: 下流のビン補間は非空の energy/depth 軸を前提とする (260921Cl: 補間は 4×4 の 3 次 B スプライン。添字は端でクランプするので binCount ≥ 2 でよい)
         ArgumentNullException.ThrowIfNull(bseList);
         ArgumentNullException.ThrowIfNull(energies);
@@ -318,6 +340,12 @@ public sealed class EbsdMonteCarloDistribution
         //  低加速 (5〜10 keV) の EBSD で E_dead を上限 10 keV にすると実際に起こるので、重み無しへ落とす
         bool useEnergyWeight = double.IsFinite(energyWeightDeadKeV) && energyWeightDeadKeV < beamEnergy; // 260919Cl 追加 / 260920Cl ガード追加
         EnergyWeightDeadKeV = useEnergyWeight ? energyWeightDeadKeV : double.NaN;
+        //260922Cl 追加 (作者指示): エネルギーフィルター。蛍光体の E_dead と同じく、ビームエネルギー以上だと全電子が落ちて
+        //  パターンが恒等的にゼロになる (規格化で NaN) ので、そのときは無しに落とす
+        bool useEnergyFilter = double.IsFinite(energyFilterMinKeV) && energyFilterMinKeV > 0 && energyFilterMinKeV < beamEnergy;
+        EnergyFilterMinKeV = useEnergyFilter ? energyFilterMinKeV : double.NaN;
+        double deadKeV = EnergyWeightDeadKeV, filterKeV = EnergyFilterMinKeV;
+        double ElectronWeight(double e) => ElectronEnergyWeight(e, deadKeV, filterKeV); //260922Cl 追加: 電子ごとの重み φ(E)·θ(E − E_min)
         double totalWeight = 0; // 260919Cl 追加: Σφ(E) (重み無しなら電子数)
 
         //260921Cl 変更: 検出器面との交点ではなく、試料系での射出方向そのものでビニングする
@@ -357,7 +385,8 @@ public sealed class EbsdMonteCarloDistribution
             binOf[n] = -1;
             //260920Cl (/simplify2): 重みの母数は全電子。射出しない電子を落とす continue より前で積む (旧 binFraction の分母 bseList.Length と同義)
             //  (260921Cl: 旧・検出器ビニングでは「検出器を外れる continue」より前、の意味だった)
-            totalWeight += useEnergyWeight ? Math.Max(0, energy - energyWeightDeadKeV) : 1.0;
+            //totalWeight += useEnergyWeight ? Math.Max(0, energy - energyWeightDeadKeV) : 1.0; //260922Cl 変更前
+            totalWeight += ElectronWeight(energy); //260922Cl 変更: エネルギーフィルターも掛ける
             //260921Cl 変更: 検出器面との交点 (px, py) で 8×8 に切っていたのをやめ、試料系の射出方向を
             //  射出半球の等積格子へ写して半球を切る (旧 7f27fa5: Rosca-Lambert 等積正方格子、現: Lambert 等積ディスク。DirectionToBinCoords の doc)。
             //  旧コード (260718Cl / 260723Cl、検出器面との交点) は下にコメントで残す (/simplify2 で復元)。
@@ -387,7 +416,8 @@ public sealed class EbsdMonteCarloDistribution
             int bi = Math.Clamp((int)Math.Round(fbx), 0, binCount - 1);
             int bj = Math.Clamp((int)Math.Round(fby), 0, binCount - 1);
             // binTotals[bi, bj]++; binEnergies[bi, bj].Add(energy); // 260919Cl 変更前
-            double phi = useEnergyWeight ? Math.Max(0, energy - energyWeightDeadKeV) : 1.0; // 260919Cl 追加 (試行): 蛍光体の発光量 ∝ E − E_dead
+            //double phi = useEnergyWeight ? Math.Max(0, energy - energyWeightDeadKeV) : 1.0; // 260919Cl 追加 (試行): 蛍光体の発光量 ∝ E − E_dead //260922Cl 変更前
+            double phi = ElectronWeight(energy); //260922Cl 変更: 蛍光体の発光量 ∝ E − E_dead × エネルギーフィルター
             binTotals[bi, bj] += phi; binCounts[bi, bj]++; // 260919Cl 変更
             binOf[n] = bi * binCount + bj; //260921Cl 追加 (2 パス化)
             //260920Cl (/simplify2): totalWeight はループ先頭で全電子ぶん積む。ここで積むと母数が「検出器に当たった電子」になり、
@@ -449,7 +479,8 @@ public sealed class EbsdMonteCarloDistribution
         //旧: var energyGroups = new List<double>[nBins]; var weightGroups = useEnergyWeight ? new List<double>[nBins] : null;
         //旧: for (int b = 0; b < nBins; b++) { energyGroups[b] = binEnergies[b / binCount, b % binCount]; if (weightGroups != null) weightGroups[b] = binEnergyWeights[b / binCount, b % binCount]; }
         //旧: var globalEnergy = NormalizeToUnitSum(ComputeEnergyGaussian(energyGroups, energies, weightGroups));
-        var globalEnergy = NormalizeToUnitSum(ComputeEnergyGaussian(binEnergies, energies, EnergyWeightDeadKeV)); //260921Cl 変更 (2 パス化): ビン順に並べた全電子 = 旧 energyGroups と同じ走査順
+        //var globalEnergy = NormalizeToUnitSum(ComputeEnergyGaussian(binEnergies, energies, EnergyWeightDeadKeV)); //260921Cl 変更 (2 パス化): ビン順に並べた全電子 = 旧 energyGroups と同じ走査順 //260922Cl 変更前
+        var globalEnergy = NormalizeToUnitSum(ComputeEnergyGaussian(binEnergies, energies, EnergyWeightDeadKeV, EnergyFilterMinKeV)); //260922Cl 変更: エネルギーフィルター
         // 260919Cl 追加: 合算 λ(E) の深さ重み (エネルギー因子 1)。合成器で非晶質源の基準強度 ⟨M⟩(e) を作るのに使う
         //260921Cl 変更 (深さ写像 A2): 全ビン合算の λ ではなく、各ビンの (μ_b で換算した) 条件付き深さ分布を F_b で混ぜたものにする (下の Parallel.For の後)。
         //  全 (E, 深さ) を一括正規化してから混ぜると、有限の深さ範囲で捕まえられる割合がビンごとに違うせいでビン間の比が変わる (Codex 指摘)
@@ -495,7 +526,8 @@ public sealed class EbsdMonteCarloDistribution
             {
                 //energyDistribution = NormalizeToUnitSum(ComputeEnergyGaussian([binEnergies[bi, bj]], energies, useEnergyWeight ? [binEnergyWeights[bi, bj]] : null)); // 260919Cl: エネルギーは全電子 (重み付き) //260921Cl 変更前 (2 パス化)
                 //if (binData.Count >= 10 && FitLambdaFromData(binData, energies, out double la, out double lb, out double lc)) // 260919Cl: λ は結晶内の源 //260921Cl 変更前 (2 パス化)
-                energyDistribution = NormalizeToUnitSum(ComputeEnergyGaussian(binEnergies.AsSpan(binStart[idx], binStart[idx + 1] - binStart[idx]), energies, EnergyWeightDeadKeV)); // 260919Cl: エネルギーは全電子 (重み付き)
+                //energyDistribution = NormalizeToUnitSum(ComputeEnergyGaussian(binEnergies.AsSpan(binStart[idx], binStart[idx + 1] - binStart[idx]), energies, EnergyWeightDeadKeV)); // 260919Cl: エネルギーは全電子 (重み付き) //260922Cl 変更前
+                energyDistribution = NormalizeToUnitSum(ComputeEnergyGaussian(binEnergies.AsSpan(binStart[idx], binStart[idx + 1] - binStart[idx]), energies, EnergyWeightDeadKeV, EnergyFilterMinKeV)); //260922Cl 変更: エネルギーフィルター
                 if (binLambda.Count(idx) >= 10 && binLambda.Fit(idx, out double la, out double lb, out double lc)) // 260919Cl: λ は結晶内の源
                 {
                     lambda = EvaluateLambda(energies, la, lb, lc); state = BinFitState.Fitted;
@@ -516,9 +548,11 @@ public sealed class EbsdMonteCarloDistribution
             if (binTotal > 0)
             {
                 var scaled = new double[eLen];
-                FillPathLengthWeights(weights, energyDistribution, lambda, mu, depths, depthWidths, sliceMass: false); //総和 1
+                //FillPathLengthWeights(weights, energyDistribution, lambda, mu, depths, depthWidths, sliceMass: false); //総和 1 //260923Cl 変更前
+                FillPathLengthWeights(weights, energyDistribution, lambda, mu, depths, depthWidths, sliceMass: false, AbsorptionLengthNm); //総和 1 //260923Cl λ_abs 追加
                 for (int ei = 0; ei < eLen; ei++) scaled[ei] = binFraction * energyDistribution[ei];
-                FillPathLengthWeights(absoluteSliceWeights, scaled, lambda, mu, depths, depthWidths, sliceMass: true); //総和 F
+                //FillPathLengthWeights(absoluteSliceWeights, scaled, lambda, mu, depths, depthWidths, sliceMass: true); //総和 F //260923Cl 変更前
+                FillPathLengthWeights(absoluteSliceWeights, scaled, lambda, mu, depths, depthWidths, sliceMass: true, AbsorptionLengthNm); //総和 F //260923Cl λ_abs 追加
             }
 
             BinWeights[bi, bj] = weights;
@@ -573,16 +607,23 @@ public sealed class EbsdMonteCarloDistribution
     /// <param name="depths">経路長の格子 t_d [nm] (単調増加、t₀ = 0 は暗黙)</param>
     /// <param name="depthWidths">区間幅 Δt_d (<see cref="MasterPattern.ComputeDepthIntervals"/>)</param>
     /// <param name="sliceMass">true = 区間質量 (model 2)、false = 密度 × 区間幅 (model 0/1)</param>
+    /// <param name="absorptionLengthNm">260923Cl 追加: Bloch 波の平均吸収長 λ_abs(E) [nm] (経路長、長さ eLen)。空なら補正なし。
+    ///   与えると減衰率を α = μ/λ_d − 1/λ_abs にして、MC の深さ分布に入っている熱散漫の生存 (マスターパターンの平均吸収と同じもの) を
+    ///   取り除く (ctor の doc「生存確率の二重計上」)。α は μ/λ_d の 1/10 を下限にする (かすめ出射 μ → 0 で α ≤ 0 になり、
+    ///   有限の格子の最深スライスに質量が集まる非物理を避ける)</param>
+    //旧シグネチャ: public static void FillPathLengthWeights(Span<double> w, ReadOnlySpan<double> energyWeight, ReadOnlySpan<double> lambdaNm, double mu, ReadOnlySpan<double> depths, ReadOnlySpan<double> depthWidths, bool sliceMass)
     public static void FillPathLengthWeights(Span<double> w, ReadOnlySpan<double> energyWeight, ReadOnlySpan<double> lambdaNm,
-        double mu, ReadOnlySpan<double> depths, ReadOnlySpan<double> depthWidths, bool sliceMass)
+        double mu, ReadOnlySpan<double> depths, ReadOnlySpan<double> depthWidths, bool sliceMass, ReadOnlySpan<double> absorptionLengthNm = default) // 260923Cl absorptionLengthNm 追加
     {
         int eLen = energyWeight.Length, dLen = depths.Length;
+        bool correct = absorptionLengthNm.Length == eLen; //260923Cl 追加
         for (int ei = 0; ei < eLen; ei++)
         {
             var row = w.Slice(ei * dLen, dLen);
             double ew = energyWeight[ei];
             if (!(ew > 0)) { row.Clear(); continue; }
             double alpha = mu / lambdaNm[ei]; //経路長の減衰率 [1/nm] (λ_t = λ_d/μ)
+            if (correct && absorptionLengthNm[ei] > 0) alpha = Math.Max(alpha - 1 / absorptionLengthNm[ei], 0.1 * alpha); //260923Cl 追加: 二重計上の除去 (下限 μ/(10 λ_d))
             double sum = 0;
             if (sliceMass)
             {
@@ -778,10 +819,13 @@ public sealed class EbsdMonteCarloDistribution
     //旧: private static double[] ComputeEnergyGaussian(IReadOnlyList<List<double>> energyGroups, double[] energies, IReadOnlyList<List<double>> weightGroups = null) // 260921Cl 変更: グループ化
     //260921Cl シグネチャ変更 (再ビニングの 2 パス化): グループのリストの代わりに、ビン順に並べた 1 本の配列 (の区間) を受け取る。
     //  重みは φ(E) = max(0, E − E_dead) を E から計算し直す (energyWeightDeadKeV が NaN なら 1 本 1 票)。値も足す順序も旧版と同じ
-    private static double[] ComputeEnergyGaussian(ReadOnlySpan<double> electronEnergies, double[] energies, double energyWeightDeadKeV = double.NaN)
+    //旧: private static double[] ComputeEnergyGaussian(ReadOnlySpan<double> electronEnergies, double[] energies, double energyWeightDeadKeV = double.NaN)
+    //260922Cl シグネチャ変更: エネルギーフィルター energyFilterMinKeV を追加 (NaN なら無し)。電子の重みに θ(E − E_min) を掛け、
+    //  当てはめた格子上の分布もスライスの幅のうち E_min を超える割合だけ残す (ガウス関数の裾がフィルターの下へ漏れないように)
+    private static double[] ComputeEnergyGaussian(ReadOnlySpan<double> electronEnergies, double[] energies, double energyWeightDeadKeV = double.NaN, double energyFilterMinKeV = double.NaN)
     {
         int eLen = energies.Length;
-        bool weighted = double.IsFinite(energyWeightDeadKeV);
+        //bool weighted = double.IsFinite(energyWeightDeadKeV); //260922Cl 変更前
         double sumE = 0, sumW = 0, firstE = double.NaN;
         //旧: for (int g = 0; g < energyGroups.Count; g++)
         //旧: {
@@ -790,7 +834,8 @@ public sealed class EbsdMonteCarloDistribution
         //旧: }
         foreach (double e in electronEnergies)
         {
-            double w = weighted ? Math.Max(0, e - energyWeightDeadKeV) : 1.0;
+            //double w = weighted ? Math.Max(0, e - energyWeightDeadKeV) : 1.0; //260922Cl 変更前
+            double w = ElectronEnergyWeight(e, energyWeightDeadKeV, energyFilterMinKeV); //260922Cl 変更
             sumE += w * e; sumW += w; if (double.IsNaN(firstE)) firstE = e;
         }
         if (double.IsNaN(firstE)) return new double[eLen]; //電子が 1 本も無い (呼び出し側は総和 0 を一様へ正規化する)
@@ -809,7 +854,8 @@ public sealed class EbsdMonteCarloDistribution
         //旧: }
         foreach (double e in electronEnergies)
         {
-            double w = weighted ? Math.Max(0, e - energyWeightDeadKeV) : 1.0;
+            //double w = weighted ? Math.Max(0, e - energyWeightDeadKeV) : 1.0; //260922Cl 変更前
+            double w = ElectronEnergyWeight(e, energyWeightDeadKeV, energyFilterMinKeV); //260922Cl 変更
             if (e < meanE) { varL += w * (e - meanE) * (e - meanE); wL += w; nL++; }
             else { varR += w * (e - meanE) * (e - meanE); wR += w; nR++; }
         }
@@ -840,8 +886,27 @@ public sealed class EbsdMonteCarloDistribution
             double inv2SigmaSq = dE < 0 ? inv2SigmaSqL : inv2SigmaSqR;
             gE[ei] = Math.Exp(-dE * dE * inv2SigmaSq);
         }
+        //260922Cl 追加: エネルギーフィルター。スライス ei は隣との中点で区切った区間 [E_ei − h⁻, E_ei + h⁺] を代表するとみなし、
+        //  そのうち E_min を超える割合を掛ける (E_min をまたぐスライスは一部だけ残る。値を動かしたときパターンが連続に変わる)
+        if (double.IsFinite(energyFilterMinKeV))
+            for (int ei = 0; ei < eLen; ei++)
+            {
+                double hiEdge = ei > 0 ? 0.5 * (energies[ei] + energies[ei - 1]) : energies[ei] + (eLen > 1 ? 0.5 * Math.Abs(energies[0] - energies[1]) : 0);
+                double loEdge = ei < eLen - 1 ? 0.5 * (energies[ei] + energies[ei + 1]) : energies[ei] - (eLen > 1 ? 0.5 * Math.Abs(energies[^2] - energies[^1]) : 0);
+                if (hiEdge < loEdge) (hiEdge, loEdge) = (loEdge, hiEdge); //昇順の格子でも正しく
+                double pass = hiEdge > loEdge ? Math.Clamp((hiEdge - energyFilterMinKeV) / (hiEdge - loEdge), 0, 1) : (energies[ei] > energyFilterMinKeV ? 1 : 0);
+                gE[ei] *= pass;
+            }
 
         return gE;
+    }
+
+    /// <summary>260922Cl 追加: 電子 1 本の重み = 蛍光体応答 φ(E) = max(0, E − E_dead) (NaN なら 1) × エネルギーフィルター θ(E − E_min) (NaN なら 1)。
+    /// E ≤ E_min の電子は 0 (「指定した値以下の電子は像に寄与させない」)</summary>
+    private static double ElectronEnergyWeight(double energy, double deadKeV, double filterMinKeV)
+    {
+        if (double.IsFinite(filterMinKeV) && energy <= filterMinKeV) return 0;
+        return double.IsFinite(deadKeV) ? Math.Max(0, energy - deadKeV) : 1.0;
     }
 
     //260921Cl 変更 (再ビニングの 2 パス化): 下の FitLambdaFromData は LambdaAccumulator へ置き換えた (電子を List に溜めず 1 本ずつ集計する)。

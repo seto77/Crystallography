@@ -518,7 +518,8 @@ public sealed class EbsdPatternComposer
                 for (int e = 0; e < eLen; e++) { double g = omega * flatG[o + e]; n[e] += g; lam[e] += g * flatL[o + e]; }
             }
         for (int e = 0; e < eLen; e++) lam[e] = n[e] > 0 ? lam[e] / n[e] : EbsdMonteCarloDistribution.UniformDepthLambdaNm;
-        EbsdMonteCarloDistribution.FillPathLengthWeights(s.Wv.AsSpan(0, nSlices), n, lam, mu, depths, depthWidths, sliceMass);
+        //EbsdMonteCarloDistribution.FillPathLengthWeights(s.Wv.AsSpan(0, nSlices), n, lam, mu, depths, depthWidths, sliceMass); //260923Cl 変更前
+        EbsdMonteCarloDistribution.FillPathLengthWeights(s.Wv.AsSpan(0, nSlices), n, lam, mu, depths, depthWidths, sliceMass, dist.AbsorptionLengthNm); //260923Cl λ_abs (dec モードの二重計上の除去) を渡す
         return omegaSum > 0 ? fANum / omegaSum : 0;
     }
 
@@ -1293,7 +1294,14 @@ public sealed class EbsdPatternComposer
     }
 
     /// <summary>model 2: absolute MC 重みと differential MasterPattern を掛け合わせて weighted 合成する。260325Ch 追加</summary>
-    public unsafe void ApplyWeightedModel2(double[] values, int width, int height, MasterPattern mp, EbsdMonteCarloDistribution dist, in EbsdRasterView view)
+    /// <param name="background">260921Cl 追加: null でなければ、菊池の変調を含まない背景 B = cos³α·Σ W·M̄ (非晶質項込み) を画素ごとに書く (長さ = width·height)。
+    ///   <para>【なぜ】表示の背景平坦化 (原画像 − Gaussian ぼかし) は滑らかな背景に −(σ²/2)∇²B を残す (中心が明るく周辺が暗い)。
+    ///   この残りは A(E) に依らない一方、A(E) はバンドのコントラストを Ā 倍 (Si 20 kV・E_c 0.8 keV で実測 0.06 倍) に下げるので、
+    ///   自動伸張のあとでは残りの方が主になり「描画範囲の端が暗い」ように見えていた (作者報告 260921。実機ハーネスで確認:
+    ///   平坦化後の広域の明暗 / 細構造の rms が A(E) 無効 0.72 → 有効 8.76)。B は A(E) の合成式の第 1 項 (CohAccum.Dc) と同じ量なので、
+    ///   表示側で P − B としてから平坦化すれば、この残りは原理的に出ない。</para></param>
+    //旧シグネチャ: public unsafe void ApplyWeightedModel2(double[] values, int width, int height, MasterPattern mp, EbsdMonteCarloDistribution dist, in EbsdRasterView view)
+    public unsafe void ApplyWeightedModel2(double[] values, int width, int height, MasterPattern mp, EbsdMonteCarloDistribution dist, in EbsdRasterView view, double[] background = null)
     {
         EnsureGridMatches(mp, dist); //260727Cl
         double xm = view.XMirror; // 260718Cl: 左右反転 (UI スレッドで捕捉)
@@ -1326,7 +1334,9 @@ public sealed class EbsdPatternComposer
         //  260921Cl: A(E) は台座をやめて平面ごとの方向平均 (planeMeans、エネルギーへ畳まない) を使うようになったので、この注意はもう当たらない
         //  (畳んだ値 posMeans/negMeans を使うのは非晶質層の変調なし成分だけで、そのときは GlobalDepthWeights がある)
         var cohA = BuildCoherenceFactors(mp);
-        if (hasAmorphous || cohA != null) (posMeans, negMeans, planeMeans) = GetPlaneMeansCached(mp, dist, posPlanes, negPlanes, dLen, depthWidths); // 260919Cl 追加: model 2 は差分 ΔM/Δt の平均 (/simplify: 以前は null 版を先に呼んでキャッシュを取りこぼしていた) / 260920Cl A(E) でも使う
+        //if (hasAmorphous || cohA != null) (posMeans, negMeans, planeMeans) = GetPlaneMeansCached(mp, dist, posPlanes, negPlanes, dLen, depthWidths); //260921Cl 変更前
+        bool wantBackground = background != null; //260921Cl 追加: 背景 B も平面ごとの方向平均 M̄ から作る
+        if (hasAmorphous || cohA != null || wantBackground) (posMeans, negMeans, planeMeans) = GetPlaneMeansCached(mp, dist, posPlanes, negPlanes, dLen, depthWidths); // 260919Cl 追加: model 2 は差分 ΔM/Δt の平均 (/simplify: 以前は null 版を先に呼んでキャッシュを取りこぼしていた) / 260920Cl A(E) でも使う
         //260920Cl 追加: 変調なし成分の基準は**全球**の方向平均。半球ごとの平均 (posMeans / negMeans) をそのまま使うと、
         //  パターンが赤道 (試料系 z = 0、ノモニック投影では直線) を跨ぐ所で段差になる。源の向きを失った電子に半球の区別は無い
         double[] sphereMeans = null;
@@ -1354,7 +1364,8 @@ public sealed class EbsdPatternComposer
                 double pyView = (2.0 * h + 1 - height) * scaleH + viewOffY;
                 double oy = ray.Y(pyView), oz = ray.Z(pyView); //射出方向の Y, Z (試料系)。規約は ExitRay の doc
                 //試料表面より下へ向かう方向には電子が出てこない。oz は h だけで決まるので行ごとに落とす
-                if (!(oz > 0)) { for (int w = 0; w < width; w++) pVal0[h * width + w] = 0; return scratch; }
+                //if (!(oz > 0)) { for (int w = 0; w < width; w++) pVal0[h * width + w] = 0; return scratch; } //260921Cl 変更前
+                if (!(oz > 0)) { for (int w = 0; w < width; w++) pVal0[h * width + w] = 0; if (wantBackground) Array.Clear(background, h * width, width); return scratch; } //260921Cl 変更: 背景も 0
 
                 for (int w = 0; w < width; w++)
                 {
@@ -1379,6 +1390,7 @@ public sealed class EbsdPatternComposer
 
                     double sum = 0;
                     double sumMean = 0; // 260919Cl 追加: 非晶質源 (変調なし) 用の方向平均強度
+                    double bgSum = 0; //260921Cl 追加: 背景 Σ W·M̄ (A(E) 有効時の CohAccum.Dc と同じ量)
                     var acc = new CohAccum(); //260921Cl 追加: A(E) 有効時だけ使う累算器 (意味は CohAccum の doc)
                     if (isHexGrid) // 260331Cl
                     {
@@ -1408,6 +1420,7 @@ public sealed class EbsdPatternComposer
                                 //260921Cl 変更 (深さ写像 A2、Codex 指摘): W は区間質量のまま (Δt で割ると不等間隔格子で Ā·W/SA が格子の切り方に依存する。等間隔なら従来と同じ)
                                 if (hasA) acc.Add(weight, weight * planeMeans[wIdx], aE); //planeMeans は既に /Δt 済みなので m = weight·M̄
                                 if (fA > 0) sumMean += weight * sMean; // 260919Cl 追加 / 260920Cl 変更: 半球平均 → 全球平均 (平均は既に /Δt 済み)
+                                if (wantBackground) bgSum += weight * planeMeans[wIdx]; //260921Cl 追加
                             }
                         }
                     }
@@ -1443,6 +1456,7 @@ public sealed class EbsdPatternComposer
                                 //260921Cl 変更 (深さ写像 A2、Codex 指摘): W は区間質量のまま (Δt で割ると不等間隔格子で Ā·W/SA が格子の切り方に依存する。等間隔なら従来と同じ)
                                 if (hasA) acc.Add(weight, weight * planeMeans[wIdx], aE); //planeMeans は既に /Δt 済みなので m = weight·M̄
                                 if (fA > 0) sumMean += weight * sMean; // 260919Cl 追加 / 260920Cl 変更: 半球平均 → 全球平均 (平均は既に /Δt 済み)
+                                if (wantBackground) bgSum += weight * planeMeans[wIdx]; //260921Cl 追加
                             }
                         }
                     }
@@ -1457,6 +1471,7 @@ public sealed class EbsdPatternComposer
                     //pVal0[i] = fA > 0 ? (1 - fA) * coherentSum + fA * sumMean : coherentSum; // 260919Cl 変更: 非晶質層内の源は方向平均 (変調なし) で寄与 //260921Cl 変更前
                     //260921Cl 変更: 画素の立体角を掛ける (値は重みについて 1 次同次なので、最後に 1 回掛ければ全項に掛けたのと同じ)
                     pVal0[i] = pixelSolidAngle * (fA > 0 ? (1 - fA) * coherentSum + fA * sumMean : coherentSum); // 260919Cl: 非晶質層内の源は方向平均 (変調なし) で寄与
+                    if (wantBackground) background[i] = pixelSolidAngle * (fA > 0 ? (1 - fA) * bgSum + fA * sumMean : bgSum); //260921Cl 追加: 上の式で菊池の変調 (coherentSum − bgSum) を除いたもの
                 }
                 return scratch;
             }, _ => { });

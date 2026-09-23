@@ -122,14 +122,14 @@ public static class ImageProcess
                 blur[h] = Math.Exp(-(h - center) * (h - center) / hwhm / hwhm * Math.Log(2));
             blur = Statistics.Normarize(blur);
 
+            //260921Cl 変更 (Codex 指摘): カーネルが上下両端を同時にはみ出す (画像の高さ < カーネル幅) と、旧式は片側しか切らず分母が大きすぎた
+            //  (FWHM が画像に比べて大きいと、一様な画像でも中央が暗くなる)。分母は下の畳み込みと同じ範囲 lo..hi の和にする。
+            //  はみ出さない画素は従来どおり 1 (内部の値はビット単位で不変)
+            //旧: if (h < center) blurSumH[h] = blur[(center - h)..].Sum(); else if (h >= height - center) blurSumH[h] = blur[..(height - h + center)].Sum(); else blurSumH[h] = 1;
             Parallel.For(0, height, h =>
             {
-                if (h < center)
-                    blurSumH[h] = blur[(center - h)..].Sum();
-                else if (h >= height - center)
-                    blurSumH[h] = blur[..(height - h + center)].Sum();
-                else
-                    blurSumH[h] = 1;
+                int lo = Math.Max(0, center - h), hi = Math.Min(limit, height - h + center);
+                blurSumH[h] = lo == 0 && hi == limit ? 1 : blur[lo..hi].Sum();
             });
             Parallel.For(0, width, w =>
             {
@@ -141,14 +141,12 @@ public static class ImageProcess
                 }
             });
 
+            //260921Cl 変更: 上の blurSumH と同じ理由で、分母は畳み込みと同じ範囲の和にする
+            //旧: if (w < center) blurSumW[w] = blur[(center - w)..].Sum(); else if (w >= width - center) blurSumW[w] = blur[..(width - w + center)].Sum(); else blurSumW[w] = 1;
             Parallel.For(0, width, w =>
             {
-                if (w < center)
-                    blurSumW[w] = blur[(center - w)..].Sum();
-                else if (w >= width - center)
-                    blurSumW[w] = blur[..(width - w + center)].Sum();
-                else
-                    blurSumW[w] = 1;
+                int lo = Math.Max(0, center - w), hi = Math.Min(limit, width - w + center);
+                blurSumW[w] = lo == 0 && hi == limit ? 1 : blur[lo..hi].Sum();
             });
             Parallel.For(0, height, h =>
             {

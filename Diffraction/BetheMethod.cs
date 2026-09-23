@@ -3835,6 +3835,24 @@ public partial class BetheMethod
     /// <returns></returns>
     public (Complex Real, Complex Imag) getU(double voltage) => getU(voltage, new Beam((0, 0, 0), new Vector3DBase(0, 0, 0)));
 
+    /// <summary>260923Cl 追加: Bloch 波の平均吸収長 λ_abs(E) = K/(2π U'_0) [nm] (強度の減衰、経路長) をエネルギー格子 [keV] ごとに返す。
+    /// U'_0 は g = 0 の吸収ポテンシャル (熱散漫、<see cref="AbsorptionElasticModel"/> に従う)、K は真空の波数 (結晶内との差は U₀/2K² ≈ 10⁻⁴)。
+    /// EBSD の源の深さを「最後のコヒーレンス破壊事象」で取るとき、MC の生存確率とマスターパターンの平均吸収の二重計上を除くのに使う
+    /// (<see cref="EbsdMonteCarloDistribution.FillPathLengthWeights"/>)。U'_0 ≤ 0 (B 未設定など) のエネルギーは +∞ (補正なし)。</summary>
+    public double[] MeanAbsorptionLengthNm(double[] energiesKeV)
+    {
+        var result = new double[energiesKeV.Length];
+        for (int i = 0; i < energiesKeV.Length; i++)
+        {
+            double kvac = UniversalConstants.Convert.EnergyToElectronWaveNumber(energiesKeV[i]);
+            uDictionary.Clear(); // getU はエネルギーに依らないキーでキャッシュするので、エネルギーごとに空にする
+            double uPrime0 = getU(energiesKeV[i]).Imag.Real;
+            result[i] = uPrime0 > 0 ? kvac / (2 * Math.PI * uPrime0) : double.PositiveInfinity;
+        }
+        uDictionary.Clear();
+        return result;
+    }
+
     /// <summary>
     /// 260316Cl 追加
     /// Find_gVectors の最終ループ向け最適化オーバーロード (h=null, inner/outer=NaN の場合)。

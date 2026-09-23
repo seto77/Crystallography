@@ -1217,8 +1217,10 @@ public static partial class AtomStatic // (260401Ch) generated NIST elastic samp
     /// a1,a2,a3,a4,a5,b1,b2,b3,b4,b5,valence,method (f_e(s) = Σ a_i exp(-b_i s^2), s = sinθ/λ [Å^-1])
     /// <para>出典: 中性原子 = L.-M. Peng, G. Ren, S. L. Dudarev and M. J. Whelan (1996),
     /// "Robust parameterization of elastic and absorptive electron atomic scattering factors", Acta Cryst. A52, 257-276
-    /// (DOI:10.1107/S0108767395014371; 5 Gaussian, s 最大 6 Å^-1)。イオン = L.-M. Peng (1998), Acta Cryst. A54, 481-485
+    /// (DOI:10.1107/S0108767395014371; 5 Gaussian)。イオン = L.-M. Peng (1998), Acta Cryst. A54, 481-485
     /// (DOI:10.1107/S0108767398001901)。表は International Tables for Crystallography Vol. C, Table 4.3.2.2 にも収録。260606Cl 出典詳細化</para>
+    /// <para>260923Cl 注記訂正: ここの係数は ITC Vol. C Table 4.3.2.2 = Peng 1996 の <b>s ≤ 2 Å⁻¹ 用</b>の当てはめ (旧注記の「s 最大 6 Å⁻¹」は誤り。
+    /// 6 Å⁻¹ までの当てはめは同論文の別表 = ITC Table 4.3.2.3)。s &gt; 2 Å⁻¹ (大角の熱散漫の全球積分など) では外挿になる。</para>
     /// </summary>
     public static readonly ES[][] ElectronScatteringPeng =
         [
