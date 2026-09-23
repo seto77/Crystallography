@@ -182,6 +182,15 @@ public class EBSD
     /// <summary>保持している MasterPattern を破棄する。結晶変更などで無効になったときに呼ぶ。260724Cl 追加</summary>
     public void ClearMasterPattern() => MasterPattern = null;
 
+    /// <summary>260921Cl 追加: ファイルから読み込んだ MasterPattern (<see cref="MasterPatternFile.Load"/>) を保持させる。構築中は差し替えない (false)</summary>
+    public bool SetMasterPattern(MasterPattern masterPattern)
+    {
+        ArgumentNullException.ThrowIfNull(masterPattern);
+        if (IsBuilding) return false;
+        MasterPattern = masterPattern;
+        return true;
+    }
+
     private MasterPatternBuildRequest currentMasterPatternBuildRequest = null; // (260327Ch) build 条件はクラス内部だけで保持する
 
     /// <summary>Bethe 計算中または plane 変換中かどうかを返す。</summary>
