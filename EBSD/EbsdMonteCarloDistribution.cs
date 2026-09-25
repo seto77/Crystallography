@@ -19,6 +19,10 @@ public sealed class EbsdMonteCarloDistribution
     /// <summary>260922Cl 追加 (作者指示): エネルギーフィルター。射出エネルギーがこの値 [keV] 以下の電子は像に寄与させない
     /// (検出器の前に理想的な高域通過のエネルギーフィルターを置いたのと同じ)。NaN なら無し (従来)</summary>
     public double EnergyFilterMinKeV { get; }
+    /// <summary>260925Cl 追加 (EBSD 案 d・本体への持ち込み (i)): ビンごとの射出エネルギー分布 G(E) を、MC 電子の生のヒストグラム
+    /// (φ 重み、エネルギー格子の隣り合う 2 枚へ線形に配る) で作るか。false (既定) なら従来の非対称ガウス
+    /// (重み付き平均と左右別の分散、<see cref="ComputeEnergyGaussian"/>)。ctor の doc</summary>
+    public bool EnergyHistogram { get; }
 
     /// <summary>ビンごとの正規化重み。BinWeights[binI, binJ] は double[energyCount * depthCount]。 // (260327Ch)
     /// <para>⚠ 260921Cl: 深さ写像の改修 (A2) 以降は、<b>ビン中心の射出方向 <see cref="BinCenterMu"/> で経路長へ換算した近似</b>。
@@ -304,6 +308,11 @@ public sealed class EbsdMonteCarloDistribution
     /// <param name="energyWeightDeadKeV">蛍光体応答 φ(E) = max(0, E − E_dead) の E_dead [keV]。NaN なら 1 本 1 票</param>
     /// <param name="energyFilterMinKeV">260922Cl 追加: エネルギーフィルター [keV]。E ≤ この値の電子は重み 0 (φ に掛ける)。
     /// 当てはめた格子上のエネルギー分布も、スライスの幅のうちこの値を超える割合だけ残す。NaN または 0 以下なら無し</param>
+    /// <param name="energyHistogram">260925Cl 追加: true ならビンごとのエネルギー分布を MC 電子の生のヒストグラムで作る
+    /// (<see cref="ComputeEnergyHistogram"/>)。【なぜ】非対称ガウスは E₀ 側の鋭い山 (弾性に近い電子) を 2〜3 分の 1 に過小評価し、
+    /// 帯を広く見せる (Si 20 keV・実測との比較で、A(E) を切った固定 18 反射の幅の指標 α̂ の実測との差の約 45 % がこれ。
+    /// 正本 .project-guidance/ReciPro/ReciPro_EBSD総合設計・実装・高速化・引継ぎ.md §2.7.0 の 260924Cl「3 次元での確認」)。
+    /// ⚠ A(E) の既定 E_c (0.8 keV) は非対称ガウスの合成で実測に合わせた値なので、true では E_c の較正をやり直す必要がある。</param>
     public EbsdMonteCarloDistribution(
         (double Depth, V3 Vec, double Energy)[] bseList,
         double beamEnergy,
@@ -316,8 +325,11 @@ public sealed class EbsdMonteCarloDistribution
         double energyWeightDeadKeV = double.NaN, // 260919Cl 追加 (試行): 蛍光体応答 φ(E)=max(0,E−E_dead) で電子を重み付け。NaN = 重み無し (従来)
         //double energyFilterMinKeV = double.NaN) // 260922Cl 追加 (作者指示): エネルギーフィルター。E ≤ この値の電子は像に寄与させない。NaN = 無し //260923Cl 変更前
         double energyFilterMinKeV = double.NaN, // 260922Cl 追加 (作者指示): エネルギーフィルター。E ≤ この値の電子は像に寄与させない。NaN = 無し
-        double[] absorptionLengthNm = null) // 260923Cl 追加: Bloch 波の平均吸収長 λ_abs(E) [nm] (energies と同じ長さ、経路長)。null = 補正なし (下の AbsorptionLengthNm)
+        //double[] absorptionLengthNm = null) // 260923Cl 追加: Bloch 波の平均吸収長 λ_abs(E) [nm] (energies と同じ長さ、経路長)。null = 補正なし (下の AbsorptionLengthNm) //260925Cl 変更前
+        double[] absorptionLengthNm = null, // 260923Cl 追加: Bloch 波の平均吸収長 λ_abs(E) [nm] (energies と同じ長さ、経路長)。null = 補正なし (下の AbsorptionLengthNm)
+        bool energyHistogram = false) // 260925Cl 追加: ビンごとのエネルギー分布を MC の生のヒストグラムで (false = 従来の非対称ガウス)
     {
+        EnergyHistogram = energyHistogram; // 260925Cl 追加
         //260923Cl 追加 (案 d §2.2 の「生存確率の二重計上」): 源の深さを「最後のコヒーレンス破壊事象」(熱散漫も含む) で取ると、
         //  MC の深さ分布は「源の生まれた密度 × 表面まで次の破壊事象が起きない確率」で、掛けるマスターパターンは表面から深さ t まで
         //  の熱散漫の平均吸収 exp(−t/λ_abs) を既に含む。同じ熱散漫の生存が 2 回掛かるので、λ_abs(E) を渡したときは深さの重みを
@@ -480,7 +492,10 @@ public sealed class EbsdMonteCarloDistribution
         //旧: for (int b = 0; b < nBins; b++) { energyGroups[b] = binEnergies[b / binCount, b % binCount]; if (weightGroups != null) weightGroups[b] = binEnergyWeights[b / binCount, b % binCount]; }
         //旧: var globalEnergy = NormalizeToUnitSum(ComputeEnergyGaussian(energyGroups, energies, weightGroups));
         //var globalEnergy = NormalizeToUnitSum(ComputeEnergyGaussian(binEnergies, energies, EnergyWeightDeadKeV)); //260921Cl 変更 (2 パス化): ビン順に並べた全電子 = 旧 energyGroups と同じ走査順 //260922Cl 変更前
-        var globalEnergy = NormalizeToUnitSum(ComputeEnergyGaussian(binEnergies, energies, EnergyWeightDeadKeV, EnergyFilterMinKeV)); //260922Cl 変更: エネルギーフィルター
+        //var globalEnergy = NormalizeToUnitSum(ComputeEnergyGaussian(binEnergies, energies, EnergyWeightDeadKeV, EnergyFilterMinKeV)); //260922Cl 変更: エネルギーフィルター //260925Cl 変更前
+        var globalEnergy = NormalizeToUnitSum(EnergyHistogram //260925Cl 変更: 生のヒストグラムも選べる
+            ? ComputeEnergyHistogram(binEnergies, energies, EnergyWeightDeadKeV, EnergyFilterMinKeV)
+            : ComputeEnergyGaussian(binEnergies, energies, EnergyWeightDeadKeV, EnergyFilterMinKeV));
         // 260919Cl 追加: 合算 λ(E) の深さ重み (エネルギー因子 1)。合成器で非晶質源の基準強度 ⟨M⟩(e) を作るのに使う
         //260921Cl 変更 (深さ写像 A2): 全ビン合算の λ ではなく、各ビンの (μ_b で換算した) 条件付き深さ分布を F_b で混ぜたものにする (下の Parallel.For の後)。
         //  全 (E, 深さ) を一括正規化してから混ぜると、有限の深さ範囲で捕まえられる割合がビンごとに違うせいでビン間の比が変わる (Codex 指摘)
@@ -527,7 +542,11 @@ public sealed class EbsdMonteCarloDistribution
                 //energyDistribution = NormalizeToUnitSum(ComputeEnergyGaussian([binEnergies[bi, bj]], energies, useEnergyWeight ? [binEnergyWeights[bi, bj]] : null)); // 260919Cl: エネルギーは全電子 (重み付き) //260921Cl 変更前 (2 パス化)
                 //if (binData.Count >= 10 && FitLambdaFromData(binData, energies, out double la, out double lb, out double lc)) // 260919Cl: λ は結晶内の源 //260921Cl 変更前 (2 パス化)
                 //energyDistribution = NormalizeToUnitSum(ComputeEnergyGaussian(binEnergies.AsSpan(binStart[idx], binStart[idx + 1] - binStart[idx]), energies, EnergyWeightDeadKeV)); // 260919Cl: エネルギーは全電子 (重み付き) //260922Cl 変更前
-                energyDistribution = NormalizeToUnitSum(ComputeEnergyGaussian(binEnergies.AsSpan(binStart[idx], binStart[idx + 1] - binStart[idx]), energies, EnergyWeightDeadKeV, EnergyFilterMinKeV)); //260922Cl 変更: エネルギーフィルター
+                //energyDistribution = NormalizeToUnitSum(ComputeEnergyGaussian(binEnergies.AsSpan(binStart[idx], binStart[idx + 1] - binStart[idx]), energies, EnergyWeightDeadKeV, EnergyFilterMinKeV)); //260922Cl 変更: エネルギーフィルター //260925Cl 変更前
+                var binSpan = binEnergies.AsSpan(binStart[idx], binStart[idx + 1] - binStart[idx]); //260925Cl 変更: 生のヒストグラムも選べる
+                energyDistribution = NormalizeToUnitSum(EnergyHistogram
+                    ? ComputeEnergyHistogram(binSpan, energies, EnergyWeightDeadKeV, EnergyFilterMinKeV)
+                    : ComputeEnergyGaussian(binSpan, energies, EnergyWeightDeadKeV, EnergyFilterMinKeV));
                 if (binLambda.Count(idx) >= 10 && binLambda.Fit(idx, out double la, out double lb, out double lc)) // 260919Cl: λ は結晶内の源
                 {
                     lambda = EvaluateLambda(energies, la, lb, lc); state = BinFitState.Fitted;
@@ -899,6 +918,42 @@ public sealed class EbsdMonteCarloDistribution
             }
 
         return gE;
+    }
+
+    /// <summary>260925Cl 追加 (EBSD 案 d・本体への持ち込み (i)): ビンの電子の射出エネルギーの生のヒストグラム (エネルギー格子上、正規化前)。
+    /// 電子 1 本の重みは <see cref="ElectronEnergyWeight"/> (φ(E)·θ(E − E_min)) で、格子の隣り合う 2 枚 E_i ≥ E &gt; E_{i+1} へ
+    /// 線形に配る (三角の核 = マスターパターンをエネルギーで線形補間するのと同じ)。格子の外の電子は端の 1 枚へ寄せる
+    /// (格子は MC の損失 95 % 点までなので、下端の外は数 %。tools/EbsdProfileFit の --energy-split の Hist と同じ扱い)。
+    /// エネルギーフィルターは電子の重みだけで効かせる (非対称ガウスの裾の漏れ対策の「スライスの通過割合」は掛けない:
+    /// E_min をまたぐ隣の 2 枚への配分は、E_min より上の電子を補間で表したもの)。格子は降順 (<see cref="Energies"/>) でも昇順でもよい。</summary>
+    private static double[] ComputeEnergyHistogram(ReadOnlySpan<double> electronEnergies, double[] energies, double energyWeightDeadKeV = double.NaN, double energyFilterMinKeV = double.NaN)
+    {
+        int eLen = energies.Length;
+        var h = new double[eLen];
+        if (eLen == 1)
+        {
+            foreach (double e in electronEnergies) h[0] += ElectronEnergyWeight(e, energyWeightDeadKeV, energyFilterMinKeV);
+            return h;
+        }
+        bool desc = energies[0] > energies[^1];
+        int top = desc ? 0 : eLen - 1, bottom = desc ? eLen - 1 : 0;
+        foreach (double e in electronEnergies)
+        {
+            double w = ElectronEnergyWeight(e, energyWeightDeadKeV, energyFilterMinKeV);
+            if (!(w > 0)) continue;
+            if (e >= energies[top]) { h[top] += w; continue; }
+            if (e <= energies[bottom]) { h[bottom] += w; continue; }
+            //e を挟む区間 [lo, hi] (energies[lo] < e < energies[hi] となる隣り合う添字) を二分探索
+            int a = 0, b = eLen - 1; // desc: energies[a] > e > energies[b]、asc: energies[a] < e < energies[b]
+            while (b - a > 1)
+            {
+                int mid = (a + b) >> 1;
+                if (desc ? energies[mid] > e : energies[mid] < e) a = mid; else b = mid;
+            }
+            double t = (e - energies[a]) / (energies[b] - energies[a]); //0 (= energies[a]) … 1 (= energies[b])
+            h[a] += w * (1 - t); h[b] += w * t;
+        }
+        return h;
     }
 
     /// <summary>260922Cl 追加: 電子 1 本の重み = 蛍光体応答 φ(E) = max(0, E − E_dead) (NaN なら 1) × エネルギーフィルター θ(E − E_min) (NaN なら 1)。
