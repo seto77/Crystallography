@@ -3466,7 +3466,8 @@ public partial class BetheMethod
             edxSignals[chIndex] = new StemSignalMap
             {
                 Data = chData,
-                Quantity = SignalQuantity.IonizationVacanciesGenerated,
+                //Quantity = SignalQuantity.IonizationVacanciesGenerated,//260925Cl 変更前
+                Quantity = XrayLineSeries.IsLineSeries(chData.Target.Shell) ? SignalQuantity.XrayPhotonsGenerated : SignalQuantity.IonizationVacanciesGenerated,//260925Cl 変更: 線の系列は光子の生成数
                 Normalization = SignalNormalization.ModelAbsoluteNotAudited,
                 Image = new StemImageStack(new Size(width, height), image_edx),
                 HermitianResidualMax = hermMax,
