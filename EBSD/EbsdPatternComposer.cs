@@ -1512,5 +1512,53 @@ public sealed class EbsdPatternComposer
             }, _ => { });
         }
     }
+
+    /// <summary>260927Cl 追加 (電子ごとの A = G_A の同値検査用、設計 = .project-guidance/ReciPro/ReciPro_EBSD_ヒストグラムG_A実装設計_260927.md §4):
+    /// model 2 の表示合成 (<see cref="ApplyWeightedModel2"/>) が画素 i・エネルギー節点 e で掛ける A の係数 a[e][i] と、全面共通のコントラスト減衰 Ā
+    /// (<see cref="MeanCoherentFraction"/>) を返す。ヒストグラム分布 (<see cref="EbsdMonteCarloDistribution.EnergyHistogram"/>) なら電子ごとの A
+    /// (G_A/G を 4×4 タップで内挿した実効 A)、近似ガウスなら節点の A (全画素で同じ値)。A(E) 無効 (E_c が NaN・∞ など) なら null (Ā = 1)。
+    /// <para>【なぜ】本体の合成は V = Σ W·M̄ + Ā·(Σ W)·(⟨I⟩_A − ⟨M̄⟩_A) で、A はエネルギー節点ごとの係数としてしか入らない。
+    /// この係数とエネルギー別の画像 (A 無効で 1 節点だけ残したマスターの合成) があれば、外部の参照実装 (tools/EbsdProfileFit の ComposeBody) が
+    /// 同じ離散化のまま本体の合成を再現でき、G_A の配線 (内挿・退避・縁の延長) を画像の一致で検査できる。</para>
+    /// <para>画素 → 射出方向 → ビン座標 → 4×4 タップの経路は <see cref="ApplyWeightedModel2"/> とまったく同じ (<see cref="EvaluatePathLengthWeights"/>)。
+    /// 試料表面より下を向く画素 (表示合成では 0) と、内挿したエネルギー重みが 0 の節点 (重み 0 なので合成に効かない) は節点の A を入れる。
+    /// ⚠ 分布の <see cref="EbsdMonteCarloDistribution.FlatEnergyDistributionA"/> を現在の E_c で作り直す (表示合成と同じ副作用)。</para></summary>
+    public double[][] ComputeEffectiveCoherenceModel2(int width, int height, MasterPattern mp, EbsdMonteCarloDistribution dist, in EbsdRasterView view, out double meanCohFraction)
+    {
+        EnsureGridMatches(mp, dist);
+        int eLen = mp.Energies.Length, dLen = mp.Depths.Length, binCount = dist.BinCount, nSlices = eLen * dLen;
+        var cohA = BuildCoherenceFactors(mp);
+        if (cohA == null) { meanCohFraction = 1; return null; }
+        //以下の 3 行は ApplyWeightedModel2 と同じ (G_A の作り直し・model 2 の重みの種類・Ā)
+        dist.ComputeElectronWiseCoherence(BeamEnergyKeV, CoherenceLossDecayKeV);
+        var flatGA = dist.FlatEnergyDistributionA;
+        const bool absoluteWeights = true, sliceMassWeights = true;
+        var depthGrid = mp.Depths; var depthGridWidths = mp.DepthIntervals;
+        meanCohFraction = MeanCoherentFraction(dist, cohA, view, absoluteWeights, sliceMassWeights, depthGrid, depthGridWidths, null, eLen, dLen);
+        var a = new double[eLen][];
+        for (int ei = 0; ei < eLen; ei++) { a[ei] = new double[width * height]; Array.Fill(a[ei], cohA[ei]); }
+        if (flatGA == null) return a; //近似ガウス: 節点の A
+        double scaleW = view.ScaleW, scaleH = view.ScaleH, viewOffX = view.OffX, viewOffY = view.OffY;
+        var ray = CreateExitRay(view);
+        Parallel.For(0, height, () => new BinScratch(nSlices, eLen), (h, _, scratch) =>
+        {
+            double pyView = (2.0 * h + 1 - height) * scaleH + viewOffY;
+            double oy = ray.Y(pyView), oz = ray.Z(pyView);
+            if (!(oz > 0)) return scratch;
+            for (int w = 0; w < width; w++)
+            {
+                int i = h * width + w;
+                double pxView = (2.0 * w + 1 - width) * scaleW + viewOffX;
+                double ox = ray.X(pxView);
+                var (bx, by) = EbsdMonteCarloDistribution.DirectionToBinCoords(ox, oy, oz, binCount);
+                double mu = oz / Math.Sqrt(ox * ox + oy * oy + oz * oz);
+                EvaluatePathLengthWeights(dist, bx, by, mu, absoluteWeights, sliceMassWeights, depthGrid, depthGridWidths, scratch, eLen, nSlices, false, flatGA);
+                var aEff = scratch.AEff;
+                for (int ei = 0; ei < eLen; ei++) if (!double.IsNaN(aEff[ei])) a[ei][i] = aEff[ei];
+            }
+            return scratch;
+        }, _ => { });
+        return a;
+    }
     #endregion
 }

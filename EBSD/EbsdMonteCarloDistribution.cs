@@ -701,7 +701,6 @@ public sealed class EbsdMonteCarloDistribution
         return l;
     }
 
-    /// <summary>260921Cl 追加: 総和 1 に正規化した新しい配列を返す (総和が 0 なら一様)。</summary>
     /// <summary>260927Cl 追加 (電子ごとの A = G_A、作者判断 2026-09-27「ヒストグラム + 整合した G_A を選択肢として公開」): E0 [keV] と E_c [keV] から、ビンごとの A 重み付きヒストグラム
     /// G_A,b[e] = Σ_電子 w_e·A(E_e)·k_e(E_e) (k_e = <see cref="ComputeEnergyHistogram"/> と同じ三角核、w_e = 蛍光体応答 × フィルター) を、プレーンな G_b と同じ規格化定数で割って
     /// <see cref="FlatEnergyDistributionA"/> に作る。ctor と同じ規則: 電子 10 本未満のビンは全電子で退避、被覆率が足りない縁のビン (<see cref="BinMeasured"/> = false) は
@@ -743,6 +742,7 @@ public sealed class EbsdMonteCarloDistribution
         FlatEnergyDistributionA = flat;
     }
 
+    /// <summary>260921Cl 追加: 総和 1 に正規化した新しい配列を返す (総和が 0 なら一様)。</summary>
     static double[] NormalizeToUnitSum(double[] v)
     {
         double s = 0; foreach (var x in v) s += x;
