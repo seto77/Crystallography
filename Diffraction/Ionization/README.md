@@ -1,21 +1,21 @@
-# STEM-EDX イオン化データリソース (260801Cl 作成 / 260805Cl v3 更新 / 260809Cl v4 更新 / 260811Cl v5 反映)
+# STEM-EDX イオン化データリソース (260801Cl 作成 / 260805Cl v3 更新 / 260809Cl v4 更新 / 260811Cl v5 反映 / 260927Cl v7 の記述に更新)
 
 | ファイル | 内容 | リーダー |
 |---|---|---|
-| `IonizationFsE0.bin` | 内殻イオン化形状因子 F(s,E0) 本番テーブル dataset 5.0.0 (K: Z=6–50 / L1・L2・L3: Z=20–86 / M1–M5: Z=30–86、計525ch、**s=0..16Å⁻¹ 321点**、符号付きF) | `IonizationFsTable` (Diffraction/IonizationChannel.cs) |
+| `IonizationFsE0.bin` | 内殻イオン化形状因子 F(s,E0) 本番テーブル dataset 7.0.0 (K: Z=6–50 / L1・L2・L3: Z=20–86 / M1–M5: Z=30–86、計525ch、**s=0..16Å⁻¹ 321点**、符号付きF) | `IonizationFsTable` (Diffraction/IonizationChannel.cs) |
 | `BoteSalvat.bin` | Bote–Salvat 2008 電子衝撃イオン化断面積係数 (Z=1–99, K/L/M subshell) | `BoteSalvat` (同上) |
 
 ## 出所とライセンス
 
 - `IonizationFsE0.bin` は**完全自前計算** (生成器 = Temari `src/gen_production.jl`、
-  モデルID `DHFS-KS23-DiracB-KDIRAC2C-jsplit-fullrange-sym-v4-DSCF` = **κ 分解 Dirac
+  モデルID `DHFS-KS23-DiracB-KDIRAC2C-jsplit-fullrange-sym-v4-DSCF-FNUSX` (v7。`-FNUSX` = 有限核) = **κ 分解 Dirac
   連続状態 + 完全 Dirac SCF 原子場** + HIGH 求積 + E0 倍密度グリッド)。
   OA2000 表・µSTEM データは一切含まれない。
 - ⚠ **自前計算だが MIT ではない。**Temari は**ソフトを MIT、生成データを CC BY 4.0** と
   意図的に分けている (MIT はソフトウェア向けの文言で EU のデータベース権に触れないため。
   根拠は Temari `licenses/README.md`)。ここに置いてあるのは**その改変版** (下記の再パック) なので、
   **CC BY 4.0 の帰属表示が要る**。表示の実体はリポジトリルートの `THIRD-PARTY-NOTICES.md`。
-  - 原典: dataset **v5.0.0** (2026)、DOI [10.5281/zenodo.21872050](https://doi.org/10.5281/zenodo.21872050)
+  - 原典: dataset **v7.0.0** (2026)、DOI [10.5281/zenodo.22643468](https://doi.org/10.5281/zenodo.22643468)
     (版非依存 DOI は 10.5281/zenodo.21872049)
   - **改変あり**: 公開テーブルを `pack_resource.py` (method 2 = 1e-6 量子化 + s 方向 delta +
     byte-plane shuffle) で 1 本のバイナリに詰め直してある。**値の再計算はしていない**
@@ -44,7 +44,7 @@ F テーブルの生成側も同じ条件で弾いている。σ が無い = 重
 (NSRDS 164 / Llovet ら 2014)。**M 殻を出す以上、UI かドキュメントで利用者に伝えること。**
 形状 F(s) の精度とは別の話で、こちらは絶対値に効く。
 
-## v4.0.0 → v5.0.0 (260810Cl・**現在の同梱版**)
+## v4.0.0 → v5.0.0 (260810Cl)
 
 1. **s グリッドを 161 → 321 点へ延長** (s ≤ 8 → **16 Å⁻¹**、刻みは 0.05 Å⁻¹ のまま)。
    **formatVersion は 4** へ。ALCHEMI は基底が大きいと s = 10.5 Å⁻¹ を要求する
@@ -56,10 +56,23 @@ F テーブルの生成側も同じ条件で弾いている。σ が無い = 重
 3. ⚠ **formatVersion 1/2/3 の .bin はこのリーダーでは読めない** (s グリッド検査で拒否)。
    `.bin` と `Crystallography.dll` は**必ず同時に差し替える**こと
 
+## v5.0.0 → v7.0.0 (2026-09-08 に同梱 `a28fd91`・**現在の同梱版**)
+
+1. **核の模型だけが変わった**。v7 は一様に帯電した球の有限核 (半径は IAEA の実測の rms 電荷半径) で計算した最初の版で、
+   model_id の末尾の `-FNUSX` がそれを示す。v4.0.0〜v6.0.0 は文章では有限核と書きながら点核で計算していた
+   (Temari 側の訂正)。v6.0.0 はここには同梱していない
+2. **s グリッド・formatVersion・tail の意味論は v5 と同一** (321 点で s = 16 Å⁻¹ まで、formatVersion 4)。
+   リーダーは v5 と v7 の両方を読めるので、どちらを読んだかは見出しの `DatasetVersion` で区別する
+3. 525 チャネル・14,796 行で、行ごとの max|ΔF| は 1.5e-08〜5.0e-04。同梱の元にした 525 本の JSON は、
+   公開した manifest の digest (`cead107f…`) をそのまま再現する (公開した dataset そのもので、作り直しではない)
+4. 原典: DOI [10.5281/zenodo.22643468](https://doi.org/10.5281/zenodo.22643468)。生成の記録は公開書庫の中の
+   `MANIFEST.md` (Temari の GitHub release `dataset-v7.0.0` にバイト同一の写しがある)
+
 ## フォーマット・契約の正本
 
 - バイナリレイアウト: `tools/IonizationGen/pack_resource.py` 冒頭コメント
-- 補間・範囲・tail の C# 契約 + 生成の QC: `tools/IonizationGen/handout/prod_v5_jl/MANIFEST.md`
+- 補間・範囲・tail の C# 契約 + 生成の QC: `tools/IonizationGen/handout/prod_v5_jl/MANIFEST.md` (v5 のときの記録。
+  v7 で契約は変わっていない。v7 の生成の記録は公開書庫の `MANIFEST.md`)
 - 設計: `.project-guidance/ReciPro/ReciPro_STEM-EDX設計.md`
 
 `IonizationFsE0.bin` の method フィールド: 1 = F を float32 可逆格納 (v4 実測 8.25MB) /
