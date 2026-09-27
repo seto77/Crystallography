@@ -90,6 +90,17 @@ public sealed class EbsdMonteCarloDistribution
     internal double[] FlatFraction { get; }
     /// <summary>260921Cl 追加: 非晶質割合の場 (<see cref="BinAmorphousFraction"/> を縁で延長したもの)。</summary>
     internal double[] FlatAmorphousFraction { get; }
+    /// <summary>260927Cl 追加 (電子ごとの A = G_A、設計 = .project-guidance/ReciPro/ReciPro_EBSD_ヒストグラムG_A実装設計_260927.md、作者判断 2026-09-27): ビン順 (b = bi·binCount + bj) に
+    /// 並べた全電子の射出エネルギー [keV] (層内の源も含む。EnergyHistogram の入力そのもの) と、各ビンの開始添字 (ビン b の電子は [BinElectronStart[b], BinElectronStart[b+1]))。
+    /// 合成器が E_c を決めた時点で A 重み付きヒストグラムを作るために保持する (電子数 × 8 B)。</summary>
+    internal double[] BinElectronEnergies { get; }
+    internal int[] BinElectronStart { get; }
+    /// <summary>260927Cl 追加 (電子ごとの A): <see cref="ComputeElectronWiseCoherence"/> が作る A 重み付きヒストグラム G_A (<see cref="FlatEnergyDistribution"/> と同じ並び nBins × eLen、
+    /// プレーンな G と同じ規格化定数で割ってある → 節点ごとの G_A/G = その節点に配られた電子の A の重み付き平均、0 ≤ G_A ≤ G)。null なら合成器は節点の A を使う (従来)。</summary>
+    internal double[] FlatEnergyDistributionA { get; private set; }
+    /// <summary>260927Cl 追加 (電子ごとの A): 合成器が内挿する場で「電子をそのまま使う」ビン (被覆率 ≥ MinBinCoverage) の印。縁のビンは false で、
+    /// ctor は <see cref="ExtendFieldOutward"/> で内側の隣から延長した値に置き換える。G_A の場も同じ印・同じ延長で作る (G と G_A の比を崩さないため)。</summary>
+    internal bool[] BinMeasured { get; }
 
     /// <summary>260921Cl 追加 (Lambert 等積ディスク): 各ビンの面積のうち射出半球の円板に入る割合 (0..1)。内側は 1、円板の外は 0。
     /// <see cref="BinFraction"/> は電子の割合そのもの (総和 1) なので、縁のビンでは被覆率のぶん小さい。</summary>
@@ -450,6 +461,7 @@ public sealed class EbsdMonteCarloDistribution
         var binFill = binStart[..nBins];
         for (int n = 0; n < bseList.Length; n++)
             if (binOf[n] is int b and >= 0) binEnergies[binFill[b]++] = bseList[n].Energy;
+        BinElectronEnergies = binEnergies; BinElectronStart = binStart; //260927Cl 追加 (電子ごとの A): 合成時に E_c で A 重み付きヒストグラムを作るため保持 (binFill は binStart の複製なので binStart は不変)
 
         BinWeights = new double[binCount, binCount][];
         BinAbsoluteSliceWeights = new double[binCount, binCount][]; // (260325Ch) model 2 用
@@ -577,7 +589,6 @@ public sealed class EbsdMonteCarloDistribution
             BinWeights[bi, bj] = weights;
             BinAbsoluteSliceWeights[bi, bj] = absoluteSliceWeights; // (260325Ch)
         });
-
         //260921Cl 追加 (Lambert 等積ディスク): 合成器が内挿する場の縁の処理 (ctor の doc【縁のビン】)
         BinCoverage = ComputeDiskCoverage(binCount);
         FlatAmorphousFraction = new double[nBins];
@@ -588,6 +599,7 @@ public sealed class EbsdMonteCarloDistribution
             FlatAmorphousFraction[b] = BinAmorphousFraction[b / binCount, b % binCount];
             if (cov >= MinBinCoverage) { measured[b] = true; FlatFraction[b] /= cov; } //ビン全面あたりの割合 (内側のビンは cov = 1 で不変)
         }
+        BinMeasured = (bool[])measured.Clone(); //260927Cl 追加 (電子ごとの A): 延長前の印を保持 (ExtendFieldOutward は known を書き換える)
         ExtendFieldOutward(measured, binCount, eLen, FlatFraction, FlatAmorphousFraction, FlatEnergyDistribution, FlatLambdaNm);
 
         //260921Cl 追加 (深さ写像 A2): 非晶質層の基準強度用の深さ重み = Σ_b F_b·G_b(E)·p_b(t|E) (ビン中心 μ で換算)。
@@ -690,6 +702,47 @@ public sealed class EbsdMonteCarloDistribution
     }
 
     /// <summary>260921Cl 追加: 総和 1 に正規化した新しい配列を返す (総和が 0 なら一様)。</summary>
+    /// <summary>260927Cl 追加 (電子ごとの A = G_A、作者判断 2026-09-27「ヒストグラム + 整合した G_A を選択肢として公開」): E0 [keV] と E_c [keV] から、ビンごとの A 重み付きヒストグラム
+    /// G_A,b[e] = Σ_電子 w_e·A(E_e)·k_e(E_e) (k_e = <see cref="ComputeEnergyHistogram"/> と同じ三角核、w_e = 蛍光体応答 × フィルター) を、プレーンな G_b と同じ規格化定数で割って
+    /// <see cref="FlatEnergyDistributionA"/> に作る。ctor と同じ規則: 電子 10 本未満のビンは全電子で退避、被覆率が足りない縁のビン (<see cref="BinMeasured"/> = false) は
+    /// <see cref="ExtendFieldOutward"/> で内側の隣から延長 (G と同じ重み・同じ順なので G_A/G の比は保たれる)。
+    /// 【なぜ】節点の A (格子のエネルギーで A を評価) は格子の中央の電子で cosh(h/2E_c) 倍ずれる (案 d (8m)(8o): 同じ E_c で α̂ +0.005)。電子ごとに A を掛けて同じ核で配れば整合する。
+    /// EnergyHistogram = false (近似ガウス) または E_c が有効でないときは null (従来の節点の A。ガウス G と生 MC の G_A は混用しない)。0 ≤ G_A ≤ G を全節点で検査し、違反は例外。</summary>
+    internal void ComputeElectronWiseCoherence(double e0KeV, double ecKeV)
+    {
+        if (!EnergyHistogram || !(ecKeV > 0) || !double.IsFinite(ecKeV) || BinElectronEnergies == null) { FlatEnergyDistributionA = null; return; }
+        var energies = Energies;
+        int eLen = energies.Length, nBins = BinCount * BinCount;
+        double eMax = double.NegativeInfinity; foreach (var e in energies) eMax = Math.Max(eMax, e);
+        double e0 = e0KeV > 0 && double.IsFinite(e0KeV) ? e0KeV : eMax; //EbsdPatternComposer.CoherenceFactors と同じ E0 の規約
+        var globalG = ComputeEnergyHistogram(BinElectronEnergies, energies, EnergyWeightDeadKeV, EnergyFilterMinKeV);
+        var globalA = ComputeEnergyHistogram(BinElectronEnergies, energies, EnergyWeightDeadKeV, EnergyFilterMinKeV, e0, ecKeV);
+        var flat = new double[nBins * eLen];
+        Parallel.For(0, nBins, b =>
+        {
+            int n = BinElectronStart[b + 1] - BinElectronStart[b];
+            double[] hG, hA;
+            if (n < 10) { hG = globalG; hA = globalA; } //ctor の退避規則 (binCounts < 10 → 全電子) と同じ
+            else
+            {
+                var span = new ReadOnlySpan<double>(BinElectronEnergies, BinElectronStart[b], n);
+                hG = ComputeEnergyHistogram(span, energies, EnergyWeightDeadKeV, EnergyFilterMinKeV);
+                hA = ComputeEnergyHistogram(span, energies, EnergyWeightDeadKeV, EnergyFilterMinKeV, e0, ecKeV);
+            }
+            double s = 0; foreach (var x in hG) s += x;
+            int o = b * eLen;
+            for (int e = 0; e < eLen; e++) //NormalizeToUnitSum と同じ扱い: 総和が正なら割る。そうでなければ G は一様 (1/eLen) なので G_A = (1/eLen)·A(節点) にして比を節点の A に戻す
+                flat[o + e] = s > 0 && double.IsFinite(s) ? hA[e] / s : Math.Exp(-Math.Max(0, e0 - energies[e]) / ecKeV) / eLen;
+        });
+        //縁のビンを ctor と同じ規則で延長 (fraction・amorphous・λ の場は捨てる複製)
+        ExtendFieldOutward((bool[])BinMeasured.Clone(), BinCount, eLen, new double[nBins], new double[nBins], flat, new double[nBins * eLen]);
+        var flatG = FlatEnergyDistribution;
+        for (int k = 0; k < flat.Length; k++)
+            if (flat[k] < -1E-15 || flat[k] > flatG[k] * (1 + 1E-9) + 1E-15)
+                throw new InvalidOperationException($"G_A の範囲 0 ≤ G_A ≤ G に違反 (ビン {k / eLen}, 節点 {k % eLen}: G_A {flat[k]}, G {flatG[k]})");
+        FlatEnergyDistributionA = flat;
+    }
+
     static double[] NormalizeToUnitSum(double[] v)
     {
         double s = 0; foreach (var x in v) s += x;
@@ -926,13 +979,17 @@ public sealed class EbsdMonteCarloDistribution
     /// (格子は MC の損失 95 % 点までなので、下端の外は数 %。tools/EbsdProfileFit の --energy-split の Hist と同じ扱い)。
     /// エネルギーフィルターは電子の重みだけで効かせる (非対称ガウスの裾の漏れ対策の「スライスの通過割合」は掛けない:
     /// E_min をまたぐ隣の 2 枚への配分は、E_min より上の電子を補間で表したもの)。格子は降順 (<see cref="Energies"/>) でも昇順でもよい。</summary>
-    private static double[] ComputeEnergyHistogram(ReadOnlySpan<double> electronEnergies, double[] energies, double energyWeightDeadKeV = double.NaN, double energyFilterMinKeV = double.NaN)
+    //private static double[] ComputeEnergyHistogram(ReadOnlySpan<double> electronEnergies, double[] energies, double energyWeightDeadKeV = double.NaN, double energyFilterMinKeV = double.NaN) //260927Cl 変更前
+    private static double[] ComputeEnergyHistogram(ReadOnlySpan<double> electronEnergies, double[] energies, double energyWeightDeadKeV = double.NaN, double energyFilterMinKeV = double.NaN,
+        double e0KeV = double.NaN, double ecKeV = double.NaN) //260927Cl e0KeV・ecKeV 追加 (電子ごとの A): 有効なら各電子の重みに A(E) = exp(−max(0, E0 − E)/E_c) を掛ける (G_A)。NaN なら従来 (G)
     {
         int eLen = energies.Length;
         var h = new double[eLen];
+        bool withA = ecKeV > 0 && double.IsFinite(ecKeV); //260927Cl 追加
         if (eLen == 1)
         {
-            foreach (double e in electronEnergies) h[0] += ElectronEnergyWeight(e, energyWeightDeadKeV, energyFilterMinKeV);
+            //foreach (double e in electronEnergies) h[0] += ElectronEnergyWeight(e, energyWeightDeadKeV, energyFilterMinKeV); //260927Cl 変更前
+            foreach (double e in electronEnergies) h[0] += ElectronEnergyWeight(e, energyWeightDeadKeV, energyFilterMinKeV) * (withA ? Math.Exp(-Math.Max(0, e0KeV - e) / ecKeV) : 1.0); //260927Cl 電子ごとの A
             return h;
         }
         bool desc = energies[0] > energies[^1];
@@ -940,6 +997,7 @@ public sealed class EbsdMonteCarloDistribution
         foreach (double e in electronEnergies)
         {
             double w = ElectronEnergyWeight(e, energyWeightDeadKeV, energyFilterMinKeV);
+            if (withA) w *= Math.Exp(-Math.Max(0, e0KeV - e) / ecKeV); //260927Cl 追加 (電子ごとの A)。CoherenceFactors と同じ式
             if (!(w > 0)) continue;
             if (e >= energies[top]) { h[top] += w; continue; }
             if (e <= energies[bottom]) { h[bottom] += w; continue; }

@@ -468,6 +468,10 @@ public sealed class EbsdPatternComposer
         public readonly double[] NE = new double[eLen];
         /// <summary>内挿した λ_d(E) (N で重み付けした平均)</summary>
         public readonly double[] LamE = new double[eLen];
+        /// <summary>260927Cl 追加 (電子ごとの A): 内挿した A 重み付きエネルギー重み N_A(E) = Σ ω·G_A,b(E)</summary>
+        public readonly double[] NEA = new double[eLen];
+        /// <summary>260927Cl 追加 (電子ごとの A): 画素の実効 A(E) = N_A/N (N = 0 の節点は NaN → 呼び出し側は節点の A へ退避)</summary>
+        public readonly double[] AEff = new double[eLen];
     }
 
     /// <summary>260921Cl 追加 (深さ写像 A2): 画素の重みベクトル (エネルギー × 深さ) を、MC のビンパラメータを 4×4 タップで内挿して作る。
@@ -487,8 +491,11 @@ public sealed class EbsdPatternComposer
     //260921Cl シグネチャ変更: 非晶質割合はビンの配列 (double[,]) ではなく、分布の場 (FlatAmorphousFraction、縁で延長済み) を使う。
     //旧: static double EvaluatePathLengthWeights(EbsdMonteCarloDistribution dist, double bx, double by, double mu, bool absolute, bool sliceMass,
     //旧:     double[] depths, double[] depthWidths, BinScratch s, int eLen, int nSlices, double[,] amorphousFraction)
+    //旧: static double EvaluatePathLengthWeights(EbsdMonteCarloDistribution dist, double bx, double by, double mu, bool absolute, bool sliceMass,
+    //旧:     double[] depths, double[] depthWidths, BinScratch s, int eLen, int nSlices, bool withAmorphous) //260927Cl 変更前
     static double EvaluatePathLengthWeights(EbsdMonteCarloDistribution dist, double bx, double by, double mu, bool absolute, bool sliceMass,
-        double[] depths, double[] depthWidths, BinScratch s, int eLen, int nSlices, bool withAmorphous)
+        double[] depths, double[] depthWidths, BinScratch s, int eLen, int nSlices, bool withAmorphous,
+        double[] flatGA = null) //260927Cl flatGA 追加 (電子ごとの A): dist.FlatEnergyDistributionA。null なら従来 (s.AEff は使わない)
     {
         int binCount = dist.BinCount;
         BinSplineTaps(bx, binCount, out int x0, out int x1, out int x2, out int x3, out double qx0, out double qx1, out double qx2, out double qx3);
@@ -497,6 +504,7 @@ public sealed class EbsdPatternComposer
         Span<double> qx = [qx0, qx1, qx2, qx3], qy = [qy0, qy1, qy2, qy3];
         var n = s.NE.AsSpan(0, eLen); var lam = s.LamE.AsSpan(0, eLen);
         n.Clear(); lam.Clear();
+        var nA = s.NEA.AsSpan(0, eLen); if (flatGA != null) nA.Clear(); //260927Cl 追加
         var flatG = dist.FlatEnergyDistribution; var flatL = dist.FlatLambdaNm; var flatF = dist.FlatFraction;
         var flatA = withAmorphous ? dist.FlatAmorphousFraction : null; //260921Cl 追加
         //260921Cl (Codex 指摘): 非晶質割合も強度と同じ重み ω で平均する (旧: fA = Σ c·fA_b)。
@@ -516,8 +524,10 @@ public sealed class EbsdPatternComposer
                 omegaSum += omega;
                 int o = b * eLen;
                 for (int e = 0; e < eLen; e++) { double g = omega * flatG[o + e]; n[e] += g; lam[e] += g * flatL[o + e]; }
+                if (flatGA != null) for (int e = 0; e < eLen; e++) nA[e] += omega * flatGA[o + e]; //260927Cl 追加 (電子ごとの A): 同じ ω で G_A も内挿
             }
         for (int e = 0; e < eLen; e++) lam[e] = n[e] > 0 ? lam[e] / n[e] : EbsdMonteCarloDistribution.UniformDepthLambdaNm;
+        if (flatGA != null) { var ae = s.AEff.AsSpan(0, eLen); for (int e = 0; e < eLen; e++) ae[e] = n[e] > 0 ? nA[e] / n[e] : double.NaN; } //260927Cl 追加: 画素の実効 A = N_A/N
         //EbsdMonteCarloDistribution.FillPathLengthWeights(s.Wv.AsSpan(0, nSlices), n, lam, mu, depths, depthWidths, sliceMass); //260923Cl 変更前
         EbsdMonteCarloDistribution.FillPathLengthWeights(s.Wv.AsSpan(0, nSlices), n, lam, mu, depths, depthWidths, sliceMass, dist.AbsorptionLengthNm); //260923Cl λ_abs (dec モードの二重計上の除去) を渡す
         return omegaSum > 0 ? fANum / omegaSum : 0;
@@ -726,6 +736,7 @@ public sealed class EbsdPatternComposer
         double[] depths, double[] depthWidths, double[] planeScaleFactors, int eLen, int dLen)
     {
         if (cohA == null) return 1; //A(E) 無効 (呼び出し側は使わない)
+        var flatGA = dist.FlatEnergyDistributionA; //260927Cl 追加 (電子ごとの A): 呼び出し側 (ApplyWeightedModel*) が ComputeElectronWiseCoherence 済み。null なら節点の A
         double hw = view.HalfWidth, hh = view.HalfHeight;
         if (!(hw > 0) || !(hh > 0)) return 1;
         var ray = CreateExitRay(view); //ラムダは in 引数を捕捉できないので値で持つ
@@ -745,15 +756,18 @@ public sealed class EbsdPatternComposer
                 double ox = ray.X((2.0 * ix + 1 - n) / n * hw);
                 double r = Math.Sqrt(ox * ox + oy * oy + oz * oz), cosA = planeD / r, jac = cosA * cosA * cosA; //画素の立体角 ∝ cos³α
                 var (bx, by) = EbsdMonteCarloDistribution.DirectionToBinCoords(ox, oy, oz, binCount);
-                EvaluatePathLengthWeights(dist, bx, by, oz / r, absolute, sliceMass, depths, depthWidths, scratch, eLen, nSlices, false);
+                //EvaluatePathLengthWeights(dist, bx, by, oz / r, absolute, sliceMass, depths, depthWidths, scratch, eLen, nSlices, false); //260927Cl 変更前
+                EvaluatePathLengthWeights(dist, bx, by, oz / r, absolute, sliceMass, depths, depthWidths, scratch, eLen, nSlices, false, flatGA); //260927Cl 電子ごとの A
                 var wv = scratch.Wv;
+                var aEff = scratch.AEff; //260927Cl 追加
                 for (int ei = 0; ei < eLen; ei++)
                     for (int di = 0; di < dLen; di++)
                     {
                         int k = ei * dLen + di;
                         double w = wv[k] * jac;
                         if (planeScaleFactors != null) w *= (uint)k < (uint)planeScaleFactors.Length ? planeScaleFactors[k] : 0.0; //model 1 の規格化係数
-                        num += w * cohA[ei];
+                        //num += w * cohA[ei]; //260927Cl 変更前
+                        num += w * (flatGA != null && !double.IsNaN(aEff[ei]) ? aEff[ei] : cohA[ei]); //260927Cl 電子ごとの A
                         den += w;
                     }
             }
@@ -838,6 +852,10 @@ public sealed class EbsdPatternComposer
         //  260921Cl: A(E) は台座をやめて平面ごとの方向平均 (planeMeans、エネルギーへ畳まない) を使うようになったので、この注意はもう当たらない
         //  (畳んだ値 posMeans/negMeans を使うのは非晶質層の変調なし成分だけで、そのときは GlobalDepthWeights がある)
         var cohA = BuildCoherenceFactors(mp);
+        //260927Cl 追加 (電子ごとの A = G_A、作者判断 2026-09-27): ヒストグラム分布 (dist.EnergyHistogram) なら E_c から A 重み付きヒストグラムを作り、
+        //  節点の A の代わりに画素ごとの実効 A (G_A/G を 4×4 タップで内挿) を掛ける。近似ガウス分布・A 無効では null (従来どおり)。ZNCC 用 ComposeGlobalWeightedPattern は節点の A のまま (doc)
+        if (cohA != null) dist.ComputeElectronWiseCoherence(BeamEnergyKeV, CoherenceLossDecayKeV);
+        var flatGA = cohA != null ? dist.FlatEnergyDistributionA : null;
         var (posMeans, negMeans, planeMeans) = hasAmorphous || cohA != null ? GetPlaneMeansCached(mp, dist, posPlanes, negPlanes, dLen, null) : (null, null, null); // 260919Cl 追加: 変調なし成分用の方向平均 / 260920Cl A(E) でも使う / 260921Cl planeMeans 追加
         //260920Cl 追加: 変調なし成分の基準は**全球**の方向平均。半球ごとの平均 (posMeans / negMeans) をそのまま使うと、
         //  パターンが赤道 (試料系 z = 0、ノモニック投影では直線) を跨ぐ所で段差になる。源の向きを失った電子に半球の区別は無い
@@ -885,8 +903,9 @@ public sealed class EbsdPatternComposer
                     //260921Cl 変更 (深さ写像 A2): 画素の出射方向の μ = cos χ で、垂直深さの分布を経路長の分布へ換算して重みを作る
                     double mu = oz / Math.Sqrt(ox * ox + oy * oy + oz * oz);
                     //double fA = EvaluatePathLengthWeights(dist, bx, by, mu, absoluteWeights, sliceMassWeights, depthGrid, depthGridWidths, scratch, eLen, nSlices, hasAmorphous ? amorphousFraction : null); // 260919Cl 非晶質源の割合 //260921Cl 変更前
-                    double fA = EvaluatePathLengthWeights(dist, bx, by, mu, absoluteWeights, sliceMassWeights, depthGrid, depthGridWidths, scratch, eLen, nSlices, hasAmorphous); // 260919Cl 非晶質源の割合 (260921Cl: 分布の場 = 縁で延長済み)
+                    double fA = EvaluatePathLengthWeights(dist, bx, by, mu, absoluteWeights, sliceMassWeights, depthGrid, depthGridWidths, scratch, eLen, nSlices, hasAmorphous, flatGA); //260927Cl flatGA (電子ごとの A) // 260919Cl 非晶質源の割合 (260921Cl: 分布の場 = 縁で延長済み)
                     var wv = scratch.Wv;
+                    var aEff = scratch.AEff; //260927Cl 追加 (電子ごとの A)
 
                     // ルックアップテーブルからマスターパターン補間パラメータ取得
                     bool posZ = pPosZ0[i];
@@ -905,7 +924,8 @@ public sealed class EbsdPatternComposer
                         {
                             //260921Cl 変更: aE は ei にしか依らないので di ループの外へ出す (値は完全に同一)。
                             //  旧は最内 (画素 × eLen × dLen) で毎回 null 判定していた
-                            double aE = cohA == null ? 1.0 : cohA[ei];
+                            //double aE = cohA == null ? 1.0 : cohA[ei]; //260927Cl 変更前
+                            double aE = cohA == null ? 1.0 : (flatGA != null && !double.IsNaN(aEff[ei]) ? aEff[ei] : cohA[ei]); //260927Cl 電子ごとの A (G_A/G の内挿)。無ければ節点の A
                             //260921Cl: sphereMeans[ei] も ei にしか依らないので一緒に出す (aE を出したときの取りこぼし)
                             double sMean = sphereMeans == null ? 0 : sphereMeans[ei];
                             for (int di = 0; di < dLen; di++)
@@ -932,7 +952,8 @@ public sealed class EbsdPatternComposer
                         {
                             //260921Cl 変更: aE は ei にしか依らないので di ループの外へ出す (値は完全に同一)。
                             //  旧は最内 (画素 × eLen × dLen) で毎回 null 判定していた
-                            double aE = cohA == null ? 1.0 : cohA[ei];
+                            //double aE = cohA == null ? 1.0 : cohA[ei]; //260927Cl 変更前
+                            double aE = cohA == null ? 1.0 : (flatGA != null && !double.IsNaN(aEff[ei]) ? aEff[ei] : cohA[ei]); //260927Cl 電子ごとの A (G_A/G の内挿)。無ければ節点の A
                             //260921Cl: sphereMeans[ei] も ei にしか依らないので一緒に出す (aE を出したときの取りこぼし)
                             double sMean = sphereMeans == null ? 0 : sphereMeans[ei];
                             for (int di = 0; di < dLen; di++)
@@ -1095,6 +1116,10 @@ public sealed class EbsdPatternComposer
         //  260921Cl: A(E) は台座をやめて平面ごとの方向平均 (planeMeans、エネルギーへ畳まない) を使うようになったので、この注意はもう当たらない
         //  (畳んだ値 posMeans/negMeans を使うのは非晶質層の変調なし成分だけで、そのときは GlobalDepthWeights がある)
         var cohA = BuildCoherenceFactors(mp);
+        //260927Cl 追加 (電子ごとの A = G_A、作者判断 2026-09-27): ヒストグラム分布 (dist.EnergyHistogram) なら E_c から A 重み付きヒストグラムを作り、
+        //  節点の A の代わりに画素ごとの実効 A (G_A/G を 4×4 タップで内挿) を掛ける。近似ガウス分布・A 無効では null (従来どおり)。ZNCC 用 ComposeGlobalWeightedPattern は節点の A のまま (doc)
+        if (cohA != null) dist.ComputeElectronWiseCoherence(BeamEnergyKeV, CoherenceLossDecayKeV);
+        var flatGA = cohA != null ? dist.FlatEnergyDistributionA : null;
         var (posMeans, negMeans, planeMeans) = hasAmorphous || cohA != null ? GetPlaneMeansCached(mp, dist, posPlanes, negPlanes, dLen, null) : (null, null, null); // 260919Cl 追加: 変調なし成分用の方向平均 / 260920Cl A(E) でも使う / 260921Cl planeMeans 追加
         //260920Cl 追加: 変調なし成分の基準は**全球**の方向平均。半球ごとの平均 (posMeans / negMeans) をそのまま使うと、
         //  パターンが赤道 (試料系 z = 0、ノモニック投影では直線) を跨ぐ所で段差になる。源の向きを失った電子に半球の区別は無い
@@ -1140,8 +1165,9 @@ public sealed class EbsdPatternComposer
                     //260921Cl 変更 (深さ写像 A2): 画素の出射方向の μ = cos χ で、垂直深さの分布を経路長の分布へ換算して重みを作る
                     double mu = oz / Math.Sqrt(ox * ox + oy * oy + oz * oz);
                     //double fA = EvaluatePathLengthWeights(dist, bx, by, mu, absoluteWeights, sliceMassWeights, depthGrid, depthGridWidths, scratch, eLen, nSlices, hasAmorphous ? amorphousFraction : null); // 260919Cl 非晶質源の割合 //260921Cl 変更前
-                    double fA = EvaluatePathLengthWeights(dist, bx, by, mu, absoluteWeights, sliceMassWeights, depthGrid, depthGridWidths, scratch, eLen, nSlices, hasAmorphous); // 260919Cl 非晶質源の割合 (260921Cl: 分布の場 = 縁で延長済み)
+                    double fA = EvaluatePathLengthWeights(dist, bx, by, mu, absoluteWeights, sliceMassWeights, depthGrid, depthGridWidths, scratch, eLen, nSlices, hasAmorphous, flatGA); //260927Cl flatGA (電子ごとの A) // 260919Cl 非晶質源の割合 (260921Cl: 分布の場 = 縁で延長済み)
                     var wv = scratch.Wv;
+                    var aEff = scratch.AEff; //260927Cl 追加 (電子ごとの A)
                     bool posZ = pPosZ0[i];
 
                     double sum = 0;
@@ -1156,7 +1182,8 @@ public sealed class EbsdPatternComposer
                         {
                             //260921Cl 変更: aE は ei にしか依らないので di ループの外へ出す (値は完全に同一)。
                             //  旧は最内 (画素 × eLen × dLen) で毎回 null 判定していた
-                            double aE = cohA == null ? 1.0 : cohA[ei];
+                            //double aE = cohA == null ? 1.0 : cohA[ei]; //260927Cl 変更前
+                            double aE = cohA == null ? 1.0 : (flatGA != null && !double.IsNaN(aEff[ei]) ? aEff[ei] : cohA[ei]); //260927Cl 電子ごとの A (G_A/G の内挿)。無ければ節点の A
                             //260921Cl: sphereMeans[ei] も ei にしか依らないので一緒に出す (aE を出したときの取りこぼし)
                             double sMean = sphereMeans == null ? 0 : sphereMeans[ei];
                             for (int di = 0; di < dLen; di++)
@@ -1185,7 +1212,8 @@ public sealed class EbsdPatternComposer
                         {
                             //260921Cl 変更: aE は ei にしか依らないので di ループの外へ出す (値は完全に同一)。
                             //  旧は最内 (画素 × eLen × dLen) で毎回 null 判定していた
-                            double aE = cohA == null ? 1.0 : cohA[ei];
+                            //double aE = cohA == null ? 1.0 : cohA[ei]; //260927Cl 変更前
+                            double aE = cohA == null ? 1.0 : (flatGA != null && !double.IsNaN(aEff[ei]) ? aEff[ei] : cohA[ei]); //260927Cl 電子ごとの A (G_A/G の内挿)。無ければ節点の A
                             //260921Cl: sphereMeans[ei] も ei にしか依らないので一緒に出す (aE を出したときの取りこぼし)
                             double sMean = sphereMeans == null ? 0 : sphereMeans[ei];
                             for (int di = 0; di < dLen; di++)
@@ -1334,6 +1362,10 @@ public sealed class EbsdPatternComposer
         //  260921Cl: A(E) は台座をやめて平面ごとの方向平均 (planeMeans、エネルギーへ畳まない) を使うようになったので、この注意はもう当たらない
         //  (畳んだ値 posMeans/negMeans を使うのは非晶質層の変調なし成分だけで、そのときは GlobalDepthWeights がある)
         var cohA = BuildCoherenceFactors(mp);
+        //260927Cl 追加 (電子ごとの A = G_A、作者判断 2026-09-27): ヒストグラム分布 (dist.EnergyHistogram) なら E_c から A 重み付きヒストグラムを作り、
+        //  節点の A の代わりに画素ごとの実効 A (G_A/G を 4×4 タップで内挿) を掛ける。近似ガウス分布・A 無効では null (従来どおり)。ZNCC 用 ComposeGlobalWeightedPattern は節点の A のまま (doc)
+        if (cohA != null) dist.ComputeElectronWiseCoherence(BeamEnergyKeV, CoherenceLossDecayKeV);
+        var flatGA = cohA != null ? dist.FlatEnergyDistributionA : null;
         //if (hasAmorphous || cohA != null) (posMeans, negMeans, planeMeans) = GetPlaneMeansCached(mp, dist, posPlanes, negPlanes, dLen, depthWidths); //260921Cl 変更前
         bool wantBackground = background != null; //260921Cl 追加: 背景 B も平面ごとの方向平均 M̄ から作る
         if (hasAmorphous || cohA != null || wantBackground) (posMeans, negMeans, planeMeans) = GetPlaneMeansCached(mp, dist, posPlanes, negPlanes, dLen, depthWidths); // 260919Cl 追加: model 2 は差分 ΔM/Δt の平均 (/simplify: 以前は null 版を先に呼んでキャッシュを取りこぼしていた) / 260920Cl A(E) でも使う
@@ -1384,8 +1416,9 @@ public sealed class EbsdPatternComposer
                     double r = Math.Sqrt(ox * ox + oy * oy + oz * oz), mu = oz / r;
                     double cosA = planeD / r, pixelSolidAngle = cosA * cosA * cosA; //260921Cl 追加: 画素の立体角 ∝ cos³α (planeD の doc)
                     //double fA = EvaluatePathLengthWeights(dist, bx, by, mu, absoluteWeights, sliceMassWeights, depthGrid, depthGridWidths, scratch, eLen, nSlices, hasAmorphous ? amorphousFraction : null); // 260919Cl 非晶質源の割合 //260921Cl 変更前
-                    double fA = EvaluatePathLengthWeights(dist, bx, by, mu, absoluteWeights, sliceMassWeights, depthGrid, depthGridWidths, scratch, eLen, nSlices, hasAmorphous); // 260919Cl 非晶質源の割合 (260921Cl: 分布の場 = 縁で延長済み)
+                    double fA = EvaluatePathLengthWeights(dist, bx, by, mu, absoluteWeights, sliceMassWeights, depthGrid, depthGridWidths, scratch, eLen, nSlices, hasAmorphous, flatGA); //260927Cl flatGA (電子ごとの A) // 260919Cl 非晶質源の割合 (260921Cl: 分布の場 = 縁で延長済み)
                     var wv = scratch.Wv;
+                    var aEff = scratch.AEff; //260927Cl 追加 (電子ごとの A)
                     bool posZ = pPosZ0[i];
 
                     double sum = 0;
@@ -1401,7 +1434,8 @@ public sealed class EbsdPatternComposer
                         {
                             //260921Cl 変更: aE は ei にしか依らないので di ループの外へ出す (値は完全に同一)。
                             //  旧は最内 (画素 × eLen × dLen) で毎回 null 判定していた
-                            double aE = cohA == null ? 1.0 : cohA[ei];
+                            //double aE = cohA == null ? 1.0 : cohA[ei]; //260927Cl 変更前
+                            double aE = cohA == null ? 1.0 : (flatGA != null && !double.IsNaN(aEff[ei]) ? aEff[ei] : cohA[ei]); //260927Cl 電子ごとの A (G_A/G の内挿)。無ければ節点の A
                             //260921Cl: sphereMeans[ei] も ei にしか依らないので一緒に出す (aE を出したときの取りこぼし)
                             double sMean = sphereMeans == null ? 0 : sphereMeans[ei];
                             for (int di = 0; di < dLen; di++)
@@ -1435,7 +1469,8 @@ public sealed class EbsdPatternComposer
                         {
                             //260921Cl 変更: aE は ei にしか依らないので di ループの外へ出す (値は完全に同一)。
                             //  旧は最内 (画素 × eLen × dLen) で毎回 null 判定していた
-                            double aE = cohA == null ? 1.0 : cohA[ei];
+                            //double aE = cohA == null ? 1.0 : cohA[ei]; //260927Cl 変更前
+                            double aE = cohA == null ? 1.0 : (flatGA != null && !double.IsNaN(aEff[ei]) ? aEff[ei] : cohA[ei]); //260927Cl 電子ごとの A (G_A/G の内挿)。無ければ節点の A
                             //260921Cl: sphereMeans[ei] も ei にしか依らないので一緒に出す (aE を出したときの取りこぼし)
                             double sMean = sphereMeans == null ? 0 : sphereMeans[ei];
                             for (int di = 0; di < dLen; di++)
