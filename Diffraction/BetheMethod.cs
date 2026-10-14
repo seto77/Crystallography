@@ -116,8 +116,17 @@ public partial class BetheMethod
     public double[] Thicknesses { get; set; }
 
     // 260318Cl 追加: BFS 探索結果のキャッシュ (baseRotation が同じなら再利用)
-    private (int key, double gX, double gY, double gZ, double gLen)[] gCache;
-    private (double, double, double, double, double, double, double, double, double) matCache;
+    // private (int key, double gX, double gY, double gZ, double gLen)[] gCache; // 261004Cl 旧: matCache と別々に更新していたため並列呼び出しで競合した
+    // private (double, double, double, double, double, double, double, double, double) matCache; // 261004Cl 旧
+
+    // 261004Cl 追加: 方位 (Mat) と候補配列 (Items) を 1 つの不変スナップショットにまとめ、参照の差し替えを 1 回の代入にする。
+    // 旧実装は Build_gCache の冒頭で matCache を更新し、BFS の後で gCache を差し替えていた。その間に PED の並列ループ
+    // (GetPrecessionElectronDiffraction の stepP.ForAll) が Find_gVectors を呼ぶと、「matCache は新方位・gCache は旧方位」を見て
+    // 再構築せずに旧方位の g を使うことがあった (結晶を回した直後の PED で発生)。構築はロックで 1 本にまとめる。
+    private sealed record GCacheSnapshot((double, double, double, double, double, double, double, double, double) Mat,
+        (int key, double gX, double gY, double gZ, double gLen)[] Items);
+    private volatile GCacheSnapshot gCacheSnapshot;
+    private readonly object gCacheLock = new();
 
     // 260316Cl 追加
     /// <summary>
@@ -348,6 +357,7 @@ public partial class BetheMethod
         //波数を計算
         var kvac = UniversalConstants.Convert.EnergyToElectronWaveNumber(AccVoltage);
         //U0を計算
+        uDictionary.Clear(); // 261014Cl 追加: getU は電圧に依らない鍵で貯めるので、U0 を読む前に空にする (前の電圧・MeanAbsorptionLengthNm の最後のエネルギーの値を使わない)
         var u0 = getU(AccVoltage).Real.Real;
         //k0ベクトルを計算
         var vecK0 = getVecK0(kvac, u0);
@@ -1443,8 +1453,11 @@ public partial class BetheMethod
             AccVoltage = voltages[vIndex];
 
             var kvac = UniversalConstants.Convert.EnergyToElectronWaveNumber(AccVoltage);
-            var u0 = getU(AccVoltage).Real.Real;
+            // var u0 = getU(AccVoltage).Real.Real;
+            // uDictionary.Clear();
+            // 261014Cl 変更: 先にキャッシュを空にする。getU(double) は電圧に依らない鍵 (0,0,0) で貯めるので、旧の順では 2 つ目以降の電圧が前の電圧の U0 (K0 の屈折) を使っていた
             uDictionary.Clear();
+            var u0 = getU(AccVoltage).Real.Real;
 
             #region 260919Cl 追加: 後方散乱源の重み σ_n を物理スケールで計算
             // σ_n = (2π/k)·(γ_rel/πV)·Occ_n·f'_n,back(0)  [1/nm]
@@ -2252,6 +2265,7 @@ public partial class BetheMethod
         //波数を計算
         var kvac = UniversalConstants.Convert.EnergyToElectronWaveNumber(voltage);
         //U0を計算
+        uDictionary.Clear(); // 261014Cl 追加: getU は電圧に依らない鍵で貯めるので、U0 を読む前に空にする (前の電圧・MeanAbsorptionLengthNm の最後のエネルギーの値を使わない)
         var u0 = getU(voltage).Real.Real;
 
         if (AccVoltage != voltage)
@@ -2414,6 +2428,7 @@ public partial class BetheMethod
         //波数を計算
         var kvac = UniversalConstants.Convert.EnergyToElectronWaveNumber(AccVoltage);
         //U0を計算
+        uDictionary.Clear(); // 261014Cl 追加: getU は電圧に依らない鍵で貯めるので、U0 を読む前に空にする (前の電圧・MeanAbsorptionLengthNm の最後のエネルギーの値を使わない)
         var u0 = getU(AccVoltage).Real.Real;
         //k0ベクトルを計算
         var vecK0 = getVecK0(kvac, u0);
@@ -3851,6 +3866,7 @@ public partial class BetheMethod
             result[i] = uPrime0 > 0 ? kvac / (2 * Math.PI * uPrime0) : double.PositiveInfinity;
         }
         uDictionary.Clear();
+        uDictionary.Clear(); // 261014Cl 追加: 最後のエネルギーの U を残さない (呼び出し元の AccVoltage と食い違うため)
         return result;
     }
 
@@ -4162,14 +4178,16 @@ public partial class BetheMethod
     /// <summary>
     /// baseRotation に基づく BFS 探索キャッシュを構築する。エワルド球テストは行わず、
     /// 逆格子点の座標 (gX, gY, gZ) と gLen を記録する。260318Cl 追加
+    /// 261004Cl 変更: フィールドを直接書き換えず、完成したスナップショットを返す (呼び出し側がロック内で 1 回だけ差し替える)
     /// </summary>
-    private void Build_gCache(Matrix3D baseRotation, int cacheLimit)
+    // private void Build_gCache(Matrix3D baseRotation, int cacheLimit) // 261004Cl 旧シグネチャ
+    private GCacheSnapshot Build_gCache(Matrix3D baseRotation, int cacheLimit)
     {
         var direction = GetDirection();
 
         var mat = baseRotation * Crystal.MatrixInverseTransposed;
         var (m11, m12, m13, m21, m22, m23, m31, m32, m33) = mat.Tuple;
-        matCache = mat.Tuple;
+        // matCache = mat.Tuple; // 261004Cl 旧: BFS の前に方位だけ先に更新していた (競合の原因)
 
         var shift = direction.Max(dir => (mat * dir).Length) * 0.5;
 
@@ -4202,7 +4220,8 @@ public partial class BetheMethod
             }
         }
 
-        gCache = [.. candidates];
+        // gCache = [.. candidates]; // 261004Cl 旧
+        return new GCacheSnapshot(mat.Tuple, [.. candidates]);
     }
 
     /// <summary>候補となるgVectorを検索する.</summary>
@@ -4229,8 +4248,21 @@ public partial class BetheMethod
 
         #region Phase 1: キャッシュ構築 (baseRotation が変わった場合のみ)
         var cacheLimit = Math.Max(maxNumOfBloch * 64, 50_000);
-        if (gCache == null || matCache != mat.Tuple || gCache.Length < cacheLimit)
-            Build_gCache(baseRotation, cacheLimit);
+        // if (gCache == null || matCache != mat.Tuple || gCache.Length < cacheLimit) // 261004Cl 旧
+        //     Build_gCache(baseRotation, cacheLimit);
+        // 261004Cl 変更: スナップショットを 1 回だけ読み、この呼び出しの中では同じ配列を使い続ける (他スレッドの差し替えと混ざらない)。
+        // 再構築が要るときはロックの中で確認し直し、構築は 1 スレッドだけが行う。
+        var snapshot = gCacheSnapshot;
+        if (snapshot == null || snapshot.Mat != mat.Tuple || snapshot.Items.Length < cacheLimit)
+        {
+            lock (gCacheLock)
+            {
+                snapshot = gCacheSnapshot;
+                if (snapshot == null || snapshot.Mat != mat.Tuple || snapshot.Items.Length < cacheLimit)
+                    gCacheSnapshot = snapshot = Build_gCache(baseRotation, cacheLimit);
+            }
+        }
+        var gCache = snapshot.Items;
         #endregion
 
         #region Phase 2: キャッシュ済み候補に対してエワルド球テストのみ実行
