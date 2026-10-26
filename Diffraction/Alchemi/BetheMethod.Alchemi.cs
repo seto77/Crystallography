@@ -294,8 +294,13 @@ public partial class BetheMethod
 
                 //260811Cl: 虚部の出所を明示的に渡す。既定に頼らず毎回引き渡すのは、getU 側の宣言と
                 //再注入側の前提を **1 本の線でつなぐ**ため (宣言が TDS 以外になった瞬間に Yield が落ちる)
+                //260829Cl: P_g/P_0 も渡し、L_coh の生存流束を法線電流 Σ(P_g/P_0)|ψ_g|² で数える
+                //(行割り修正後の厳密な保存量。系統列では P_g ≈ P_0 なので差は ~10⁻³ 以下)
+                var pOverP0 = new double[bLen];
+                for (int g = 0; g < bLen; g++)
+                    pOverP0[g] = beams[g].P / beams[0].P;
                 var reduction = new AlchemiReduction(bLen, eigenValues, eigenVectors, alpha, request.ThicknessesNm,
-                    ImaginaryPotentialAbsorption);
+                    ImaginaryPotentialAbsorption, pOverP0);
                 var l = reduction.CoherentPathLengthNm();//方位あたり 1 回 (以後キャッシュ)
                 for (int t = 0; t < tLen; t++) lcoh[oi * tLen + t] = l[t];
 

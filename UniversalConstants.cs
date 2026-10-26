@@ -228,6 +228,10 @@ public static class UniversalConstants
         public static double EnergyToElectronWaveNumber(in double kiloVoltage)
             => Math.Sqrt(kiloVoltage * 1000.0 * (1 + kiloVoltage * 0.9784753725226711491437618236159 / 1000)) / 1.2264262862108010441350327657997;
 
+        /// <summary>260919Cl 追加: 電子線の波数の二乗 k² (nm⁻²、k=1/λ)。EnergyToElectronWaveNumber と同じ定数で sqrt を省いた形 (モンテカルロの散乱イベントごとの評価用)。</summary>
+        public static double EnergyToElectronWaveNumberSquared(in double kiloVoltage)
+            => kiloVoltage * 1000.0 * (1 + kiloVoltage * 0.9784753725226711491437618236159 / 1000) / (1.2264262862108010441350327657997 * 1.2264262862108010441350327657997);
+
         /// <summary>電子線の波数(nm^-1)をエネルギー(keV)に変換</summary>
         /// <param name="kiloVoltage"></param>
         /// <returns></returns>

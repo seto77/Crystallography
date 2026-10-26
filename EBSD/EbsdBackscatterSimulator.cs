@@ -16,10 +16,15 @@ namespace Crystallography;
 /// <see cref="MonteCarlo.BackscatteredElectronDetail"/> に、ステレオ投影 (Schmidt) 済みの出射方向 <see cref="Position"/> を足したもの。
 /// (FormEBSD が持っていた 10 要素タプルを名前付きにした。メンバー名はタプル要素名と同一)
 /// </summary>
+// public readonly record struct EbsdBackscatteredElectron( // 260919Cl 変更前 (HasLastDecoherenceEvent / LastDecoherenceDepth 無し)
+//     double Depth, V3 Vec, PointD Position, double Energy, double TotalEnergyLoss,
+//     bool HasLastInelasticEvent, double LastInelasticDepth,
+//     double LastInelasticEnergyBeforeLoss, double LastInelasticEnergyAfterLoss, V3 LastInelasticDirection);
 public readonly record struct EbsdBackscatteredElectron(
     double Depth, V3 Vec, PointD Position, double Energy, double TotalEnergyLoss,
     bool HasLastInelasticEvent, double LastInelasticDepth,
-    double LastInelasticEnergyBeforeLoss, double LastInelasticEnergyAfterLoss, V3 LastInelasticDirection);
+    double LastInelasticEnergyBeforeLoss, double LastInelasticEnergyAfterLoss, V3 LastInelasticDirection,
+    bool HasLastDecoherenceEvent, double LastDecoherenceDepth); // 260919Cl 追加: 最後のコヒーレンス破壊イベント (MonteCarlo.BackscatteredElectronDetail と同じ)
 
 /// <summary>
 /// モンテカルロによる後方散乱電子の飛程シミュレーション (大量の電子を並列に走らせ、脱出した電子を集める)。
@@ -56,7 +61,7 @@ public static class EbsdBackscatterSimulator
                 var electron = monte.GetBackscatteredElectronDetail();
                 if (electron.Energy > energyThreshold)
                     local.list.Add(new EbsdBackscatteredElectron(electron.Depth, electron.Direction, Stereonet.ConvertVectorToSchmidt(sampleRotation * electron.Direction), electron.Energy,
-                        electron.TotalEnergyLoss, electron.HasLastInelasticEvent, electron.LastInelasticDepth, electron.LastInelasticEnergyBeforeLoss, electron.LastInelasticEnergyAfterLoss, electron.LastInelasticDirection)); // (260331Ch)
+                        electron.TotalEnergyLoss, electron.HasLastInelasticEvent, electron.LastInelasticDepth, electron.LastInelasticEnergyBeforeLoss, electron.LastInelasticEnergyAfterLoss, electron.LastInelasticDirection, electron.HasLastDecoherenceEvent, electron.LastDecoherenceDepth)); // (260331Ch) 260919Cl decoherence 2 項追加
 
                 // 260603Cl 旧: 毎電子で共有カウンタを Interlocked.Increment (全 worker が同一 cache-line を叩く)
                 // var current = Interlocked.Increment(ref completed);

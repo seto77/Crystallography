@@ -27,8 +27,12 @@ namespace Crystallography;
 /// ⚠ **Z = 30–32 (Zn/Ga/Ge) には M4/M5 が無い** (M1–M3 が 57 本、M4/M5 が 54 本)。
 /// Bote–Salvat の係数表が Z ≤ 32 では 7 副殻 (K, L1–L3, M1–M3) までしか持たないためで、
 /// F テーブルの生成側も同じ条件で弾いている。σ が無い以上そもそも重みを作れないので、
-/// MTotal は「表にある副殻だけ」を合算する契約 (LTotal のように全副殻を要求しない)。</summary>
-public enum IonizationShell { K = 0, LTotal = 1, L1 = 2, L2 = 3, L3 = 4, MTotal = 5, M1 = 6, M2 = 7, M3 = 8, M4 = 9, M5 = 10 }
+/// MTotal は「表にある副殻だけ」を合算する契約 (LTotal のように全副殻を要求しない)。
+/// 260925Cl 追加: **X 線の線の系列 (Kα・Kβ・Lα・Lβ・Mα)** を末尾に追加 (既存値は不変)。殻の空孔ではなく、その系列の線の光子を数えるチャネル。
+/// 係数は <see cref="XrayLineSeries"/> (xraylib の Coster–Kronig + 放射の連鎖。Auger の連鎖は含まない)。</summary>
+//public enum IonizationShell { K = 0, LTotal = 1, L1 = 2, L2 = 3, L3 = 4, MTotal = 5, M1 = 6, M2 = 7, M3 = 8, M4 = 9, M5 = 10 }//260925Cl 変更前
+public enum IonizationShell { K = 0, LTotal = 1, L1 = 2, L2 = 3, L3 = 4, MTotal = 5, M1 = 6, M2 = 7, M3 = 8, M4 = 9, M5 = 10,
+    KAlpha = 11, KBeta = 12, LAlpha = 13, LBeta = 14, MAlpha = 15 }//260925Cl 追加: 線の系列
 
 /// <summary>260801Cl 追加: 元素×殻のチャネル指定。</summary>
 public record IonizationChannelSpec(int Z, IonizationShell Shell)
@@ -40,6 +44,11 @@ public record IonizationChannelSpec(int Z, IonizationShell Shell)
     {
         IonizationShell.LTotal => "L",
         IonizationShell.MTotal => "M",
+        IonizationShell.KAlpha => "Kα",//260925Cl 追加: 線の系列
+        IonizationShell.KBeta => "Kβ",
+        IonizationShell.LAlpha => "Lα",
+        IonizationShell.LBeta => "Lβ",
+        IonizationShell.MAlpha => "Mα",
         _ => Shell.ToString(),
     };
 
@@ -47,6 +56,11 @@ public record IonizationChannelSpec(int Z, IonizationShell Shell)
     {
         IonizationShell.LTotal => "L (total)",
         IonizationShell.MTotal => "M (total)",
+        IonizationShell.KAlpha => "Kα line",//260925Cl 追加: 線の系列
+        IonizationShell.KBeta => "Kβ line",
+        IonizationShell.LAlpha => "Lα line",
+        IonizationShell.LBeta => "Lβ line",
+        IonizationShell.MAlpha => "Mα line",
         _ => Shell.ToString(),
     };
 
@@ -1189,6 +1203,59 @@ public static class IonizationDataProvider
             : partial with { Status = IonizationAvailability.Available, SigmaNm2 = sigma };
     }
 
+    /// <summary>260925Cl 追加: 殻のチャネルと線の系列の振り分け (Resolve / Inspect の入口を 1 か所に)。</summary>
+    private static IonizationChannelInfo DescribeAny(IonizationChannelSpec spec, double e0KeV, IonizationFsTable table)
+        => XrayLineSeries.IsLineSeries(spec.Shell) ? DescribeLineSeries(spec, e0KeV, table) : Describe(spec, e0KeV, table);
+
+    /// <summary>260925Cl 追加: 線の系列の寄与する一次の殻 (<see cref="XrayLineSeries"/> の殻の添字) と重み w_i = B_i·σ_i [nm²]。
+    /// 寄与する殻 = B_i &gt; 0 で F テーブルにある殻。表に無い供給元 (Z &gt; 50 の K など) は省く
+    /// (Temari の temari_engine.xray_lines の既定と同じ。Au の Lα で約 1 %)。<see cref="DescribeLineSeries"/> が Available と言った後にだけ呼ぶ。</summary>
+    private static (int[] Shells, double[] Weights) LineSeriesTerms(IonizationChannelSpec spec, double e0KeV, IonizationFsTable table)
+    {
+        var b = XrayLineSeries.Yields(spec.Z, spec.Shell, out var reason) ?? throw new NotSupportedException(reason);
+        var shells = Enumerable.Range(0, b.Length).Where(i => b[i] > 0 && table.Contains(XrayLineSeries.ShellCodeOf[i], spec.Z)).ToArray();
+        var eV = e0KeV * 1e3;
+        return (shells, [.. shells.Select(i => b[i] * SigmaOf(XrayLineSeries.ShellCodeOf[i], spec.Z, eV))]);
+    }
+
+    /// <summary>260925Cl 追加: 線の系列 (Kα・Kβ・Lα・Lβ・Mα) の照会。σ = Σ_i B_i σ_i (その系列の線の光子の生成断面積、全方位)。
+    /// 判定順は <see cref="Describe"/> と同じ: UnsupportedShell (dataset に j 分解の L・M 殻が無い / xraylib が使えない) →
+    /// UnsupportedElement (系列の始状態の殻が表に無い / xraylib に線か蛍光収率が無い) → E0OutOfRange → BelowEdge → Available。</summary>
+    private static IonizationChannelInfo DescribeLineSeries(IonizationChannelSpec spec, double e0KeV, IonizationFsTable table)
+    {
+        var init = XrayLineSeries.InitialShellsOf(spec.Shell);
+        bool needL = init.Any(i => i >= 1), needM = init.Any(i => i >= 4);   // 殻の添字: K=0, L1..L3=1..3, M1..M5=4..8
+        if ((needL && !table.HasJResolvedL) || (needM && !table.HasMShell) || !Xraylib.Enabled || !Xraylib.CosterKronigEnabled)
+            return new IonizationChannelInfo { Channel = spec, Status = IonizationAvailability.UnsupportedShell };
+        if (init.Any(i => !table.Contains(XrayLineSeries.ShellCodeOf[i], spec.Z)))
+            return new IonizationChannelInfo { Channel = spec, Status = IonizationAvailability.UnsupportedElement };
+        var b = XrayLineSeries.Yields(spec.Z, spec.Shell, out _);
+        if (b is null)
+            return new IonizationChannelInfo { Channel = spec, Status = IonizationAvailability.UnsupportedElement };
+        var inTable = Enumerable.Range(0, b.Length).Where(i => b[i] > 0 && table.Contains(XrayLineSeries.ShellCodeOf[i], spec.Z)).ToArray();
+        var omitted = Enumerable.Range(0, b.Length).Where(i => b[i] > 0 && !table.Contains(XrayLineSeries.ShellCodeOf[i], spec.Z)).ToArray();
+        var edge = inTable.Min(i => table.GetChannel(XrayLineSeries.ShellCodeOf[i], spec.Z).EthKeV);
+        var partial = new IonizationChannelInfo
+        {
+            Channel = spec,
+            EdgeEnergyKeV = edge,
+            Overvoltage = e0KeV / edge,
+            CrossSectionSource = new IonizationDataProvenance("Bote-Salvat-2008 x xraylib-4.2.1 (Coster-Kronig + radiative cascade)",
+                "xion.f/ADNDT95; xraylib 4.2.1 FluorYield, RadRate, CosKronTransProb",
+                $"X-ray photons of the {spec.Shell} series per incident electron and atom: sum_i B_i sigma_i; no Auger cascade"
+                + (omitted.Length > 0 ? $"; supply from {string.Join(",", omitted.Select(i => (Xraylib.XrlShell)i))} omitted (not in the F table)" : "")
+                + $"; {table.BoteRef}"),
+            ShapeSource = new IonizationDataProvenance(table.ModelId, table.DatasetVersion,
+                "generated by Temari (github.com/seto77/Temari) — first-principles isolated-atom DHFS/Dirac tables; series shape = B_i sigma_i weighted mean of the shells"),
+        };
+        if (!(e0KeV >= MinE0KeV && e0KeV <= MaxE0KeV))
+            return partial with { Status = IonizationAvailability.E0OutOfRange };
+        var sigma = LineSeriesTerms(spec, e0KeV, table).Weights.Sum();
+        return sigma <= 0
+            ? partial with { Status = IonizationAvailability.BelowEdge }
+            : partial with { Status = IonizationAvailability.Available, SigmaNm2 = sigma };
+    }
+
     /// <summary>解決。E0 範囲外 (30–400 keV 以外) は ArgumentOutOfRangeException、
     /// 未収録 Z/殻・below-edge は NotSupportedException。
     /// 260802Cl: v2 dataset では K / LTotal に加えて L1 / L2 / L3 も単独で解決できる
@@ -1197,7 +1264,8 @@ public static class IonizationDataProvider
     {
         ArgumentNullException.ThrowIfNull(spec);
         table ??= IonizationFsTable.Default;
-        var info = Describe(spec, e0KeV, table);
+        //var info = Describe(spec, e0KeV, table);//260925Cl 変更前
+        var info = DescribeAny(spec, e0KeV, table);//260925Cl 変更: 線の系列は DescribeLineSeries へ振り分ける
         switch (info.Status)
         {
             case IonizationAvailability.E0OutOfRange:
@@ -1208,6 +1276,14 @@ public static class IonizationDataProvider
                 throw new NotSupportedException($"Ionization table has no channel for Z={spec.Z} {spec.Shell} (K: Z=6–50, L: Z=20–86, M: Z=30–86)");
             case IonizationAvailability.BelowEdge:
                 throw new NotSupportedException($"Z={spec.Z} {spec.Shell}: below edge at E0={e0KeV} keV (σ=0)");
+        }
+        //260925Cl 追加: 線の系列は σ_i·B_i の重みで束ねる (殻のチャネルの経路は下のまま = 既存の値は不変)
+        if (XrayLineSeries.IsLineSeries(spec.Shell))
+        {
+            var (series, w) = LineSeriesTerms(spec, e0KeV, table);
+            var seriesShapes = series.Select((i, n) => w[n] > 0 ? table.GetChannel(XrayLineSeries.ShellCodeOf[i], spec.Z).BuildShape(e0KeV) : null).ToArray();
+            return new IonizationData(spec, info.EdgeEnergyKeV, info.SigmaNm2,
+                new IonizationLTotalShape(seriesShapes, w), info.CrossSectionSource, info.ShapeSource);
         }
         //ここから先は Available 確定。shape は σ>0 の成分だけ構築する (σ=0 成分は null + 重み 0 で合成。Evaluate は w>0 の成分しか触らない契約)
         //260802Cl: 単一副殻も複数副殻も同じ経路で組む (旧: K を特別扱いし、L は L1+L23 決め打ち)。
@@ -1233,13 +1309,16 @@ public static class IonizationDataProvider
     public static IonizationChannelInfo Inspect(IonizationChannelSpec spec, double e0KeV, IonizationFsTable table = null)
     {
         ArgumentNullException.ThrowIfNull(spec);
-        return Describe(spec, e0KeV, table ?? IonizationFsTable.Default);
+        //return Describe(spec, e0KeV, table ?? IonizationFsTable.Default);//260925Cl 変更前
+        return DescribeAny(spec, e0KeV, table ?? IonizationFsTable.Default);//260925Cl 変更: 線の系列も照会できる
     }
 
     /// <summary>260801Cl 追加: 結晶の構成元素から STEM-EDX 候補チャネルを列挙する (設計書 §5.9-3)。
     /// 収録外の元素・殻は返さない。below-edge / E0 範囲外は「理由付きで選べない候補」として返す
     /// (GUI 側にデータ収録範囲 (K: Z=6–50 等) をハードコードさせないための入口)。</summary>
-    public static IonizationChannelInfo[] EnumerateChannels(Crystal crystal, double e0KeV, IonizationFsTable table = null)
+    //public static IonizationChannelInfo[] EnumerateChannels(Crystal crystal, double e0KeV, IonizationFsTable table = null)//260925Cl 変更前
+    /// 260925Cl 追加: <paramref name="includeLineSeries"/> = true なら殻の後に線の系列 (Kα・Kβ・Lα・Lβ・Mα) も列挙する (既定 false = 従来どおり)。
+    public static IonizationChannelInfo[] EnumerateChannels(Crystal crystal, double e0KeV, IonizationFsTable table = null, bool includeLineSeries = false)
     {
         if (crystal?.Atoms is null || crystal.Atoms.Length == 0) return [];
         table ??= IonizationFsTable.Default;
@@ -1258,6 +1337,15 @@ public static class IonizationDataProvider
                 if (info.Status is not (IonizationAvailability.UnsupportedElement or IonizationAvailability.UnsupportedShell))
                     list.Add(info);
             }
+        //260925Cl 追加: 線の系列 (選んだときだけ)。殻のチャネルの後に、元素ごとに並べる
+        if (includeLineSeries)
+            foreach (var z in crystal.Atoms.Select(a => a.AtomicNumber).Distinct().OrderBy(z => z))
+                foreach (var series in new[] { IonizationShell.KAlpha, IonizationShell.KBeta, IonizationShell.LAlpha, IonizationShell.LBeta, IonizationShell.MAlpha })
+                {
+                    var info = DescribeLineSeries(new IonizationChannelSpec(z, series), e0KeV, table);
+                    if (info.Status is not (IonizationAvailability.UnsupportedElement or IonizationAvailability.UnsupportedShell))
+                        list.Add(info);
+                }
         return [.. list];
     }
 }

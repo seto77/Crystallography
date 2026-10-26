@@ -68,8 +68,22 @@ public static class Xraylib
     [DllImport(Dll, CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     private static extern double FluorYield(int Z, int shell, IntPtr error); // 蛍光収率 ω (≤1)
 
+    //260925Cl 追加: Coster–Kronig の遷移確率 (線ごとの X 線の応答 XrayLineSeries の空孔の連鎖で使う)。trans は xraylib の FL12_TRANS=1 … FM45_TRANS=14。
+    //⚠ 同梱の DLL は Kissel の光電・Compton profile・Auger rates を削った build (native\win-x64\libxrl-11.x64.PROVENANCE.txt) だが、
+    //  この関数は ω・R と同じく残っている (2026-09-25 に PyPI の xraylib 4.2.1 と 14 遷移すべてビット同一を確認)。
+    [DllImport(Dll, CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+    private static extern double CosKronTransProb(int Z, int trans, IntPtr error);
+
     /// <summary>xraylib ネイティブ DLL が読み込めて self-test に通ったか。260606Cl 追加。</summary>
     public static bool Enabled { get; }
+
+    /// <summary>260925Cl 追加: Coster–Kronig の関数が読み込めて self-test (Au の f13 ≈ 0.615) に通ったか。
+    /// P/Invoke は遅延束縛なので、入口が無い DLL でも <see cref="Enabled"/> は true になりうる — そのため別に確かめる。</summary>
+    public static bool CosterKronigEnabled { get; }
+
+    /// <summary>260925Cl 追加: Coster–Kronig の self-test に失敗した理由 (成功時と未試行時は null)。
+    /// <see cref="LastLoadError"/> は「成功時は null」の契約なので、そこには書かない。</summary>
+    public static string? CosterKronigLoadError { get; private set; }
 
     /// <summary>DLL ロード/self-test に失敗した場合の理由 (成功時は null)。260606Cl 追加。</summary>
     public static string? LastLoadError { get; private set; }
@@ -91,6 +105,20 @@ public static class Xraylib
             Enabled = false;
             LastLoadError = ex.Message;
         }
+        //260925Cl 追加: Coster–Kronig の入口の self-test。Au (Z=79) の f13 = 0.615 (xraylib 4.2.1)。
+        if (Enabled)
+            try
+            {
+                double f13 = CosKronTransProb(79, (int)XrlTrans.FL13, IntPtr.Zero);
+                CosterKronigEnabled = double.IsFinite(f13) && f13 is > 0.5 and < 0.7;
+                if (!CosterKronigEnabled)
+                    CosterKronigLoadError = $"xraylib Coster-Kronig self-test out of expected range: Au f13={f13:g4}.";
+            }
+            catch (Exception ex)
+            {
+                CosterKronigEnabled = false;
+                CosterKronigLoadError = ex.Message;
+            }
     }
 
     /// <summary>異常分散の実部 f′(E) [electron 単位]。<paramref name="energyKeV"/> は keV。利用不可・範囲外は <c>NaN</c>。260606Cl 追加。</summary>
@@ -162,4 +190,16 @@ public static class Xraylib
     public static double LineRadRate(int z, XrlLine line) => BadZ(z) ? double.NaN : Pos(RadRate(z, (int)line, IntPtr.Zero));
     /// <summary>蛍光収率 ω (≤1)。260606Cl 追加。</summary>
     public static double FluorescenceYield(int z, XrlShell shell) => BadZ(z) ? double.NaN : Pos(FluorYield(z, (int)shell, IntPtr.Zero));
+
+    /// <summary>260925Cl 追加: xraylib の Coster–Kronig 遷移の整数マクロ (FL12_TRANS=1 … FM45_TRANS=14)。FLP13 は L1→L3 の f′13。</summary>
+    public enum XrlTrans { FL12 = 1, FL13 = 2, FLP13 = 3, FL23 = 4, FM12 = 5, FM13 = 6, FM14 = 7, FM15 = 8, FM23 = 9, FM24 = 10, FM25 = 11, FM34 = 12, FM35 = 13, FM45 = 14 }
+
+    /// <summary>260925Cl 追加: Coster–Kronig の遷移確率 (0〜1)。**0 は正当な値** (遷移が無い) なので <see cref="Pos"/> で NaN に畳まない。
+    /// 利用不可・非有限・負は NaN。xraylib は範囲外でも 0 を返すので、0 は「遷移が無い」と「データが無い」を区別しない (xraylib 自身の連鎖と同じ扱い)。</summary>
+    public static double CosterKronig(int z, XrlTrans trans)
+    {
+        if (!CosterKronigEnabled || z < 1 || z > 99) return double.NaN;
+        double v = CosKronTransProb(z, (int)trans, IntPtr.Zero);
+        return double.IsFinite(v) && v >= 0 ? v : double.NaN;
+    }
 }

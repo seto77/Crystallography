@@ -227,7 +227,13 @@ public class Tiff
             IFD.Write(bw, 278, (uint)(srcData[n].Length / imageWidth));    //RowsPerStrip
             IFD.Write(bw, 279, (uint)(srcData[n].Length * bytePerPixel));  //StripByteCounts
             IFD.Write(bw, 280, (ushort)0);                              //MinSampleValue
-            IFD.Write(bw, 281, (ushort)255);                            //MaxSampleValue
+            // IFD.Write(bw, 281, (ushort)255);                         //MaxSampleValue // 260907Cl 変更前: bit 深度に関わらず 255 固定だった
+            //260907Cl 変更: 16/32bit 整数で書いたときも 255 と名乗っていたため、MaxSampleValue を実際の bit 深度に合わせる。
+            //  タグ 281 の型は SHORT なので 65535 が上限 (32bit 整数のときはそこで頭打ちにする)。
+            //  値そのものは advisory (TIFF 6.0 で deprecated) で画素データの解釈には使われないが、
+            //  これを表示レンジの初期値に使う読み手 (ImageJ 等) では 16bit 画像が飽和して見える。
+            //  8bit (bytePerPixel==1) と float (sampleFormat==3) は従来どおり 255 のまま。
+            IFD.Write(bw, 281, (ushort)(sampleFormat == 1 && bytePerPixel >= 2 ? 65535 : 255)); //MaxSampleValue
             offset = IFD.Write(bw, 282, (uint)1, (uint)pixelSizeX, offset); //XResolution
             offset = IFD.Write(bw, 283, (uint)1, (uint)pixelSizeY, offset); //YResolution
             IFD.Write(bw, 296, (ushort)1);                              //ResolutionUnit

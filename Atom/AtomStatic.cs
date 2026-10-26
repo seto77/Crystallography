@@ -1217,8 +1217,10 @@ public static partial class AtomStatic // (260401Ch) generated NIST elastic samp
     /// a1,a2,a3,a4,a5,b1,b2,b3,b4,b5,valence,method (f_e(s) = Σ a_i exp(-b_i s^2), s = sinθ/λ [Å^-1])
     /// <para>出典: 中性原子 = L.-M. Peng, G. Ren, S. L. Dudarev and M. J. Whelan (1996),
     /// "Robust parameterization of elastic and absorptive electron atomic scattering factors", Acta Cryst. A52, 257-276
-    /// (DOI:10.1107/S0108767395014371; 5 Gaussian, s 最大 6 Å^-1)。イオン = L.-M. Peng (1998), Acta Cryst. A54, 481-485
+    /// (DOI:10.1107/S0108767395014371; 5 Gaussian)。イオン = L.-M. Peng (1998), Acta Cryst. A54, 481-485
     /// (DOI:10.1107/S0108767398001901)。表は International Tables for Crystallography Vol. C, Table 4.3.2.2 にも収録。260606Cl 出典詳細化</para>
+    /// <para>260923Cl 注記訂正: ここの係数は ITC Vol. C Table 4.3.2.2 = Peng 1996 の <b>s ≤ 2 Å⁻¹ 用</b>の当てはめ (旧注記の「s 最大 6 Å⁻¹」は誤り。
+    /// 6 Å⁻¹ までの当てはめは同論文の別表 = ITC Table 4.3.2.3)。s &gt; 2 Å⁻¹ (大角の熱散漫の全球積分など) では外挿になる。</para>
     /// </summary>
     public static readonly ES[][] ElectronScatteringPeng =
         [
@@ -2906,6 +2908,14 @@ new(4.86738014,0.319974401,4.58872425,
         //  入れた   … FactorImaginary (局所・全立体角) と FactorImaginaryAnnular 2 本 = **吸収の本番経路すべて**
         //  入れない … ⚠ FactorImaginaryAnnularFlatEwald と FactorImaginaryAnnular2 は Gauss 和の直書きのまま。
         //             どちらも「未完成」「没?」で本番から呼ばれていないため。**復活させるときは必ずここも直すこと**
+        //
+        //【260922Cl 追加: TemariHybrid (BetheMethod.AbsorptionElasticModel、既定)】
+        //  中性原子の 0 ≤ s ≤ 6 Å⁻¹ を Temari dataset-factors v2.0.0 の第一原理 f_e に替える切替。s > 6 は上の Mott–Bethe tail のまま。
+        //  既定は TemariHybrid (作者決定 2026-09-22)。上の Peng→Mott–Bethe の二段構成は、イオン・Z = 87–98 と PengTail (旧挙動) で使われる。
+        //  根拠 = Temari の TDS 監査 (分岐 2): s > 6 の寄与は f″(0) の 1.5〜4.8 % あるが、tail の模型を替えた幅は 0.04〜0.43 %、
+        //  観測量への効きは 0.45 % 以下 ⇒ 6 以遠を Temari 由来にする必要は無い。PengTail との差は f″(0) の 0.06〜0.27 %。
+        //  既存の Peng→MB の smoothstep (1.5〜2.5) は、TemariHybrid では中性原子について使われない (s ≤ 6 が全部 Temari)。
+        //
         //  入れない … ⚠ **弾性散乱の実部** (BetheMethod.getU が呼ぶ es.Factor) は従来どおり純 Peng である。
         //             「Peng が s ≳ 2 Å⁻¹ で使えない」のは表の性質なので実部にも当てはまるが、実用的な反射は
         //             |g| ≤ 50 nm⁻¹ (s ≈ 0.25 Å⁻¹) で接続域に遠く届かず、変えると既存の全結果が動くため触っていない。
@@ -2918,6 +2928,9 @@ new(4.86738014,0.319974401,4.58872425,
 
         //⚠ 二乗版を別に置くのは、最頻経路 (純 Peng) から Math.Sqrt を消すため。const なのでコンパイル時に畳まれる
         private const double TailJoinLow2 = TailJoinLow * TailJoinLow, TailJoinHigh2 = TailJoinHigh * TailJoinHigh;
+
+        /// <summary>TemariHybrid で Temari の f_e を使う上限 s² [Å⁻²] (= <see cref="TemariSMaxAngstromInv"/>²)。260922Cl 追加</summary>
+        private const double TemariSMax2 = TemariSMaxAngstromInv * TemariSMaxAngstromInv;
 
         /// <summary>Mott–Bethe 係数を Å 規約にしたもの。f[Å] = 0.023934·(Z − f_x)/s²[Å⁻²]
         /// (<see cref="MottBetheMonopoleCoefficient"/> は s² が nm⁻²・f が nm の規約なので 1/10)</summary>
@@ -2943,6 +2956,16 @@ new(4.86738014,0.319974401,4.58872425,
         /// エントリは <see cref="Prms"/> が空で、そもそも <see cref="AttachTail"/> も呼ばれないので純 Peng 側 (= 0) へ落ちる。</remarks>
         internal double ElasticFactorWithTail(double s2, bool useTail = true)
         {
+            //260922Cl 追加: TemariHybrid (Temari の TDS 監査 分岐 2)。中性原子 (Valence = 0) の 0 ≤ s ≤ 6 Å⁻¹ だけ Temari の f_e [Å] に替える。
+            //  s > 6 は下の従来経路へ落ちる (s ≥ 2.5 なので純 Mott–Bethe)。s = 6 での値の跳び (≤ 0.041 %) は監査が許した形 (raw) なので合わせない。
+            //  ⚠ イオン (Valence ≠ 0) は従来どおり — Temari は「イオンはこの表からは導出できない」と明記している。
+            //  ⚠ AtomicNumber は AttachTail を呼ばれたエントリ (電子用の Peng と 8 Gaussian) だけが持つ。0 なら TemariScattering が null を返す。
+            //  ⚠ useTail = false (検証専用の入口) は純 Peng のまま。TemariFactor.Fe は s > 6 で例外を投げるので、s² ≤ 36 の判定を先に置く。
+            //  ⚠ s² は丸めで僅かに負になりうる (FactorImaginary の q0 − d) ので 0 へ寄せてから平方根を取る (Fe は負の s でも例外)。
+            if (useTail && Valence == 0 && s2 <= TemariSMax2 && BetheMethod.AbsorptionElasticModel == AbsorptionElasticModel.TemariHybrid
+                && TemariScattering(AtomicNumber) is { } temari)
+                return temari.Fe(s2 > 0 ? Math.Sqrt(s2) : 0);
+
             //純 Peng の側。ここが最頻 (前方散乱) なので Gauss 和だけで抜ける
             if (!useTail || s2 <= TailJoinLow2 || NeutralXray == null)
                 return PengSum(s2);
@@ -7543,14 +7566,20 @@ new(4.86738014,0.319974401,4.58872425,
     #endregion
 
 
-    #region Temari 原子散乱因子 f_x / f_e (dataset-factors v1.0.0) 260818Cl 追加
+    #region Temari 原子散乱因子 f_x / f_e (dataset-factors v2.0.0) 260818Cl 追加、260918Cl v2.0.0 へ更新
 
     /// <summary>
     /// Temari の原子散乱因子。<see cref="TemariScattering(int)"/> が返す 1 元素分の表。260818Cl 追加。
-    /// <para>出典: Temari dataset-factors v1.0.0 (Yusuke SETO), CC-BY-4.0,
-    /// <see href="https://github.com/seto77/Temari"/> release <c>dataset-factors-v1.0.0</c>。
+    /// <para>出典: Temari dataset-factors v2.0.0 (Yusuke SETO), CC-BY-4.0, DOI 10.5281/zenodo.22820415,
+    /// <see href="https://github.com/seto77/Temari"/> release <c>dataset-factors-v2.0.0</c> (260918Cl v1.0.0 から更新)。
     /// 完全 Dirac SCF (小成分込み) + 厳密交換 KLI による第一原理計算で、フィット係数ではない
-    /// (model_id <c>DHFS-KLI-DTM1-dt16-neutral-v1</c>)。</para>
+    /// (model_id <c>DHFS-KLI-DTM1-dt16-neutral-v1</c>。処方は v1.0.0 と同じ)。</para>
+    /// <para>⚠ <b>数値の精度について、データセットは厳密な誤差上界を主張していない</b> — 全表が
+    /// <c>artifact_role = computed</c> / <c>certification_status = not_certified</c> (Temari の作者決定 I34 / I36。
+    /// v1.0.0 が名乗っていた「停止誤差の上界」は撤回された)。ReciPro が検査しているのは<b>公開した release への所属</b>
+    /// (manifest の sha256 と各表の sha256 = 生成 tools/TemariFactorsGen/pack_temari_factors.py) と
+    /// <b>自分の変換</b> (再量子化と補間) だけで、精度の主張を足さない。表示や文書で「認証された精度」と書かないこと。
+    /// 状態は <see cref="TemariCertificationStatus"/>、1 文の説明は <see cref="TemariAccuracyStatement"/>。</para>
     /// <para>⚠ <b>中性原子のみ・Z = 1–86 のみ</b>。Temari は「イオンはこの表からは導出できない」と明記しているので、
     /// イオンに中性値を代用したり Peng 型の Mott–Bethe 単極子を足したりしてはいけない。</para>
     /// <para>⚠ <see cref="Fe"/> は first-Born (Mott–Bethe) の<b>非相対論的</b>電子散乱因子で、入射電子の
@@ -7570,7 +7599,8 @@ new(4.86738014,0.319974401,4.58872425,
             AtomicNumber = z;
             // Temari の interpolation_contract。⚠ PCHIP / linear / natural / smoothing はいずれも契約が禁じている
             splineFx = new TemariSpline(s, fx, TemariSpline.End.Clamped, TemariSpline.End.NotAKnot, leftValue: 0.0);
-            splineFe = new TemariSpline(t, fe, TemariSpline.End.NotAKnot, TemariSpline.End.NotAKnot);
+            //splineFe = new TemariSpline(t, fe, TemariSpline.End.NotAKnot, TemariSpline.End.NotAKnot); // 260922Cl 変更前
+            splineFe = new TemariSpline(t, fe, TemariSpline.End.NotAKnot, TemariSpline.End.NotAKnot, onSquaredGrid: true); // 260922Cl: 節点 t = s² (区間の見当付け用)
         }
 
         private static double Guard(double s)
@@ -7604,11 +7634,20 @@ new(4.86738014,0.319974401,4.58872425,
 
         private readonly double[] x, y, m;
 
-        public TemariSpline(double[] x, double[] y, End left, End right, double leftValue = 0.0, double rightValue = 0.0)
+        /// <summary>260922Cl 追加: 区間の見当付け。節点は s について等間隔 (s_i = s_max·i/(n−1)) なので、
+        /// 節点が s のとき i ≈ xq/Δs、t = s² のとき i ≈ √xq/Δs で区間が O(1) で分かる (<see cref="Evaluate"/> 参照)。</summary>
+        private readonly bool onSquaredGrid;
+        private readonly double invStep;
+
+        //public TemariSpline(double[] x, double[] y, End left, End right, double leftValue = 0.0, double rightValue = 0.0) // 260922Cl 変更前
+        /// <param name="onSquaredGrid">260922Cl 追加: 節点が t = s² (f_e) なら true、s (f_x) なら false。区間の見当付けにだけ使い、選ぶ区間と値は変わらない</param>
+        public TemariSpline(double[] x, double[] y, End left, End right, double leftValue = 0.0, double rightValue = 0.0, bool onSquaredGrid = false)
         {
             this.x = x;
             this.y = y;
             m = Slopes(x, y, left, right, leftValue, rightValue);
+            this.onSquaredGrid = onSquaredGrid;
+            invStep = (x.Length - 1) / TemariSMaxAngstromInv;
         }
 
         private static double[] Slopes(double[] x, double[] y, End left, End right, double leftValue, double rightValue)
@@ -7662,15 +7701,24 @@ new(4.86738014,0.319974401,4.58872425,
         /// <summary>xq での値。区間の選び方も Hermite 基底の評価順も参照実装と同一。</summary>
         public double Evaluate(double xq)
         {
-            int lo = 0, hi = x.Length;                                    // Python の bisect_right
-            while (lo < hi)
-            {
-                int mid = (lo + hi) >> 1;
-                if (xq < x[mid]) hi = mid; else lo = mid + 1;
-            }
-            int i = lo - 1;
-            if (i < 0) i = 0;
-            if (i > x.Length - 2) i = x.Length - 2;
+            //260922Cl 変更: 区間を 2 分探索 (bisect_right、約 13 段) から「等間隔の s からの見当 + 前後の詰め」へ。
+            //  吸収の f″ (TemariHybrid) の被積分関数は s が毎回変わるので、2 分探索の分岐が当たらず 1 評価 ~20 ns 余分に掛かり、
+            //  ポテンシャル行列 1 枚が約 2 倍になっていた (BDN AbsorptionPotentialBenchmark.PotentialMatrixNumeric)。
+            //  ⚠ 選ぶ区間は bisect_right と同一: x[i] ≤ xq < x[i+1] を満たす唯一の i (端は [0, n−2] へ clamp)。見当が丸めで 1 ずれても
+            //  下の 2 本の while が正す。Hermite の評価は触っていないので**値はビット同一** (全 86 元素 × 15 万点の Fx/Fe で照合済み)。
+            //int lo = 0, hi = x.Length;                                    // Python の bisect_right
+            //while (lo < hi)
+            //{
+            //    int mid = (lo + hi) >> 1;
+            //    if (xq < x[mid]) hi = mid; else lo = mid + 1;
+            //}
+            //int i = lo - 1;
+            //if (i < 0) i = 0;
+            //if (i > x.Length - 2) i = x.Length - 2;
+            double guess = (onSquaredGrid ? Math.Sqrt(xq) : xq) * invStep;
+            int i = guess >= x.Length - 2 ? x.Length - 2 : guess > 0 ? (int)guess : 0;//NaN はここで 0 (呼び出し側の Guard が弾くので来ない)
+            while (i > 0 && xq < x[i]) i--;
+            while (i < x.Length - 2 && xq >= x[i + 1]) i++;
 
             double h = x[i + 1] - x[i];
             double t = (xq - x[i]) / h;
@@ -7698,13 +7746,35 @@ new(4.86738014,0.319974401,4.58872425,
     /// <summary>原子番号 z が Temari の表に収録されているか。260818Cl 追加。</summary>
     public static bool IsTemariSupported(int z) => z >= TemariMinAtomicNumber && z <= TemariMaxAtomicNumber;
 
-    /// <summary>Temari のデータセット版 (例 "1.0.0")。260818Cl 追加。</summary>
+    /// <summary>Temari のデータセット版 (例 "2.0.0")。260818Cl 追加。</summary>
     public static string TemariDatasetVersion => TemariMeta("dataset_version");
+
+    /// <summary>この版の DOI (例 "10.5281/zenodo.22820415")。引用と保存の識別子であって、精度の表明ではない。260918Cl 追加。</summary>
+    public static string TemariDoi => TemariMeta("doi");
+
+    /// <summary>系列の DOI (常に最新版へ解決。例 "10.5281/zenodo.22644247")。260918Cl 追加。</summary>
+    public static string TemariConceptDoi => TemariMeta("doi_concept");
+
+    /// <summary>全表の <c>artifact_role</c> (v2.0.0 は "computed")。260918Cl 追加。</summary>
+    public static string TemariArtifactRole => TemariMeta("artifact_role");
+
+    /// <summary>全表の <c>certification_status</c> (v2.0.0 は "not_certified" = 厳密な誤差上界の主張なし)。260918Cl 追加。
+    /// ⚠ 空文字は「欄の無い古い .bin」なので、"certified" と読み替えない。</summary>
+    public static string TemariCertificationStatus => TemariMeta("certification_status");
+
+    /// <summary>状態の理由 (データセットの文をそのまま)。260918Cl 追加。</summary>
+    public static string TemariCertificationStatusReason => TemariMeta("certification_status_reason");
+
+    /// <summary>保証の範囲を述べる 1 文 (About / マニュアル / ツールチップ用。「認証」の語を使わない)。260918Cl 追加。</summary>
+    public static string TemariAccuracyStatement => TemariMeta("accuracy_statement");
+
+    /// <summary>詰めた release の manifest.json (生バイト) の sha256 = 公開物への所属の根拠。260918Cl 追加。</summary>
+    public static string TemariManifestSha256 => TemariMeta("manifest_sha256");
 
     /// <summary>Temari の物理処方 ID (例 "DHFS-KLI-DTM1-dt16-neutral-v1")。260818Cl 追加。</summary>
     public static string TemariModelId => TemariMeta("model_id");
 
-    /// <summary>Temari の元 release タグ (例 "dataset-factors-v1.0.0")。260818Cl 追加。</summary>
+    /// <summary>Temari の元 release タグ (例 "dataset-factors-v2.0.0")。260818Cl 追加。</summary>
     public static string TemariReleaseTag => TemariMeta("release_tag");
 
     /// <summary>Temari データセットのライセンス ("CC-BY-4.0")。260818Cl 追加。</summary>
@@ -7726,8 +7796,10 @@ new(4.86738014,0.319974401,4.58872425,
     /// 原子番号 z の Temari 原子散乱因子を返す (未収録なら null)。元素単位で lazy に展開しキャッシュする。260818Cl 追加。
     /// <para>格納形式は ReciPro 固有 (Temari データセットの仕様ではない): 節点は 7681 点すべてを持つが、値は絶対量子化
     /// されている (f_x 1e-10 electrons / f_e 1e-11 Å = 公開値の 11 桁丸め粒度の 1/10)。公開値からのずれは最大
-    /// 5e-11 / 5e-12、契約スプラインで評価した曲線の差は 7.5e-11 / 7.2e-12 で、Temari の認証予算 1e-7 の 1/1300。
-    /// 生成は tools/TemariFactorsGen/pack_temari_factors.py。</para>
+    /// 5e-11 / 5e-12、契約スプラインで評価した曲線の差は 6.1e-11 / 7.1e-12 (v2.0.0 の golden 12 点で実測、260918Cl。
+    /// 検査 B の許容 7.5e-11 / 7.2e-12 は v1.0.0 のときのまま)。
+    /// ⚠ これは<b>公開値からの変換差</b>であって、物理量の精度ではない (データセットは誤差上界を主張していない)。
+    /// 物理量の精度と足して「総合精度」を作らないこと。生成は tools/TemariFactorsGen/pack_temari_factors.py。</para>
     /// <para>⚠ <b>「Temari の契約テストに合格」とは言えない</b> — 同テストの許容は相対 1e-12 で、絶対量子化した表は
     /// 小さい f_x (H の高 s 側) で相対 7.6e-6 ずれる。言えるのは<b>「補間法は契約どおり」</b>まで。</para>
     /// </summary>

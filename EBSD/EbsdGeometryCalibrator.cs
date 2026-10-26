@@ -1,8 +1,8 @@
-#region using
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
-#endregion
+using System.Threading.Tasks;
 
 namespace Crystallography;
 
@@ -75,10 +75,8 @@ public static class EbsdGeometryCalibrator
     /// <summary>ソフト境界の外で返す罰則値の下駄。目的関数は -ZNCC (= 高々 1 程度) なので、10 なら確実に棄却される。260727Cl 追加</summary>
     const double SoftBoundPenaltyBase = 10;
 
-    /// <summary>較正の最後に行う 6 変数 (PC_u, PC_v, lnDD, 方位 3) 同時最適化の評価上限。260726Cl 追加。
-    /// 6 次元なので交互法の 3 変数段 (120-150) より多く要る。1 評価ごとに projector を作り直す重い段だが、
-    /// 交互法では下れない斜めの谷をここで下る</summary>
-    const int JointPolishMaxEval = 600;
+    //260920Cl (/simplify) 削除: const int JointPolishMaxEval = 600; — 多段化で StageMaxEval[].Joint へ吸収され、
+    //  doc も「1 評価ごとに projector を作り直す」という撤去済みの設計を説明したままだった
 
     /// <summary>較正の多点開始オフセット。値は無次元 [-1,1]³ で、消費側で <see cref="StartSpreadPc"/> (検出器幅・高さ比) と
     /// <see cref="StartSpreadLnDd"/> (lnDD) を掛けてスケールする。260726Cl 追加 (作者要望)。 //260727Cl: doc が旧値 (1%・0.02) のままで実装 (8%・0.08) と食い違っていたので訂正
@@ -103,13 +101,98 @@ public static class EbsdGeometryCalibrator
         return offsets;
     }
 
-    /// <summary>PC/DD と方位を較正する。結果は <see cref="EbsdDetectorGeometry.FromPatternCenter"/> で DetX/DetY/DetZ へ戻す。</summary>
+    /// <summary>260920Cl 追加: 較正の比較解像度 (長辺 px)。粗 → 中 → フル解像度の 3 段で、段ごとに前段の解を引き継ぐ。
+    /// 旧実装は全段 160 px 固定で、1 画素が検出器上 0.4 mm 相当 (1344 px の検出器) と最終の詰めには粗すぎた。
+    /// 最終段は 0 = 実測画像のフル解像度。作者指示「計算時間は長くかかっても構わない。なるべく元の解像度で」</summary>
+    static readonly int[] StageLongSides = [160, 480, 0];
+
+    /// <summary>260920Cl 追加: 2 段目・3 段目へ持ち上げる上位解の数。1 段目 (粗) の谷が浅いと最良が入れ替わるため 1 点に絞らない</summary>
+    //260920Cl: 中段の点数はコア数に合わせる (6 点だと多コア機で遊ぶ)。最終段は 1 点にして評価の内部を並列にする
+    static readonly int[] StageKeep = [Math.Max(6, Environment.ProcessorCount), 1];
+
+    /// <summary>260920Cl 追加: 各段の Nelder-Mead の収束条件。段が細かくなるほど厳しくする
+    /// (関数値の幅 tol と、初期刻みに対するシンプレックスの広がり xtolRel の両方)</summary>
+    static readonly (double Tol, double XTol)[] StageTolerance = [(1E-6, 1E-2), (1E-7, 3E-3), (1E-9, 3E-4)];
+
+    /// <summary>260920Cl 追加: 各段の評価上限 (方位段 / 幾何段 / 6 変数同時段)。フル解像度は 1 評価が重いので点数を絞る代わりに上限を上げる</summary>
+    static readonly (int Ori, int Geo, int Joint)[] StageMaxEval = [(150, 120, 600), (200, 180, 900), (300, 250, 1500)];
+
+    /// <summary>260920Cl 追加: 最終段で 6 変数同時最適化を刻みを縮めて張り直す回数。素の Nelder-Mead は谷で停滞する</summary>
+    const int JointRestarts = 3;
+
+    /// <summary>260920Cl 追加: 1 つの比較解像度。Reference は正規化済み (ZNCC の参照)、FlattenFwhm はシミュレーション側に掛ける高域通過の半値幅 [この解像度の px]</summary>
+    sealed class Scale { public int W, H; public double[] Reference; public double FlattenFwhm; }
+
+    /// <summary>260920Cl 追加 (作者指示): 幾何を固定して方位だけ動かすときの採点器。較正の**最終段とまったく同じ**
+    /// 参照 (表示中の実測値をフル解像度で正規化)・同じ高域通過・同じ ZNCC を使う。
+    /// 方位探索の仕上げ段がこれを通ることで Find と Calibrate の目的関数が一致する。
+    /// 両者が違うと「Find → トップ選択 → Calibrate → 再び Find」で方位が 2 値を約 1° で往復して収束しない (作者の実機報告)。
+    /// DisplayReference が無い旧経路では context.Reference (縮小 + 強制背景除算) の 1 段になるので、従来の採点と同じになる</summary>
+    public sealed class FixedGeometryScorer
+    {
+        readonly EbsdMatchingContext context;
+        readonly Scale scale;
+        readonly EbsdPatternProjector projector;
+        readonly double[] buf, work1, work2;
+
+        /// <summary>採点に使う解像度 (較正の最終段と同じ)</summary>
+        public int Width => scale.W;
+        /// <summary>同上</summary>
+        public int Height => scale.H;
+
+        internal FixedGeometryScorer(EbsdMatchingContext context)
+        {
+            this.context = context;
+            scale = BuildScales(context)[^1]; //最終段 = 最も細かい解像度
+            projector = new EbsdPatternProjector(context.Geometry, scale.W, scale.H);
+            int n = scale.W * scale.H;
+            buf = new double[n]; work1 = new double[n]; work2 = new double[n];
+        }
+
+        /// <summary>与えた方位での ZNCC。値が大きいほど実測に近い (較正は −ZNCC を最小化している)</summary>
+        public double Zncc(Matrix3D rotation)
+        {
+            projector.Project(context.MasterPattern, rotation, context.PositivePlane, context.NegativePlane, buf);
+            if (scale.FlattenFwhm >= 1) EbsdPatternScorer.SubtractBoxBackground(buf, work1, work2, scale.W, scale.H, scale.FlattenFwhm, true);
+            return EbsdPatternScorer.ZnccSimd(scale.Reference, buf, true);
+        }
+    }
+
+    /// <summary>260920Cl 追加 (作者指示): 較正の最終段と同じ採点器を作る。方位探索の仕上げ段と目的関数を揃えるための入口</summary>
+    public static FixedGeometryScorer CreateFinalScorer(EbsdMatchingContext context)
+    {
+        ArgumentNullException.ThrowIfNull(context);
+        return new FixedGeometryScorer(context);
+    }
+
+    /// <summary>260920Cl 追加: スレッドごとの作業バッファ (投影先・box blur の作業用・使い回すプロジェクタ)。
+    /// Proj は幾何が変わるたび Rebuild するだけで、配列の確保はこの 1 回きり</summary>
+    sealed class Work
+    {
+        public double[] Buf, W1, W2;
+        public EbsdPatternProjector Proj;
+        public Work(Scale sc, EbsdDetectorGeometry geom)
+        {
+            int n = sc.W * sc.H;
+            Buf = new double[n]; W1 = new double[n]; W2 = new double[n];
+            Proj = new EbsdPatternProjector(geom, sc.W, sc.H);
+        }
+    }
+
+    /// <summary>PC/DD と方位を較正する。結果は <see cref="EbsdDetectorGeometry.FromPatternCenter"/> で DetX/DetY/DetZ へ戻す。
+    /// 260920Cl 全面改修 (作者指示): 粗 → 中 → フル解像度の多段、多点開始の並列化、シミュレーション側にも実測と同じ平坦化、収束判定の強化。
+    /// 旧実装 (全段 160 px・逐次・シミュレーション側は生値・関数値だけの収束判定) は git 履歴 260727Cl 版を参照</summary>
     /// <param name="context">実測パターン・MasterPattern・現在の幾何と方位のスナップショット</param>
     /// <param name="detectorWidthMm">検出器の物理幅 (mm)。ソフト境界と Nelder-Mead の初期ステップに使う</param>
     /// <param name="detectorHeightMm">検出器の物理高さ (mm)</param>
+    /// <param name="cancel">中止トークン</param>
     /// <param name="progress">進捗 (0-1) と段の名前。ワーカースレッドから呼ばれるので受け手側でマーシャリングすること</param>
+    /// <param name="startCount">260922Cl 追加: 多点開始の点数 (既定 = <see cref="StartCount"/>)。1 なら context の幾何と方位から 1 回だけ</param>
+    /// <param name="maxStages">260922Cl 追加: 使う解像度の段数 (0 = 全段)。方位探索の候補の順位付けでは粗い段だけで足りる</param>
+    //旧シグネチャ: public static EbsdCalibrationResult Run(EbsdMatchingContext context, double detectorWidthMm, double detectorHeightMm,
+    //    CancellationToken cancel = default, Action<double, string> progress = null)
     public static EbsdCalibrationResult Run(EbsdMatchingContext context, double detectorWidthMm, double detectorHeightMm,
-        CancellationToken cancel = default, Action<double, string> progress = null)
+        CancellationToken cancel = default, Action<double, string> progress = null, int startCount = StartCount, int maxStages = 0)
     {
         ArgumentNullException.ThrowIfNull(context);
         if (!(detectorWidthMm > 0) || !double.IsFinite(detectorWidthMm)) throw new ArgumentOutOfRangeException(nameof(detectorWidthMm));
@@ -118,41 +201,21 @@ public static class EbsdGeometryCalibrator
         var geom0 = context.Geometry;
         double detTilt = geom0.DetTilt, smpTilt = geom0.SampleTilt, xm = geom0.XMirror, pixelSize = geom0.PixelSize;
         int imgW = geom0.WidthPx, imgH = geom0.HeightPx;
-        var (footU0, footV0) = geom0.PatternCenterMm; //260724Cl (/simplify): PC 式の手書き重複 (-DetX, -(DetY cosδ+DetZ sinδ)) を幾何オブジェクトへ一元化
-        double dd0 = geom0.CameraLength;
+        var (footU0, footV0) = geom0.PatternCenterMm;
+        double dd0 = geom0.CameraLength, lnDd0 = Math.Log(dd0);
         double physW = detectorWidthMm, physH = detectorHeightMm;
 
-        var buf = new double[context.RasterWidth * context.RasterHeight];
-        int evalTotal = 0;
-        //260726Cl 変更 (作者報告「プログレスバーの挙動がおかしい」): 旧実装は「評価回数 / 静的な予算」で進捗を出していたが、
-        //予算は最大ラウンド (20) を使い切る前提なのに実際は 1-2 ラウンドで収束するため、バーは 3 割ほどで止まって最後に 100% へ飛んでいた
-        //(実測 334,551 評価 / 予算 1,220,000)。**完了した開始点の数**を主軸にし、実行中の開始点の内側だけを
-        //「これまでの 1 点あたり実測平均」で按分する。1 点目だけは実測が無いので静的な予算で見積もる。
-        //旧: int evalBudget = StartOffsets.Length * PerStartBudget; ratio = evalsDone / evalBudget
-        int evalsDone = 0;
-        const int PerStartBudget = MaxRounds * (150 + 120) + 100 + JointPolishMaxEval;
-        int completedStarts = 0, evalsAtStartBegin = 0;
-        double avgEvalsPerStart = PerStartBudget;
+        //--- 比較スケールを作る。DisplayReference (フル解像度の表示値) があればそれを段ごとに縮小 + 正規化する。
+        //    無ければ旧来どおり context.Reference (縮小 + 強制背景除算済み) の 1 段だけで動く
+        var scales = BuildScales(context);
+        if (maxStages > 0 && scales.Length > maxStages) scales = scales[..maxStages]; //260922Cl 追加
+        var startOffsets = StartOffsets[..Math.Clamp(startCount, 1, StartOffsets.Length)]; //260922Cl 追加 ([0] は context の幾何そのもの)
 
         EbsdDetectorGeometry MakeGeom(double u, double v, double ld)
         {
             var (dx, dy, dz) = EbsdDetectorGeometry.FromPatternCenter(u, v, Math.Exp(ld), detTilt);
             return new EbsdDetectorGeometry(detTilt, dx, dy, dz, pixelSize, imgW, imgH, xm, smpTilt);
         }
-        //260727Cl (/simplify): soft bounds の判定とペナルティ式が交互法② と 6 変数同時仕上げの 2 箇所に同じ形で書かれ、
-        //  閾値 (W/H の 25%・lnDD 0.35) とペナルティ基底 10 も 2 重にハードコードされていたので 1 本にまとめた。
-        //260727Cl 変更: **入力の較正開始位置 (footU0, footV0, ln dd0) からの累積ずれ**で判定する。
-        //  旧実装は各段の増分 v[] をそのまま渡しており、交互法が毎ラウンド fu/fv/lnDd を更新するぶん
-        //  「1 ラウンドあたりの増分」しか縛れていなかった (MaxRounds=20 なので原理的には PC が physW の 5 倍、
-        //  lnDD が ±7 = DD 約 1100 倍まで流れ得た)。ソフト境界の目的は「単一パターンの PC-DD-方位縮退で
-        //  非物理領域へ流れないようにする」ことなので、doc どおり開始位置基準に直す。
-        //  多点開始のオフセットは physW の 8% (StartSpreadPc) なので、どの開始点も境界の十分内側から始まる。
-        //  旧: bool OutOfSoftBounds(double du, double dv, double dlnDd, out double penalty)  // du/dv/dlnDd はその段の増分
-        //  1 ラウンド目は fu==footU0 なので判定は旧実装と完全に一致する。2 ラウンド目以降だけが変わるが、
-        //  交互法②の初期シンプレックスは physW の 1% (同時仕上げは 0.5%) で、収束も実測 1-2 ラウンドなので、
-        //  正常な較正では累積ずれが上限 25% に達しない = 結果は変わらない。効くのは ZNCC 面が平坦で
-        //  微小改善が 20 ラウンド続く病的なケースだけで、そこを止めるのがこの境界の目的。
-        double lnDd0 = Math.Log(dd0);
         bool OutOfSoftBounds(double u, double v, double lnDd, out double penalty)
         {
             double du = u - footU0, dv = v - footV0, dlnDd = lnDd - lnDd0;
@@ -160,114 +223,166 @@ public static class EbsdGeometryCalibrator
             return Math.Abs(du) > physW * SoftBoundPcFraction || Math.Abs(dv) > physH * SoftBoundPcFraction
                 || Math.Abs(dlnDd) > SoftBoundLnDd;
         }
-        double ScoreWith(EbsdPatternProjector proj, Matrix3D rot)
-        {
-            cancel.ThrowIfCancellationRequested(); //260725Ch: 各評価の投影前に中止を反映
-            //260726Cl: 完了した開始点 + 実行中の開始点の按分。NM は逐次なので単純加算で足りる
-            evalsDone++;
-            double inCurrentStart = Math.Min(0.99, (evalsDone - evalsAtStartBegin) / Math.Max(1, avgEvalsPerStart));
-            progress?.Invoke(Math.Min(0.99, (completedStarts + inCurrentStart) / StartOffsets.Length), null);
-            proj.Project(context.MasterPattern, rot, context.PositivePlane, context.NegativePlane, buf);
-            return -EbsdPatternScorer.Zncc(context.Reference, buf);
-        }
-        double startZncc = -ScoreWith(new EbsdPatternProjector(MakeGeom(footU0, footV0, Math.Log(dd0)), context.RasterWidth, context.RasterHeight), context.Rotation);
 
-        //260726Cl 追加 (作者要望): 1 開始点ぶんの較正 (交互法 → 方位仕上げ → 6 変数同時) を関数化し、多点開始から呼ぶ
-        (double Zncc, double Fu, double Fv, double LnDd, Matrix3D Rot, int Rounds, bool Converged, double JointGain) RunFrom(double fu, double fv, double lnDd)
+        int evalTotal = 0; //260920Cl (/simplify): 進捗は完了した開始点の数で出すので、評価回数の逐次カウンタ (旧 evalsDone) は不要
+        double ScoreWith(Scale sc, Work w, EbsdPatternProjector proj, Matrix3D rot, bool innerParallel)
         {
-            var r0 = context.Rotation;
-            //260725Cl 変更 (作者指示): 旧 for (int round = 0; round < 2; round++) — 2 ラウンド固定で収束判定なし。
-            //PC・DD・方位の相関で交互法はジグザグするため、改善が止まるまで最大 MaxRounds 回まわす
-            int roundsUsed = 0;
-            bool converged = false;
-            double prevZncc = -ScoreWith(new EbsdPatternProjector(MakeGeom(fu, fv, lnDd), context.RasterWidth, context.RasterHeight), r0);
+            cancel.ThrowIfCancellationRequested();
+            proj.Project(context.MasterPattern, rot, context.PositivePlane, context.NegativePlane, w.Buf, innerParallel);
+            //260920Cl: 実測側が平坦化されているならシミュレーション側にも同じ高域通過を掛ける (これを欠くと ZNCC がモデル由来の背景勾配に引かれる)
+            if (sc.FlattenFwhm >= 1) EbsdPatternScorer.SubtractBoxBackground(w.Buf, w.W1, w.W2, sc.W, sc.H, sc.FlattenFwhm, innerParallel); //260920Cl: 最終段は内部も並列
+            return -EbsdPatternScorer.ZnccSimd(sc.Reference, w.Buf, innerParallel); //260920Cl: SIMD 版。最終段は並列
+        }
+        //260920Cl: 旧実装は評価ごとに new EbsdPatternProjector していた (フル解像度で 1 評価あたり 33 MB の確保)。バッファを使い回す
+        //旧: => ScoreWith(sc, w, new EbsdPatternProjector(MakeGeom(fu, fv, lnDd), sc.W, sc.H), rot, innerParallel);
+        double ScoreAt(Scale sc, Work w, double fu, double fv, double lnDd, Matrix3D rot, bool innerParallel)
+        {
+            w.Proj.Rebuild(MakeGeom(fu, fv, lnDd), innerParallel);
+            return ScoreWith(sc, w, w.Proj, rot, innerParallel);
+        }
+
+        var coarse = scales[0];
+        //260920Cl: 較正前後の ZNCC は**同じ解像度**で測る。段ごとに ZNCC の絶対値は変わる (細かいほど下がる) ので、
+        //  旧: 開始値を粗い段、結果を最終段で測っており、改善しても悪化したように見えていた
+        var finest = scales[^1];
+        double startZncc = -ScoreAt(finest, new Work(finest, geom0), footU0, footV0, lnDd0, context.Rotation, true);
+
+        //--- 1 開始点ぶんの較正 (交互法 → 方位仕上げ → 6 変数同時 (最終段は再起動付き))
+        (double Zncc, double Fu, double Fv, double LnDd, Matrix3D Rot, int Rounds, bool Converged, double JointGain)
+            RunFrom(int stage, double fu, double fv, double lnDd, Matrix3D rot, bool innerParallel)
+        {
+            var sc = scales[Math.Min(stage, scales.Length - 1)];
+            var (tol, xtol) = StageTolerance[Math.Min(stage, StageTolerance.Length - 1)];
+            var (maxOri, maxGeo, maxJoint) = StageMaxEval[Math.Min(stage, StageMaxEval.Length - 1)];
+            var w = new Work(sc, geom0);
+            var r0 = rot;
+            int roundsUsed = 0; bool converged = false;
+            double prevZncc = -ScoreAt(sc, w, fu, fv, lnDd, r0, innerParallel);
             for (int round = 0; round < MaxRounds; round++)
             {
-                cancel.ThrowIfCancellationRequested(); //260725Ch
+                cancel.ThrowIfCancellationRequested();
                 //① 幾何固定で方位 (粗 0.7°)
-                var projFixed = new EbsdPatternProjector(MakeGeom(fu, fv, lnDd), context.RasterWidth, context.RasterHeight);
-                var (bo, _, eo) = EbsdPatternScorer.NelderMead(v => ScoreWith(projFixed, EbsdIndexer.PerturbRotation(r0, v[0], v[1], v[2])), [0, 0, 0], [0.7, 0.7, 0.7], 150);
-                r0 = EbsdIndexer.PerturbRotation(r0, bo[0], bo[1], bo[2]); evalTotal += eo;
+                //260920Cl: 方位段は幾何が固定なので視線を 1 回だけ作り直して使い回す (旧: 毎ラウンド new = フル解像度で 33 MB)
+                w.Proj.Rebuild(MakeGeom(fu, fv, lnDd), innerParallel);
+                var projFixed = w.Proj;
+                var (bo, _, eo) = EbsdPatternScorer.NelderMead(v => ScoreWith(sc, w, projFixed, EbsdIndexer.PerturbRotation(r0, v[0], v[1], v[2]), innerParallel),
+                    [0, 0, 0], [0.7, 0.7, 0.7], maxOri, tol, xtol);
+                r0 = EbsdIndexer.PerturbRotation(r0, bo[0], bo[1], bo[2]); Interlocked.Add(ref evalTotal, eo);
 
                 //② 方位固定で幾何 (dU, dV [mm], dlnDD)。ステップ = 検出器幅/高の 1%、lnDD 0.02
-                //260724Cl: 単一パターンの PC-DD-方位縮退で非物理領域へ流れないよう soft bounds (初期値から W/H の 25%・DD ±40% でペナルティ)
                 var rFixed = r0;
                 var (bg, vg, eg) = EbsdPatternScorer.NelderMead(
-                    v => OutOfSoftBounds(fu + v[0], fv + v[1], lnDd + v[2], out var pen) ? pen //260727Cl: 判定+罰則式を OutOfSoftBounds へ集約し、増分でなく開始位置からの累積で判定する
-                        : ScoreWith(new EbsdPatternProjector(MakeGeom(fu + v[0], fv + v[1], lnDd + v[2]), context.RasterWidth, context.RasterHeight), rFixed),
-                    [0, 0, 0], [physW * 0.01, physH * 0.01, 0.02], 120);
-                fu += bg[0]; fv += bg[1]; lnDd += bg[2]; evalTotal += eg;
+                    v => OutOfSoftBounds(fu + v[0], fv + v[1], lnDd + v[2], out var pen) ? pen
+                        : ScoreAt(sc, w, fu + v[0], fv + v[1], lnDd + v[2], rFixed, innerParallel),
+                    [0, 0, 0], [physW * 0.01, physH * 0.01, 0.02], maxGeo, tol, xtol);
+                fu += bg[0]; fv += bg[1]; lnDd += bg[2]; Interlocked.Add(ref evalTotal, eg);
                 roundsUsed = round + 1;
 
-                //260725Cl: このラウンドの ZNCC 到達点で収束判定 (soft bounds のペナルティ値が返った場合は改善なしとして扱われる)
                 double zncc = -vg;
                 if (zncc - prevZncc < ZnccTolerance) { converged = true; break; }
                 prevZncc = zncc;
             }
-            //仕上げの方位微調整。260725Cl 変更: 0.2° → OrientationPolishStepDeg (0.1°、作者指示)。Find の仕上げ段と同じ値
+            //仕上げの方位微調整
             const double polishStep = EbsdOrientationSearch.OrientationPolishStepDeg;
-            var projFinal = new EbsdPatternProjector(MakeGeom(fu, fv, lnDd), context.RasterWidth, context.RasterHeight);
-            var (bf, vf, ef) = EbsdPatternScorer.NelderMead(v => ScoreWith(projFinal, EbsdIndexer.PerturbRotation(r0, v[0], v[1], v[2])),
-                [0, 0, 0], [polishStep, polishStep, polishStep], 100);
-            r0 = EbsdIndexer.PerturbRotation(r0, bf[0], bf[1], bf[2]); evalTotal += ef;
+            w.Proj.Rebuild(MakeGeom(fu, fv, lnDd), innerParallel); //260920Cl: 同上
+            var projFinal = w.Proj;
+            var (bf, vf, ef) = EbsdPatternScorer.NelderMead(v => ScoreWith(sc, w, projFinal, EbsdIndexer.PerturbRotation(r0, v[0], v[1], v[2]), innerParallel),
+                [0, 0, 0], [polishStep, polishStep, polishStep], maxOri, tol, xtol);
+            r0 = EbsdIndexer.PerturbRotation(r0, bf[0], bf[1], bf[2]); Interlocked.Add(ref evalTotal, ef);
 
-            //260726Cl 追加 (作者要望): 6 変数 (PC_u, PC_v, lnDD, 方位 3) の同時最適化を仕上げに 1 段。
-            //交互法は変数を片方ずつしか動かせないので、相関のある谷では斜め方向に下れずジグザグして止まる。
-            //実機報告でも初期 DetX/Y/Z を変えると最終スコアが 20.0〜20.3 程度ばらついていた。
-            //開始点 (増分ゼロ) が初期シンプレックスの頂点 0 で、NelderMead は最良頂点を返すので、この段で悪化することはない。
-            //ソフト境界は交互法の②と同じ判定を増分に対して掛ける (この段の増分は小さいので通常は発火しない)。
+            //6 変数 (PC_u, PC_v, lnDD, 方位 3) 同時最適化。交互法は相関のある谷を斜めに下れないのでここで下る
             var rBase = r0;
             double fuBase = fu, fvBase = fv, lnDdBase = lnDd;
             double ScoreJoint(double[] v)
             {
-                if (OutOfSoftBounds(fuBase + v[0], fvBase + v[1], lnDdBase + v[2], out var pen)) return pen; //260727Cl: 交互法②と同じ判定を共通関数へ (開始位置からの累積で判定)
-                return ScoreWith(new EbsdPatternProjector(MakeGeom(fuBase + v[0], fvBase + v[1], lnDdBase + v[2]), context.RasterWidth, context.RasterHeight),
-                    EbsdIndexer.PerturbRotation(rBase, v[3], v[4], v[5]));
+                if (OutOfSoftBounds(fuBase + v[0], fvBase + v[1], lnDdBase + v[2], out var pen)) return pen;
+                return ScoreAt(sc, w, fuBase + v[0], fvBase + v[1], lnDdBase + v[2], EbsdIndexer.PerturbRotation(rBase, v[3], v[4], v[5]), innerParallel);
             }
-            //幾何側は交互法②の半分のステップ (もう最適点の近くにいる)、方位側は仕上げと同じ 0.1°
-            var (bj, vj, ej) = EbsdPatternScorer.NelderMead(ScoreJoint, [0, 0, 0, 0, 0, 0],
-                [physW * 0.005, physH * 0.005, 0.01, polishStep, polishStep, polishStep], JointPolishMaxEval);
+            double[] jointSteps = [physW * 0.005, physH * 0.005, 0.01, polishStep, polishStep, polishStep];
+            //260920Cl: 最終段だけ刻みを縮めて張り直す (再起動)。粗い段でそこまで詰めても次段で作り直すので無駄
+            var (bj, vj, ej) = stage >= scales.Length - 1
+                ? EbsdPatternScorer.NelderMeadRestart(ScoreJoint, [0, 0, 0, 0, 0, 0], jointSteps, maxJoint, tol, xtol, JointRestarts)
+                : EbsdPatternScorer.NelderMead(ScoreJoint, [0, 0, 0, 0, 0, 0], jointSteps, maxJoint, tol, xtol);
             fu = fuBase + bj[0]; fv = fvBase + bj[1]; lnDd = lnDdBase + bj[2];
-            r0 = EbsdIndexer.PerturbRotation(rBase, bj[3], bj[4], bj[5]); evalTotal += ej;
+            r0 = EbsdIndexer.PerturbRotation(rBase, bj[3], bj[4], bj[5]); Interlocked.Add(ref evalTotal, ej);
 
-            return (Zncc: -vj, Fu: fu, Fv: fv, LnDd: lnDd, Rot: r0, Rounds: roundsUsed, Converged: converged,
-                JointGain: -vj - -vf); //260726Cl: 同時最適化が交互法の到達点からどれだけ伸ばしたか
+            return (Zncc: -vj, Fu: fu, Fv: fv, LnDd: lnDd, Rot: r0, Rounds: roundsUsed, Converged: converged, JointGain: -vj - -vf);
         }
 
-        //260726Cl 追加 (作者要望): 多点開始。局所解が多く、初期 DetX/Y/Z を変えると最終スコアが 0.3 程度ばらつくため、
-        //現在の幾何と、そこから決定的に振った開始点から同じ較正を走らせ、最も ZNCC の高い解を採る。
-        //同時最適化は交互法の停滞は解消するが局所解の壁は越えないので、壁の向こう側は開始点を変えて拾うしかない
-        (double Zncc, double Fu, double Fv, double LnDd, Matrix3D Rot, int Rounds, bool Converged, double JointGain) bestRun = default;
-        int bestIndex = -1;
-        double worstZncc = double.MaxValue;
-        var runs = new (double Zncc, double Fu, double Fv, double Dd)[StartOffsets.Length]; //260726Cl: 最良解へ到達した点の数と、その幾何の広がりを見るため
-        for (int s = 0; s < StartOffsets.Length; s++)
+        //--- 段 0: 粗い解像度で多点開始 (並列)。1 点が独立なので Parallel.For し、内側の投影は逐次にする
+        var runs = new (double Zncc, double Fu, double Fv, double LnDd, Matrix3D Rot, int Rounds, bool Converged, double JointGain)[startOffsets.Length];
+        int completed = 0;
+        progress?.Invoke(0, $"stage 1/{scales.Length}: {startOffsets.Length} starts at {coarse.W}x{coarse.H}");
+        Parallel.For(0, startOffsets.Length, new ParallelOptions { CancellationToken = cancel }, i =>
         {
-            cancel.ThrowIfCancellationRequested();
-            progress?.Invoke(Math.Min(0.99, (double)s / StartOffsets.Length), $"start {s + 1}/{StartOffsets.Length}"); //260726Cl
-            var (ou, ov, od) = StartOffsets[s];
-            //260726Cl 変更: 振れ幅を定数化 (旧 physW*0.01 / physH*0.01 / 0.02 は狭すぎて全点が同じ谷に落ちていた)
-            var run = RunFrom(footU0 + ou * physW * StartSpreadPc, footV0 + ov * physH * StartSpreadPc,
-                Math.Log(dd0) + od * StartSpreadLnDd);
-            runs[s] = (run.Zncc, run.Fu, run.Fv, Math.Exp(run.LnDd));
-            worstZncc = Math.Min(worstZncc, run.Zncc);
-            if (bestIndex < 0 || run.Zncc > bestRun.Zncc) { bestRun = run; bestIndex = s; }
-            //260726Cl: 進捗の按分に使う「1 点あたりの実測評価数」を更新する
-            completedStarts = s + 1;
-            avgEvalsPerStart = (double)evalsDone / completedStarts;
-            evalsAtStartBegin = evalsDone;
-        }
-        //最良から 1E-3 以内に入った開始点の数 = 最良解の basin の広さ。spread (最良−最悪) だけだと外れ値に引きずられる
-        var near = runs.Where(r => r.Zncc >= bestRun.Zncc - 1E-3).ToArray();
-        //260726Cl 追加 (作者要望): その集団の PC・DD の広がり (半値幅) = ZNCC で幾何がどこまで決まっているか。
-        //ZNCC 1E-3 以内で PC が数 mm 動くなら、単一パターンでは幾何がその精度までしか決まっていない (正本 §2.4)
+            var (ou, ov, od) = startOffsets[i];
+            runs[i] = RunFrom(0, footU0 + ou * physW * StartSpreadPc, footV0 + ov * physH * StartSpreadPc, lnDd0 + od * StartSpreadLnDd, context.Rotation, false);
+            int done = Interlocked.Increment(ref completed);
+            progress?.Invoke(0.5 * done / startOffsets.Length, $"stage 1/{scales.Length}: {done}/{startOffsets.Length} starts");
+        });
+
+        //--- 診断値 (幾何がどこまで決まっているか) は多点開始を行ったこの段で測る
+        var order = Enumerable.Range(0, runs.Length).OrderByDescending(i => runs[i].Zncc).ToArray();
+        int bestIndex = order[0];
+        double worstZncc = runs.Min(r => r.Zncc), coarseBest = runs[bestIndex].Zncc;
+        var near = runs.Where(r => r.Zncc >= coarseBest - 1E-3).ToArray();
         double flatU = (near.Max(r => r.Fu) - near.Min(r => r.Fu)) / 2;
         double flatV = (near.Max(r => r.Fv) - near.Min(r => r.Fv)) / 2;
-        double flatDd = (near.Max(r => r.Dd) - near.Min(r => r.Dd)) / 2;
+        double flatDd = (near.Max(r => Math.Exp(r.LnDd)) - near.Min(r => Math.Exp(r.LnDd))) / 2;
+
+        //--- 段 1 以降: 上位だけを細かい解像度で引き継ぐ。最終段は 1 点なので内側 (投影) を並列にする
+        var carried = order.ToArray();
+        for (int stage = 1; stage < scales.Length; stage++)
+        {
+            int keep = Math.Min(StageKeep[Math.Min(stage - 1, StageKeep.Length - 1)], carried.Length);
+            var sc = scales[stage];
+            var stageRuns = new (double Zncc, double Fu, double Fv, double LnDd, Matrix3D Rot, int Rounds, bool Converged, double JointGain)[keep];
+            int doneStage = 0;
+            progress?.Invoke(0.5 + 0.5 * (stage - 1) / Math.Max(1, scales.Length - 1), $"stage {stage + 1}/{scales.Length}: {keep} start(s) at {sc.W}x{sc.H}");
+            if (keep > 1)
+                Parallel.For(0, keep, new ParallelOptions { CancellationToken = cancel }, k =>
+                {
+                    var src = runs[carried[k]];
+                    stageRuns[k] = RunFrom(stage, src.Fu, src.Fv, src.LnDd, src.Rot, false);
+                    int d = Interlocked.Increment(ref doneStage);
+                    progress?.Invoke(0.5 + 0.5 * ((stage - 1) + (double)d / keep) / Math.Max(1, scales.Length - 1), null);
+                });
+            else
+            {
+                var src = runs[carried[0]];
+                stageRuns[0] = RunFrom(stage, src.Fu, src.Fv, src.LnDd, src.Rot, true);
+            }
+            //次段へ渡すため runs/carried を差し替える
+            runs = stageRuns;
+            carried = Enumerable.Range(0, keep).OrderByDescending(i => stageRuns[i].Zncc).ToArray();
+        }
+        var bestRun = runs[carried[0]];
 
         return new EbsdCalibrationResult(bestRun.Rot, bestRun.Fu, bestRun.Fv, Math.Exp(bestRun.LnDd), bestRun.Zncc, startZncc,
             evalTotal, bestRun.Rounds, bestRun.Converged, bestRun.JointGain,
-            StartOffsets.Length, bestIndex, bestRun.Zncc - worstZncc, near.Length, //260726Cl: 局所解のばらつきを可視化
-            flatU, flatV, flatDd); //260726Cl: ZNCC が同等な解の集団における PC・DD の広がり (半値幅、mm)
+            startOffsets.Length, bestIndex, coarseBest - worstZncc, near.Length,
+            flatU, flatV, flatDd);
+    }
+
+    /// <summary>260920Cl 追加: 比較スケールを作る。DisplayReference (表示中の実測値、フル解像度) を各段の長辺へ box 縮小し、
+    /// ZNCC 用に正規化する。シミュレーション側へ掛ける高域通過の半値幅も同じ縮小率で換算する。
+    /// DisplayReference が無い場合 (旧経路) は context.Reference の 1 段だけを返す</summary>
+    static Scale[] BuildScales(EbsdMatchingContext context)
+    {
+        if (context.DisplayReference == null || context.DisplayWidth <= 0 || context.DisplayHeight <= 0
+            || context.DisplayReference.Length != context.DisplayWidth * context.DisplayHeight)
+            return [new Scale { W = context.RasterWidth, H = context.RasterHeight, Reference = context.Reference, FlattenFwhm = 0 }];
+
+        int fullW = context.DisplayWidth, fullH = context.DisplayHeight;
+        var list = new List<Scale>();
+        foreach (var target in StageLongSides)
+        {
+            int longSide = target > 0 ? Math.Min(target, Math.Max(fullW, fullH)) : Math.Max(fullW, fullH);
+            var (data, w, h) = EbsdPatternScorer.Downsample(context.DisplayReference, fullW, fullH, longSide);
+            if (list.Count > 0 && list[^1].W == w && list[^1].H == h) continue; //同じ解像度が続いたら 1 段にまとめる
+            EbsdPatternScorer.NormalizeInPlace(data);
+            list.Add(new Scale { W = w, H = h, Reference = data, FlattenFwhm = context.SimFlattenFwhmPx * w / fullW });
+        }
+        return [.. list];
     }
 }

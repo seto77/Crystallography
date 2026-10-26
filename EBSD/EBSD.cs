@@ -27,7 +27,8 @@ public class EBSD
             BetheMethod.Solver solver = BetheMethod.Solver.Auto,
             int thread = 1,
             bool useNonLocalAbsorption = false,
-            bool includeTDSBackground = false)
+            bool includeTDSBackground = false,
+            bool includeAbsorbedFluxBackground = false) // 260919Cl 追加
         {
             Crystal = crystal ?? throw new ArgumentNullException(nameof(crystal));
             MaxNumOfBloch = maxNumOfBloch;
@@ -39,6 +40,7 @@ public class EBSD
             Thread = thread;
             UseNonLocalAbsorption = useNonLocalAbsorption;
             IncludeTDSBackground = includeTDSBackground;
+            IncludeAbsorbedFluxBackground = includeAbsorbedFluxBackground; // 260919Cl 追加
         }
 
         /// <summary>計算対象の結晶。</summary>
@@ -70,13 +72,16 @@ public class EBSD
 
         /// <summary>TDS 背景を含めるかどうか。</summary>
         public bool IncludeTDSBackground { get; }
+        /// <summary>260919Cl 追加: 吸収で失われたフラックスを拡散背景として再注入する。</summary>
+        public bool IncludeAbsorbedFluxBackground { get; }
 
         /// <summary>Bethe 計算側の進捗を規格化するための基準値。</summary>
         public int DivisionCount => Math.Max(1, GridSize * GridSize * Math.Max(1, Energies.Length) * 2); // (260321Ch) MasterPattern は常に全球計算する
 
         /// <summary> 非同期実行中に UI 側の配列が変更されても影響しないよう、配列も複製して保持する。 </summary>
         public MasterPatternBuildRequest Clone()
-            => new(Crystal, MaxNumOfBloch, Energies, Depths, GridSize, Solver, Thread, UseNonLocalAbsorption, IncludeTDSBackground);
+            // => new(Crystal, MaxNumOfBloch, Energies, Depths, GridSize, Solver, Thread, UseNonLocalAbsorption, IncludeTDSBackground); // 260919Cl 変更前
+            => new(Crystal, MaxNumOfBloch, Energies, Depths, GridSize, Solver, Thread, UseNonLocalAbsorption, IncludeTDSBackground, IncludeAbsorbedFluxBackground); // 260919Cl
     }
 
     /// <summary>MasterPattern 作成中の進捗情報。</summary>
@@ -177,6 +182,15 @@ public class EBSD
     /// <summary>保持している MasterPattern を破棄する。結晶変更などで無効になったときに呼ぶ。260724Cl 追加</summary>
     public void ClearMasterPattern() => MasterPattern = null;
 
+    /// <summary>260921Cl 追加: ファイルから読み込んだ MasterPattern (<see cref="MasterPatternFile.Load"/>) を保持させる。構築中は差し替えない (false)</summary>
+    public bool SetMasterPattern(MasterPattern masterPattern)
+    {
+        ArgumentNullException.ThrowIfNull(masterPattern);
+        if (IsBuilding) return false;
+        MasterPattern = masterPattern;
+        return true;
+    }
+
     private MasterPatternBuildRequest currentMasterPatternBuildRequest = null; // (260327Ch) build 条件はクラス内部だけで保持する
 
     /// <summary>Bethe 計算中または plane 変換中かどうかを返す。</summary>
@@ -227,7 +241,7 @@ public class EBSD
 
         try
         {
-            masterPatternBethe.RunEBSDNew(currentMasterPatternBuildRequest.MaxNumOfBloch, currentMasterPatternBuildRequest.Energies, Matrix3D.IdentityMatrix, currentMasterPatternBuildRequest.Depths, directions, currentMasterPatternBuildRequest.Solver, currentMasterPatternBuildRequest.Thread, currentMasterPatternBuildRequest.UseNonLocalAbsorption, currentMasterPatternBuildRequest.IncludeTDSBackground);
+            masterPatternBethe.RunEBSDNew(currentMasterPatternBuildRequest.MaxNumOfBloch, currentMasterPatternBuildRequest.Energies, Matrix3D.IdentityMatrix, currentMasterPatternBuildRequest.Depths, directions, currentMasterPatternBuildRequest.Solver, currentMasterPatternBuildRequest.Thread, currentMasterPatternBuildRequest.UseNonLocalAbsorption, currentMasterPatternBuildRequest.IncludeTDSBackground, currentMasterPatternBuildRequest.IncludeAbsorbedFluxBackground); // 260919Cl includeAbsorbedFluxBackground 追加
             return true;
         }
         catch
@@ -469,18 +483,33 @@ public sealed class MasterPattern
     /// 等間隔グリッドでは全体が定数倍になるだけだが、不等間隔・絶対単位ではスライス間の重み比が変わる。
     /// 幅が 0 以下になる異常な深さ列では 1 を返し、従来どおり割らない動作にする。
     /// </summary>
-    public double[] DepthIntervals
+    //260921Cl 変更: 本体を ComputeDepthIntervals へ移し、MC 分布 (EbsdMonteCarloDistribution) の重み作りと同じ定義を共有する
+    //旧: public double[] DepthIntervals
+    //旧: {
+    //旧:     get
+    //旧:     {
+    //旧:         var widths = new double[Depths.Length];
+    //旧:         for (int j = 0; j < Depths.Length; j++)
+    //旧:         {
+    //旧:             double width = j == 0 ? Depths[0] : Depths[j] - Depths[j - 1];
+    //旧:             widths[j] = width > 0 && double.IsFinite(width) ? width : 1;
+    //旧:         }
+    //旧:         return widths;
+    //旧:     }
+    //旧: }
+    public double[] DepthIntervals => ComputeDepthIntervals(Depths);
+
+    /// <summary>260921Cl 追加: 深さ格子 t_j の区間幅 Δt_j (t₀ = 0 は暗黙、j = 0 は t_0 そのもの)。幅が 0 以下・非有限なら 1。
+    /// <see cref="DepthIntervals"/> と MC 分布の重み作りが同じ定義を使うための共有関数。</summary>
+    public static double[] ComputeDepthIntervals(double[] depths)
     {
-        get
+        var widths = new double[depths.Length];
+        for (int j = 0; j < depths.Length; j++)
         {
-            var widths = new double[Depths.Length];
-            for (int j = 0; j < Depths.Length; j++)
-            {
-                double width = j == 0 ? Depths[0] : Depths[j] - Depths[j - 1];
-                widths[j] = width > 0 && double.IsFinite(width) ? width : 1;
-            }
-            return widths;
+            double width = j == 0 ? depths[0] : depths[j] - depths[j - 1];
+            widths[j] = width > 0 && double.IsFinite(width) ? width : 1;
         }
+        return widths;
     }
 
     /// <summary> MasterPattern 本体を初期化する。 </summary>

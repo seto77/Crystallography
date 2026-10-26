@@ -122,14 +122,14 @@ public static class ImageProcess
                 blur[h] = Math.Exp(-(h - center) * (h - center) / hwhm / hwhm * Math.Log(2));
             blur = Statistics.Normarize(blur);
 
+            //260921Cl 変更 (Codex 指摘): カーネルが上下両端を同時にはみ出す (画像の高さ < カーネル幅) と、旧式は片側しか切らず分母が大きすぎた
+            //  (FWHM が画像に比べて大きいと、一様な画像でも中央が暗くなる)。分母は下の畳み込みと同じ範囲 lo..hi の和にする。
+            //  はみ出さない画素は従来どおり 1 (内部の値はビット単位で不変)
+            //旧: if (h < center) blurSumH[h] = blur[(center - h)..].Sum(); else if (h >= height - center) blurSumH[h] = blur[..(height - h + center)].Sum(); else blurSumH[h] = 1;
             Parallel.For(0, height, h =>
             {
-                if (h < center)
-                    blurSumH[h] = blur[(center - h)..].Sum();
-                else if (h >= height - center)
-                    blurSumH[h] = blur[..(height - h + center)].Sum();
-                else
-                    blurSumH[h] = 1;
+                int lo = Math.Max(0, center - h), hi = Math.Min(limit, height - h + center);
+                blurSumH[h] = lo == 0 && hi == limit ? 1 : blur[lo..hi].Sum();
             });
             Parallel.For(0, width, w =>
             {
@@ -141,14 +141,12 @@ public static class ImageProcess
                 }
             });
 
+            //260921Cl 変更: 上の blurSumH と同じ理由で、分母は畳み込みと同じ範囲の和にする
+            //旧: if (w < center) blurSumW[w] = blur[(center - w)..].Sum(); else if (w >= width - center) blurSumW[w] = blur[..(width - w + center)].Sum(); else blurSumW[w] = 1;
             Parallel.For(0, width, w =>
             {
-                if (w < center)
-                    blurSumW[w] = blur[(center - w)..].Sum();
-                else if (w >= width - center)
-                    blurSumW[w] = blur[..(width - w + center)].Sum();
-                else
-                    blurSumW[w] = 1;
+                int lo = Math.Max(0, center - w), hi = Math.Min(limit, width - w + center);
+                blurSumW[w] = lo == 0 && hi == limit ? 1 : blur[lo..hi].Sum();
             });
             Parallel.For(0, height, h =>
             {
@@ -161,6 +159,35 @@ public static class ImageProcess
             });
         }
         finally { ArrayPool<double>.Shared.Return(tmpPixels); }
+    }
+
+    /// <summary>260920Cl 追加: 画像から、その Gaussian ぼかし (半値全幅 fwhm [px]) を差し引き、緩やかに変わる明るさ分布を取り除く (ハイパスフィルタ)。
+    /// ぼかしは <see cref="GaussianBlurFast(double[], int, double)"/> (可分・端は有効画素の重みで正規化するので縁が暗くならない)。
+    /// 元画像は書き換えない。results を渡すと再利用する (pixels と同じ配列でもよい)。fwhm が 1 px 未満なら ぼかし = 原画像 なので全て 0。</summary>
+    /// <param name="pixels">画像データの一次元配列</param>
+    /// <param name="width">画像の幅</param>
+    /// <param name="fwhm">ピクセル単位の Gaussian の半値全幅</param>
+    /// <param name="results">出力バッファ (省略時は新規確保)</param>
+    static public double[] SubtractGaussianBackground(double[] pixels, int width, double fwhm, double[] results = null)
+    {
+        if (results == null || results.Length != pixels.Length) results = GC.AllocateUninitializedArray<double>(pixels.Length);
+        if (!(fwhm >= 1)) { Array.Fill(results, 0.0); return results; }
+        if (ReferenceEquals(results, pixels))
+        {   // その場書き換え: ぼかしを一時配列に取ってから差し引く
+            var blurred = ArrayPool<double>.Shared.Rent(pixels.Length);
+            try
+            {
+                GaussianBlurFast(pixels, width, fwhm / 2, blurred);
+                Parallel.For(0, pixels.Length / width, h => { for (int i = h * width, e = i + width; i < e; i++) results[i] = pixels[i] - blurred[i]; });
+            }
+            finally { ArrayPool<double>.Shared.Return(blurred); }
+        }
+        else
+        {
+            GaussianBlurFast(pixels, width, fwhm / 2, results);
+            Parallel.For(0, pixels.Length / width, h => { for (int i = h * width, e = i + width; i < e; i++) results[i] = pixels[i] - results[i]; });
+        }
+        return results;
     }
 
     #endregion

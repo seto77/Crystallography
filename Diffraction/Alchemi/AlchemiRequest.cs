@@ -232,8 +232,14 @@ public sealed class AlchemiResult
     /// **ここが TDS だけのときしか計算されない** (<see cref="AbsorptionSource"/>)。
     /// 「何を再注入したのか」は結果の解釈に直結するので provenance として保存する。</summary>
     public AbsorptionSource AbsorptionSources { get; init; } = AbsorptionSource.TdsRedistributable;
-    /// <summary>物理量と規格化 (設計 §3.6: 表示正規化とは別管理)</summary>
+    /// <summary>物理量と規格化 (設計 §3.6: 表示正規化とは別管理)
+    /// 260925Cl: 線の系列のチャネル (Kα など) を含む run では、チャネルごとの量は <see cref="QuantityOf"/> で読む。</summary>
     public SignalQuantity Quantity { get; init; } = SignalQuantity.IonizationVacanciesGenerated;
+
+    /// <summary>260925Cl 追加: チャネル <paramref name="channelIndex"/> の物理量。線の系列 (<see cref="XrayLineSeries"/>) は
+    /// X 線の光子の生成数 (<see cref="SignalQuantity.XrayPhotonsGenerated"/>)、殻は <see cref="Quantity"/>。</summary>
+    public SignalQuantity QuantityOf(int channelIndex)
+        => XrayLineSeries.IsLineSeries(ChannelData[channelIndex].Target.Shell) ? SignalQuantity.XrayPhotonsGenerated : Quantity;
     public SignalNormalization Normalization { get; init; } = SignalNormalization.PerIncidentElectron;
     /// <summary>サイト応答の線形合成が許されるか (Tracer 近似のみ true。設計 §3.5)</summary>
     public bool LinearCombinationValid { get; init; } = true;
