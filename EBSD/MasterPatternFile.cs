@@ -7,6 +7,7 @@ using System.Linq;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Serialization; // 261028Cl 追加 (JsonNumberHandling)
 #endregion
 
 namespace Crystallography;
@@ -92,6 +93,12 @@ public static class MasterPatternFile
 
     static ReadOnlySpan<byte> Magic => "RPMP"u8;
 
+    /// <summary>261028Cl 追加: ヘッダ (JSON) の読み書きの設定。<see cref="MasterPatternFileInfo"/> の既定の McSampleTiltRad・McEnergyThresholdKeV は NaN で、
+    /// 既定の設定の JsonSerializer は NaN を書けずに ArgumentException を出していた (電子なしの保存がすべて落ちた)。NaN・±Infinity は
+    /// 文字列 ("NaN" など) で書いて読む。有限の数はこれまでどおり JSON の数で書く・読むので、既存のファイルはそのまま読め、ヘッダのバイト列も変わらない。
+    /// ⚠ NaN の入ったヘッダは、この修正より前の版では読めない (その版では書けもしなかった)。</summary>
+    static readonly JsonSerializerOptions HeaderJsonOptions = new() { NumberHandling = JsonNumberHandling.AllowNamedFloatingPointLiterals };
+
     /// <summary>MasterPattern を保存する。</summary>
     /// <param name="compression">本体の zlib 圧縮レベル。float の強度はあまり縮まないので既定は Fastest</param>
     /// <param name="backscatteredElectrons">一緒に保存する MC の後方散乱電子 (null なら保存しない)。
@@ -110,7 +117,8 @@ public static class MasterPatternFile
         var tmp = path + ".tmp";
         using (var fs = new FileStream(tmp, FileMode.Create, FileAccess.Write, FileShare.None, 1 << 20))
         {
-            var header = JsonSerializer.SerializeToUtf8Bytes(info);
+            // var header = JsonSerializer.SerializeToUtf8Bytes(info); // 261028Cl 変更前: NaN (電子なしのときの Mc* の既定) で例外
+            var header = JsonSerializer.SerializeToUtf8Bytes(info, HeaderJsonOptions); // 261028Cl 変更
             fs.Write(Magic);
             Span<byte> i32 = stackalloc byte[4];
             BitConverter.TryWriteBytes(i32, FormatVersion); fs.Write(i32);
@@ -149,7 +157,11 @@ public static class MasterPatternFile
     }
 
     /// <summary>MasterPattern (と、保存されていれば後方散乱電子) を読み込む。</summary>
-    public static MasterPatternFileContent Load(string path)
+    /// <param name="loadElectrons">261028Cl 追加: false なら後方散乱電子の区画を読まない (返す BackscatteredElectrons は空。保存されていた本数は
+    ///   Info.BackscatteredElectronCount)。電子の配列 (MnAl 1e7 で約 545 万本 ≈ 0.7 GiB の連続の領域) を確保しないので、平面だけが要るときに
+    ///   峰のメモリと LOH の断片化の心配が減る。既定 (true) は従来と同じ</param>
+    // public static MasterPatternFileContent Load(string path) // 261028Cl 旧シグネチャ
+    public static MasterPatternFileContent Load(string path, bool loadElectrons = true)
     {
         ArgumentNullException.ThrowIfNull(path);
         using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, 1 << 20);
@@ -175,6 +187,9 @@ public static class MasterPatternFile
                 r.BaseStream.ReadExactly(MemoryMarshal.AsBytes(p.AsSpan()));
                 planes[k] = p;
             }
+        // 261028Cl 追加: 電子を読まないときは、平面のあとの区画 (電子の本数と本体) を展開せずに返す
+        if (!loadElectrons)
+            return new MasterPatternFileContent(new MasterPattern(gridSize, energies, depths, pos, neg, gridType), info, []);
         int nBse = r.ReadInt32();
         if (nBse < 0) throw new InvalidDataException("Corrupt MasterPattern file (negative electron count).");
         var bses = new EbsdBackscatteredElectron[nBse];
@@ -218,7 +233,8 @@ public static class MasterPatternFile
         if (headerLength < 0 || headerLength > 1 << 24) throw new InvalidDataException("Corrupt MasterPattern file (bad header length).");
         var header = new byte[headerLength];
         fs.ReadExactly(header);
-        return JsonSerializer.Deserialize<MasterPatternFileInfo>(header) ?? new MasterPatternFileInfo();
+        // return JsonSerializer.Deserialize<MasterPatternFileInfo>(header) ?? new MasterPatternFileInfo(); // 261028Cl 変更前
+        return JsonSerializer.Deserialize<MasterPatternFileInfo>(header, HeaderJsonOptions) ?? new MasterPatternFileInfo(); // 261028Cl 変更: "NaN" なども読む
     }
 
     /// <summary>結晶の同一性を表す文字列。格子定数 (nm, 6 桁)・角度 (度, 4 桁)・空間群の系列番号・

@@ -54,6 +54,20 @@ public enum AbsorptionElasticModel
     TemariHybrid,
 }
 
+/// <summary>
+/// 261028Cl 追加: <see cref="BetheMethod.Find_gVectors(Matrix3D, Vector3DBase, Vector3DBase, int)"/> が Rating (= |g|·Q²) の小さい順に選んだ
+/// maxNumOfBloch + 1 本の、末尾の同点の組 (Rating の隣どうしの差が 1e-6 以下でつながる組 = ふつうは対称で等価なビーム) の扱い。
+/// グローバル設定 <see cref="BetheMethod.BeamBoundaryTieMode"/> で選ぶ (M1 の N の診断用)。
+/// </summary>
+public enum BeamBoundaryTieMode
+{
+    /// <summary>従来 (既定): 末尾の組を丸ごと落とす。N+1 本目は境を見るための番兵で、N 本目と同点ならその組ごと外れる (結果は N 本以下)。</summary>
+    DropGroup,
+    /// <summary>診断用: 末尾の組が N 本目以前とつながる (境をまたぐ) とき、組を丸ごと入れる。N+1 本に入らなかった残りの候補のうち
+    /// 同じ組につながるものも足す (N を少し越えてよい)。組が N+1 本目だけなら従来と同じ (番兵だけを落として N 本)。</summary>
+    IncludeGroup,
+}
+
 /// <summary>Bethe法による動力学計算を提供するクラス。すべて、単位はnm</summary>
 //260807Cl 変更: class → partial class (旧: public class BetheMethod)。
 //ALCHEMI の方位ループは AccVoltage / Crystal / BaseRotation / getEigenMatrix (いずれも private) を
@@ -123,8 +137,12 @@ public partial class BetheMethod
     // 旧実装は Build_gCache の冒頭で matCache を更新し、BFS の後で gCache を差し替えていた。その間に PED の並列ループ
     // (GetPrecessionElectronDiffraction の stepP.ForAll) が Find_gVectors を呼ぶと、「matCache は新方位・gCache は旧方位」を見て
     // 再構築せずに旧方位の g を使うことがあった (結晶を回した直後の PED で発生)。構築はロックで 1 本にまとめる。
+    // private sealed record GCacheSnapshot((double, double, double, double, double, double, double, double, double) Mat,
+    //     (int key, double gX, double gY, double gZ, double gLen)[] Items); // 261028Cl 変更前
+    // 261028Cl 変更 (M1a2 の査読 M1): 作り方の記録を足す。Diagnostic = 診断の呼び出し (BeamCandidateMultiplier ≠ 0) が作った
+    // (hkl の鍵の範囲を検査済み。従来の呼び出しとは共有しない)。CoverRadius = これより |g| の小さい格子点はすべて Items にある半径 (nm⁻¹)。
     private sealed record GCacheSnapshot((double, double, double, double, double, double, double, double, double) Mat,
-        (int key, double gX, double gY, double gZ, double gLen)[] Items);
+        (int key, double gX, double gY, double gZ, double gLen)[] Items, bool Diagnostic, double CoverRadius);
     private volatile GCacheSnapshot gCacheSnapshot;
     private readonly object gCacheLock = new();
 
@@ -177,6 +195,80 @@ public partial class BetheMethod
     /// 既定 = TemariHybrid (作者決定 2026-09-22。Temari の TDS 監査 分岐 2 で採用可と判定、手順書 §3 の検証済み)。旧挙動は PengTail で再現できる。
     /// </summary>
     public static AbsorptionElasticModel AbsorptionElasticModel { get; set; } = AbsorptionElasticModel.TemariHybrid;
+
+    //     /// <summary>
+    //     /// 261028Cl 追加 (診断用のグローバル設定。既定 8 = 従来とビット単位で同じ): <see cref="Find_gVectors(Matrix3D, Vector3DBase, Vector3DBase, int)"/> の候補探索の倍率。
+    //     /// エワルド球の条件を満たす候補を BFS キャッシュの先頭 (おおよそ |g| の小さい順) から maxNumOfBloch × この倍率 個まで集め、
+    //     /// その中から Rating (= |g|·Q²) の小さい maxNumOfBloch + 1 個を選ぶ。BFS キャッシュの大きさもこれに比例させる
+    //     /// (max(8N, 6,250) × 倍率。倍率 8 で従来の max(64N, 50,000))。
+    //     /// 解に使うビームの数 N と候補の範囲を別々に変えて、方向ごとの選び直しの影響を診断するために使う (従来は N を上げると候補の範囲 8N も広がった)。
+    //     /// プロセス全体で共有 (static)。Find_gVectors は呼び出しの冒頭で 1 回だけ読むので、並列の呼び出しが読むだけなら安全。
+    //     /// ⚠ 計算の走行中には変えないこと (方向ごとに違う設定で選んだビームが混ざる)。大きい倍率で作った BFS キャッシュは同じインスタンスで
+    //     /// 使い回される (Items.Length ≥ cacheLimit なら作り直さない) ので、倍率を戻して既定と比べるときは BetheMethod を作り直すのが確実
+    //     /// (既定のキャッシュで候補が上限に届かずに尽きる条件では、大きいキャッシュを使い回すと候補が増えて結果が変わりうる)。
+    //     /// </summary> // 261028Cl 変更前の summary (m1a2 impl の版。倍率 8 を既定とし、キャッシュを倍率に比例させていた)
+    /// <summary>
+    /// 261028Cl 追加・変更 (診断用のグローバル設定。既定 0 = 従来とビット単位で同じ): <see cref="Find_gVectors(Matrix3D, Vector3DBase, Vector3DBase, int)"/> の候補探索の倍率。
+    /// Find_gVectors は、エワルド球の条件を満たす候補を BFS キャッシュの先頭 (おおよそ |g| の小さい順) から上限の個数まで集め、
+    /// その中から Rating (= |g|·Q²) の小さい maxNumOfBloch + 1 個を選ぶ。
+    /// <para>0 (既定 = 従来): 上限 8N、キャッシュ max(64N, 50,000) 点。⚠ エワルドの殻に入る候補はキャッシュの点の数の 2/3 乗にしか増えないので、
+    /// N ≳ 250 では候補が上限に届かないうちにキャッシュの端で尽き、候補の範囲は 8N ではなくキャッシュの半径 (MnAl で |g| ≈ 80 nm⁻¹) で決まる
+    /// (MnAl P1・7〜20 keV で、集まる候補は上限の 0.95 (N 256)・0.76 (N 320)・0.47 (N 512))。</para>
+    /// <para>2〜64 (診断): 候補をちょうど N × 倍率 個 (BFS の順で最初のもの) 集める。キャッシュは従来と同じ max(64N, 50,000) 点から始め、
+    /// 上限に届かないうちに端まで来たら、足りない分を 2/3 乗の関係から見積もって (少なくとも 2 倍に) 作り直して探し直す。キャッシュがエワルドの殻
+    /// (|g| &lt; 2k0 + shift) を覆い切るか、<see cref="MaxDiagnosticCacheLength"/> 点に達したら止める (このときだけ上限に届かないことがある。
+    /// 殻を覆い切って届かないのは、殻の候補の全部が N × 倍率 より少ない (低いエネルギーで起きやすい) ためで、このときは呼び出しごとにキャッシュの全体を探すので遅くなる)。
+    /// 集める候補がキャッシュの大きさに依らないので、結果は呼び出しの順やキャッシュの使い回しに依らない。解に使うビームの数 N と候補の範囲 (N × 倍率) を
+    /// 別々に変えて、方向ごとの選び直しの影響を診断するために使う (従来は N を上げると候補の範囲 8N も広がった)。
+    /// 倍率 8 は、従来のキャッシュで候補が尽きない N では従来とビット単位で同じ。1 は番兵 (N+1 本目) が無くなるので不可。
+    /// 大きい単位胞で hkl が BFS キャッシュの鍵の範囲 (k, l は −255〜256) を越えたら例外を投げる (従来は検査しない)。</para>
+    /// <para>尽きたかどうかは <see cref="LastBeamCandidateScan"/>・<see cref="BeamCandidateExhaustedCount"/> で見る。従来と診断は BFS キャッシュを共有しない。
+    /// プロセス全体で共有 (static)。Find_gVectors は呼び出しの冒頭で 1 回だけ読むので、並列の呼び出しが読むだけなら安全。
+    /// ⚠ 計算の走行中には変えないこと (方向ごとに違う設定で選んだビームが混ざる)。
+    /// ⚠ I 格子 (体心) では、方向の集合 (12 要素の FrozenSet) の列挙の順がプロセスごとに変わり BFS の順も変わるため、従来も診断も
+    /// 結果がプロセスの間で一致しないことがある (既存の性質。この設定とは無関係で、直していない)。</para>
+    /// </summary>
+    public static int BeamCandidateMultiplier
+    {
+        get => _beamCandidateMultiplier;
+        // set => _beamCandidateMultiplier = value >= 1 ? value : throw new ArgumentOutOfRangeException(nameof(value), value, "BeamCandidateMultiplier must be 1 or more."); // 261028Cl 変更前
+        // 261028Cl 変更 (査読 m1・m2): 0 (従来) か 2〜64。1 は番兵が無くなる。64 を越える倍率は診断に要らず、キャッシュと hkl の鍵の範囲の負担だけが増える
+        set => _beamCandidateMultiplier = value == 0 || value is >= 2 and <= 64 ? value
+            : throw new ArgumentOutOfRangeException(nameof(value), value, "BeamCandidateMultiplier must be 0 (legacy) or 2 to 64.");
+    }
+    // private static int _beamCandidateMultiplier = 8; // 261028Cl 追加 (変更前)
+    private static int _beamCandidateMultiplier = 0; // 261028Cl 変更: 既定 0 = 従来 (明示の 8 は診断の「ちょうど 8N 個」)
+
+    /// <summary>261028Cl 追加 (査読 M1): 診断 (<see cref="BeamCandidateMultiplier"/> ≠ 0) の BFS キャッシュの上限 (点。最後の一巡の分だけ少し越える)。
+    /// 作るときの一時的な確保は 0.5 GB 程度 (検査のプロセスの峰は 1.1〜1.6 GiB を実測)</summary>
+    public const int MaxDiagnosticCacheLength = 4_000_000;
+
+    /// <summary>
+    /// 261028Cl 追加 (診断用・査読 M1): このスレッドで最後に呼んだ <see cref="Find_gVectors(Matrix3D, Vector3DBase, Vector3DBase, int)"/> の候補探索の記録 (記録だけで結果は変えない)。
+    /// Collected = エワルド球の条件を通って集めた候補の数、Limit = 上限 (従来 8N、診断 N × 倍率)、CacheLength = 探した BFS キャッシュの点の数、
+    /// ShellCovered = キャッシュがエワルドの殻 (|g| &lt; 2k0 + shift) を覆い切っていた。Collected &lt; Limit で ShellCovered が false なら、
+    /// 候補の範囲は上限ではなくキャッシュの大きさで決まった。[ThreadStatic] なので、Find_gVectors を呼んだのと同じスレッドで読むこと。
+    /// </summary>
+    public static (int Collected, int Limit, int CacheLength, bool ShellCovered) LastBeamCandidateScan => lastBeamCandidateScan;
+    [ThreadStatic] private static (int Collected, int Limit, int CacheLength, bool ShellCovered) lastBeamCandidateScan; // 261028Cl 追加
+
+    /// <summary>
+    /// 261028Cl 追加 (診断用・査読 M1): 候補探索が上限に届かないうちに BFS キャッシュの端で尽きた (殻を覆い切っていない) Find_gVectors の呼び出しの累計。
+    /// プロセス全体・全インスタンス・全スレッドで数える (RunEBSDNew の並列の中の呼び出しも)。数えるだけで結果は変えない。0 を代入して数え直せる (走行中には代入しないこと)。
+    /// </summary>
+    public static long BeamCandidateExhaustedCount
+    {
+        get => Interlocked.Read(ref beamCandidateExhaustedCount);
+        set => Interlocked.Exchange(ref beamCandidateExhaustedCount, value);
+    }
+    private static long beamCandidateExhaustedCount; // 261028Cl 追加
+
+    /// <summary>
+    /// 261028Cl 追加 (診断用のグローバル設定。既定 DropGroup = 従来): Find_gVectors で選んだ maxNumOfBloch + 1 本の末尾の同点の組の扱い。
+    /// 意味は <see cref="Crystallography.BeamBoundaryTieMode"/> enum 参照。<see cref="BeamCandidateMultiplier"/> と同じく static で、
+    /// 呼び出しの冒頭で 1 回だけ読む (並列の呼び出しが読むだけなら安全)。⚠ 計算の走行中には変えないこと。
+    /// </summary>
+    public static BeamBoundaryTieMode BeamBoundaryTieMode { get; set; } = BeamBoundaryTieMode.DropGroup;
 
     /// <summary>U のキャッシュ (uDictionary) を破棄する。260613Cl 追加: ElasticIonModel 切替後に再計算なしで表示を更新する経路向け。</summary>
     public void ClearUCache() => uDictionary.Clear();
@@ -4179,9 +4271,12 @@ public partial class BetheMethod
     /// baseRotation に基づく BFS 探索キャッシュを構築する。エワルド球テストは行わず、
     /// 逆格子点の座標 (gX, gY, gZ) と gLen を記録する。260318Cl 追加
     /// 261004Cl 変更: フィールドを直接書き換えず、完成したスナップショットを返す (呼び出し側がロック内で 1 回だけ差し替える)
+    /// 261028Cl 変更 (M1a2 の査読 M1・m2): diagnostic = 診断 (BeamCandidateMultiplier ≠ 0) の呼び出しが作る。このときだけ hkl の鍵の範囲を検査する。
+    /// 覆い切った半径 (CoverRadius) をスナップショットに記録する
     /// </summary>
     // private void Build_gCache(Matrix3D baseRotation, int cacheLimit) // 261004Cl 旧シグネチャ
-    private GCacheSnapshot Build_gCache(Matrix3D baseRotation, int cacheLimit)
+    // private GCacheSnapshot Build_gCache(Matrix3D baseRotation, int cacheLimit) // 261028Cl 旧シグネチャ
+    private GCacheSnapshot Build_gCache(Matrix3D baseRotation, int cacheLimit, bool diagnostic = false)
     {
         var direction = GetDirection();
 
@@ -4209,6 +4304,10 @@ public partial class BetheMethod
                 {
                     int h = h1 + h2, k = k1 + k2, l = l1 + l2;
                     var newKey = compose(h, k, l);
+                    // 261028Cl 追加 (査読 m2): 診断の大きいキャッシュで hkl が鍵の範囲 (各成分 10 ビット: k, l は −255〜256) を越えたら止める
+                    // (越えると鍵が重なり、訪問済みの判定と hkl が黙って壊れる)。従来 (diagnostic = false) は検査しない (挙動を変えない)
+                    if (diagnostic && decompose(newKey) != (h, k, l))
+                        throw new InvalidOperationException($"Find_gVectors (diagnostic BeamCandidateMultiplier): hkl ({h}, {k}, {l}) is outside the range of the BFS cache key. Lower the multiplier or N.");
                     if (whole.Add(newKey))
                     {
                         double gX = Dot3(m11, h, m12, k, m13, l), gY = Dot3(m21, h, m22, k, m23, l), gZ = Dot3(m31, h, m32, k, m33, l);
@@ -4221,7 +4320,12 @@ public partial class BetheMethod
         }
 
         // gCache = [.. candidates]; // 261004Cl 旧
-        return new GCacheSnapshot(mat.Tuple, [.. candidates]);
+        // return new GCacheSnapshot(mat.Tuple, [.. candidates]); // 261028Cl 変更前
+        // 261028Cl 追加 (査読 M1): 覆い切った半径。前線 (outer) の最小の |g| より 6·shift 以上小さい格子点は、すべてキャッシュにある
+        // (原点から格子点へ、線分に沿って方向の集合の基底 3 本で進む道は線分から 3 本の長さの和 (≤ 6·shift) 以内に収まる。
+        //  その道の点は前線より内側なので展開済みで、隣の点はすべて whole に入っている)
+        var coverRadius = outer.TryPeek(out _, out var front) ? front - 6 * shift : double.PositiveInfinity;
+        return new GCacheSnapshot(mat.Tuple, [.. candidates], diagnostic, coverRadius);
     }
 
     /// <summary>候補となるgVectorを検索する.</summary>
@@ -4240,6 +4344,10 @@ public partial class BetheMethod
     {
         if (maxNumOfBloch == -1)
             maxNumOfBloch = MaxNumOfBloch;
+        // 261028Cl 追加: 診断用の静的な設定 (BeamCandidateMultiplier・BeamBoundaryTieMode) は冒頭で 1 回だけ読み、この呼び出しの中では同じ値を使う
+        var candidateMultiplier = BeamCandidateMultiplier;
+        var tieMode = BeamBoundaryTieMode;
+        var diagnostic = candidateMultiplier != 0; // 261028Cl 追加 (査読 M1): 倍率の指定あり = 診断 (候補をちょうど N × 倍率 個集める)。0 = 従来
 
         // 260318Cl 変更: BFS 探索 (Phase 1) とエワルド球スクリーニング (Phase 2) を分離
         // baseRotationとmaxNumOfBloch が BFS キャッシュを再利用し、vecK0 依存のスクリーニングのみ実行
@@ -4247,26 +4355,35 @@ public partial class BetheMethod
         var mat = baseRotation * Crystal.MatrixInverseTransposed;
 
         #region Phase 1: キャッシュ構築 (baseRotation が変わった場合のみ)
+        // var cacheLimit = Math.Max(maxNumOfBloch * 8, 6_250) * candidateMultiplier; // 261028Cl m1a2 impl の版 (倍率に比例させた。殻の候補は点の数の 2/3 乗にしか増えず、N ≳ 200 で頭打ちになった)
+        // 261028Cl 変更 (査読 M1): 従来の式に戻す。診断も同じ大きさから始め、候補が上限に届かなければ Phase 2 で必要なだけ広げる
         var cacheLimit = Math.Max(maxNumOfBloch * 64, 50_000);
         // if (gCache == null || matCache != mat.Tuple || gCache.Length < cacheLimit) // 261004Cl 旧
         //     Build_gCache(baseRotation, cacheLimit);
         // 261004Cl 変更: スナップショットを 1 回だけ読み、この呼び出しの中では同じ配列を使い続ける (他スレッドの差し替えと混ざらない)。
         // 再構築が要るときはロックの中で確認し直し、構築は 1 スレッドだけが行う。
+        // 261028Cl 変更 (査読 M1): 従来と診断はキャッシュを共有しない (Diagnostic が違えば作り直す)。従来どうしは従来どおり、長さが足りれば使い回す
+        // (診断が広げた大きいキャッシュを従来の呼び出しが使い回すと、候補が尽きる条件で候補が増え、結果が呼び出しの順に依存するため)
         var snapshot = gCacheSnapshot;
-        if (snapshot == null || snapshot.Mat != mat.Tuple || snapshot.Items.Length < cacheLimit)
+        // if (snapshot == null || snapshot.Mat != mat.Tuple || snapshot.Items.Length < cacheLimit) // 261028Cl 変更前
+        if (snapshot == null || snapshot.Mat != mat.Tuple || snapshot.Items.Length < cacheLimit || snapshot.Diagnostic != diagnostic)
         {
             lock (gCacheLock)
             {
                 snapshot = gCacheSnapshot;
-                if (snapshot == null || snapshot.Mat != mat.Tuple || snapshot.Items.Length < cacheLimit)
-                    gCacheSnapshot = snapshot = Build_gCache(baseRotation, cacheLimit);
+                // if (snapshot == null || snapshot.Mat != mat.Tuple || snapshot.Items.Length < cacheLimit) // 261028Cl 変更前
+                //     gCacheSnapshot = snapshot = Build_gCache(baseRotation, cacheLimit);
+                if (snapshot == null || snapshot.Mat != mat.Tuple || snapshot.Items.Length < cacheLimit || snapshot.Diagnostic != diagnostic)
+                    gCacheSnapshot = snapshot = Build_gCache(baseRotation, cacheLimit, diagnostic);
             }
         }
         var gCache = snapshot.Items;
         #endregion
 
         #region Phase 2: キャッシュ済み候補に対してエワルド球テストのみ実行
-        var limit = maxNumOfBloch * 8;
+        // var limit = maxNumOfBloch * 8; // 261028Cl 変更前
+        // var limit = maxNumOfBloch * candidateMultiplier; // 261028Cl 変更前 (m1a2 impl の版)
+        var limit = maxNumOfBloch * (diagnostic ? candidateMultiplier : 8); // 261028Cl 変更: 候補の上限 = 従来 8N、診断 N × 倍率
         var pool = ArrayPool<(int cacheIndex, float rating)>.Shared.Rent(limit); // cacheIndex slot にキャッシュインデックスを格納
         var beamsSpan = pool.AsSpan(0, limit);
 
@@ -4278,16 +4395,38 @@ public partial class BetheMethod
         // var (sX, sY, sZ) = Surface.Tuple; // (260321Ch) 旧案: 常に固定平面表面法線を使っていた
         var (sX, sY, sZ) = surface.Tuple;
         int count = 0;
-        for (int i = 0; i < gCache.Length && count < limit; i++)
+        // for (int i = 0; i < gCache.Length && count < limit; i++) { ... } // 261028Cl 変更前: 1 回だけ探す (本体は下の for と同じ)
+        while (true) // 261028Cl 変更 (査読 M1): 診断では、候補が上限に届かないうちにキャッシュの端まで来たら、キャッシュを広げて探し直す
         {
-            var (_, gX, gY, gZ, gLen) = gCache[i];
-            double vX = gX + kX, vY = gY + kY, vZ = gZ + kZ;
-            double q = k0_2 - Dot3(vX, vX, vY, vY, vZ, vZ);
+            count = 0;
+            for (int i = 0; i < gCache.Length && count < limit; i++)
+            {
+                var (_, gX, gY, gZ, gLen) = gCache[i];
+                double vX = gX + kX, vY = gY + kY, vZ = gZ + kZ;
+                double q = k0_2 - Dot3(vX, vX, vY, vY, vZ, vZ);
 
-            if (Math.Abs(q) < maxQ && Dot3(sX, vX, sY, vY, sZ, vZ) > 0)
-                beamsSpan[count++] = (i, (float)(gLen * q * q)); // キャッシュインデックスを格納
+                if (Math.Abs(q) < maxQ && Dot3(sX, vX, sY, vY, sZ, vZ) > 0)
+                    beamsSpan[count++] = (i, (float)(gLen * q * q)); // キャッシュインデックスを格納
+            }
+            // 上限に届いた・従来・キャッシュがエワルドの殻 (|v| < k0 + shift なので |g| < 2k0 + shift) を覆い切った・上限の大きさ、のどれかなら終わり
+            if (count == limit || !diagnostic || snapshot.CoverRadius >= 2 * k0 + shift || gCache.Length >= MaxDiagnosticCacheLength)
+                break;
+            // 殻の候補は点の数の 2/3 乗に比例するので、足りない比の 1.5 乗の 2 割増し (少なくとも 2 倍) に広げる
+            var grown = (int)Math.Min(MaxDiagnosticCacheLength, gCache.Length * Math.Max(2.0, 1.2 * Math.Pow(limit / Math.Max(count, 1.0), 1.5)));
+            lock (gCacheLock)
+            {
+                snapshot = gCacheSnapshot;
+                if (snapshot == null || snapshot.Mat != mat.Tuple || snapshot.Items.Length < grown || !snapshot.Diagnostic)
+                    gCacheSnapshot = snapshot = Build_gCache(baseRotation, grown, true);
+            }
+            gCache = snapshot.Items;
         }
         beamsSpan = beamsSpan[..count];
+        // 261028Cl 追加 (査読 M1): 候補探索の結果を記録する (記録だけで結果は変えない)。上限に届かず殻も覆い切っていない = 候補の範囲がキャッシュの大きさで決まった
+        var shellCovered = snapshot.CoverRadius >= 2 * k0 + shift;
+        lastBeamCandidateScan = (count, limit, gCache.Length, shellCovered);
+        if (count < limit && !shellCovered)
+            Interlocked.Increment(ref beamCandidateExhaustedCount);
         #endregion
 
         count = Math.Min(count, maxNumOfBloch + 1);
@@ -4310,6 +4449,8 @@ public partial class BetheMethod
             var g = new Vector3DBase(gX, gY, gZ);
             beams[i] = new Beam((h, k, l), g, getU(AccVoltage, (h, k, l), g), (q, p));
         }
+        // 261028Cl 追加: 診断用 (IncludeGroup) では、N+1 本に入らなかった残りの候補を、借りた配列を返す前に写しておく (既定の DropGroup では写さない)
+        var restCandidates = tieMode == BeamBoundaryTieMode.IncludeGroup ? beamsSpan[count..].ToArray() : null;
         ArrayPool<(int key, float rating)>.Shared.Return(pool);
 
         beams.Sort(static (a, b) => a.Rating.CompareTo(b.Rating));
@@ -4343,6 +4484,50 @@ public partial class BetheMethod
                 n = i;
                 break;
             }
+
+        #region 261028Cl 追加: 末尾の同点の組を丸ごと入れる (診断用の BeamBoundaryTieMode.IncludeGroup。既定の DropGroup はここを通らない)
+        if (tieMode == BeamBoundaryTieMode.IncludeGroup)
+        {
+            // 末尾の組の始まり j (beams[j..] は隣どうしの Rating の差が 1e-6 以下でつながる)。上の n と同じ判定だが、全部が同点のときは j = 0 になる
+            int j = beams.Length - 1;
+            while (j >= 1 && !(Math.Abs(beams[j].Rating - beams[j - 1].Rating) > 1E-6))
+                j--;
+            if (j < beams.Length - 1) // 組が 2 本以上 = N 本目以前とつながって境をまたぐ。組が番兵 1 本だけなら下の従来の返り値 (番兵だけを落とす)
+            {
+                // N+1 本に入らなかった残りの候補から、組につながるものを足す: Rating (Beam.Rating と同じ式 |g|·Q²) が [組の最小 − 1e-6, 組の最大 + 1e-6] にあるもの。
+                // 昇順に見て、足すたびに組の最大を伸ばす。接平面内座標の重複は上と同じ鍵で除く。候補探索の上限 (従来 8N、診断 N × 倍率) の外にある組の残りは足せない
+                double lo = beams[j].Rating - 1E-6, hi = beams[^1].Rating;
+                var extra = new List<(double Rating, int CacheIndex)>();
+                foreach (var (cacheIndex, _) in restCandidates)
+                {
+                    var (_, gX, gY, gZ, gLen) = gCache[cacheIndex];
+                    double vX = gX + kX, vY = gY + kY, vZ = gZ + kZ;
+                    double q = k0_2 - Dot3(vX, vX, vY, vY, vZ, vZ), rating = gLen * q * q;
+                    if (rating >= lo)
+                        extra.Add((rating, cacheIndex));
+                }
+                extra.Sort();
+                var included = new List<Beam>(beams.ToArray());
+                foreach (var (rating, cacheIndex) in extra)
+                {
+                    if (rating > hi + 1E-6)
+                        break;
+                    var (key, gX, gY, gZ, _) = gCache[cacheIndex];
+                    var g = new Vector3DBase(gX, gY, gZ);
+                    long xKey = (long)Math.Round(g * axisU / duplicateTol, MidpointRounding.AwayFromZero);
+                    long yKey = (long)Math.Round(g * axisV / duplicateTol, MidpointRounding.AwayFromZero);
+                    if (!uniqueXY.Add((xKey << 32) ^ (yKey & 0xFFFFFFFFL)))
+                        continue;
+                    hi = Math.Max(hi, rating);
+                    var (h, k, l) = decompose(key);
+                    double vX = gX + kX, vY = gY + kY, vZ = gZ + kZ;
+                    double q = k0_2 - Dot3(vX, vX, vY, vY, vZ, vZ), p = 2 * Dot3(sX, vX, sY, vY, sZ, vZ);
+                    included.Add(new Beam((h, k, l), g, getU(AccVoltage, (h, k, l), g), (q, p)));
+                }
+                return [.. included];
+            }
+        }
+        #endregion
         return [.. beams[..n]];
     }
 
