@@ -225,8 +225,8 @@ public partial class BetheMethod
     /// <para>尽きたかどうかは <see cref="LastBeamCandidateScan"/>・<see cref="BeamCandidateExhaustedCount"/> で見る。従来と診断は BFS キャッシュを共有しない。
     /// プロセス全体で共有 (static)。Find_gVectors は呼び出しの冒頭で 1 回だけ読むので、並列の呼び出しが読むだけなら安全。
     /// ⚠ 計算の走行中には変えないこと (方向ごとに違う設定で選んだビームが混ざる)。
-    /// ⚠ I 格子 (体心) では、方向の集合 (12 要素の FrozenSet) の列挙の順がプロセスごとに変わり BFS の順も変わるため、従来も診断も
-    /// 結果がプロセスの間で一致しないことがある (既存の性質。この設定とは無関係で、直していない)。</para>
+    /// 261030Cl: I 格子 (体心) で、方向の集合 (12 要素の FrozenSet) の列挙の順がプロセスごとに変わり、従来も診断も結果がプロセスの間で
+    /// 一致しなかった不具合は、方向の集合を配列にして直した (旧注: 「既存の性質。この設定とは無関係で、直していない」)。</para>
     /// </summary>
     public static int BeamCandidateMultiplier
     {
@@ -4242,20 +4242,34 @@ public partial class BetheMethod
     #endregion
 
     #region 候補となるg vectorsの検索
-    static readonly FrozenSet<(int h, int k, int l)> directionF = new[] { (1, 1, 1), (1, 1, -1), (1, -1, 1), (1, -1, -1), (-1, 1, 1), (-1, 1, -1), (-1, -1, 1), (-1, -1, -1) }.ToFrozenSet();
-    static readonly FrozenSet<(int h, int k, int l)> directionA = new[] { (0, 1, 1), (0, 1, -1), (0, -1, 1), (0, -1, -1), (1, 0, 0), (-1, 0, 0) }.ToFrozenSet();
-    static readonly FrozenSet<(int h, int k, int l)> directionB = new[] { (1, 0, 1), (1, 0, -1), (-1, 0, 1), (-1, 0, -1), (0, 1, 0), (0, -1, 0) }.ToFrozenSet();
-    static readonly FrozenSet<(int h, int k, int l)> directionC = new[] { (1, 1, 0), (1, -1, 0), (-1, 1, 0), (-1, -1, 0), (0, 0, 1), (0, 0, -1) }.ToFrozenSet();
-    static readonly FrozenSet<(int h, int k, int l)> directionI = new[] { (1, 1, 0), (1, -1, 0), (-1, 1, 0), (-1, -1, 0), (0, 1, 1), (0, 1, -1), (0, -1, 1), (0, -1, -1), (1, 0, 1), (1, 0, -1), (-1, 0, 1), (-1, 0, -1) }.ToFrozenSet();
-    static readonly FrozenSet<(int h, int k, int l)> directionRH = new[] { (1, 0, 1), (0, -1, 1), (-1, 1, 1), (-1, 0, -1), (0, 1, -1), (1, -1, -1) }.ToFrozenSet();
-    static readonly FrozenSet<(int h, int k, int l)> directionHex = new[] { (1, 0, 0), (-1, 0, 0), (0, 1, 0), (0, -1, 0), (1, -1, 0), (-1, 1, 0), (0, 0, 1), (0, 0, -1) }.ToFrozenSet();
-    static readonly FrozenSet<(int h, int k, int l)> directionP = new[] { (1, 0, 0), (-1, 0, 0), (0, 1, 0), (0, -1, 0), (0, 0, 1), (0, 0, -1) }.ToFrozenSet();
+    // 261030Cl 変更: 方向の集合を FrozenSet から配列にした (BFS は foreach で回すだけで Contains は使わない)。
+    //  FrozenSet は要素が 10 以下 (F・A・B・C・RH・Hex・P) では書いた順のまま列挙するが、12 要素の I はハッシュの順で列挙し、
+    //  その順がプロセスごとに変わっていた (ValueTuple のハッシュの種がプロセスごと)。BFS の展開の順と候補の並びが変わり、
+    //  I 格子の結晶だけ Find_gVectors の結果がプロセスの間で一致しなかった (BetheBench で Fe (alpha) の CBED が相対 0.76、パイロープ 0.98)。
+    //  配列は書いた順で列挙するので、I 以外は従来とビット単位で同じ、I は書いた順に固定される。
+    // static readonly FrozenSet<(int h, int k, int l)> directionF = new[] { (1, 1, 1), (1, 1, -1), (1, -1, 1), (1, -1, -1), (-1, 1, 1), (-1, 1, -1), (-1, -1, 1), (-1, -1, -1) }.ToFrozenSet();
+    // static readonly FrozenSet<(int h, int k, int l)> directionA = new[] { (0, 1, 1), (0, 1, -1), (0, -1, 1), (0, -1, -1), (1, 0, 0), (-1, 0, 0) }.ToFrozenSet();
+    // static readonly FrozenSet<(int h, int k, int l)> directionB = new[] { (1, 0, 1), (1, 0, -1), (-1, 0, 1), (-1, 0, -1), (0, 1, 0), (0, -1, 0) }.ToFrozenSet();
+    // static readonly FrozenSet<(int h, int k, int l)> directionC = new[] { (1, 1, 0), (1, -1, 0), (-1, 1, 0), (-1, -1, 0), (0, 0, 1), (0, 0, -1) }.ToFrozenSet();
+    // static readonly FrozenSet<(int h, int k, int l)> directionI = new[] { (1, 1, 0), (1, -1, 0), (-1, 1, 0), (-1, -1, 0), (0, 1, 1), (0, 1, -1), (0, -1, 1), (0, -1, -1), (1, 0, 1), (1, 0, -1), (-1, 0, 1), (-1, 0, -1) }.ToFrozenSet();
+    // static readonly FrozenSet<(int h, int k, int l)> directionRH = new[] { (1, 0, 1), (0, -1, 1), (-1, 1, 1), (-1, 0, -1), (0, 1, -1), (1, -1, -1) }.ToFrozenSet();
+    // static readonly FrozenSet<(int h, int k, int l)> directionHex = new[] { (1, 0, 0), (-1, 0, 0), (0, 1, 0), (0, -1, 0), (1, -1, 0), (-1, 1, 0), (0, 0, 1), (0, 0, -1) }.ToFrozenSet();
+    // static readonly FrozenSet<(int h, int k, int l)> directionP = new[] { (1, 0, 0), (-1, 0, 0), (0, 1, 0), (0, -1, 0), (0, 0, 1), (0, 0, -1) }.ToFrozenSet();
+    static readonly (int h, int k, int l)[] directionF = [(1, 1, 1), (1, 1, -1), (1, -1, 1), (1, -1, -1), (-1, 1, 1), (-1, 1, -1), (-1, -1, 1), (-1, -1, -1)];
+    static readonly (int h, int k, int l)[] directionA = [(0, 1, 1), (0, 1, -1), (0, -1, 1), (0, -1, -1), (1, 0, 0), (-1, 0, 0)];
+    static readonly (int h, int k, int l)[] directionB = [(1, 0, 1), (1, 0, -1), (-1, 0, 1), (-1, 0, -1), (0, 1, 0), (0, -1, 0)];
+    static readonly (int h, int k, int l)[] directionC = [(1, 1, 0), (1, -1, 0), (-1, 1, 0), (-1, -1, 0), (0, 0, 1), (0, 0, -1)];
+    static readonly (int h, int k, int l)[] directionI = [(1, 1, 0), (1, -1, 0), (-1, 1, 0), (-1, -1, 0), (0, 1, 1), (0, 1, -1), (0, -1, 1), (0, -1, -1), (1, 0, 1), (1, 0, -1), (-1, 0, 1), (-1, 0, -1)];
+    static readonly (int h, int k, int l)[] directionRH = [(1, 0, 1), (0, -1, 1), (-1, 1, 1), (-1, 0, -1), (0, 1, -1), (1, -1, -1)];
+    static readonly (int h, int k, int l)[] directionHex = [(1, 0, 0), (-1, 0, 0), (0, 1, 0), (0, -1, 0), (1, -1, 0), (-1, 1, 0), (0, 0, 1), (0, 0, -1)];
+    static readonly (int h, int k, int l)[] directionP = [(1, 0, 0), (-1, 0, 0), (0, 1, 0), (0, -1, 0), (0, 0, 1), (0, 0, -1)];
     static int compose(int h, int k, int l) => ((h + 255) << 20) + ((k + 255) << 10) + l + 255;
     static int compose((int h, int k, int l) index) => ((index.h + 255) << 20) + ((index.k + 255) << 10) + index.l + 255;
     static (int h, int k, int l) decompose(int key) => ((key >> 20) - 255, ((key << 12) >> 22) - 255, ((key << 22) >> 22) - 255);
 
-    /// <summary>格子タイプに対応する direction セットを返す。260318Cl 追加</summary>
-    private FrozenSet<(int h, int k, int l)> GetDirection()
+    /// <summary>格子タイプに対応する direction セットを返す。260318Cl 追加。261030Cl: 列挙の順を固定するため配列で返す</summary>
+    // private FrozenSet<(int h, int k, int l)> GetDirection() // 261030Cl 旧シグネチャ
+    private (int h, int k, int l)[] GetDirection()
     {
         if (Crystal.Symmetry.LatticeTypeStr == "F") return directionF;
         else if (Crystal.Symmetry.LatticeTypeStr == "A") return directionA;
