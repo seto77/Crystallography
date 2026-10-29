@@ -28,6 +28,7 @@ public class Crystal : IEquatable<Crystal>, ICloneable, IComparable<Crystal>
             crystal.Atoms[i] = (Atoms)Atoms[i].Clone();
         //crystal.EOSCondition = this.EOSCondition.Clone();
         crystal.ElasticStiffnessArray = this.ElasticStiffnessArray;
+        crystal.ElementValences = ElementValences?.ToArray() ?? []; // 261025Cl 追加: MemberwiseClone だと配列を共有するので、コピー先の価数を変えても元が変わらないよう複製
 
         return crystal;
     }
@@ -316,6 +317,22 @@ public class Crystal : IEquatable<Crystal>, ICloneable, IComparable<Crystal>
     [NonSerialized]
     [XmlIgnore]
     public double[] ElementNum;
+
+    /// <summary>261025Cl 追加: 化学組成フォーム (酸化物などへの形式的換算) でユーザーが手入力した元素ごとの価数。手入力した元素だけを持つ。
+    /// アプリの結晶リスト (XML) にだけ保存し、Crystal2 (アプリ間の送受信・配布データベース) には載せない (作者決定 261025: 古い版との互換のため)。</summary>
+    public ElementValence[] ElementValences = [];
+
+    /// <summary>261025Cl 追加: 元素 (原子番号 Z) の手入力価数 (分数も double で持つ。例 8/3)</summary>
+    [Serializable()]
+    public struct ElementValence
+    {
+        /// <summary>原子番号。261026Cl 説明を追加</summary>
+        public int Z;
+        /// <summary>手入力の価数 (正: 陽イオン、負: 陰イオン、0: 質量だけ数える)。261026Cl 説明を追加</summary>
+        public double Valence;
+        /// <summary>原子番号と価数を指定して作る。261026Cl 説明を追加</summary>
+        public ElementValence(int z, double valence) { Z = z; Valence = valence; }
+    }
     #endregion
 
     #region 原子情報
@@ -566,6 +583,7 @@ public class Crystal : IEquatable<Crystal>, ICloneable, IComparable<Crystal>
         Bounds = cry.Bounds;
 
         ElasticStiffnessArray = cry.ElasticStiffnessArray;
+        ElementValences = cry.ElementValences?.ToArray() ?? []; // 261025Cl 追加: 複製 (ReciPro の Duplicate など) でも、化学組成フォームで手入力した価数を引き継ぐ (Clone と同じ)
     }
 
     #endregion コンストラクタ
@@ -1791,10 +1809,19 @@ public class Crystal : IEquatable<Crystal>, ICloneable, IComparable<Crystal>
             var Num = ElementNum.ToArray();
 
             //まずNumの最小値をさがす
+            // 261024Cl 変更: 原子数がちょうど 0 の元素 (占有率 0 のサイトしか無い元素) だけを最小値探索から除く。含めると n=0 になって
+            // 約分されず (例: Mg4 Fe0 O4 が Z=1 のまま)、先頭元素が 0 で他が 3 の倍数だと下の is3times 分岐で 0 除算
+            // (DivideByZeroException、例: コランダムで Al の占有率 0) になっていた。割り切れるかの判定では 0 を残してよい (0 % i == 0)。
+            // 負・NaN は従来どおり扱う (原子数 0 の元素が無い結晶の結果は旧コードと完全に同じ)。
             int n = int.MaxValue;
             foreach (double var in Num)
-                if (n > var)
+                //if (n > var) // 261024Cl 変更前
+                if (var != 0 && n > var)
                     n = (int)var;
+            // 261024Cl 追加: 有限で 0 でない原子数が無い (NaN・∞ と 0 だけ等) と n が int.MaxValue のまま残り、下の for の i が
+            // int を一周して終わらない (旧コードからの無限ループ)。そのときは約分しない
+            if (n == int.MaxValue)
+                n = 0;
 
             //次に2から順番にわっていく
             for (int i = 2; i <= n; i++)
@@ -1810,7 +1837,11 @@ public class Crystal : IEquatable<Crystal>, ICloneable, IComparable<Crystal>
             }
 
             //単位格子あたりの組成式の数Zは
-            ChemicalFormulaZ = (int)(ElementNum[0] / Num[0]);
+            // 261024Cl 変更: 基準は原子数が 0 でない先頭の元素 (旧: 常に先頭。先頭が 0 だと 0/0 になっていた。0 の元素が無ければ旧と同じ先頭)。
+            // 全元素を同じ数で割っているので、0 でない元素ならどれを基準にしても同じ Z になる (ElementNum.Sum() != 0 なので必ず見つかる)
+            var k = Math.Max(0, Array.FindIndex(Num, v => v != 0));
+            //ChemicalFormulaZ = (int)(ElementNum[0] / Num[0]); // 261024Cl 変更前
+            ChemicalFormulaZ = (int)(ElementNum[k] / Num[k]);
 
             //組成式 Fe21.333333333 O32  Fe2O3   *32/3 のように表示させる
             bool is3times = true;
@@ -1819,16 +1850,30 @@ public class Crystal : IEquatable<Crystal>, ICloneable, IComparable<Crystal>
                 if (Math.Abs((Num[i] / 3.0)) % 1.0 > 0.000000001)
                     is3times = false;
 
+            // 261024Cl 追加: *x/3 表記の基準は、3 倍して整数化した値が 0 にならない先頭の元素 (原子数 0 の元素が無ければ旧と同じ先頭)。
+            // 無いとき (極小の原子数しか無い) は分母が 0 になり 0 除算していた (旧コードから) ので、*x/3 表記にしない
+            var k3 = Array.FindIndex(Num, v => (int)(v * 3 + 0.1) != 0);
+            if (k3 < 0)
+                is3times = false;
+
             if (is3times == true)
             {
-                denom = (int)(Num[0] * 3 + 0.1);
+                //denom = (int)(Num[0] * 3 + 0.1); // 261024Cl 変更前
+                denom = (int)(Num[k3] * 3 + 0.1); // 261024Cl 変更: 基準を上の k3 に
                 for (int i = 0; i < Num.Length; i++)
                     Num[i] = (int)(Num[i] * 3 + 0.1);
                 //まずNumの最小値をさがす
                 int m = int.MaxValue;
-                foreach (double var in Num)
-                    if (m > var)
-                        m = (int)var;
+                //foreach (double var in Num) // 261024Cl 変更前
+                //    if (m > var)
+                //        m = (int)var;
+                // 261024Cl 変更: 元の原子数がちょうど 0 の元素だけ除く (上の n と同じ理由)。3 倍して切り捨てた結果の 0 (極小の原子数) は
+                // 旧来どおり含める (= 原子数 0 の元素が無い結晶は旧コードと同じ結果)
+                for (int i = 0; i < Num.Length; i++)
+                    if (ElementNum[i] != 0 && m > Num[i])
+                        m = (int)Num[i];
+                if (m == int.MaxValue) // 261024Cl 追加: 上の n と同じ無限ループ対策
+                    m = 0;
 
                 //次に2から順番にわっていく
                 for (int i = 2; i <= m; i++)
@@ -1844,7 +1889,8 @@ public class Crystal : IEquatable<Crystal>, ICloneable, IComparable<Crystal>
                         i--;
                     }
                 }
-                denom /= (int)Num[0];
+                //denom /= (int)Num[0]; // 261024Cl 変更前 (先頭が 0 だと 0 除算)
+                denom /= (int)Num[k3]; // 261024Cl 変更: Num[k3] は 0 でない整数を約分したもの (割り切れる時だけ割る) なので 0 にならない
             }
 
             ChemicalFormulaSum = "";
