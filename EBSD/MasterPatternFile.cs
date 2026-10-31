@@ -1,5 +1,6 @@
 #region using
 using System;
+using System.Collections.Generic; // 261031Cl 追加 (ReadElectronChunks の IEnumerable)
 using System.Globalization;
 using System.IO;
 using System.IO.Compression;
@@ -86,6 +87,7 @@ public sealed record MasterPatternFileContent(MasterPattern MasterPattern, Maste
 public static class MasterPatternFile
 {
     /// <summary>ファイル形式の版。形式を変えたら上げ、<see cref="Load"/> で旧版を読めるようにすること</summary>
+    /// <remarks>261031Cl 追加: 本体 (格子の見出し・平面の並び・電子の区画) は <see cref="ReadElectronChunks"/> でも読む。形式を変えたら両方を直すこと</remarks>
     public const int FormatVersion = 1;
 
     /// <summary>既定の拡張子</summary>
@@ -195,6 +197,58 @@ public static class MasterPatternFile
         var bses = new EbsdBackscatteredElectron[nBse];
         for (int i = 0; i < nBse; i++) bses[i] = ReadElectron(r);
         return new MasterPatternFileContent(new MasterPattern(gridSize, energies, depths, pos, neg, gridType), info, bses);
+    }
+
+    /// <summary>261031Cl 追加: 保存した後方散乱電子を、chunkSize 本ずつの配列 (塊) にしてファイルの並び順に返す。
+    /// <see cref="Load"/> と違って電子の全部を 1 本の配列 (MnAl 1e7 で約 545 万本 ≈ 0.7 GiB の連続の領域) にしないので、GC のヒープの上限のもとや
+    /// LOH が断片化した後でも読める。1 本ずつの読み方は <see cref="Load"/> と同じなので、塊をつなぐと Load の BackscatteredElectrons とビットで同じになる。
+    /// <para>平面は配列を作らずに読み飛ばす。ただし本体は 1 本の zlib の流れなので、電子の区画へ行くには平面の分も展開する (平面の多いファイルでは
+    /// その分の時間がかかる)。平面も要るときは <see cref="Load"/> (loadElectrons: false) を別に呼ぶ。作成条件 (MC の試料傾斜など) は <see cref="ReadInfo"/> で読む。</para>
+    /// <para>ファイルは列挙を始めたとき (最初の MoveNext) に開き、最後まで読んだとき・foreach を途中で抜けたとき (列挙子の Dispose)・例外のときに閉じる。
+    /// 列挙している間はファイルを (FileShare.Read で) 開いたままなので、その間は同じパスへの <see cref="Save"/> (一時ファイルからの置き換え) が
+    /// 例外で失敗する (path.tmp が残る)。Load にも同じ窓はあるが、こちらは呼び手が塊を処理する時間だけ長くなる。
+    /// 列挙するたびに初めから読み直す。返す塊は毎回新しい配列なので、持っておいてよい。電子が 0 本のファイルでは何も返さない。</para></summary>
+    /// <param name="chunkSize">1 つの塊の本数 (1 以上。最後の塊は端数)。既定の 512 本 (69,632 B。今の構造体 136 B/本 のとき) は LOH の閾値 (85,000 B) より小さい。
+    ///   全本数より大きくすると全部が 1 つの塊になる (Load と同じ大きさの配列になる)</param>
+    /// <exception cref="ArgumentNullException">path が null (列挙の前、呼んだときに出す)</exception>
+    /// <exception cref="ArgumentOutOfRangeException">chunkSize が 0 以下 (列挙の前、呼んだときに出す)</exception>
+    public static IEnumerable<EbsdBackscatteredElectron[]> ReadElectronChunks(string path, int chunkSize = 512)
+    {
+        ArgumentNullException.ThrowIfNull(path);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(chunkSize);
+        return Chunks(); //引数の検査を列挙の前に済ませるため、反復子の本体は局所関数にする
+
+        IEnumerable<EbsdBackscatteredElectron[]> Chunks()
+        {
+            using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, 1 << 20);
+            ReadHeader(fs);
+            using var z = new ZLibStream(fs, CompressionMode.Decompress);
+            using var r = new BinaryReader(z, Encoding.UTF8);
+            //本体の書式は Load と同じに読む (形式を変えたら両方を直す。FormatVersion の remarks)。格子の見出しも Load と同じに検査する
+            int gridSize = r.ReadInt32();
+            var gridType = (MasterPattern.Types)r.ReadInt32();
+            int nE = r.ReadInt32(), nD = r.ReadInt32();
+            if (gridSize <= 0 || nE < 0 || nD < 0 || !System.Enum.IsDefined(gridType)) throw new InvalidDataException("Corrupt MasterPattern file (bad grid header).");
+            for (int i = 0; i < nE + nD; i++) r.ReadDouble(); //エネルギー列・深さ列は読み捨てる
+            //平面は配列を作らず、長さ × 4 バイトを捨て緩衝 (64 KiB、LOH に入らない) へ読み捨てる (+Z → −Z の 2 × nE·nD 枚)
+            var discard = new byte[1 << 16];
+            for (long k = 0, planeCount = 2L * nE * nD; k < planeCount; k++)
+            {
+                int len = r.ReadInt32();
+                if (len < 0) throw new InvalidDataException("Corrupt MasterPattern file (negative plane length).");
+                for (long left = 4L * len; left > 0; left -= discard.Length)
+                    r.BaseStream.ReadExactly(discard, 0, (int)Math.Min(left, discard.Length));
+            }
+            int nBse = r.ReadInt32();
+            if (nBse < 0) throw new InvalidDataException("Corrupt MasterPattern file (negative electron count).");
+            for (int done = 0; done < nBse;)
+            {
+                var chunk = new EbsdBackscatteredElectron[Math.Min(chunkSize, nBse - done)];
+                for (int i = 0; i < chunk.Length; i++) chunk[i] = ReadElectron(r);
+                done += chunk.Length;
+                yield return chunk;
+            }
+        }
     }
 
     //電子 1 本 = float32 × 15 + フラグ 1 バイト (61 バイト)。MC の統計誤差に比べて float の丸めは無視できる
