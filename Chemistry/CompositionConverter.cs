@@ -240,7 +240,18 @@ public static class CompositionConverter
         var balanced = -others / n;
         // 0 になるはずの値に浮動小数の残り (占有率 0.2 × 3 など、1e-16 程度) が乗ると、S の自動の釣り合わせで価数 ≈ −1e-16 となり、
         // 異常な成分名・重量% になるので 0 にそろえる (−0 も 0 にして「-0」と見せない)
-        return Math.Abs(balanced) <= 1e-9 * Math.Max(1, magnitude / n) ? 0 : balanced;
+        //return Math.Abs(balanced) <= 1e-9 * Math.Max(1, magnitude / n) ? 0 : balanced; // 261105Cl 変更前
+        if (Math.Abs(balanced) <= 1e-9 * Math.Max(1, magnitude / n))
+            return 0;
+        // 261105Cl 追加: 分母 12 以下の分数 (ComponentFormula と同じ範囲) に相対 1e-9 以内なら、その分数にそろえる。
+        // 占有率の積の丸め誤差で 2.0000000000000004 のような値が価数欄に出て、そのまま Crystal.ElementValences に保存されていた
+        for (int d = 1; d <= 12; d++)
+        {
+            var p = Math.Round(balanced * d);
+            if (p != 0 && Math.Abs(balanced - p / d) <= 1e-9 * Math.Max(1, Math.Abs(balanced)))
+                return p / d;
+        }
+        return balanced;
     }
 
     /// <summary>
