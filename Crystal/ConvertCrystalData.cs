@@ -292,9 +292,14 @@ public class ConvertCrystalData
         try
         {
             Crystal2 c2 = null;
-            if (fileName.EndsWith("amc", Ord))
+            //if (fileName.EndsWith("amc", Ord)) // 261105Cl 変更前 (4 行)
+            //    c2 = ConvertFromAmc(fileName);
+            //else if (fileName.EndsWith("cif", Ord))
+            //    c2 = ConvertFromCIF(fileName);
+            // 261105Cl 変更: 拡張子の大文字小文字を区別しない (以前は ".CIF" などを読めなかった。監査 #28)
+            if (fileName.EndsWith("amc", StringComparison.OrdinalIgnoreCase))
                 c2 = ConvertFromAmc(fileName);
-            else if (fileName.EndsWith("cif", Ord))
+            else if (fileName.EndsWith("cif", StringComparison.OrdinalIgnoreCase))
                 c2 = ConvertFromCIF(fileName);
 
             if (c2 != null)
@@ -317,12 +322,14 @@ public class ConvertCrystalData
     {
         try
         {
-            if (fileName.EndsWith("amc", Ord))
+            //if (fileName.EndsWith("amc", Ord)) // 261105Cl 変更前 (拡張子の判定 2 か所)
+            //else if (fileName.EndsWith("cif", Ord))
+            if (fileName.EndsWith("amc", StringComparison.OrdinalIgnoreCase)) // 261105Cl 変更: 大文字小文字を区別しない (監査 #28)
             {
                 var c = ConvertFromAmc(fileName);
                 return c?.ToCrystal();
             }
-            else if (fileName.EndsWith("cif", Ord))
+            else if (fileName.EndsWith("cif", StringComparison.OrdinalIgnoreCase))
             {
                 var c = ConvertFromCIF(fileName);
                 return c?.ToCrystal();
