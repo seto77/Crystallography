@@ -59,6 +59,26 @@ public static class DiffractionOptics
         }
     }
 
+    /// <summary>261105Cl 追加: .prm (<see cref="Parameter"/>) の数値文字列を地域設定に依らず解釈する。
+    /// <para>IPAnalyzer は 261105Cl から数値を InvariantCulture ("0.1") で書くが、それより前は地域設定 (CurrentCulture) で書いていたので
+    /// "0,1" (de, fr など) や U+2212 の負号を使う "−0,1" (sv, nb, fi など) も来る。CurrentCulture の Convert.ToDouble では、
+    /// de-DE が "0.1" を桁区切りとみなして黙って 1 と読み、fr-FR / sv-SE は例外になっていた。</para>
+    /// <para>.prm の各要素は単一の数値で、桁区切りは一度も書いていない (どれも double/decimal/int の ToString() そのもの)。そこで
+    /// "," が 1 個だけなら小数点とみなす。"," が 2 個以上、または "," と "." の混在は、どちらの書き方でも生じないので
+    /// 推測せず <see cref="FormatException"/> にする (黙って誤読しない)。null は <see cref="ArgumentNullException"/>。</para></summary>
+    public static double ParseNumber(string s) // 261105Cl 追加
+    {
+        ArgumentNullException.ThrowIfNull(s); // 261105Cl 追加
+        s = s.Trim().Replace('\u2212', '-'); // 261105Cl 追加
+        if (s.Contains(',')) // 261105Cl 追加
+        {
+            if (s.Contains('.') || s.IndexOf(',') != s.LastIndexOf(',')) // 261105Cl 追加
+                throw new FormatException($"Ambiguous number in the parameter file: {s}"); // 261105Cl 追加
+            s = s.Replace(',', '.'); // 261105Cl 追加
+        }
+        return double.Parse(s, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture); // 261105Cl 追加
+    }
+
     /// <summary>回折光学系のパラメータ. 主にIPAnzlyzerとReciProから利用。</summary>
     [Serializable()]
     public class Parameter
