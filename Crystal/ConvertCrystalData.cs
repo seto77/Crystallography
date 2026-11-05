@@ -1579,6 +1579,7 @@ public class ConvertCrystalData
                     cifOrbit = [.. ops.Select(c => AffineGen.Parse(c[0], c[1], c[2]).Apply(p.X, p.Y, p.Z))]; // 261105Cl 追加
             } // 261105Cl 追加
             catch (Exception e) when (e is FormatException or OverflowException) { cifOrbit = null; } // 261105Cl 追加 ('1/' など)
+            // 261105Cl 追記: その後 AffineGen.Parse 自身も読めない式で FormatException を投げるようにした (無限ループしない)。上の文字の確認は、大文字を小文字にしてから読むために残す
             foreach (var standard in new[] { true, false })
             {
                 //int hit = -1, hitCount = 0; // 261105Cl 変更前

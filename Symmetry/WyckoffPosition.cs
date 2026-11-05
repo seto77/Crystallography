@@ -239,7 +239,10 @@ public readonly struct AffineGen
     public AffineGen AddTranslation(double dx, double dy, double dz)
         => new(cx0, cy0, cz0, t0, cx1, cy1, cz1, t1, cx2, cy2, cz2, t2, px + dx, py + dy, pz + dz);
 
-    /// <summary>"a,b,c" の 3 成分(x,y,z 標準表記)からアフィン変換を構築。整数係数(2x 等)と分数併進(1/3 等)に対応。</summary>
+    /// <summary>"a,b,c" の 3 成分(x,y,z 標準表記)からアフィン変換を構築。整数係数(2x 等)と分数併進(1/3 等)に対応。
+    /// 261105Cl 追記: 読めない成分 (小数点、大文字の X、* や括弧、空の成分、分子・分母の無い分数、分母 0、桁あふれ) は FormatException を投げる
+    /// (以前は小数点や大文字などで先へ進まず無限ループになっていた)。</summary>
+    /// <exception cref="FormatException">261105Cl 追加: 成分を読めないとき</exception>
     public static AffineGen Parse(string a, string b, string c)
     {
         var (cx0, cy0, cz0, t0) = ParseComponent(a);
@@ -250,6 +253,10 @@ public readonly struct AffineGen
 
     private static (double cx, double cy, double cz, double t) ParseComponent(string s)
     {
+        // 261105Cl 追加: 読めない成分は FormatException。整数は桁あふれも FormatException にそろえる
+        FormatException bad(string why) => new($"AffineGen.Parse: cannot read \"{s}\" ({why})"); // 261105Cl 追加
+        int toInt(string digits) => int.TryParse(digits, System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out var v) ? v : throw bad($"integer '{digits}'"); // 261105Cl 追加
+        if (string.IsNullOrWhiteSpace(s)) throw bad("empty"); // 261105Cl 追加
         double cx = 0, cy = 0, cz = 0, t = 0; int i = 0;
         while (i < s.Length)
         {
@@ -257,23 +264,34 @@ public readonly struct AffineGen
             if (s[i] == '+') { i++; }
             else if (s[i] == '-') { sign = -1; i++; }
             else if (char.IsWhiteSpace(s[i])) { i++; continue; }
+            while (i < s.Length && char.IsWhiteSpace(s[i])) i++; // 261105Cl 追加: 符号の後の空白 ('z - 1/4')。以前は符号が捨てられ +1/4 と読んでいた
             int ns = i;
             while (i < s.Length && char.IsDigit(s[i])) i++;
             string num = s[ns..i];
             if (i < s.Length && (s[i] == 'x' || s[i] == 'y' || s[i] == 'z'))
             {
-                double coef = sign * (num.Length > 0 ? int.Parse(num) : 1);
+                //double coef = sign * (num.Length > 0 ? int.Parse(num) : 1); // 261105Cl 変更前
+                double coef = sign * (num.Length > 0 ? toInt(num) : 1); // 261105Cl
                 if (s[i] == 'x') cx += coef; else if (s[i] == 'y') cy += coef; else cz += coef;
                 i++;
             }
             else if (i < s.Length && s[i] == '/')
             {
                 i++; int ds = i; while (i < s.Length && char.IsDigit(s[i])) i++;
-                t += sign * ((double)int.Parse(num) / (double)int.Parse(s[ds..i]));
+                //t += sign * ((double)int.Parse(num) / (double)int.Parse(s[ds..i])); // 261105Cl 変更前
+                if (num.Length == 0 || ds == i) throw bad("fraction without numerator or denominator"); // 261105Cl 追加
+                var den = toInt(s[ds..i]); // 261105Cl 追加
+                if (den == 0) throw bad("zero denominator"); // 261105Cl 追加
+                t += sign * ((double)toInt(num) / den); // 261105Cl
             }
             else
             {
-                t += sign * (num.Length > 0 ? int.Parse(num) : 0);
+                // 261105Cl 追加: ここで止まる文字 (符号・空白以外) は次の周回でも読めず、以前は i が進まないまま無限ループになっていた。
+                //  数字が無い (符号の後に項が無い 'x+'、'x--y' など) のも読めない
+                if (num.Length == 0) throw bad(i < s.Length ? $"unexpected '{s[i]}' at {i}" : "sign without a term"); // 261105Cl 追加
+                if (i < s.Length && s[i] != '+' && s[i] != '-' && !char.IsWhiteSpace(s[i])) throw bad($"unexpected '{s[i]}' at {i}"); // 261105Cl 追加
+                //t += sign * (num.Length > 0 ? int.Parse(num) : 0); // 261105Cl 変更前
+                t += sign * (num.Length > 0 ? toInt(num) : 0); // 261105Cl
             }
         }
         return (cx, cy, cz, t);
