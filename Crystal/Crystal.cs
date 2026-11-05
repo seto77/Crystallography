@@ -1336,9 +1336,13 @@ public class Crystal : IEquatable<Crystal>, ICloneable, IComparable<Crystal>
     /// <summary>現在の結晶構造で強度が上位最大16位までのものを検索し、返す</summary>
     /// <param name="waveLength">X線の波長を指定 単位はnm </param>
     /// <param name="maxNum"> 計算する結晶面の数 </param>
+    /// <param name="maxTwoThetaDeg">261105Cl 追加: 数える反射の 2θ の上限 (度)。2θ → 180° では LP 因子 (1+cos²2θ)/(sin2θ sinθ) が発散するので、
+    /// 上限が無いと実在しない強い反射が上位を占める (2025-12 に作った AMCSD.cdb3 では d ≈ λ/2 の値が上位に並んでいた)</param>
     /// <returns></returns>
-    public float[] GetDspacingList(double waveLength, int maxNum = 512, int bestNum = 16)
+    //public float[] GetDspacingList(double waveLength, int maxNum = 512, int bestNum = 16) // 261105Cl 変更前
+    public float[] GetDspacingList(double waveLength, int maxNum = 512, int bestNum = 16, double maxTwoThetaDeg = 150)
     {
+        var gMax = 2 * Math.Sin(maxTwoThetaDeg / 360 * Math.PI) / waveLength; // 261105Cl 追加: 2θ の上限に当たる |g|
         double aX = A_Star.X, aY = A_Star.Y, aZ = A_Star.Z, bX = B_Star.X, bY = B_Star.Y, bZ = B_Star.Z, cX = C_Star.X, cY = C_Star.Y, cZ = C_Star.Z;
         var outer = new List<(int H, int K, int L, double gLen)>() { (0, 0, 0, 0) };
         var whole = new HashSet<(int H, int K, int L)>() { (0, 0, 0) }; 
@@ -1354,7 +1358,8 @@ public class Crystal : IEquatable<Crystal>, ICloneable, IComparable<Crystal>
                 shift = candidate;
         }
 
-        while (list.Count < maxNum)
+        //while (list.Count < maxNum) // 261105Cl 変更前
+        while (list.Count < maxNum && outer[0].gLen <= gMax) // 261105Cl 変更: 2θ の上限より外の面しか残っていなければ止める (小さい格子では maxNum に届かない)
         {
             min = outer[0].gLen + shift;
             var end = outer.FindLastIndex(o => o.gLen - min < 0) + 1;
@@ -1368,7 +1373,10 @@ public class Crystal : IEquatable<Crystal>, ICloneable, IComparable<Crystal>
                         double gLen2 = x * x + y * y + z * z, gLen = Math.Sqrt(gLen2);
                         outer.Add((h, k, l, gLen));
 
-                        if (SymmetryStatic.IsRootPlane((h, k, l), Symmetry, out var indices))
+                        //if (SymmetryStatic.IsRootPlane((h, k, l), Symmetry, out var indices)) // 261105Cl 変更前
+                        // 261105Cl 変更: 粉末の X 線では h と −h の強度が等しい (Friedel 則) ので、対称心を足した群 (Laue 群) で同じ面とみなす
+                        // (多重度もその群で数える)。以前は非中心対称の結晶で同じ d が 2 回ずつ並んでいた。2θ の上限より外は数えない
+                        if (gLen <= gMax && SymmetryStatic.IsRootPlane((h, k, l), Symmetry, out var indices, addInversion: true))
                             if (!Symmetry.HasExtinction(h, k, l))//260605Cl 旧: Symmetry.CheckExtinctionRule(h, k, l).Length == 0
                             {
                                 double sinTheta = waveLength / 2 * gLen, twoTheta = 2 * Math.Asin(sinTheta), cosTwoTheta = 1 - 2 * sinTheta * sinTheta, sinTwoTheta = Math.Sin(twoTheta);
@@ -1381,6 +1389,20 @@ public class Crystal : IEquatable<Crystal>, ICloneable, IComparable<Crystal>
             outer.RemoveRange(0, end);
             outer.Sort((e1, e2) => e1.gLen.CompareTo(e2.gLen));
         }
+
+        // 261105Cl 追加: 数学的に同じ d (立方晶の 333 と 511 のように、等価でない面の d が一致する場合) は 1 つにまとめ、強度を足す
+        // (粉末のピークとしては 1 本)。以前は同じ d が上位に 2 回以上並んでいた。相対差 1e-6 未満を同じ d とする: 格子定数は有効数字 6〜8 桁で
+        // 与えられるので、理想構造 (AMCSD の Pyroxene-ideal など) の数学的に同じ d も 1e-8〜1e-7 ずれる。この差はどの回折計でも分けられない
+        list.Sort((e1, e2) => e1.D.CompareTo(e2.D));
+        var merged = new List<(double D, double intensity)>(list.Count);
+        foreach (var e in list)
+        {
+            if (merged.Count > 0 && Math.Abs(e.D - merged[^1].D) < 1e-6 * e.D)
+                merged[^1] = (merged[^1].D, merged[^1].intensity + e.intensity);
+            else
+                merged.Add(e);
+        }
+        list = merged;
 
         //強度の順にソート
         list.Sort((e1, e2) => e2.intensity.CompareTo(e1.intensity));
