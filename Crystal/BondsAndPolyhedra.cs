@@ -28,6 +28,7 @@ public partial class Bonds
     public bool ShowInnerBonds;
     public int ArgbPolyhedron;
     public bool ShowEdges;
+    /// <summary>261105Cl 追加 (説明): 多面体の稜線の太さ (px, 1〜5)。旧版で保存された 0〜1 の値 (旧「Like Vesta」の既定 0 を含む) は 1 px として描く</summary>
     public float EdgeLineWidth;
     public int ArgbEdge;
     public bool Enabled = true;
@@ -158,8 +159,10 @@ public partial class Bonds
         foreach ((string e1, string e2, double min, double max) in bondCandidates)
             if (symbolToElement.TryGetValue(e1, out var element1) && symbolToElement.TryGetValue(e2, out var element2))
             {
+                //bonds.Add(new Bonds(true, list, element1, element2, // 261105Cl 変更前 (2 行): 稜線の太さ 0 (描画では使われず、実際は常に 1 px だった)
+                //    min / 10.0, max / 10.0, true, 0.01, 1, false, true, true, true, 0.7, true, 0));
                 bonds.Add(new Bonds(true, list, element1, element2,
-                    min / 10.0, max / 10.0, true, 0.01, 1, false, true, true, true, 0.7, true, 0));
+                    min / 10.0, max / 10.0, true, 0.01, 1, false, true, true, true, 0.7, true, 1)); // 261105Cl 変更 (監査 H4): 稜線の太さを 1 px に (範囲 1〜5 px。従来の見え方と同じ)
             }
 
         //CationとAnionが両方含まれている場合は、同種原子の結合を除去

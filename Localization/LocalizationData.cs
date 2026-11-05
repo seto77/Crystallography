@@ -257,6 +257,8 @@ internal static class LocalizationData
             new("radioButton3mf", "Text", "3MF (parts colored by element)", "3MF (元素ごとに色分け)", "3MF (nach Element gefärbt)", "3MF (coloré par élément)", "3MF (coloreado por elemento)", "3MF (colorido por elemento)", "3MF (colorato per elemento)", "3MF (цвет по элементам)", "3MF (按元素着色)", "3MF (依元素著色)", "3MF (원소별 색상)"),
             new("buttonOK", "Text", "Save...", "保存...", "Speichern...", "Enregistrer...", "Guardar...", "Salvar...", "Salva...", "Сохранить...", "保存...", "儲存...", "저장..."),
             new("buttonCancel", "Text", "Cancel", "キャンセル", "Abbrechen", "Annuler", "Cancelar", "Cancelar", "Annulla", "Отмена", "取消", "取消", "취소"),
+            // 261105Cl 追加 (監査 H10): 構造ビューアの「Clip objects by bound planes」は出力に効かない旨の注記 (1 行 382 px 以内を実測で確認した訳)
+            new("labelClipNote", "Text", "Note: clipping by the bound planes is not applied to the output.", "注: 境界面でのクリップは出力に反映されません。", "Hinweis: Kein Abschneiden an den Begrenzungsebenen.", "Remarque : le découpage aux plans limites n'est pas appliqué.", "Nota: no se aplica el recorte en los planos límite.", "Nota: o corte nos planos delimitadores não é aplicado.", "Nota: il ritaglio ai piani di delimitazione non viene applicato.", "Прим.: обрезка граничными плоскостями не применяется.", "注: 输出不应用按边界面的裁剪。", "註：輸出不套用依邊界面的裁切。", "참고: 경계면 자르기는 출력에 적용되지 않습니다."),
         };
         reg["FormIsotopeComposition"] = new Localization.Entry[]
         {
