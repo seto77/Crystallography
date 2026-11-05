@@ -812,7 +812,7 @@ public class Crystal : IEquatable<Crystal>, ICloneable, IComparable<Crystal>
         return Math.Acos(Math.Clamp(GetLengthPlane(h, k, l) / GetLengthAxis(u, v, w) * (h * u + k * v + l * w), -1, 1)); // 261105Cl 変更: 法線と軸が平行・反平行のとき NaN にならないよう [-1, 1] に収める
     }
 
-    /// <summary>2面から成る晶帯軸</summary>
+    /// <summary>2面から成る晶帯軸 [uvw] = (h₁k₁l₁) × (h₂k₂l₂) (教科書の向き。261105Cl)。2 本の軸 [u₁v₁w₁], [u₂v₂w₂] を渡すと、両方を含む面 (hkl) = [u₁v₁w₁] × [u₂v₂w₂] を返す。</summary>
     /// <param name="h1"></param>
     /// <param name="k1"></param>
     /// <param name="l1"></param>
@@ -823,7 +823,8 @@ public class Crystal : IEquatable<Crystal>, ICloneable, IComparable<Crystal>
     public static string GetZoneAxis(int h1, int k1, int l1, int h2, int k2, int l2)
     {
         int u, v, w, z;
-        u = l1 * k2 - k1 * l2; v = h1 * l2 - l1 * h2; w = k1 * h2 - h1 * k2;
+        //u = l1 * k2 - k1 * l2; v = h1 * l2 - l1 * h2; w = k1 * h2 - h1 * k2; // 261105Cl 変更前: −(h₁×h₂) を返していた (監査 B16)
+        u = k1 * l2 - l1 * k2; v = l1 * h2 - h1 * l2; w = h1 * k2 - k1 * h2; // 261105Cl 変更: 教科書の向き h₁×h₂ (Spot ID v1 の ZoneAxis も同じ向きに揃えた)
         for (z = 2; z <= Math.Abs(u) || z <= Math.Abs(v) || z <= Math.Abs(w); z++)
             if ((u % z == 0) && (v % z == 0) && (w % z == 0))
             {

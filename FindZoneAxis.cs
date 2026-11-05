@@ -21,9 +21,14 @@ public struct ZoneAxis
         this.plane2 = plane2;
         Theta = cry.GetAnglePlanes(plane1.h, plane1.k, plane1.l, plane2.h, plane2.k, plane2.l);
 
-        u = plane1.l * plane2.k - plane1.k * plane2.l;
-        v = plane1.h * plane2.l - plane1.l * plane2.h;
-        w = plane1.k * plane2.h - plane1.h * plane2.k;
+        //u = plane1.l * plane2.k - plane1.k * plane2.l; // 261105Cl 変更前 (3 行): −(g₁×g₂) だった (監査 B16)
+        //v = plane1.h * plane2.l - plane1.l * plane2.h;
+        //w = plane1.k * plane2.h - plane1.h * plane2.k;
+        // 261105Cl 変更: 晶帯軸を教科書の向き [uvw] = g₁×g₂ で表示する (対称性の窓の Crystal.GetZoneAxis と同じ)。
+        //   方位の決定 (Euler.SerchEulerAngleFromZoneAxes) は旧の向き −(g₁×g₂) をビームの向きに合わせていたので、そちらで符号を戻し、結果の方位は変えない
+        u = plane1.k * plane2.l - plane1.l * plane2.k;
+        v = plane1.l * plane2.h - plane1.h * plane2.l;
+        w = plane1.h * plane2.k - plane1.k * plane2.h;
 
         plane3 = new Plane();
         plane3.h = plane1.h - plane2.h;

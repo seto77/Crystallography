@@ -25,7 +25,10 @@ public class Euler
     {
         double tilt1 = za.tilt1;
         double tilt2 = za.tilt2;
-        var v = Vector3D.Normarize(za.u * cry.A_Axis + za.v * cry.B_Axis + za.w * cry.C_Axis);
+        // 261105Cl: ZoneAxis の [uvw] を教科書の向き g₁×g₂ に変えた (FindZoneAxis.cs) ので、ここ (と下の 2 つの関数) では旧の向き −(g₁×g₂) に
+        //   戻してビームの向きに合わせる。表示の約束だけを変え、求まる方位は旧と同じ (符号の反転は浮動小数点でも厳密なので結果はビット単位で一致)
+        //var v = Vector3D.Normarize(za.u * cry.A_Axis + za.v * cry.B_Axis + za.w * cry.C_Axis); // 261105Cl 変更前
+        var v = Vector3D.Normarize((-za.u) * cry.A_Axis + (-za.v) * cry.B_Axis + (-za.w) * cry.C_Axis); // 261105Cl 変更
 
         var (sinTilt1, cosTilt1) = Math.SinCos(tilt1);
         var (sinTilt2, cosTilt2) = Math.SinCos(tilt2);
@@ -116,8 +119,10 @@ public class Euler
         double tilt2 = za2.tilt1;
         double azimuth2 = za2.tilt2;
 
-        var v1 = Vector3DBase.Normarize(za1.u * cry.A_Axis + za1.v * cry.B_Axis + za1.w * cry.C_Axis);
-        var v2 = Vector3DBase.Normarize(za2.u * cry.A_Axis + za2.v * cry.B_Axis + za2.w * cry.C_Axis);
+        //var v1 = Vector3DBase.Normarize(za1.u * cry.A_Axis + za1.v * cry.B_Axis + za1.w * cry.C_Axis); // 261105Cl 変更前
+        var v1 = Vector3DBase.Normarize((-za1.u) * cry.A_Axis + (-za1.v) * cry.B_Axis + (-za1.w) * cry.C_Axis); // 261105Cl 変更
+        //var v2 = Vector3DBase.Normarize(za2.u * cry.A_Axis + za2.v * cry.B_Axis + za2.w * cry.C_Axis); // 261105Cl 変更前
+        var v2 = Vector3DBase.Normarize((-za2.u) * cry.A_Axis + (-za2.v) * cry.B_Axis + (-za2.w) * cry.C_Axis); // 261105Cl 変更
 
         var (sinTilt1, cosTilt1) = Math.SinCos(tilt1);
         var (sinAzimuth1, cosAzimuth1) = Math.SinCos(azimuth1);
@@ -214,9 +219,12 @@ public class Euler
         double tilt3 = za3.tilt1;
         double azimuth3 = za3.tilt2;
 
-        var v1 = Vector3DBase.Normarize(za1.u * cry.A_Axis + za1.v * cry.B_Axis + za1.w * cry.C_Axis);
-        var v2 = Vector3DBase.Normarize(za2.u * cry.A_Axis + za2.v * cry.B_Axis + za2.w * cry.C_Axis);
-        var v3 = Vector3DBase.Normarize(za3.u * cry.A_Axis + za3.v * cry.B_Axis + za3.w * cry.C_Axis);
+        //var v1 = Vector3DBase.Normarize(za1.u * cry.A_Axis + za1.v * cry.B_Axis + za1.w * cry.C_Axis); // 261105Cl 変更前
+        var v1 = Vector3DBase.Normarize((-za1.u) * cry.A_Axis + (-za1.v) * cry.B_Axis + (-za1.w) * cry.C_Axis); // 261105Cl 変更
+        //var v2 = Vector3DBase.Normarize(za2.u * cry.A_Axis + za2.v * cry.B_Axis + za2.w * cry.C_Axis); // 261105Cl 変更前
+        var v2 = Vector3DBase.Normarize((-za2.u) * cry.A_Axis + (-za2.v) * cry.B_Axis + (-za2.w) * cry.C_Axis); // 261105Cl 変更
+        //var v3 = Vector3DBase.Normarize(za3.u * cry.A_Axis + za3.v * cry.B_Axis + za3.w * cry.C_Axis); // 261105Cl 変更前
+        var v3 = Vector3DBase.Normarize((-za3.u) * cry.A_Axis + (-za3.v) * cry.B_Axis + (-za3.w) * cry.C_Axis); // 261105Cl 変更
 
         var (sinTilt1, cosTilt1) = Math.SinCos(tilt1);
         var (sinAzimuth1, cosAzimuth1) = Math.SinCos(azimuth1);

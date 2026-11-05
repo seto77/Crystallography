@@ -14,7 +14,9 @@ internal static class LocalizationData
             new("label1", "Text", "Target Atom", "対象原子", "Zielatom", "Atome cible", "Átomo objetivo", "Átomo-alvo", "Atomo bersaglio", "Целевой атом", "目标原子", "目標原子", "대상 원자"),
             new("atomLabelDataGridViewTextBoxColumn", "HeaderText", "Atom Label", "原子ラベル", "Atombezeichnung", "Étiquette de l'atome", "Etiqueta del átomo", "Rótulo do átomo", "Etichetta atomo", "Метка атома", "原子标签", "原子標籤", "원자 라벨"),
             new("lengthÅDataGridViewTextBoxColumn", "HeaderText", "Length (Å)", "長さ (Å)", "Länge (Å)", "Longueur (Å)", "Longitud (Å)", "Comprimento (Å)", "Lunghezza (Å)", "Длина (Å)", "长度 (Å)", "長度 (Å)", "길이 (Å)"),
-            new("numericUpDownWidth", "HeaderText", "Bar Width", "バー幅", "Balkenbr.", "Largeur barre", "Anch. barra", "Larg. da barra", "Largh. barra", "Ширина штриха", "条宽", "長條寬度", "막대 폭"),
+            //new("numericUpDownWidth", "HeaderText", "Bar Width", "バー幅", "Balkenbr.", "Largeur barre", "Anch. barra", "Larg. da barra", "Largh. barra", "Ширина штриха", "条宽", "長條寬度", "막대 폭"), // 261105Cl 変更前
+            // 261105Cl 変更 (監査 B18): 値は棒の半幅 (距離 d の棒を d±w に描く)。見出しをツールチップの各言語の語「半幅」に合わせる
+            new("numericUpDownWidth", "HeaderText", "Half-width", "半幅", "Halbbreite", "Demi-largeur", "Semianchura", "Meia-largura", "Semilarghezza", "Полуширина", "半宽", "半寬", "반너비"), // 261105Cl
             new("numericUpDownMaxLength", "HeaderText", "Max. distance", "最大距離", "Max. Abstand", "Distance max.", "Distancia máx.", "Distância máx.", "Distanza max.", "Макс. расстояние", "最大距离", "最大距離", "최대 거리"),
         };
         reg["ChemicalFormulaInputControl"] = new Localization.Entry[]

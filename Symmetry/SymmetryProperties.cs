@@ -35,8 +35,11 @@ public sealed class SymmetryProperties
     /// <summary>掌性対の相手の空間群 IT 番号 (無ければ 0)。</summary>
     public int EnantiomorphPartnerNumber { get; }
 
+    /// <summary>結晶族 (英語の小文字。triclinic … cubic)。画面の訳は表示側 (FormSymmetryInformation) で付ける (261105Cl)。</summary>
     public string CrystalFamilyStr { get; }
+    /// <summary>格子系 (英語の小文字。triclinic … rhombohedral, hexagonal, cubic)。画面の訳は表示側で付ける (261105Cl)。</summary>
     public string LatticeSystemStr { get; }
+    /// <summary>Bravais 型。ITA の正式な 14 型で、設定の格子記号が違うときは括弧で併記 (例 "oS (oA)")。261105Cl 変更。</summary>
     public string BravaisTypeStr { get; }
     public string ArithmeticCrystalClassStr { get; }
     public string PattersonSymmetryStr { get; }
@@ -258,16 +261,27 @@ public sealed class SymmetryProperties
     private static (string Family, string LatticeSystem, string Bravais) LatticeDescriptors(int crystalSystem, string lat)
     {
         // crystalSystem: 1 triclinic .. 7 cubic。trigonal は格子で hexagonal/rhombohedral が分かれる。
+        // 261105Cl 変更: Bravais 型は ITA の正式な 14 型 (aP, mP, mS, oP, oS, oI, oF, tP, tI, hP, hR, cP, cI, cF) で示し、設定の格子記号が
+        //   正式な型と違うときは括弧で併記する (例 oS (oA)、mS (mI)、aP (aC))。旧は「結晶族の文字 + 設定の格子記号」で、oA・mI・aC など
+        //   設定の記号が正式な型のように出ていた。中心化の対応: 三斜晶は全て aP、単斜晶の A・B・C・I は mS、直方晶の A・B・C は oS、
+        //   正方晶の C は tP・F は tI (今の 530 余の設定には無いが ITA に沿う)、六方晶の H 胞は hP、R は六方軸・菱面体軸とも hR。
+        string Bravais(string formal) => formal[1..] == lat ? formal : $"{formal} ({formal[0]}{lat})"; // 261105Cl 追加
         return crystalSystem switch
         {
-            1 => ("triclinic", "triclinic", "a" + lat),
-            2 => ("monoclinic", "monoclinic", "m" + lat),
-            3 => ("orthorhombic", "orthorhombic", "o" + lat),
-            4 => ("tetragonal", "tetragonal", "t" + lat),
+            //1 => ("triclinic", "triclinic", "a" + lat), // 261105Cl 変更前 (以下 4 行も)
+            //2 => ("monoclinic", "monoclinic", "m" + lat),
+            //3 => ("orthorhombic", "orthorhombic", "o" + lat),
+            //4 => ("tetragonal", "tetragonal", "t" + lat),
+            1 => ("triclinic", "triclinic", Bravais("aP")), // 261105Cl 変更
+            2 => ("monoclinic", "monoclinic", Bravais(lat == "P" ? "mP" : "mS")), // 261105Cl 変更
+            3 => ("orthorhombic", "orthorhombic", Bravais(lat is "A" or "B" or "C" ? "oS" : "o" + lat)), // 261105Cl 変更
+            4 => ("tetragonal", "tetragonal", Bravais(lat is "P" or "C" ? "tP" : "tI")), // 261105Cl 変更
             5 => lat == "R"
                     ? ("hexagonal", "rhombohedral", "hR")
-                    : ("hexagonal", "hexagonal", "h" + lat),
-            6 => ("hexagonal", "hexagonal", "h" + lat),
+                    //: ("hexagonal", "hexagonal", "h" + lat), // 261105Cl 変更前
+                    : ("hexagonal", "hexagonal", Bravais("hP")), // 261105Cl 変更
+            //6 => ("hexagonal", "hexagonal", "h" + lat), // 261105Cl 変更前
+            6 => ("hexagonal", "hexagonal", Bravais("hP")), // 261105Cl 変更
             7 => ("cubic", "cubic", "c" + lat),
             _ => ("unknown", "unknown", lat),
         };
