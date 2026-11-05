@@ -363,10 +363,44 @@ public class Crystal : IEquatable<Crystal>, ICloneable, IComparable<Crystal>
     public Matrix3D Stress = new(0, 0, 0, 0, 0, 0, 0, 0, 0);
 
     /// <summary>ヒル定数</summary>
+    /// <remarks>261106Cl 追記 (作者の決定 C6): 新しく作る結晶の既定は 0.5 (Hill 平均)。格子定数を受け取るコンストラクタ (CIF・データベース・結晶の欄・マクロなど、新しく作る経路はすべてここを通る) で設定する。
+    /// ここ (引数なしのコンストラクタ = 結晶リストの XML の読み込み) の 0 は変えない: 0 の値は XML に書かない (<see cref="ShouldSerializeHillCoefficient"/>) ので、
+    /// 要素の無い保存済みの結晶を 0 のまま読むため (既定を 0.5 にすると、0 で保存した結晶が黙って 0.5 に変わる)</remarks>
     public double HillCoefficient = 0;
 
     /// <summary>弾性定数 (保存用)</summary>
     public double[] ElasticStiffnessArray = new double[21];
+
+    /// <summary>261106Cl 追加 (作者の決定 C8-3): 弾性コンプライアンス (保存用。上三角の 21 成分を ElasticStiffnessArray と同じ順に、単位 GPa⁻¹)。
+    /// 結晶の欄でコンプライアンスを入力・表示していたときだけ持ち (それ以外は null)、入力した値をそのまま保つ。
+    /// 逆行列の無いコンプライアンス (一部の欄が 0 など) は剛性に直せず、剛性 (ElasticStiffnessArray) は全部 0 になるので、以前はこの値が失われていた。
+    /// 持っているときは計算 (応力 → 歪み) もこちらを使う。剛性 (<see cref="ElasticStiffness"/>) を設定すると消す (剛性と食い違う古い値を残さない)。
+    /// 古いデータはこの要素を持たない (null = 従来どおり剛性だけ)。この要素を知らない古い版・姉妹アプリの古い版は読み飛ばす (剛性はそのまま読める)</summary>
+    public double[] ElasticComplianceArray = null;
+
+    /// <summary>261106Cl 追加: 弾性コンプライアンスの 6×6 行列 (<see cref="ElasticComplianceArray"/> が無ければ null)。null を設定すると消す</summary>
+    [XmlIgnore]
+    public double[,] ElasticCompliance
+    {
+        get
+        {
+            if (ElasticComplianceArray is not { Length: 21 } a) return null;
+            var mtx = new double[6, 6];
+            for (int i = 0, n = 0; i < 6; i++)
+                for (int j = i; j < 6; j++, n++)
+                    mtx[i, j] = mtx[j, i] = a[n];
+            return mtx;
+        }
+        set
+        {
+            if (value == null) { ElasticComplianceArray = null; return; }
+            var a = new double[21];
+            for (int i = 0, n = 0; i < 6; i++)
+                for (int j = i; j < 6; j++, n++)
+                    a[n] = value[i, j];
+            ElasticComplianceArray = a;
+        }
+    }
 
     /// <summary>弾性定数マトリックス</summary>
     [XmlIgnore]
@@ -374,6 +408,7 @@ public class Crystal : IEquatable<Crystal>, ICloneable, IComparable<Crystal>
     {
         set
         {
+            ElasticComplianceArray = null; // 261106Cl 追加 (C8-3): 剛性を設定したら、前に入力したコンプライアンスは消す (食い違いを残さない。CrystalControl は剛性の後に設定し直す)
             ElasticStiffnessArray = [
                  value[0, 0],value[0, 1], value[0, 2] ,value[0, 3] , value[0, 4] ,value[0, 5] ,
                  value[1, 1], value[1, 2] ,value[1, 3] , value[1, 4] ,value[1, 5] ,
@@ -442,6 +477,7 @@ public class Crystal : IEquatable<Crystal>, ICloneable, IComparable<Crystal>
     public bool ShouldSerializeStress() => Stress != null && !(Stress.E11 == 0 && Stress.E12 == 0 && Stress.E13 == 0 && Stress.E21 == 0 && Stress.E22 == 0 && Stress.E23 == 0 && Stress.E31 == 0 && Stress.E32 == 0 && Stress.E33 == 0);
     public bool ShouldSerializeHillCoefficient() => HillCoefficient != 0;
     public bool ShouldSerializeElasticStiffnessArray() => ElasticStiffnessArray != null && System.Array.Exists(ElasticStiffnessArray, v => v != 0);
+    public bool ShouldSerializeElasticComplianceArray() => ElasticComplianceArray != null && System.Array.Exists(ElasticComplianceArray, v => v != 0); // 261106Cl 追加 (C8-3)
     public bool ShouldSerializeBounds() => Bounds != null && Bounds.Length > 0;
     public bool ShouldSerializeLatticePlanes() => LatticePlanes != null && LatticePlanes.Length > 0;
     public bool ShouldSerializeDoesUseEOS() => DoesUseEOS;
@@ -492,6 +528,11 @@ public class Crystal : IEquatable<Crystal>, ICloneable, IComparable<Crystal>
         Argb = col.ToArgb();
         SymmetrySeriesNumber = symmetrySeriesNumber;
         Symmetry = SymmetryStatic.Symmetries[SymmetrySeriesNumber];
+
+        // 261106Cl 追加 (作者の決定 C6): 新しく作る結晶の Hill 係数の既定は 0.5 (Hill 平均)。格子定数を受け取るコンストラクタはすべてここを通る
+        // (CIF の読み込み・データベースとアプリ間の受け渡し (Crystal2 は Hill 係数を持たない)・結晶の欄の作り直し・マクロ)。
+        // 引数なしのコンストラクタ (結晶リストの XML の読み込み) は 0 のまま (保存済みの結晶を保存されている値のまま読むため。フィールドの注記参照)
+        HillCoefficient = 0.5;
 
         SetAxis();
     }
@@ -595,6 +636,7 @@ public class Crystal : IEquatable<Crystal>, ICloneable, IComparable<Crystal>
         if (Bounds != null) foreach (var b in Bounds) b.Reset(this);
         if (LatticePlanes != null) foreach (var p in LatticePlanes) p.Reset(this);
         ElasticStiffnessArray = cry.ElasticStiffnessArray?.ToArray();
+        ElasticComplianceArray = cry.ElasticComplianceArray?.ToArray(); // 261106Cl 追加 (C8-3): 入力したコンプライアンスも複製して持つ
         RotationMatrix = new Matrix3D(cry.RotationMatrix);
         EOSCondition = cry.EOSCondition == null ? null : Deep.Copy(cry.EOSCondition);
         Strain = new Matrix3D(cry.Strain);

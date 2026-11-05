@@ -267,4 +267,87 @@ public class ElasticityTests
         Assert.True(new Elasticity(nan, Elasticity.Mode.Compliance).GetStrain(SymmetryStatic.Symmetries[1], new Matrix3D(1, 0, 0, 0, 0, 0, 0, 0, 0)).IsZero());
     }
     #endregion
+
+    #region 261106Cl 追加: Hill 係数の既定 (作者の決定 C6) と、入力したコンプライアンスの保存 (C8-3)
+    private static readonly (double, double, double, double, double, double) CubicCell = (0.5431, 0.5431, 0.5431, Math.PI / 2, Math.PI / 2, Math.PI / 2);
+
+    /// <summary>結晶リスト (XML) に書いて読み戻す (アプリと同じ ConvertCrystalData の経路)。<paramref name="edit"/> で保存後の XML 本文を書き換えられる</summary>
+    private static Crystal[] RoundTrip(Crystal[] crystals, Func<string, string> edit = null)
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"recipro_test_{Guid.NewGuid():N}.xml");
+        try
+        {
+            Assert.True(ConvertCrystalData.SaveCrystalListXml(crystals, path));
+            if (edit != null) File.WriteAllText(path, edit(File.ReadAllText(path)));
+            return ConvertCrystalData.ConvertToCrystalList(path);
+        }
+        finally { File.Delete(path); }
+    }
+
+    /// <summary>新しく作る結晶 (格子定数を受け取るコンストラクタ・データベースやアプリ間の受け渡し (Crystal2)) の Hill 係数は 0.5。
+    /// 引数なしのコンストラクタ (XML の読み込みが使う) は 0 のまま、複製は元の値を引き継ぐ</summary>
+    [Fact]
+    public void HillCoefficient_NewCrystalIsHalf()
+    {
+        var c = new Crystal(CubicCell, Series("Fd-3m(1)"), "Si", Color.White);
+        Assert.Equal(0.5, c.HillCoefficient);
+        Assert.Equal(0.5, c.ToCrystal2().ToCrystal().HillCoefficient);
+        Assert.Equal(0.0, new Crystal().HillCoefficient);
+        c.HillCoefficient = 0.25;
+        Assert.Equal(0.25, new Crystal(c).HillCoefficient);
+        Assert.Equal(0.25, ((Crystal)c.Clone()).HillCoefficient);
+    }
+
+    /// <summary>保存済みの結晶は保存された値のまま読む。0 は XML に書かれない (要素が無い) ので、要素の無い古いデータは 0 として読まれる (既定の 0.5 にならない)</summary>
+    [Fact]
+    public void HillCoefficient_SavedValueIsKept()
+    {
+        double[] values = [0, 0.5, 1, 0.3];
+        var crystals = values.Select((h, i) => new Crystal(CubicCell, Series("Fd-3m(1)"), $"c{i}", Color.White) { HillCoefficient = h }).ToArray();
+        string xml = null;
+        var read = RoundTrip(crystals, s => xml = s);
+        Assert.Equal(3, System.Text.RegularExpressions.Regex.Matches(xml, "<HillCoefficient>").Count); // 0 だけ書かれない
+        Assert.Equal(values, read.Select(c => c.HillCoefficient).ToArray());
+    }
+
+    /// <summary>コンプライアンスで入力した値 (逆行列の無いものも) を保存して読み戻せる。剛性を設定すると消える。要素の無い古いデータは null</summary>
+    [Fact]
+    public void ElasticCompliance_IsStoredAndRead()
+    {
+        // 逆行列の無いコンプライアンス (立方晶で s44 を入れていない)
+        var s = Full((11, 0.0077), (22, 0.0077), (33, 0.0077), (12, -0.0021), (13, -0.0021), (23, -0.0021));
+        Assert.Null(DenseMatrix.OfArray(s).TryInverse());
+        var c = new Crystal(CubicCell, Series("Fd-3m(1)"), "singular", Color.White) { ElasticStiffness = new double[6, 6] };
+        c.ElasticCompliance = s;
+        var plain = new Crystal(CubicCell, Series("Fd-3m(1)"), "plain", Color.White) { ElasticStiffness = Full((11, 165.7), (22, 165.7), (33, 165.7), (12, 63.9), (13, 63.9), (23, 63.9), (44, 79.6), (55, 79.6), (66, 79.6)) };
+        var read = RoundTrip([c, plain]);
+        Assert.Equal(0, RelDiff(read[0].ElasticCompliance, s));
+        Assert.All(read[0].ElasticStiffnessArray, v => Assert.Equal(0, v));
+        Assert.Null(read[1].ElasticCompliance);
+        Assert.Equal(0, RelDiff(read[1].ElasticStiffness, plain.ElasticStiffness));
+        // 複製は引き継ぐ (別の配列)
+        var copy = new Crystal(c);
+        Assert.Equal(0, RelDiff(copy.ElasticCompliance, s));
+        Assert.NotSame(copy.ElasticComplianceArray, c.ElasticComplianceArray);
+        // 剛性を設定すると消える (食い違いを残さない)
+        c.ElasticStiffness = plain.ElasticStiffness;
+        Assert.Null(c.ElasticCompliance);
+        // 逆行列の無いコンプライアンスでも応力から歪みを出せる (ε = S σ。σ11 = 1 GPa → ε11 = s11, ε22 = ε33 = s12)
+        var e = new Elasticity(DenseMatrix.OfArray(s), Elasticity.Mode.Compliance).GetStrain(SymmetryStatic.Symmetries[1], new Matrix3D(1, 0, 0, 0, 0, 0, 0, 0, 0));
+        Assert.Equal(0.0077, e.E11, 15);
+        Assert.Equal(-0.0021, e.E22, 15);
+        Assert.Equal(-0.0021, e.E33, 15);
+    }
+
+    /// <summary>新しい要素 (ElasticComplianceArray など) を知らない古い版は、その要素を読み飛ばす (XmlSerializer は知らない要素で失敗しない)。
+    /// ここでは逆に、今の版が知らない要素を足した XML を読んで確かめる</summary>
+    [Fact]
+    public void CrystalListXml_UnknownElementIsIgnored()
+    {
+        var c = new Crystal(CubicCell, Series("Fd-3m(1)"), "x", Color.White) { HillCoefficient = 0.5 };
+        var read = RoundTrip([c], s => s.Replace("<HillCoefficient>", "<SomeFutureArray><double>1</double></SomeFutureArray><HillCoefficient>"));
+        Assert.Single(read);
+        Assert.Equal(0.5, read[0].HillCoefficient);
+    }
+    #endregion
 }

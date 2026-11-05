@@ -646,7 +646,11 @@ public class Crystallite
         stopwatch.Restart();
         // 260718Cl: デバッグ用ハードコード (弾性定数 c11=1350 等・応力 E11=-10・歪み・HillCoefficient=1 の毎回上書き) を削除。
         //           応力が非ゼロになるため全結晶子で偽の Hill 歪みが常時適用され物理的に誤り+低速だった。ユーザー設定の BaseCrystal 値をそのまま使う (同型の clean 版が GetSimulatedPattern 側に既存)。
-        var elasticity = new Elasticity(DenseMatrix.OfArray(BaseCrystal.ElasticStiffness), Elasticity.Mode.Stiffness);
+        //var elasticity = new Elasticity(DenseMatrix.OfArray(BaseCrystal.ElasticStiffness), Elasticity.Mode.Stiffness); // 261106Cl 変更前
+        // 261106Cl 変更 (作者の決定 C8-3): コンプライアンスで入力した結晶はその値をそのまま使う (逆行列の無い値は剛性が全部 0 で、以前は応力からの歪みが 0 になっていた)
+        var elasticity = BaseCrystal.ElasticCompliance is { } compliance
+            ? new Elasticity(DenseMatrix.OfArray(compliance), Elasticity.Mode.Compliance)
+            : new Elasticity(DenseMatrix.OfArray(BaseCrystal.ElasticStiffness), Elasticity.Mode.Stiffness);
 
         bool strainFree = BaseCrystal.Stress.IsZero() && BaseCrystal.Strain.IsZero();
         bool rotationFree = WholeRotation.IsIdentity();
