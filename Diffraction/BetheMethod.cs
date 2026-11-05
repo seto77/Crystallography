@@ -2486,11 +2486,11 @@ public partial class BetheMethod
     { // 261105Cl 追加
         // 261105Cl 追記: その後 STEM は RunSTEM で作る専用の複製 (自分の uDictionary を持つ) で走るようにしたので、共有のキャッシュはもう汚れない。下の Clear は念のため残す (次の計算で U を作り直すだけ)
         uDictionary.Clear(); // 261105Cl 追加
-        // 261105Cl 追加: STEM は専用の複製で走るので、このインスタンスの Beams は計算の後も以前の値のままだった。計算の後に bm.Beams を読む呼び出し側
-        //  (tools/EdxCheck の fixture・extcompare など) のために、成功したときだけ、使ったビームの一覧をここで 1 回だけ渡す (完了の処理なので計算の途中には書かない)。
-        //  回折の固有解は Beams の参照が変われば作り直される (eigenBeams) ので、STEM の並びの Beams と古い固有解は混ざらない
+        // 261105Cl 追加: STEM は専用の複製で走るので、このインスタンスの Beams は STEM の計算に使ったビームではない。計算に使ったビームの一覧は
+        //  StemBeams で公開する (このインスタンスの Beams には書かない。完了の処理は UI のない環境ではスレッドプールで走るので、Beams に書くと
+        //  同じインスタンスで計算中の回折と食い違う)。成功したときだけ更新する
         if (e.Error is null && !e.Cancelled && lastStemRun?.Beams is { } stemBeams) // 261105Cl
-            Beams = stemBeams; // 261105Cl
+            StemBeams = stemBeams; // 261105Cl
         lastStemRun = null; // 261105Cl
         StemCompleted?.Invoke(sender, e); // 261105Cl
     } // 261105Cl 追加
@@ -2560,8 +2560,12 @@ public partial class BetheMethod
     /// <summary>261105Cl 追加: STEM 専用の複製 (RunSTEM で作る) のとき、結果を公開する元のインスタンス。それ以外は null</summary>
     private BetheMethod stemOwner;
 
-    /// <summary>261105Cl 追加: 直近の RunSTEM が作った専用の複製 (完了時に Beams を受け取るため)。それ以外は null</summary>
+    /// <summary>261105Cl 追加: 直近の RunSTEM が作った専用の複製 (完了時に StemBeams を受け取るため)。それ以外は null</summary>
     private BetheMethod lastStemRun;
+
+    /// <summary>261105Cl 追加: 直近に成功した STEM の計算で使ったビームの一覧 (計算は専用の複製で走るので、このインスタンスの Beams とは別)。
+    /// STEM をまだ計算していなければ null</summary>
+    public Beam[] StemBeams { get; private set; }
 
     /// <summary>261105Cl 追加: STEM 専用の複製が持つ、RunSTEM を呼んだ時点の結晶の向き (Crystal.RotationMatrix)。それ以外は null</summary>
     private Matrix3D CrystalRotation;

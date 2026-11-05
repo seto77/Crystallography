@@ -163,7 +163,8 @@ Si1 Si 0.125 0.125 0.125 0.46
     public void StemAndDiffraction_OnSameInstanceConcurrently_DoNotInterfere()
     {
         var (crystal, rot) = TiltedSi();
-        var reference = RunStem(new BetheMethod(crystal), rot).Result;
+        var referenceBethe = new BetheMethod(crystal); // 261105Cl 追加: StemBeams を比べるため
+        var reference = RunStem(referenceBethe, rot).Result;
 
         var bethe = new BetheMethod(crystal);
         var otherRot = Matrix3D.Rot(new Vector3DBase(0.2, 1, 0), 1.5 * Math.PI / 180);
@@ -185,6 +186,9 @@ Si1 Si 0.125 0.125 0.125 0.46
                     for (int i = 0; i < exp.Planes[t][d].Length; i++)
                         Assert.True(Math.Abs(got.Planes[t][d][i] - exp.Planes[t][d][i]) <= 1e-9 * scale, $"STEM {name} (画素 {i}) が実行中の回折の計算で変わった ({calls} 回)");
         }
+        // 261105Cl 追加: STEM で使ったビームは StemBeams で受け取れ、実行中の回折の計算に左右されない
+        Assert.NotNull(referenceBethe.StemBeams);
+        Assert.Equal(referenceBethe.StemBeams.Select(b => b.Index), bethe.StemBeams.Select(b => b.Index));
         // 実行中に求めた振幅は、新しいインスタンスで求めたものと同じ
         foreach (var (s, amp) in during.Take(settings.Length))
             AssertSameAmplitudes(Amplitudes(new BetheMethod(crystal).GetDifractedBeamAmpriltudes(s.N, s.KV, s.Rot, Thickness)), amp, $"STEM 実行中の回折 (N={s.N}, {s.KV} kV)");
