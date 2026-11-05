@@ -162,13 +162,34 @@ public sealed class EbsdDetectorGeometry
         return (uView / PixelSize + WidthPx / 2.0 - 0.5, footV / PixelSize + HeightPx / 2.0 - 0.5, CameraLength);
     }
 
-    /// <summary>PC (物理面内 mm、検出器中心基準) + DD + δ から DetX/DetY/DetZ を逆算 (標準配置 signed L = -DD を仮定)</summary>
-    public static (double detX, double detY, double detZ) FromPatternCenter(double footU, double footV, double dd, double detTilt)
+    /// <summary>261105Cl 追加 (監査 F13): 符号付きのカメラ長 DetY·sinδ − DetZ·cosδ (= −n・C)。標準配置 (δ = 90°, DetY &lt; 0) では −DD、
+    /// 検出器を反対側 (DetY &gt; 0) に置くと +DD。<see cref="CameraLength"/> (= |n・C|) は符号を落とすので、
+    /// <see cref="FromPatternCenter"/> で同じ側へ戻すときはこの符号を渡す (FormEBSD.SignedCameraLength と同じ式)</summary>
+    public double SignedCameraLength => DetY * Math.Sin(DetTilt) - DetZ * Math.Cos(DetTilt);
+
+    // /// <summary>PC (物理面内 mm、検出器中心基準) + DD + δ から DetX/DetY/DetZ を逆算 (標準配置 signed L = -DD を仮定)</summary> // 261105Cl 変更前
+    // public static (double detX, double detY, double detZ) FromPatternCenter(double footU, double footV, double dd, double detTilt) // 261105Cl 旧シグネチャ
+    // {
+    //     var (sinDet, cosDet) = Math.SinCos(detTilt);
+    //     // DetY·cosδ + DetZ·sinδ = -footV, DetY·sinδ - DetZ·cosδ = -DD
+    //     double detY = -(footV * cosDet + dd * sinDet);
+    //     double detZ = -footV * sinDet + dd * cosDet;
+    //     return (-footU, detY, detZ);
+    // }
+    /// <summary>PC (物理面内 mm、検出器中心基準) + DD + δ から DetX/DetY/DetZ を逆算する。
+    /// 261105Cl 変更 (監査 F13): 以前は標準配置 (signed L = −DD) を決め打ちしており、検出器を反対側 (DetY &gt; 0 で δ = 90°) に置いて較正すると
+    /// 結果の DetY が −側へ反転していた (較正器の内部の試行幾何も反転した側で作っていた)。どちらの側かを <paramref name="signedCameraLengthSign"/> で渡す</summary>
+    /// <param name="signedCameraLengthSign">元の幾何の <see cref="SignedCameraLength"/> の符号 (−1 = 標準配置、既定 / +1 = 反対側)。0 は −1 とみなす</param>
+    public static (double detX, double detY, double detZ) FromPatternCenter(double footU, double footV, double dd, double detTilt, double signedCameraLengthSign = -1)
     {
         var (sinDet, cosDet) = Math.SinCos(detTilt);
-        // DetY·cosδ + DetZ·sinδ = -footV, DetY·sinδ - DetZ·cosδ = -DD
-        double detY = -(footV * cosDet + dd * sinDet);
-        double detZ = -footV * sinDet + dd * cosDet;
+        // DetY·cosδ + DetZ·sinδ = -footV, DetY·sinδ - DetZ·cosδ = -DD // 261105Cl 変更前の連立式 (s = −1 の場合)
+        // double detY = -(footV * cosDet + dd * sinDet); // 261105Cl 変更前
+        // double detZ = -footV * sinDet + dd * cosDet; // 261105Cl 変更前
+        // 261105Cl 変更: DetY·cosδ + DetZ·sinδ = −footV, DetY·sinδ − DetZ·cosδ = s·DD (s = ±1)。s = −1 では変更前と同じ値 (浮動小数点でも同一)
+        double signedDd = (signedCameraLengthSign > 0 ? 1 : -1) * dd;
+        double detY = -footV * cosDet + signedDd * sinDet;
+        double detZ = -footV * sinDet - signedDd * cosDet;
         return (-footU, detY, detZ);
     }
 }

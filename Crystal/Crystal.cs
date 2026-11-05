@@ -363,10 +363,44 @@ public class Crystal : IEquatable<Crystal>, ICloneable, IComparable<Crystal>
     public Matrix3D Stress = new(0, 0, 0, 0, 0, 0, 0, 0, 0);
 
     /// <summary>ヒル定数</summary>
+    /// <remarks>261106Cl 追記 (作者の決定 C6): 新しく作る結晶の既定は 0.5 (Hill 平均)。格子定数を受け取るコンストラクタ (CIF・データベース・結晶の欄・マクロなど、新しく作る経路はすべてここを通る) で設定する。
+    /// ここ (引数なしのコンストラクタ = 結晶リストの XML の読み込み) の 0 は変えない: 0 の値は XML に書かない (<see cref="ShouldSerializeHillCoefficient"/>) ので、
+    /// 要素の無い保存済みの結晶を 0 のまま読むため (既定を 0.5 にすると、0 で保存した結晶が黙って 0.5 に変わる)</remarks>
     public double HillCoefficient = 0;
 
     /// <summary>弾性定数 (保存用)</summary>
     public double[] ElasticStiffnessArray = new double[21];
+
+    /// <summary>261106Cl 追加 (作者の決定 C8-3): 弾性コンプライアンス (保存用。上三角の 21 成分を ElasticStiffnessArray と同じ順に、単位 GPa⁻¹)。
+    /// 結晶の欄でコンプライアンスを入力・表示していたときだけ持ち (それ以外は null)、入力した値をそのまま保つ。
+    /// 逆行列の無いコンプライアンス (一部の欄が 0 など) は剛性に直せず、剛性 (ElasticStiffnessArray) は全部 0 になるので、以前はこの値が失われていた。
+    /// 持っているときは計算 (応力 → 歪み) もこちらを使う。剛性 (<see cref="ElasticStiffness"/>) を設定すると消す (剛性と食い違う古い値を残さない)。
+    /// 古いデータはこの要素を持たない (null = 従来どおり剛性だけ)。この要素を知らない古い版・姉妹アプリの古い版は読み飛ばす (剛性はそのまま読める)</summary>
+    public double[] ElasticComplianceArray = null;
+
+    /// <summary>261106Cl 追加: 弾性コンプライアンスの 6×6 行列 (<see cref="ElasticComplianceArray"/> が無ければ null)。null を設定すると消す</summary>
+    [XmlIgnore]
+    public double[,] ElasticCompliance
+    {
+        get
+        {
+            if (ElasticComplianceArray is not { Length: 21 } a) return null;
+            var mtx = new double[6, 6];
+            for (int i = 0, n = 0; i < 6; i++)
+                for (int j = i; j < 6; j++, n++)
+                    mtx[i, j] = mtx[j, i] = a[n];
+            return mtx;
+        }
+        set
+        {
+            if (value == null) { ElasticComplianceArray = null; return; }
+            var a = new double[21];
+            for (int i = 0, n = 0; i < 6; i++)
+                for (int j = i; j < 6; j++, n++)
+                    a[n] = value[i, j];
+            ElasticComplianceArray = a;
+        }
+    }
 
     /// <summary>弾性定数マトリックス</summary>
     [XmlIgnore]
@@ -374,6 +408,7 @@ public class Crystal : IEquatable<Crystal>, ICloneable, IComparable<Crystal>
     {
         set
         {
+            ElasticComplianceArray = null; // 261106Cl 追加 (C8-3): 剛性を設定したら、前に入力したコンプライアンスは消す (食い違いを残さない。CrystalControl は剛性の後に設定し直す)
             ElasticStiffnessArray = [
                  value[0, 0],value[0, 1], value[0, 2] ,value[0, 3] , value[0, 4] ,value[0, 5] ,
                  value[1, 1], value[1, 2] ,value[1, 3] , value[1, 4] ,value[1, 5] ,
@@ -442,6 +477,7 @@ public class Crystal : IEquatable<Crystal>, ICloneable, IComparable<Crystal>
     public bool ShouldSerializeStress() => Stress != null && !(Stress.E11 == 0 && Stress.E12 == 0 && Stress.E13 == 0 && Stress.E21 == 0 && Stress.E22 == 0 && Stress.E23 == 0 && Stress.E31 == 0 && Stress.E32 == 0 && Stress.E33 == 0);
     public bool ShouldSerializeHillCoefficient() => HillCoefficient != 0;
     public bool ShouldSerializeElasticStiffnessArray() => ElasticStiffnessArray != null && System.Array.Exists(ElasticStiffnessArray, v => v != 0);
+    public bool ShouldSerializeElasticComplianceArray() => ElasticComplianceArray != null && System.Array.Exists(ElasticComplianceArray, v => v != 0); // 261106Cl 追加 (C8-3)
     public bool ShouldSerializeBounds() => Bounds != null && Bounds.Length > 0;
     public bool ShouldSerializeLatticePlanes() => LatticePlanes != null && LatticePlanes.Length > 0;
     public bool ShouldSerializeDoesUseEOS() => DoesUseEOS;
@@ -492,6 +528,11 @@ public class Crystal : IEquatable<Crystal>, ICloneable, IComparable<Crystal>
         Argb = col.ToArgb();
         SymmetrySeriesNumber = symmetrySeriesNumber;
         Symmetry = SymmetryStatic.Symmetries[SymmetrySeriesNumber];
+
+        // 261106Cl 追加 (作者の決定 C6): 新しく作る結晶の Hill 係数の既定は 0.5 (Hill 平均)。格子定数を受け取るコンストラクタはすべてここを通る
+        // (CIF の読み込み・データベースとアプリ間の受け渡し (Crystal2 は Hill 係数を持たない)・結晶の欄の作り直し・マクロ)。
+        // 引数なしのコンストラクタ (結晶リストの XML の読み込み) は 0 のまま (保存済みの結晶を保存されている値のまま読むため。フィールドの注記参照)
+        HillCoefficient = 0.5;
 
         SetAxis();
     }
@@ -595,12 +636,16 @@ public class Crystal : IEquatable<Crystal>, ICloneable, IComparable<Crystal>
         if (Bounds != null) foreach (var b in Bounds) b.Reset(this);
         if (LatticePlanes != null) foreach (var p in LatticePlanes) p.Reset(this);
         ElasticStiffnessArray = cry.ElasticStiffnessArray?.ToArray();
+        ElasticComplianceArray = cry.ElasticComplianceArray?.ToArray(); // 261106Cl 追加 (C8-3): 入力したコンプライアンスも複製して持つ
         RotationMatrix = new Matrix3D(cry.RotationMatrix);
         EOSCondition = cry.EOSCondition == null ? null : Deep.Copy(cry.EOSCondition);
         Strain = new Matrix3D(cry.Strain);
         Stress = new Matrix3D(cry.Stress);
         HillCoefficient = cry.HillCoefficient;
         ElementValences = cry.ElementValences?.ToArray() ?? []; // 261025Cl 追加: 複製 (ReciPro の Duplicate など) でも、化学組成フォームで手入力した価数を引き継ぐ (Clone と同じ)
+        // 261105Cl 追加 (監査 A13): 読み込み時の格子定数 (「Revert cell constants」の戻り先) も引き継ぐ。以前は 0 のままで、複製した結晶では Revert が何もしなかった
+        (InitialA, InitialB, InitialC, InitialAlpha, InitialBeta, InitialGamma) = (cry.InitialA, cry.InitialB, cry.InitialC, cry.InitialAlpha, cry.InitialBeta, cry.InitialGamma);
+        (InitialA_err, InitialB_err, InitialC_err, InitialAlpha_err, InitialBeta_err, InitialGamma_err) = (cry.InitialA_err, cry.InitialB_err, cry.InitialC_err, cry.InitialAlpha_err, cry.InitialBeta_err, cry.InitialGamma_err);
     }
 
     #endregion コンストラクタ
@@ -789,7 +834,9 @@ public class Crystal : IEquatable<Crystal>, ICloneable, IComparable<Crystal>
     public double GetAngleAxes(int u1, int v1, int w1, int u2, int v2, int w2)
     {
         if (A * B * C == 0 || (u1 == 0 && v1 == 0 && w1 == 0) || (u2 == 0 && v2 == 0 && w2 == 0) || (u1 == u2 && v1 == v2 && w1 == w2)) return 0;
-        return Math.Acos(1.0 / GetLengthAxis(u1, v1, w1) / GetLengthAxis(u2, v2, w2) * (u1 * u2 * A * A + v1 * v2 * B * B + w1 * w2 * C * C + (v1 * w2 + w1 * v2) * B * C * Math.Cos(Alpha) + (w1 * u2 + u1 * w2) * C * A * Math.Cos(Beta) + (u1 * v2 + v1 * u2) * A * B * Math.Cos(Gamma)));
+        //return Math.Acos(1.0 / GetLengthAxis(u1, v1, w1) / GetLengthAxis(u2, v2, w2) * (u1 * u2 * A * A + v1 * v2 * B * B + w1 * w2 * C * C + (v1 * w2 + w1 * v2) * B * C * Math.Cos(Alpha) + (w1 * u2 + u1 * w2) * C * A * Math.Cos(Beta) + (u1 * v2 + v1 * u2) * A * B * Math.Cos(Gamma))); // 261105Cl 変更前
+        // 261105Cl 変更: 平行・反平行 ([111] と [222] など) では丸めで cos が ±1 をわずかに超え、Acos が NaN になっていた (立方晶の |u|,|v|,|w| ≤ 3 で 2 割) ので [-1, 1] に収める
+        return Math.Acos(Math.Clamp(1.0 / GetLengthAxis(u1, v1, w1) / GetLengthAxis(u2, v2, w2) * (u1 * u2 * A * A + v1 * v2 * B * B + w1 * w2 * C * C + (v1 * w2 + w1 * v2) * B * C * Math.Cos(Alpha) + (w1 * u2 + u1 * w2) * C * A * Math.Cos(Beta) + (u1 * v2 + v1 * u2) * A * B * Math.Cos(Gamma)), -1, 1));
     }
 
     /// <summary>面の垂線と軸のなす角</summary>
@@ -803,10 +850,11 @@ public class Crystal : IEquatable<Crystal>, ICloneable, IComparable<Crystal>
     public double GetAnglePlaneAxis(int h, int k, int l, int u, int v, int w)
     {
         if (A * B * C == 0 || (h == 0 && k == 0 && l == 0) || (u == 0 && v == 0 && w == 0)) return 0;
-        return Math.Acos(GetLengthPlane(h, k, l) / GetLengthAxis(u, v, w) * (h * u + k * v + l * w));
+        //return Math.Acos(GetLengthPlane(h, k, l) / GetLengthAxis(u, v, w) * (h * u + k * v + l * w)); // 261105Cl 変更前
+        return Math.Acos(Math.Clamp(GetLengthPlane(h, k, l) / GetLengthAxis(u, v, w) * (h * u + k * v + l * w), -1, 1)); // 261105Cl 変更: 法線と軸が平行・反平行のとき NaN にならないよう [-1, 1] に収める
     }
 
-    /// <summary>2面から成る晶帯軸</summary>
+    /// <summary>2面から成る晶帯軸 [uvw] = (h₁k₁l₁) × (h₂k₂l₂) (教科書の向き。261105Cl)。2 本の軸 [u₁v₁w₁], [u₂v₂w₂] を渡すと、両方を含む面 (hkl) = [u₁v₁w₁] × [u₂v₂w₂] を返す。</summary>
     /// <param name="h1"></param>
     /// <param name="k1"></param>
     /// <param name="l1"></param>
@@ -817,7 +865,8 @@ public class Crystal : IEquatable<Crystal>, ICloneable, IComparable<Crystal>
     public static string GetZoneAxis(int h1, int k1, int l1, int h2, int k2, int l2)
     {
         int u, v, w, z;
-        u = l1 * k2 - k1 * l2; v = h1 * l2 - l1 * h2; w = k1 * h2 - h1 * k2;
+        //u = l1 * k2 - k1 * l2; v = h1 * l2 - l1 * h2; w = k1 * h2 - h1 * k2; // 261105Cl 変更前: −(h₁×h₂) を返していた (監査 B16)
+        u = k1 * l2 - l1 * k2; v = l1 * h2 - h1 * l2; w = h1 * k2 - k1 * h2; // 261105Cl 変更: 教科書の向き h₁×h₂ (Spot ID v1 の ZoneAxis も同じ向きに揃えた)
         for (z = 2; z <= Math.Abs(u) || z <= Math.Abs(v) || z <= Math.Abs(w); z++)
             if ((u % z == 0) && (v % z == 0) && (w % z == 0))
             {
@@ -2012,6 +2061,7 @@ public class Crystal : IEquatable<Crystal>, ICloneable, IComparable<Crystal>
             Beta_err = InitialBeta_err;
             Gamma_err = InitialGamma_err;
             SetAxis();
+            GetFormulaAndDensity(); // 261105Cl 追加 (監査 A13): 体積が変わるので密度も計算し直す (以前は Revert 後も編集後の格子の密度が残った)
         }
     }
     #endregion
@@ -2031,10 +2081,13 @@ public class Crystal : IEquatable<Crystal>, ICloneable, IComparable<Crystal>
     /// <summary>指定した原子(target)の近辺にある原子を探索し、相対座標(絶対座標でないことに注意)、距離、ラベルを返す.</summary>
     /// <param name="target"></param>
     /// <param name="maxLength"> nm 単位</param>
+    /// <param name="position">探索の中心 (分率座標)。null なら target の第 1 等価位置 (target.Atom[0])。261105Cl 追加</param>
     /// <returns></returns>
-    public List<(double X, double Y, double Z, double Distance, string Label)> Search(Atoms target, double maxLength)
+    //public List<(double X, double Y, double Z, double Distance, string Label)> Search(Atoms target, double maxLength) // 261105Cl 変更前のシグネチャ
+    public List<(double X, double Y, double Z, double Distance, string Label)> Search(Atoms target, double maxLength, Vector3DBase position = null)
     {
-        Vector3DBase pos = MatrixReal * target.Atom[0];
+        //Vector3DBase pos = MatrixReal * target.Atom[0]; // 261105Cl 変更前: 常に第 1 等価位置の周り (構造ビューアでダブルクリックした原子が別の等価位置でも)
+        Vector3DBase pos = MatrixReal * (position ?? target.Atom[0]); // 261105Cl 変更
         var maxLen2 = maxLength * maxLength;
         var result = new List<(double X, double Y, double Z, double Distance, string Label)>();
         //まず、隣り合った単位格子の原子位置をすべて探索してresultリストに全部入れる 

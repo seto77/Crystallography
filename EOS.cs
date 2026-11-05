@@ -545,7 +545,11 @@ public class EOS
 
         //PelT (the difference from the value at 300 K of 0.04 GPa) =0.21, 1.60, and 3.78 GPa at 1000, 3000, and 5000 K, respectively.
         //上記を多項式近似
-        double Pel = -1.01162E-11 * T * T * T + 1.89796E-07 * T * T + 6.73266E-05 * T - 3.70065E-02;
+        //261105Cl 変更: 上の多項式は 300 K を基準にした差 (Pel(300 K) = -1.7e-8 GPa) だが、格子の熱圧力 (Eth - Eth0) は T0 基準なので、T0 ≠ 300 K だと基準温度が混在し、
+        //  基準状態 (a = a0, T = T0) で P = Pel(T0) ≠ 0 になっていた (T0 = 293.15 K で -1.2e-3 GPa、T0 = 1000 K で +0.21 GPa)。論文の熱圧力は格子も電子も基準温度 (論文では 300 K) からの差なので、
+        //  電子の項も Pel(T) - Pel(T0) にする (定数項は打ち消し合う)。T0 = 300 K (UI の既定・論文の条件) では差は 1.7e-8 GPa で実質不変。
+        //double Pel = -1.01162E-11 * T * T * T + 1.89796E-07 * T * T + 6.73266E-05 * T - 3.70065E-02;
+        double Pel = -1.01162E-11 * (T * T * T - T0 * T0 * T0) + 1.89796E-07 * (T * T - T0 * T0) + 6.73266E-05 * (T - T0); // 261105Cl 変更: Pel(T) - Pel(T0)
 
         double deltaPth = gamma / V * (Eth - Eth0) / 1000000000;
 

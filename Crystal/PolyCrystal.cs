@@ -17,6 +17,11 @@ public class Crystallite
 
     public static Matrix3D TiltMatrix = Matrix3D.Rot(new Vector3DBase(0.2, 0.1, 0), Math.PI / 180 * 5);//適当に傾ける行列を作成
 
+    /// <summary>261105Cl 追加: <see cref="SetGVector(Crystal, AreaDetector, bool, bool, bool)"/> が G に掛けた傾き (TiltMatrix か単位行列)。
+    /// 弾性定数は傾ける前の結晶の直交座標で表されているので、応力から歪みを出すときは結晶子の回転にこれを掛けた向きを使う</summary>
+    [XmlIgnoreAttribute]
+    private Matrix3D gTilt = Matrix3D.IdentityMatrix;
+
     [XmlIgnoreAttribute]
     public Crystal BaseCrystal = null;
 
@@ -197,6 +202,7 @@ public class Crystallite
 
         crystal.VectorOfG = temp.ToArray();
 
+        gTilt = applyTiltMatrix ? TiltMatrix : Matrix3D.IdentityMatrix; // 261105Cl 追加
         G = new (double X, double Y, double Z, double Hk1, double Hk2, double Hk3, double Intensity, double Intensity2)[crystal.VectorOfG.Length];
 
         for (int k = 0; k < crystal.VectorOfG.Length; k++)
@@ -640,7 +646,11 @@ public class Crystallite
         stopwatch.Restart();
         // 260718Cl: デバッグ用ハードコード (弾性定数 c11=1350 等・応力 E11=-10・歪み・HillCoefficient=1 の毎回上書き) を削除。
         //           応力が非ゼロになるため全結晶子で偽の Hill 歪みが常時適用され物理的に誤り+低速だった。ユーザー設定の BaseCrystal 値をそのまま使う (同型の clean 版が GetSimulatedPattern 側に既存)。
-        var elasticity = new Elasticity(DenseMatrix.OfArray(BaseCrystal.ElasticStiffness), Elasticity.Mode.Stiffness);
+        //var elasticity = new Elasticity(DenseMatrix.OfArray(BaseCrystal.ElasticStiffness), Elasticity.Mode.Stiffness); // 261106Cl 変更前
+        // 261106Cl 変更 (作者の決定 C8-3): コンプライアンスで入力した結晶はその値をそのまま使う (逆行列の無い値は剛性が全部 0 で、以前は応力からの歪みが 0 になっていた)
+        var elasticity = BaseCrystal.ElasticCompliance is { } compliance
+            ? new Elasticity(DenseMatrix.OfArray(compliance), Elasticity.Mode.Compliance)
+            : new Elasticity(DenseMatrix.OfArray(BaseCrystal.ElasticStiffness), Elasticity.Mode.Stiffness);
 
         bool strainFree = BaseCrystal.Stress.IsZero() && BaseCrystal.Strain.IsZero();
         bool rotationFree = WholeRotation.IsIdentity();
@@ -671,7 +681,9 @@ public class Crystallite
         int[] searchValidIndex(int num)
         {
             var baseRot = new Matrix3D(Rotations[num]);
-            if (!strainFree) baseRot = (elasticity.GetStrainByHill(BaseCrystal.Symmetry, baseRot, BaseCrystal.Stress, BaseCrystal.Strain, BaseCrystal.HillCoefficient) + new Matrix3D()).Inverse() * baseRot;
+            //if (!strainFree) baseRot = (elasticity.GetStrainByHill(BaseCrystal.Symmetry, baseRot, BaseCrystal.Stress, BaseCrystal.Strain, BaseCrystal.HillCoefficient) + new Matrix3D()).Inverse() * baseRot; // 261105Cl 変更前
+            // 261105Cl 変更: G は TiltMatrix で傾けてあるので、結晶 (弾性定数の座標) の向きは baseRot * gTilt。旧は弾性定数が格子から 5° ずれた向きで使われていた
+            if (!strainFree) baseRot = (elasticity.GetStrainByHill(BaseCrystal.Symmetry, baseRot * gTilt, BaseCrystal.Stress, BaseCrystal.Strain, BaseCrystal.HillCoefficient) + new Matrix3D()).Inverse() * baseRot;
             if (!rotationFree) baseRot = WholeRotation * baseRot;
             var rot = baseRot.ToArrayRowMajorOrder();
             var result = new List<int>();
@@ -718,7 +730,8 @@ public class Crystallite
             var rotations = getSubRotations(num);
             if (!strainFree)
                 rotations = rotations.Select(r =>
-                     (elasticity.GetStrainByHill(BaseCrystal.Symmetry, r, BaseCrystal.Stress, BaseCrystal.Strain, BaseCrystal.HillCoefficient) + new Matrix3D()).Inverse() * r).ToArray();
+                     //(elasticity.GetStrainByHill(BaseCrystal.Symmetry, r, BaseCrystal.Stress, BaseCrystal.Strain, BaseCrystal.HillCoefficient) + new Matrix3D()).Inverse() * r).ToArray(); // 261105Cl 変更前
+                     (elasticity.GetStrainByHill(BaseCrystal.Symmetry, r * gTilt, BaseCrystal.Stress, BaseCrystal.Strain, BaseCrystal.HillCoefficient) + new Matrix3D()).Inverse() * r).ToArray(); // 261105Cl 変更: 上と同じく傾きを掛けた向き
 
             var result = new Dictionary<int, double>();
 

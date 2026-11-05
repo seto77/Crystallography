@@ -809,6 +809,14 @@ public class FittingPeak
                     Alpha[i, j] += diff[i, k] * diff[j, k];
                 Alpha[j, i] = Alpha[i, j];
             }
+        // 261105Cl 追加: X の標準誤差 σ_X = √(s²·[(JᵀJ)⁻¹]_XX), s² = Σr²/(n − p) (n: 点数, p: ピークのパラメータ数 + 背景 2)。
+        //   旧式 1/√(JᵀJ)_XX は (1) 逆行列ではなく行列の対角を使い (他のパラメータとの相関を無視)、(2) 残差分散 s² を掛けず、
+        //   (3) 強度を 1/1000 にした J に依存していた (統計的な標準誤差ではなかった)。s²·(JᵀJ)⁻¹ は強度のスケールに依らない。
+        var covariance = length > ParamNum + 2 ? Alpha.TryInverse() : null; // 261105Cl 追加
+        double s2 = 0; // 261105Cl 追加
+        for (int k = 0; k < length; k++) // 261105Cl 追加: ResidualCurrent は採用された最終パラメータでの残差
+            s2 += ResidualCurrent[k] * ResidualCurrent[k];
+        s2 /= length - (ParamNum + 2); // 261105Cl 追加
         counter = 0;
         //最後にそれぞれもとまった数値を入れる。
         for (int i = 0; i < prms.Length; i++)
@@ -829,7 +837,8 @@ public class FittingPeak
             prms[i].B2 = pCurrent[i].B2;
             prms[i].B3 = pCurrent[i].B3;
             counter += prms[i].GetParamNumber();
-            prms[i].Xerr = 1 / Math.Sqrt(Alpha[counter - 1, counter - 1]);
+            //prms[i].Xerr = 1 / Math.Sqrt(Alpha[counter - 1, counter - 1]);
+            prms[i].Xerr = covariance != null ? Math.Sqrt(s2 * covariance[counter - 1, counter - 1]) : double.NaN; // 261105Cl 標準誤差 (自由度が 0 以下、または JᵀJ が特異なら NaN)
             prms[i].m = pCurrent[i].m;
             prms[i].range = pCurrent[i].range;
             prms[i].Residual = bestResidual;

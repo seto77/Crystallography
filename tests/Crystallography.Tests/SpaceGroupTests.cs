@@ -177,6 +177,20 @@ public class SpaceGroupTests
             .ToList();
         Assert.True(bad.Count == 0, string.Join(" / ", bad));
     }
+
+    /// <summary>261105Cl 追加: 算術結晶類 (SymmetryProperties.ArithmeticCrystalClassStr) は設定に依らず、IT 番号 1..230 で 73 類。
+    /// 向きで分かれる 312P/321P などを区別する (以前は点群 + 格子の記号で 91 種になり、312P と 321P が同じ「32P」だった)。</summary>
+    [Fact]
+    public void ArithmeticCrystalClass_IsSettingIndependentAnd73()
+    {
+        var byIt = Enumerable.Range(1, 540).GroupBy(i => (int)SymmetryStatic.Symmetries[i].SpaceGroupNumber)
+            .ToDictionary(g => g.Key, g => g.Select(i => new SymmetryProperties(SymmetryStatic.Symmetries[i]).ArithmeticCrystalClassStr).Distinct().ToArray());
+        var multi = byIt.Where(kv => kv.Value.Length != 1).Select(kv => $"{kv.Key}: {string.Join("/", kv.Value)}").ToList();
+        Assert.True(multi.Count == 0, string.Join(", ", multi));
+        Assert.Equal(73, byIt.Values.Select(v => v[0]).Distinct().Count());
+        Assert.Equal(new[] { "312P", "321P", "3m1P", "31mP", "-31mP", "-3m1P", "-6m2P", "-62mP", "-42mP", "-4m2P", "-4m2I", "-42mI" },
+            new[] { 149, 150, 156, 157, 162, 164, 187, 189, 111, 115, 119, 121 }.Select(it => byIt[it][0]));
+    }
     #endregion
 
     #region Wyckoff 位置

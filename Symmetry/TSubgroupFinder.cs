@@ -81,6 +81,79 @@ public sealed class GroupRelation
         };
         return (pinv, shift);
     }
+
+    /// <summary>261105Cl 追加 (監査 B14): 子の設定を、同じ空間群タイプの別の設定 childSeries に取り替えた関係を返す。
+    /// Minimal supergroups の関係は超群 (標準設定) の部分群表から逆引きしたもので、子は同定で見つかった設定 (標準とは限らない) になっている。
+    /// 閲覧中の結晶の設定 (P2₁/n、Pbnm など) と基準を揃えるため、(1) t-関係はまず H を childSeries として同定し直す (部分群表と同じ慣用胞の変換の表を使うので
+    /// 行列が簡明)。(2) それで見つからないとき・k-関係は、設定 → 設定の変換 (x_old = Q·x_new + q、<see cref="KSubgroupFinder.GetSettingTransform"/>) を合成する:
+    /// x_parent = P·x_old + p = (P·Q)·x_new + (P·q + p)。どちらも H の操作 (親の基準系) は変わらない。
+    /// 子が未同定・同じ設定・型が違う・変換が見つからないときは自分をそのまま返す。</summary>
+    public GroupRelation WithChildSetting(int childSeries)
+    {
+        if (ChildSeriesNumber < 0 || childSeries == ChildSeriesNumber || TransformP == null || TransformShift == null)
+            return this;
+        if (childSeries <= 0 || childSeries >= SymmetryStatic.TotalSpaceGroupNumber
+            || SymmetryStatic.Symmetries[childSeries].SpaceGroupNumber != SymmetryStatic.Symmetries[ChildSeriesNumber].SpaceGroupNumber)
+            return this;
+        // 行列式が負 (左手系) になったとき、子の設定が原点に対称心を持つなら子の対称操作 x → −x を合成して右手系にする (ITA の慣行は det P > 0。
+        // 子の操作集合は −x で写しても変わらないので P → −P (p はそのまま) も同じ関係を表す)。中心化三斜晶の設定 (C-1 など) や P-1 で使う
+        GroupRelation With(double[] p, double[] shift)
+        {
+            double det = p[0] * (p[4] * p[8] - p[5] * p[7]) - p[1] * (p[3] * p[8] - p[5] * p[6]) + p[2] * (p[3] * p[7] - p[4] * p[6]);
+            if (det < 0 && TSubgroupFinder.GetExpandedOps(childSeries).Any(o => TSubgroupFinder.LinKey(o) is [-1, 0, 0, 0, -1, 0, 0, 0, -1]
+                    && Math.Abs(o.SeitzTranslation.U - Math.Round(o.SeitzTranslation.U)) < 1e-6
+                    && Math.Abs(o.SeitzTranslation.V - Math.Round(o.SeitzTranslation.V)) < 1e-6
+                    && Math.Abs(o.SeitzTranslation.W - Math.Round(o.SeitzTranslation.W)) < 1e-6))
+                p = [.. p.Select(x => -x)];
+            return new()
+            {
+                Kind = Kind,
+                ParentSeriesNumber = ParentSeriesNumber,
+                Index = Index,
+                ConjugacyClassId = ConjugacyClassId,
+                ConjugateCount = ConjugateCount,
+                PointGroupHM = PointGroupHM,
+                Operations = Operations,
+                Representatives = Representatives,
+                CosetRepresentatives = CosetRepresentatives,
+                ChildSeriesNumber = childSeries,
+                TransformP = p,
+                TransformShift = shift,
+                SublatticeBasis = SublatticeBasis,
+            };
+        }
+        if (Kind == GroupRelationKind.T)
+        {
+            var mLin = new List<int[]>();
+            foreach (var op in Operations)
+            {
+                var key = TSubgroupFinder.LinKey(op);
+                if (TSubgroupFinder.FindKey(mLin, key) < 0) mLin.Add(key);
+            }
+            var (child, p1, shift1) = TSubgroupFinder.Identify(ParentSeriesNumber, Operations, mLin, childSeries);
+            if (child == childSeries)
+                return With(p1, shift1);
+        }
+        Fraction[] pNew, shiftNew;
+        try
+        {
+            var p = TransformP.Select(d => Fraction.FromDouble(d)).ToArray();
+            // 設定 → 設定の変換 Q は一意でない (新しい設定の正規化群の分だけある) ので、合成後の P·Q が最も簡明になる Q を選ぶ
+            var (q, qShift) = KSubgroupFinder.GetSettingTransform(ChildSeriesNumber, childSeries, p); // x_old = Q·x_new + q
+            if (q == null)
+                return this;
+            pNew = RationalMatrix.Mul(p, q);
+            shiftNew = RationalMatrix.AddVec(RationalMatrix.MulVec(p, qShift), [.. TransformShift.Select(d => Fraction.FromDouble(d))]);
+            // 合成で子の基準系の原点のずれ −P⁻¹p に整数の部分が入ることがあるので、子の格子の並進 (常に許される) で 0 の側へ寄せる
+            var pInv = RationalMatrix.Invert3(pNew);
+            var s = RationalMatrix.MulVec(pInv, shiftNew); // = P⁻¹p
+            var n = s.Select(f => new Fraction(System.Numerics.BigInteger.Divide(f.Num, f.Den))).ToArray(); // 0 に向けた切り捨て
+            shiftNew = RationalMatrix.SubVec(shiftNew, RationalMatrix.MulVec(pNew, n));
+        }
+        catch (InvalidOperationException) { return this; } // 分母の大きい値 (理論上無い) は換算せず元の関係を使う
+        static double ToDouble(Fraction f) => (double)f.Num / (double)f.Den;
+        return With([.. pNew.Select(ToDouble)], [.. shiftNew.Select(ToDouble)]);
+    }
 }
 
 /// <summary>親 Wyckoff 軌道が t-部分群でどう分裂するかの 1 成分 (260704Cl 追加)。</summary>
@@ -641,6 +714,20 @@ public static class TSubgroupFinder
         [1, 1, -1.0 / 3, 2, 0, -2.0 / 3, 0, 0, 1.0 / 3],
     ];
 
+    /// <summary>261105Cl 追加: 単斜晶の胞の取り方の変換 (ITA の cell choice 1→2・1→3 と同じ巡回)。恒等と、unique axis b (a′=c, c′=−a−c / a′=−a−c, c′=a)・
+    /// unique axis c (a,b の面内)・unique axis a (b,c の面内) の各 2 つ。列 = 新しい基底ベクトルの元の基底での成分 (CellChanges と同じ)。
+    /// <see cref="Identify"/> で targetSn を指定したときだけ使う (候補にすぎず、操作集合の完全一致で検証される)。</summary>
+    private static readonly double[][] MonoclinicCellChoices =
+    [
+        [1, 0, 0, 0, 1, 0, 0, 0, 1],
+        [0, 0, -1, 0, 1, 0, 1, 0, -1],  // b: a′=c, c′=−a−c
+        [-1, 0, 1, 0, 1, 0, -1, 0, 0],  // b: a′=−a−c, c′=a
+        [0, -1, 0, 1, -1, 0, 0, 0, 1],  // c: a′=b, b′=−a−b
+        [-1, 1, 0, -1, 0, 0, 0, 0, 1],  // c: a′=−a−b, b′=a
+        [1, 0, 0, 0, 0, -1, 0, 1, -1],  // a: b′=c, c′=−b−c
+        [1, 0, 0, 0, -1, 1, 0, -1, 0],  // a: b′=−b−c, c′=b
+    ];
+
     private static readonly Lazy<double[][]> ProperSignedPermutations = new(() =>
     {
         var list = new List<double[]>();
@@ -658,7 +745,9 @@ public static class TSubgroupFinder
     });
 
     /// <summary>H (親基準系の操作集合) の空間群型を同定する。成功時 (childSeries, P, p)、失敗時 (-1, null, null)。</summary>
-    private static (int Child, double[] P, double[] Shift) Identify(int parentSn, SymmetryOperation[] hOps, List<int[]> mLin)
+    /// <remarks>261105Cl: targetSn (>= 0) を渡すと候補の設定をそれ 1 つに絞る (<see cref="GroupRelation.WithChildSetting"/> で、閲覧中の設定として同定し直す)。</remarks>
+    //private static (int Child, double[] P, double[] Shift) Identify(int parentSn, SymmetryOperation[] hOps, List<int[]> mLin) // 261105Cl 変更前のシグネチャ
+    internal static (int Child, double[] P, double[] Shift) Identify(int parentSn, SymmetryOperation[] hOps, List<int[]> mLin, int targetSn = -1) // 261105Cl 変更 (private → internal、targetSn 追加)
     {
         string sig = Signature(mLin);
 
@@ -675,6 +764,7 @@ public static class TSubgroupFinder
         var candidates = new List<(int Sn, List<double[]> Lattice, List<int[]> Lin, List<(int[] R, double[] T)> RT)>();
         for (int s = 1; s < SymmetryStatic.TotalSpaceGroupNumber; s++)
         {
+            if (targetSn >= 0 && s != targetSn) continue; // 261105Cl 追加
             if (SettingSignature(s) != sig) continue;
             var candOps = GetExpandedOps(s);
             var candLattice = candOps.Where(o => IsIdentity(LinKey(o)))
@@ -688,10 +778,19 @@ public static class TSubgroupFinder
             candidates.Add((s, candLattice, candLin, [.. candOps.Select(op => (R: LinKey(op), T: TVec(op)))]));
         }
 
-        foreach (var cell in CellChanges)
-            foreach (var rot in ProperSignedPermutations.Value)
+        //foreach (var cell in CellChanges) // 261105Cl 変更前 (3 行)
+        //    foreach (var rot in ProperSignedPermutations.Value)
+        //    {
+        //        var P = MatMulD(cell, rot);
+        // 261105Cl 変更: 候補の P を列にした。targetSn を指定しないときは旧と同じ順序 (cell × rot) で同じものだけを試す (部分群表の結果は変わらない)。
+        //   targetSn を指定したとき (閲覧中の設定として同定し直す) は、単斜晶の胞の取り方の変換 (ITA の cell choice 1→2→3) も掛け合わせて試す。
+        //   C2 型の子を I121・A112 などの設定で表すとき、表の 1 つの P では届かず、設定どうしの変換の合成に回って成分の大きい行列 (最大 7) になっていたため
+        var pCandidates = targetSn < 0
+            ? CellChanges.SelectMany(cell => ProperSignedPermutations.Value.Select(rot => MatMulD(cell, rot)))
+            : CellChanges.SelectMany(cell => MonoclinicCellChoices.SelectMany(cc => ProperSignedPermutations.Value.SelectMany(rot =>
+                (double[][])[MatMulD(MatMulD(cell, cc), rot), MatMulD(MatMulD(cell, rot), cc)])));
+        foreach (var P in pCandidates)
             {
-                var P = MatMulD(cell, rot);
                 var Pinv = Invert3(P);
                 if (Pinv == null) continue;
 

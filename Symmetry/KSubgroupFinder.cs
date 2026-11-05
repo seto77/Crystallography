@@ -624,9 +624,48 @@ public static class KSubgroupFinder
     public static (int Child, Fraction[] P, Fraction[] Shift) IdentifyK(int parentSn, int[] hnf, int[] sigma)
         => IdentifyK(parentSn, hnf, sigma, null);
 
+    private static readonly ConcurrentDictionary<(int From, int To), (Fraction[] P, Fraction[] Shift)> _settingTransformCache = new(); // 261105Cl 追加
+
+    /// <summary>261105Cl 追加: 同じ空間群タイプの 2 つの設定 fromSn・toSn の間の座標変換 (x_from = P·x_to + p、基底は (a,b,c)_to = (a,b,c)_from·P)
+    /// を求める。toSn の対称操作は fromSn の対称操作をこの変換で写したものとちょうど一致する。型が違う・見つからないときは (null, null)。
+    /// 群自身 (指数 1 の部分群) を toSn に絞って同定する計算で、まず t-エンジンの慣用胞の変換の表 (TSubgroupFinder.Identify) で探し、
+    /// 見つからなければ IdentifyK の primitive 基底での総当たり (det P > 0 を優先し、成分の簡明な P を選ぶ) を使う。どちらも操作集合の完全一致で
+    /// 検証されるので誤った変換は返らない。Minimal supergroups の関係 (子 = 逆引きで見つかった設定) を、閲覧中の設定の軸に換算するのに使う (監査 B14)。
+    /// 変換は一意でない (toSn の正規化群の分だけある) ので、総当たりのときは scorePrefix (合成する相手の行列 M) を渡すと M·P が最も簡明になるものを選ぶ
+    /// (scorePrefix を渡したときはキャッシュしない)。</summary>
+    public static (Fraction[] P, Fraction[] Shift) GetSettingTransform(int fromSn, int toSn, Fraction[] scorePrefix = null)
+    {
+        if (fromSn <= 0 || toSn <= 0 || fromSn >= SymmetryStatic.TotalSpaceGroupNumber || toSn >= SymmetryStatic.TotalSpaceGroupNumber
+            || SymmetryStatic.Symmetries[fromSn].SpaceGroupNumber != SymmetryStatic.Symmetries[toSn].SpaceGroupNumber)
+            return (null, null);
+        (Fraction[] P, Fraction[] Shift) Compute((int From, int To) key)
+        {
+            // まず t-エンジンの慣用胞の変換の表 (軸の入れ替え・中心化の変換・単斜晶の胞の取り方) で探す (群自身 = 指数 1 の t-部分群として toSn に同定)。
+            // 表の変換は簡明なので、合成した行列も読みやすい。見つからないときだけ下の primitive 基底での総当たりに回る
+            var ops = TSubgroupFinder.GetExpandedOps(key.From);
+            var lin = new List<int[]>();
+            foreach (var op in ops)
+            {
+                var lk = TSubgroupFinder.LinKey(op);
+                if (TSubgroupFinder.FindKey(lin, lk) < 0) lin.Add(lk);
+            }
+            var (c1, p1, s1) = TSubgroupFinder.Identify(key.From, ops, lin, key.To);
+            if (c1 == key.To)
+                return ([.. p1.Select(d => Fraction.FromDouble(d))], [.. s1.Select(d => Fraction.FromDouble(d))]);
+
+            int m = BuildPointGroupData(key.From).LinKeys.Length;
+            var (child, p, shift) = IdentifyK(key.From, [1, 0, 0, 0, 1, 0, 0, 0, 1], new int[m], null, key.To, scorePrefix); // 恒等 HNF: 部分格子 = 元の格子、σ = 0 (並進は元のまま)
+            return child == key.To ? (p, shift) : (null, null);
+        }
+        return scorePrefix == null ? _settingTransformCache.GetOrAdd((fromSn, toSn), Compute) : Compute((fromSn, toSn));
+    }
+
     /// <summary>260708Cl: 呼び出し元 (ComputeMaximalK) が memo 化した QuotientData を渡せる内部版。
-    /// QuotientData が private 型のため public 側にデフォルト引数では追加できず、オーバーロードに分離。</summary>
-    private static (int Child, Fraction[] P, Fraction[] Shift) IdentifyK(int parentSn, int[] hnf, int[] sigma, QuotientData q)
+    /// QuotientData が private 型のため public 側にデフォルト引数では追加できず、オーバーロードに分離。
+    /// 261105Cl: targetSn (>= 0) を渡すと候補をその設定 1 つに絞る (同じ型の設定どうしの変換 <see cref="GetSettingTransform"/> 用)。
+    /// scorePrefix を渡すと、P の簡明さを scorePrefix·P (合成後の変換) で評価する。</summary>
+    //private static (int Child, Fraction[] P, Fraction[] Shift) IdentifyK(int parentSn, int[] hnf, int[] sigma, QuotientData q) // 261105Cl 変更前のシグネチャ
+    private static (int Child, Fraction[] P, Fraction[] Shift) IdentifyK(int parentSn, int[] hnf, int[] sigma, QuotientData q, int targetSn = -1, Fraction[] scorePrefix = null) // 261105Cl 変更
     {
         var pg = BuildPointGroupData(parentSn);
         q ??= BuildQuotient(pg, hnf); // 260708Cl (旧: var q = BuildQuotient(pg, hnf);)
@@ -656,6 +695,11 @@ public static class KSubgroupFinder
 
         var byOrder = _candidatesByOrder.Value; // 260708Cl (旧: CandidatesByOrder())
         if (!byOrder.TryGetValue(m, out var candList)) return (-1, null, null);
+        if (targetSn >= 0) // 261105Cl 追加: 候補を指定の設定だけにする
+        {
+            if (!candList.Contains(targetSn)) return (-1, null, null);
+            candList = [targetSn];
+        }
 
         // 260708Cl: ITA 慣行 (右手系を保つ det(P)>0 の胞変換) を優先する 2 パス探索 (pass=0 は det(P)>0 のみ)。
         // 実 GUI 目視で Pm-3m→Fm-3m が P=[[0,-2,0],[-2,0,0],[0,0,2]] (det=-8、左手系) と同定され、変換行列と
@@ -707,7 +751,8 @@ public static class KSubgroupFinder
                     // (同一操作集合には対称性の分だけ多数の U が通るため、全候補で origin 解決すると
                     // 2/m 逆引きが 1.4 s → 416 s になった)。ただし最初の成功 (best 未確定) までは棄却しない。
                     // フォールバックバケット (k ≥ 2、希少経路) は従来どおり首ヒット確定で、最簡化は k=1 のみ。
-                    var score = ScoreP(p);
+                    //var score = ScoreP(p); // 261105Cl 変更前
+                    var score = ScoreP(scorePrefix == null ? p : RationalMatrix.Mul(scorePrefix, p)); // 261105Cl 変更: 合成後 (scorePrefix·P) の簡明さで選べるように
                     bool perfect = score.OffDiagNonZero == 0 && score.Negatives == 0; // 対角・全非負 = それ以上本質的に改善しない
                     if (k == 1 && best.Child >= 0 && !perfect && score.CompareTo(bestScore) >= 0)
                         continue;

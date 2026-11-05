@@ -304,6 +304,9 @@ public partial class BetheMethod
     public Complex[] EigenValues { get; set; }
     public Complex[] EigenVectors { get; set; }
     public Complex[] EigenVectorsInverse { get; set; }
+    /// <summary>261105Cl 追加: <see cref="EigenValues"/>/<see cref="EigenVectors"/>/<see cref="EigenVectorsInverse"/> を求めたときの <see cref="Beams"/> 配列 (参照で比べる)。
+    /// STEM・PED・CBED や外部のコードが Beams を別の配列 (同じ反射を別の順に並べたものなど) に置き換えたあとは、固有解を使い回さない。</summary>
+    private Beam[] eigenBeams;
 
     public DVec[] EigenValuesPED { get; set; }
     public DMat[] EigenVectorsPED { get; set; }
@@ -2289,7 +2292,13 @@ public partial class BetheMethod
         var vecK0 = getVecK0(k_vac, u0);
 
         int dim;
-        if (MaxNumOfBloch != maxNumOfBloch || AccVoltage != voltage || EigenValues == null || Beams.Length != EigenValues.Length || EigenVectors == null || !rotation.Equals(BaseRotation))
+        //if (MaxNumOfBloch != maxNumOfBloch || AccVoltage != voltage || EigenValues == null || Beams.Length != EigenValues.Length || EigenVectors == null || !rotation.Equals(BaseRotation)) // 261105Cl 変更前
+        // 261105Cl 修正: STEM (StemDoWork) は Beams を |g|² 順に並べ替えた別の配列で置き換え、固有解は消さない。N・電圧・方位が同じだと上の条件を通り、
+        //  Find_gVectors の順で作った固有ベクトルの振幅を、並び順の違う Beams に入れていた (透過波 000 以外の反射の強度・位相が入れ替わる。
+        //  HRTEM → STEM → HRTEM、回折 → STEM → 回折 で同じ Crystal.Bethe を使うと起きる。Si 200 kV・[001] から 0.5°・N=50 で 37/50 反射が誤り)。
+        //  PED が Beams を置き換えたときも同じ。固有解を作ったときの Beams 配列のままでなければ作り直す。
+        if (MaxNumOfBloch != maxNumOfBloch || AccVoltage != voltage || EigenValues == null || Beams.Length != EigenValues.Length || EigenVectors == null || !rotation.Equals(BaseRotation)
+            || !ReferenceEquals(Beams, eigenBeams)) // 261105Cl
         {
             MaxNumOfBloch = maxNumOfBloch;
             AccVoltage = voltage;
@@ -2317,6 +2326,7 @@ public partial class BetheMethod
                 EigenVectors = ((DMat)evd.EigenVectors).Values;
                 EigenVectorsInverse = ((DMat)evd.EigenVectors.Inverse()).Values;
             }
+            eigenBeams = Beams; // 261105Cl 追加: この固有解がどの Beams 配列 (並び順) に対応するか
         }
 
         dim = Beams.Length;
@@ -2466,7 +2476,24 @@ public partial class BetheMethod
     #region STEM シミュレーション
     private void Stem_ProgressChanged(object sender, ProgressChangedEventArgs e) => StemProgressChanged?.Invoke(sender, e);
 
-    private void Stem_RunWorkerCompleted(object sender, RunWorkerCompletedEventArgs e) => StemCompleted?.Invoke(sender, e);
+    //private void Stem_RunWorkerCompleted(object sender, RunWorkerCompletedEventArgs e) => StemCompleted?.Invoke(sender, e); // 261105Cl 変更前
+    // 261105Cl 修正: STEM は TDS の吸収ポテンシャル U'(q+g_i−g_j) を ADF 検出器の角度範囲 [inner, outer] に限って求め、通常の U と同じ鍵
+    //  (compose(g), int.MaxValue) で uDictionary に入れたまま終わっていた (StemDoWork の Clear は計算の前だけ)。電圧が同じだと
+    //  GetDifractedBeamAmpriltudes は uDictionary を空にしないので、STEM の後に同じ Crystal.Bethe で求めた回折・HRTEM の吸収が、
+    //  検出器の範囲に限った U' と全立体角の U' の混ざった行列になっていた (implementation-questions A1。Si 200 kV・[001]・N=100・
+    //  検出器 40–150 mrad の後で |ψ000|² 0.894、正しくは 0.834)。成功・取り消し・失敗のどれで終わっても空にする。
+    private void Stem_RunWorkerCompleted(object sender, RunWorkerCompletedEventArgs e) // 261105Cl
+    { // 261105Cl 追加
+        // 261105Cl 追記: その後 STEM は RunSTEM で作る専用の複製 (自分の uDictionary を持つ) で走るようにしたので、共有のキャッシュはもう汚れない。下の Clear は念のため残す (次の計算で U を作り直すだけ)
+        uDictionary.Clear(); // 261105Cl 追加
+        // 261105Cl 追加: STEM は専用の複製で走るので、このインスタンスの Beams は STEM の計算に使ったビームではない。計算に使ったビームの一覧は
+        //  StemBeams で公開する (このインスタンスの Beams には書かない。完了の処理は UI のない環境ではスレッドプールで走るので、Beams に書くと
+        //  同じインスタンスで計算中の回折と食い違う)。成功したときだけ更新する
+        if (e.Error is null && !e.Cancelled && lastStemRun?.Beams is { } stemBeams) // 261105Cl
+            StemBeams = stemBeams; // 261105Cl
+        lastStemRun = null; // 261105Cl
+        StemCompleted?.Invoke(sender, e); // 261105Cl
+    } // 261105Cl 追加
 
     public void CancelSTEM()
     {
@@ -2496,23 +2523,69 @@ public partial class BetheMethod
         for (int i = 0; i < requests.Length; i++)
             ionData[i] = IonizationDataProvider.Resolve(requests[i].Channel, voltage);
         var runId = Interlocked.Increment(ref _stemRunCounter);
-        MaxNumOfBloch = maxNumOfBloch;
-
-        AccVoltage = voltage;
-        BaseRotation = new Matrix3D(baseRotation);
-        BeamDirections = (Vector3DBase[])beamDirections.Clone();//260801Cl 呼び出し元配列の参照を worker に渡さない (§5.4。旧: 参照代入)
-        Thicknesses = (double[])thicknesses.Clone();//260801Cl 同上
+        //MaxNumOfBloch = maxNumOfBloch; // 261105Cl 変更前 (6 行): 共有のインスタンスの状態を書き換えて worker に渡していた
+        //
+        //AccVoltage = voltage;
+        //BaseRotation = new Matrix3D(baseRotation);
+        //BeamDirections = (Vector3DBase[])beamDirections.Clone();//260801Cl 呼び出し元配列の参照を worker に渡さない (§5.4。旧: 参照代入)
+        //Thicknesses = (double[])thicknesses.Clone();//260801Cl 同上
+        // 261105Cl 変更: STEM の worker は、ここで作るこの実行専用の浅い複製 (stem) で走らせる。ReciPro では回折・像シミュレータが結晶ごとに
+        //  1 つの Crystal.Bethe を共有し、STEM の実行中も回折シミュレータは操作できる。以前は worker がこのインスタンスの Beams・BaseRotation・
+        //  AccVoltage・MaxNumOfBloch・BeamDirections・Thicknesses・uDictionary を計算の途中で何度も読み書きしていたので、実行中に別の条件で
+        //  GetDifractedBeamAmpriltudes を呼ぶと Beams が置き換わって worker が範囲外の例外で止まったり (N が違うとき)、U のキャッシュが別の電圧の値で
+        //  埋まったりした。逆に STEM は検出器の範囲に限った U' を共有のキャッシュへ書き、回折の計算を汚していた (A1)。
+        //  複製は MemberwiseClone なので設定 (Surface、吸収のモデルなど) はこの時点の値をそのまま引き継ぎ、実行ごとに変わる状態は下で複製にだけ入れる。
+        //  U のキャッシュは複製専用の新しい辞書にする。共有のまま残るのは Crystal (原子・格子。回折の計算は書き換えない)、BackgroundWorker (進捗と
+        //  取り消しはこのインスタンスの bwSTEM を通る)、gCacheLock (gCacheSnapshot は不変オブジェクトの差し替えなので共有しても安全) と静的な設定。
+        //  このインスタンスの MaxNumOfBloch・AccVoltage・BaseRotation・BeamDirections・Thicknesses は書き換えない (回折の固有解の再利用の判定や、
+        //  CBED の結果を読む ReciPro の Spot ID を乱さないため)。結果 (ResultStem) だけを、worker の最後にこのインスタンスへ公開する。
+        var stem = (BetheMethod)MemberwiseClone(); // 261105Cl 追加
+        stem.stemOwner = this; // 261105Cl 追加
+        stem.lastStemRun = null; // 261105Cl 追加 (MemberwiseClone で前回の複製への参照を引き継がない)
+        stem.uDictionary = []; // 261105Cl 追加
+        stem.Beams = null; // 261105Cl 追加
+        stem.MaxNumOfBloch = maxNumOfBloch; // 261105Cl 追加
+        stem.AccVoltage = voltage; // 261105Cl 追加
+        stem.BaseRotation = new Matrix3D(baseRotation); // 261105Cl 追加
+        stem.BeamDirections = (Vector3DBase[])beamDirections.Clone(); // 261105Cl 追加 (260801Cl と同じく呼び出し元の配列の参照は渡さない)
+        stem.Thicknesses = (double[])thicknesses.Clone(); // 261105Cl 追加
+        stem.Surface = new Vector3D(Surface); // 261105Cl 追加 (Surface は可変のオブジェクト)
+        stem.CrystalRotation = new Matrix3D(Crystal.RotationMatrix); // 261105Cl 追加: 像の原点のずらし (StemDoWork) に使う結晶の向き
+        lastStemRun = stem; // 261105Cl 追加: 完了時に、使ったビームの一覧をこのインスタンスへ渡すため (Stem_RunWorkerCompleted)
         //bwSTEM.RunWorkerAsync((solver, thread, cs, delta, sliceThickness, convergenceAngle, detAngleInner, detAngleOuter, thicknesses, defocusses, imageSize, resolution, sourceSize, ionization, ionData, runId));//260801Cl 変更前 (1 チャネル)
-        bwSTEM.RunWorkerAsync((solver, thread, cs, delta, sliceThickness, convergenceAngle, detAngleInner, detAngleOuter, Thicknesses, (double[])defocusses.Clone(), imageSize, resolution, sourceSize, requests, ionData, runId));
+        //bwSTEM.RunWorkerAsync((solver, thread, cs, delta, sliceThickness, convergenceAngle, detAngleInner, detAngleOuter, Thicknesses, (double[])defocusses.Clone(), imageSize, resolution, sourceSize, requests, ionData, runId)); // 261105Cl 変更前
+        bwSTEM.RunWorkerAsync((solver, thread, cs, delta, sliceThickness, convergenceAngle, detAngleInner, detAngleOuter, stem.Thicknesses, (double[])defocusses.Clone(), imageSize, resolution, sourceSize, requests, ionData, runId, stem)); // 261105Cl stem を追加
     }
+
+    /// <summary>261105Cl 追加: STEM 専用の複製 (RunSTEM で作る) のとき、結果を公開する元のインスタンス。それ以外は null</summary>
+    private BetheMethod stemOwner;
+
+    /// <summary>261105Cl 追加: 直近の RunSTEM が作った専用の複製 (完了時に StemBeams を受け取るため)。それ以外は null</summary>
+    private BetheMethod lastStemRun;
+
+    /// <summary>261105Cl 追加: 直近に成功した STEM の計算で使ったビームの一覧 (計算は専用の複製で走るので、このインスタンスの Beams とは別)。
+    /// STEM をまだ計算していなければ null</summary>
+    public Beam[] StemBeams { get; private set; }
+
+    /// <summary>261105Cl 追加: STEM 専用の複製が持つ、RunSTEM を呼んだ時点の結晶の向き (Crystal.RotationMatrix)。それ以外は null</summary>
+    private Matrix3D CrystalRotation;
     public unsafe void StemDoWork(object sender, DoWorkEventArgs e)
     {
         //MathNetの行列の内部は、1列目の要素、2列目の要素、という順番で格納されている
 
         //var (solver, thread, cs, delta, sliceThickness, convergenceAngle, detAngleInner, detAngleOuter, thicknesses, defocusses, imageSize, resolution, sourceSize, ionization, ionData, runId)
         //    = ((Solver, int, double, double, double, double, double, double, double[], double[], Size, double, double, StemIonizationRequest, IonizationData, long))e.Argument;//260801Cl 変更前 (1 チャネル)
-        var (solver, thread, cs, delta, sliceThickness, convergenceAngle, detAngleInner, detAngleOuter, thicknesses, defocusses, imageSize, resolution, sourceSize, requests, ionData, runId)
-            = ((Solver, int, double, double, double, double, double, double, double[], double[], Size, double, double, StemIonizationRequest[], IonizationData[], long))e.Argument;//260801Cl 多チャネル化 (codex 20巡)
+        //var (solver, thread, cs, delta, sliceThickness, convergenceAngle, detAngleInner, detAngleOuter, thicknesses, defocusses, imageSize, resolution, sourceSize, requests, ionData, runId)
+        //    = ((Solver, int, double, double, double, double, double, double, double[], double[], Size, double, double, StemIonizationRequest[], IonizationData[], long))e.Argument;//260801Cl 多チャネル化 (codex 20巡) // 261105Cl 変更前
+        var (solver, thread, cs, delta, sliceThickness, convergenceAngle, detAngleInner, detAngleOuter, thicknesses, defocusses, imageSize, resolution, sourceSize, requests, ionData, runId, stem)
+            = ((Solver, int, double, double, double, double, double, double, double[], double[], Size, double, double, StemIonizationRequest[], IonizationData[], long, BetheMethod))e.Argument; // 261105Cl stem を追加
+        // 261105Cl 追加: 本体は RunSTEM が作ったこの実行専用の複製で走らせる (共有のインスタンスの状態を読み書きしない。RunSTEM の説明を参照)。
+        //  複製の中では this == stem。e (取り消しの e.Cancel) と sender はそのまま渡す。
+        if (!ReferenceEquals(stem, this))
+        {
+            stem.StemDoWork(sender, e); // 261105Cl 追加
+            return; // 261105Cl 追加
+        }
 
         var diameterPix = (int)Math.Sqrt(BeamDirections.Length);
         var radiusPix = diameterPix / 2.0;
@@ -2740,7 +2813,13 @@ public partial class BetheMethod
             var tmp1 = -PiI * lambda * ((k2 - kq2) * defocus + cs * lambda2 * (k2 * k2 - kq2 * kq2) / 2);
             //色収差の部分
             var tmp2 = Math.PI * lambda * delta * (kq2 - k2);
-            tmp2 = -tmp2 * tmp2;
+            //tmp2 = -tmp2 * tmp2; // 261105Cl 変更前
+            // 261105Cl 修正: ½ が抜けていた。delta は焦点ぶれの標準偏差 δ = Cc·σ_V/V (σ_V = ΔV_FWHM/2.355。GetHRTEMImage と ReciPro の
+            //  FormImageSimulator.Delta と同じ δ)。焦点のずれ f が標準偏差 δ のガウス分布に従うとき、二つの部分波 (k と kq) の位相差
+            //  exp(−iπλ f X) (X = k²−kq²、上の tmp1 の defocus の項) の平均は ⟨exp(−iπλ f X)⟩ = exp(−½(πλδX)²)。
+            //  以前は exp(−(πλδX)²) で、δ を √2 倍したのと同じだった (200 kV・Cc 1.4 mm・ΔV 0.8 eV で、10/20/25 mrad の縁の包絡が
+            //  0.915/0.242/0.031、正しくは 0.957/0.492/0.177)。HRTEM 側 (下の Quasi-coherent と TCC) は ½ が付いている。
+            tmp2 = -tmp2 * tmp2 / 2; // 261105Cl
             return Exp(tmp1 + tmp2);
         }
 
@@ -3280,7 +3359,8 @@ public partial class BetheMethod
         var image_tds = Thicknesses.Select(e => defocusses.Select(e2 => GC.AllocateUninitializedArray<double>(width * height)).ToArray()).ToArray();
 
         double cX = width / 2.0, cY = height / 2.0, radiusPix2 = radiusPix * radiusPix;
-        var shift = (Crystal.RotationMatrix * (Crystal.A_Axis + Crystal.B_Axis + Crystal.C_Axis) / 2).ToPointD;
+        //var shift = (Crystal.RotationMatrix * (Crystal.A_Axis + Crystal.B_Axis + Crystal.C_Axis) / 2).ToPointD; // 261105Cl 変更前: 実行中に結晶を回すと途中の向きを読んだ
+        var shift = ((CrystalRotation ?? Crystal.RotationMatrix) * (Crystal.A_Axis + Crystal.B_Axis + Crystal.C_Axis) / 2).ToPointD; // 261105Cl 変更: RunSTEM の時点の向き
         // 260610Cl 変更: (1) q·r は t,d 非依存なので位相計算を t,d ループの外 (画素×q 単位) へ。
         //   (2) 行方向は等間隔 (Δ(q·r) = q.X·resolution) なので位相回転再帰 (複素乗算1回/画素/q) に置換し、
         //       Exp は行頭と 256 画素ごとの再アンカーのみに削減。位相ドリフトは 256·eps ~ 1e-13 オーダー。
@@ -3617,7 +3697,8 @@ public partial class BetheMethod
         //260801Cl 変更 (codex 20巡): publish 直前の最終 cancel 確認 → 完全構築済み aggregate を単一 Volatile.Write で一度だけ公開 (§5.5)。
         //失敗・cancel 時はここに到達しない = 以前の成功結果が残る (部分公開・混在公開の瞬間を作らない)
         if (bwSTEM.CancellationPending) { e.Cancel = true; return; }
-        Volatile.Write(ref _resultStem, new StemSimulationResult
+        //Volatile.Write(ref _resultStem, new StemSimulationResult // 261105Cl 変更前
+        Volatile.Write(ref (stemOwner ?? this)._resultStem, new StemSimulationResult // 261105Cl 変更: 専用の複製で走っているので、元のインスタンスへ公開する
         {
             RunId = runId,
             Size = new Size(width, height),
@@ -3737,8 +3818,8 @@ public partial class BetheMethod
                     var qSq = (k + g.Vec.ToPointD).Length2;
                     gList.Add((g.Psi, k + g.Vec.ToPointD, defocusses.Select(defocus =>
                         Exp(-PiI * rambda * qSq * (cs * rambdaSq * qSq / 2.0 + defocus))//球面収差
-                        * Math.Exp(-PiSq * betaSq * qSq * (defocus + rambdaSq * cs * qSq) * (defocus + rambdaSq * cs * qSq))//Ec 時間的インコヒーレンス
-                        * Math.Exp(-PiSq * rambdaSq * deltaSq * qSq * qSq / 2)//Es 空間的インコヒーレンス
+                        * Math.Exp(-PiSq * betaSq * qSq * (defocus + rambdaSq * cs * qSq) * (defocus + rambdaSq * cs * qSq))//Es 空間的インコヒーレンス (β: 照射の収束半角) // 261105Cl コメント修正: 旧「Ec 時間的」(下の行と逆になっていた。計算は不変)
+                        * Math.Exp(-PiSq * rambdaSq * deltaSq * qSq * qSq / 2)//Ec 時間的インコヒーレンス (δ: 焦点ぶれ) // 261105Cl コメント修正: 旧「Es 空間的」
                          ).ToArray()));
                 }
 
@@ -4007,7 +4088,8 @@ public partial class BetheMethod
         return getU(kV, new Beam(index, vq + vi - vj), null, inner, outer, nTheta, nPhi); // miss 時のみ vec/Beam を生成
     }
 
-    private readonly ConcurrentDictionary<(int Key1, int Key2), (Complex Real, Complex Imag)> uDictionary = [];
+    //private readonly ConcurrentDictionary<(int Key1, int Key2), (Complex Real, Complex Imag)> uDictionary = []; // 261105Cl 変更前
+    private ConcurrentDictionary<(int Key1, int Key2), (Complex Real, Complex Imag)> uDictionary = []; // 261105Cl readonly を外した: STEM 専用の複製 (RunSTEM) に新しいキャッシュを持たせるため
 
     #region STEM-EDX U_ion (260801Cl 追加)
 

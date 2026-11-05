@@ -148,7 +148,8 @@ public class ConvertCrystalData
             }
             catch { }
         }
-        else if (filename.EndsWith("out", Ord))//SMAP形式を読み込んだとき
+        //else if (filename.EndsWith("out", Ord))//SMAP形式を読み込んだとき // 261105Cl 変更前
+        else if (filename.EndsWith("out", StringComparison.OrdinalIgnoreCase))//SMAP形式を読み込んだとき // 261105Cl 変更 (監査 A21): 大文字の ".OUT" も読む (xml の判定と同じく大文字小文字を区別しない)
         {
             var stringList = new List<string>();
             string strTemp;
@@ -1258,8 +1259,10 @@ public class ConvertCrystalData
             {
                 var HM = i < spaceGroupNameHM.Count ? spaceGroupNameHM[i] : "";
                 var Hall = i < spaceGroupNameHall.Count ? spaceGroupNameHall[i] : "";
-                sgnum = SearchSGseriesNumberForCIF(HM, Hall, symmetry_Int_Tables_number, 
-                    a == b && b == c && alpha == beta && beta == gamma, Is90(alpha), Is90(beta), Is90(gamma));
+                //sgnum = SearchSGseriesNumberForCIF(HM, Hall, symmetry_Int_Tables_number,  // 261105Cl 変更前
+                //    a == b && b == c && alpha == beta && beta == gamma, Is90(alpha), Is90(beta), Is90(gamma));
+                sgnum = SearchSGseriesNumberForCIF(HM, Hall, symmetry_Int_Tables_number, // 261105Cl: 対称操作も渡す (曖昧な空白なし Hall 記号の判定用)
+                    a == b && b == c && alpha == beta && beta == gamma, Is90(alpha), Is90(beta), Is90(gamma), operations); // 261105Cl
                 if (sgnum != -1)
                     break;
             }
@@ -1531,7 +1534,10 @@ public class ConvertCrystalData
         return new V3(d[0], d[1], d[2]);
     }
 
-    private static int SearchSGseriesNumberForCIF(string SgNameHM, string SgNameHall, int SpaceGroupNumber, bool isRhomboShape, bool isAlpha90, bool isBeta90, bool isGamma90)
+    //private static int SearchSGseriesNumberForCIF(string SgNameHM, string SgNameHall, int SpaceGroupNumber, bool isRhomboShape, bool isAlpha90, bool isBeta90, bool isGamma90) // 261105Cl 変更前
+    /// <param name="operations">261105Cl 追加: CIF の対称操作 (_space_group_symop_operation_xyz / _symmetry_equiv_pos_as_xyz)。
+    /// 空白なしの Hall 記号が違う群の複数の設定に当たるとき、どれを採るかの判定に使う。null や空なら使わない。</param>
+    private static int SearchSGseriesNumberForCIF(string SgNameHM, string SgNameHall, int SpaceGroupNumber, bool isRhomboShape, bool isAlpha90, bool isBeta90, bool isGamma90, IEnumerable<string> operations = null) // 261105Cl operations を追加
     {
         int symmetrySeriesNumber = -1;
         if (SgNameHall != "")
@@ -1558,21 +1564,50 @@ public class ConvertCrystalData
 
             // 空白なしの比較は、標準表記と従来表記 (SpaceGroupHallStr。旧版が CIF に書き出していた表記) の両方で行う。
             // 'P32' (P3_2 と P312) や 'P62' (P6_2 と P622) のように複数の設定に当たるときは採らず、H-M 記号で決める。
+            // 261105Cl 追記: 複数の設定に当たっても、それらがすべて同じ群 (対称操作の集合が同じ。'C22-1bc' の Ccce(1) abc と ba-c など) なら最初の設定を採る。
+            //   違う群のときは、CIF の対称操作と一致する設定がちょうど 1 つならそれを採る。決まらなければ H-M 記号で、H-M 記号も無ければ番号で決める。
             var compact = hall.Replace(" ", "");
+            // 261105Cl 追加: 群どうしの比較は、一般位置 p の像の集合で行う (座標の差が格子併進なら同じ点)。
+            //   CIF の対称操作は、x, y, z と整数・分数だけの式 ('-x+y, -x, z+2/3' など) なら読む。それ以外 (小数など) を含むときは使わない。
+            var p = (X: 0.111, Y: 0.234, Z: 0.457); // 261105Cl 追加 (下の対称操作の確認と同じ一般位置)
+            static bool covers(IEnumerable<(double X, double Y, double Z)> a, IEnumerable<(double X, double Y, double Z)> b) // 261105Cl 追加: a の各点が b のどれかと格子併進を除いて一致
+                => a.All(u => b.Any(v => Math.Abs(Math.IEEERemainder(u.X - v.X, 1)) < 1e-6 && Math.Abs(Math.IEEERemainder(u.Y - v.Y, 1)) < 1e-6 && Math.Abs(Math.IEEERemainder(u.Z - v.Z, 1)) < 1e-6));
+            (double X, double Y, double Z)[] cifOrbit = null; // 261105Cl 追加
+            try // 261105Cl 追加
+            { // 261105Cl 追加
+                var ops = operations?.Select(o => o.ToLowerInvariant().Replace(" ", "").Split(',')).ToArray(); // 261105Cl 追加
+                if (ops?.Length > 0 && ops.All(c => c.Length == 3 && c.All(t => t.Length > 0 && t.All("xyz0123456789+-/".Contains)))) // 261105Cl 追加 (AffineGen.Parse は想定外の文字 (小数点など) があると先へ進まず無限ループになるので、先に弾く)
+                    cifOrbit = [.. ops.Select(c => AffineGen.Parse(c[0], c[1], c[2]).Apply(p.X, p.Y, p.Z))]; // 261105Cl 追加
+            } // 261105Cl 追加
+            catch (Exception e) when (e is FormatException or OverflowException) { cifOrbit = null; } // 261105Cl 追加 ('1/' など)
+            // 261105Cl 追記: その後 AffineGen.Parse 自身も読めない式で FormatException を投げるようにした (無限ループしない)。上の文字の確認は、大文字を小文字にしてから読むために残す
             foreach (var standard in new[] { true, false })
             {
-                int hit = -1, hitCount = 0;
+                //int hit = -1, hitCount = 0; // 261105Cl 変更前
+                var hits = new List<int>(); // 261105Cl
                 for (int i = 0; i < SymmetryStatic.TotalSpaceGroupNumber; i++)
                 {
                     var s = SymmetryStatic.Symmetries[i];
                     if (compact == (standard ? s.SpaceGroupHallStandardStr : s.SpaceGroupHallStr).Replace(" ", ""))
-                    {
-                        hit = i;
-                        hitCount++;
-                    }
+                        hits.Add(i); // 261105Cl
+                    //{ // 261105Cl 変更前
+                    //    hit = i;
+                    //    hitCount++;
+                    //}
                 }
-                if (hitCount == 1)
-                    return hit;
+                //if (hitCount == 1) // 261105Cl 変更前
+                //    return hit;
+                if (hits.Count == 1) // 261105Cl
+                    return hits[0]; // 261105Cl
+                if (hits.Count > 1) // 261105Cl 追加
+                {
+                    var orbits = hits.Select(i => SymmetryStatic.WyckoffPositions[i][0].GeneratePositions(p.X, p.Y, p.Z).Select(v => (v.X, v.Y, v.Z)).ToArray()).ToArray(); // 261105Cl 追加
+                    if (orbits.All(o => covers(o, orbits[0]) && covers(orbits[0], o))) // 261105Cl 追加: すべて同じ群
+                        return hits[0]; // 261105Cl 追加
+                    var matched = hits.Where((_, k) => cifOrbit != null && covers(orbits[k], cifOrbit) && covers(cifOrbit, orbits[k])).ToArray(); // 261105Cl 追加
+                    if (matched.Length == 1) // 261105Cl 追加
+                        return matched[0]; // 261105Cl 追加
+                }
             }
         }
 
@@ -1651,6 +1686,12 @@ public class ConvertCrystalData
      
 
         Replace(ref SgNameHM, "~", "");
+
+        // 261105Cl 追加: H-M 記号が無い (空白なしの Hall 記号が違う群の複数の設定に当たり、対称操作でも決まらなかった場合など) と、
+        //   下の SgNameHM[0] で IndexOutOfRangeException になり、呼び出し側の catch で CIF が開けなかった。H-M 記号では探せないので、
+        //   末尾の救済と同じく番号の最初の設定を採る。番号も無ければ -1 (決まらない)。
+        if (SgNameHM.Length == 0) // 261105Cl 追加
+            return SpaceGroupNumber is >= 1 and <= 230 ? Array.FindIndex(SymmetryStatic.Symmetries, s => s.SpaceGroupNumber == SpaceGroupNumber) : -1; // 261105Cl 追加
 
         //一文字目以降の英字は全て小文字に
         SgNameHM = SgNameHM[0] + SgNameHM[1..].ToLower();
