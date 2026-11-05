@@ -720,5 +720,38 @@ public class DiffuseScatteringFactor
             = (betaErr[0] / coeff[0], betaErr[1] / coeff[1], betaErr[2] / coeff[2], betaErr[3] / coeff[3], betaErr[4] / coeff[4], betaErr[5] / coeff[5]);
         return dst;
     }
+
+    /// <summary>261105Cl 追加: 格子が変形したとき (歪み・圧縮・状態方程式)、原子の揺れの大きさ (Cartesian の変位の分散 U_cart, Å²) を保つ温度因子を返す
+    /// (作者の方針 2026-11-05: B 型・U 型のどちらで持っていても同じ結果にする)。原子は分率座標のまま格子と一緒に動き、揺れの楕円体は伸び縮みしない、とする。
+    /// 変形前の実格子の行列を A (列 = a, b, c)、変形を F = R S (R は回転、S = √(FᵀF) は純粋な伸縮) とすると、楕円体は R で回るだけなので
+    /// U* = A⁻¹ U_cart A⁻ᵀ (Grosse-Kunstleve &amp; Adams 2002) から β' = M β Mᵀ、M = A⁻¹ S⁻¹ A。FᵀF = A⁻ᵀ G' A⁻¹ (G' は変形後の計量) なので、
+    /// M は変形前後の格子定数だけで決まる (A の向きの取り方にも、変形後の格子の向きにも依らない)。等方の値 (Iso) は変えない。
+    /// 直交格子の軸方向の伸縮では M = diag(a/a', b/b', c/c') となり、U 型の U_ij を固定するのと同じ。B 型 (β) を固定すると揺れが格子と一緒に伸びる。</summary>
+    /// <param name="oldCell">変形前の格子 (nm, rad)</param>
+    /// <param name="newCell">変形後の格子 (nm, rad)</param>
+    public DiffuseScatteringFactor Deform((double A, double B, double C, double Alpha, double Beta, double Gamma) oldCell,
+        (double A, double B, double C, double Alpha, double Beta, double Gamma) newCell)
+    {
+        var (a, b, c, al, be, ga) = oldCell;
+        // 変形前の実格子 (a を x 軸、b を xy 面に置く。M は向きの取り方に依らない)
+        var cy = (Math.Cos(al) - Math.Cos(be) * Math.Cos(ga)) / Math.Sin(ga);
+        var axes = MathNet.Numerics.LinearAlgebra.Double.DenseMatrix.OfArray(new double[,] {
+            { a, b * Math.Cos(ga), c * Math.Cos(be) },
+            { 0, b * Math.Sin(ga), c * cy },
+            { 0, 0, c * Math.Sqrt(1 - Math.Cos(be) * Math.Cos(be) - cy * cy) } });
+        var (a2, b2, c2, al2, be2, ga2) = newCell;
+        var g2 = MathNet.Numerics.LinearAlgebra.Double.DenseMatrix.OfArray(new double[,] {
+            { a2 * a2, a2 * b2 * Math.Cos(ga2), a2 * c2 * Math.Cos(be2) },
+            { a2 * b2 * Math.Cos(ga2), b2 * b2, b2 * c2 * Math.Cos(al2) },
+            { a2 * c2 * Math.Cos(be2), b2 * c2 * Math.Cos(al2), c2 * c2 } });
+        var inv = axes.Inverse();
+        var ftf = inv.Transpose() * g2 * inv; // = FᵀF (対称・正定値)
+        var evd = ftf.Evd(MathNet.Numerics.LinearAlgebra.Symmetricity.Symmetric);
+        var d = new double[3];
+        for (int i = 0; i < 3; i++)
+            d[i] = 1 / Math.Sqrt(evd.EigenValues[i].Real);
+        var sInv = evd.EigenVectors * MathNet.Numerics.LinearAlgebra.Double.DenseMatrix.OfDiagonalArray(d) * evd.EigenVectors.Transpose(); // S⁻¹ = (FᵀF)^(-1/2)
+        return Transform((inv * sInv * axes).ToArray(), oldCell, newCell);
+    }
     #endregion
 }
