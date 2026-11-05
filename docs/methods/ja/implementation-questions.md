@@ -15,7 +15,7 @@
 | A1b | `BetheMethod.cs:2292, 2528, 2337–2338` | **A1 の調査で見つけた別件（詳細は下の「A1b の詳細」）**: STEM が共有フィールド `Beams` を |g|² 順に並べ替えて上書きする。その後 `GetDifractedBeamAmpriltudes` が古い固有ベクトルを再利用すると、回折波の振幅が別の反射に代入される | 下記 |
 | A2 | `BetheMethod.cs:2741–2742` と `:3735, :3763` | 時間的コヒーレンス包絡の係数が STEM と HRTEM で異なる。STEM は $\exp[-\pi^2\lambda^2\delta^2(k_q^2-k^2)^2]$、HRTEM（TCC・準コヒーレントとも）は $\exp[-\tfrac12\pi^2\lambda^2\delta^2(\cdot)^2]$。同じ `delta` が STEM では √2 倍に効く。δ の定義（1σ か否か）が両者で違う意図なら、その旨の明記が必要 | [bloch-wave-imaging](bloch-wave-imaging.md) |
 | A3 | `BetheMethod.cs:1600–1608, 1630`、`EBSD/EBSD.cs:235, 1191` | 六方格子でマスターパターン格子幅 G>512（ブロック幅 3 または 5）のとき、ブロック中心が無効セル（方向 `null`）に落ちうる。するとブロック全体が [00−1] で選んだビーム集合を共有する | [kikuchi-dynamical](kikuchi-dynamical.md) §4-1 |
-| A4 | `BetheMethod.cs:2120–2168` `ComputeAbsorbedFluxBackground` | $N(z)=\sum_g|\psi_g|^2$ は密度の和。260829Cl の行割り修正後、吸収なしで保存されるのは $\sum_g P_g|\psi_g|^2$ なので、$U'=0$ でも $D(t)\neq0$ になりうる（傾いた表面・HOLZ で顕在化） | [kikuchi-dynamical](kikuchi-dynamical.md) §4-2 |
+| A4 | `BetheMethod.cs:2120–2168` `ComputeAbsorbedFluxBackground` | **追加調査で重要度を下げた（実質 B）。詳細は下の「A4 の詳細」**。$N(z)=\sum_g|\psi_g|^2$ は密度の和で、行割り後に吸収なしで保存されるのは流束 $J=\sum_g (P_g/P_0)|\psi_g|^2$。ただし $U'=0$ では $N\ge1$ となり `Max(0, …)` で D=0 に切られるので、当初書いた「$U'=0$ でも $D\ne0$」は実際には現れない。残るのは、吸収ありで D が 0.01–0.3% 小さく出る系統差（Si・20 kV の簡易計算）と、doc の「N は単調減少」が成り立たないこと | 下記、[kikuchi-dynamical](kikuchi-dynamical.md) §4-2 |
 | A5 | `Diffraction/Alchemi/AlchemiReduction.cs:146–171, 194` | 同種の不整合: $L_\mathrm{coh}$ は $P_g/P_0$ 重みの電流、$Y_\mathrm{dyn}$ は密度で数える。$\mu=\mu_{00}I$ の極限で Total $\neq\mu_{00}t/V_c$。差は HOLZ ビームと傾いた表面のときのみ | [alchemi-ionization](alchemi-ionization.md) |
 | A6 | `AlchemiReduction.Yield :196` | $Y_\mathrm{dyn}$ に $2K/P_0\ (\approx1/\cos\theta_0)$ の因子がない疑い（導出は Claude による・要検算）。30 mrad で 4.5e-4 程度 | [alchemi-ionization](alchemi-ionization.md) |
 | A7 | `BetheMethod.cs:2292, 2370` | 回折振幅・PED が固有値分解を再利用するかの判定が N・電圧・方位だけで、原子・DW 因子・Surface・モデル設定の変更を見ない | [bloch-wave](bloch-wave.md) Q5 |
@@ -58,6 +58,34 @@ Rating の式だけを Python で再現し（Si、200 kV、[001] 近傍。U0・�
 - CBED（457 行）は同じ `Find_gVectors` 呼び出しなので並びは変わらない。PED（2460 行）は和集合を Rating 順に並べ直すので、本数が N+1 と一致しても大半は同じ並びになる。
 - STEM の worker は `Beams` フィールドを 2536 行以降も 23 回読み直す（2647, 2759, 2765 行など）。STEM の実行中に同じインスタンスで `GetDifractedBeamAmpriltudes` が再計算に入ると、STEM の途中で `Beams` が別の配列に差し替わる。ポテンシャル行列（2536 行で作成）と `qList`（2759 行）が別のビーム集合になり、N が違えば範囲外アクセスにもなりうる。`IsSTEM_Busy`（317 行）はあるが、`GetDifractedBeamAmpriltudes` 側では見ていない。
 - 対処の方向（コードは変更していない）: STEM は `Beams` フィールドではなく局所変数でビームを持つ。あるいは、固有分解を作ったときのビーム配列の参照を保持し、2292 行の条件に `ReferenceEquals(Beams, eigenBeams)` を加える。
+
+### A4 の詳細（2026-11-05 追加調査）
+
+**式の確認**
+- 固有値問題は行を $P_g$ で割る $A=D_P^{-1}(D_Q+U)$（`getEigenMatrix`、260829Cl）。$U$ がエルミートで $P_g>0$ なら固有値は実数で、$J(z)=\sum_g (P_g/P_0)|\psi_g(z)|^2$ が保存される。$N(z)=\sum_g|\psi_g|^2$ は保存されない。
+- EBSD マスターパターンは、どの方向でも表面法線 $\hat s$ と出射方向 $\hat d$ が $\hat d=-\hat s$（基準が 1579–1580 行で $\hat d_\mathrm{ref}=-\hat s_\mathrm{ref}$、それを同じ回転で写すため）。`getVecK0` から $K_0=K\hat s$、よって $P_0=2K$、$P_g=2K+2\hat s\cdot g$。
+- $Q_g=-2K\hat s\cdot g-g^2$ を使うと $\varepsilon_g\equiv1-P_g/P_0=(Q_g+g^2)/(2K^2)$。Bragg 条件（$Q_g=0$）の反射では $\varepsilon_g=g^2/(2K^2)>0$。
+- したがって $N-J=\sum_g\varepsilon_g|\psi_g|^2$ は、強く励起された反射があるときに正になり、$N\ge1$ になりやすい。
+- `ComputeAbsorbedFluxBackground` の呼び出しは 1863 行の 1 か所だけ。固定表面（傾いた試料）の経路はない。そのため $\varepsilon_g$ は上の小さな値にとどまる。
+
+**数値確認（Claude による簡易計算）**
+コードと同じ $A=D_P^{-1}(D_Q+U)$、$\hat d=-\hat s$、Rating 順のビーム選択、P>0 のフィルタを Python で組んだ。条件は Si・20 kV・DW なし・$K$ に $U_0$ を入れない近似で、$f_e$ は Doyle–Turner 4-Gaussian の係数（Claude 追記・要確認）。
+
+| 方向 | N | 吸収なしの max\|J−1\| | max\|N−1\| | ∫₀¹⁰⁰(1−N)dz |
+|---|---|---|---|---|
+| [011]+1° | 150 | 3.5e-14 | 1.3e-3 | −0.070 nm |
+| [001]+3° | 150 | 8.7e-15 | 1.0e-3 | −0.063 nm |
+| [123] | 150 | 3.2e-14 | 6.2e-3 | −0.348 nm |
+
+- 吸収なしでは、全ケースで $N\ge1$（最小値 1.00000）だった。∫(1−N) は負なので `Max(0, …)` で 0 になり、D=0 という正しい値が出る。
+- 吸収あり（$[011]+1°$、$U'=0.05\,U$）: t = 5 / 20 / 100 nm で、∫(1−N) は ∫(1−J) より 0.25% / 0.13% / 0.03% 小さい。$U'=0.1\,U$ では 0.11% / 0.05% / 0.01%。
+- 差の絶対値 $\int\sum_g\varepsilon_g|\psi_g|^2dz$ は方向に依存し、Kikuchi バンドの位置で変わる。そのため一様な定数ではなく、ごく弱いコントラストとして D に乗る。
+
+**どちらが正しいか（著者の判断が要る点）**
+- 「吸収で干渉性の流束から抜けた電子が、入射と同じ法線方向の速さで拡散する」と考えるなら、拡散電子の密度は $1-J$ で、コードの $1-N$ とは $\sum\varepsilon_g|\psi_g|^2$ だけ違う。
+- 一方、doc の「チャネリングが無い極限では干渉性項と合わせて $dI/dz=\Sigma\sigma_n$」は、干渉性項が密度（$\sigma_n|\psi(r_n)|^2$）で数えられていることと $1-N$ を組み合わせると、恒等的に成り立つ。$1-J$ にすると合計は $\Sigma\sigma(1+\sum\varepsilon_g|\psi_g|^2)$ になる。斜めに進むビームの密度が高いのは物理的なので、合計が $\Sigma\sigma$ にならないこと自体は誤りではない、と Claude は考える。
+- 確実に誤っているのは、doc の「$N(0)=1$ で吸収により単調減少する」（2112 行）。吸収なしでも $N$ は 1 を超えて振動する。
+- 修正するなら 1 行で済む。`T_jj'` の $\sum_g C_g^j\overline{C_g^{j'}}$ を $\sum_g (P_g/P_0)C_g^j\overline{C_g^{j'}}$ にする（$P_g$ を関数に渡す必要がある）。効果は上の 0.01–0.3% の範囲。
 
 ## B: 条件次第・潜在的なもの
 

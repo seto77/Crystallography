@@ -15,7 +15,7 @@ Severity: **A** = may affect results / **B** = affects results only under some c
 | A1b | `BetheMethod.cs:2292, 2528, 2337–2338` | **Separate issue found while investigating A1 (see "A1b in detail" below).** STEM overwrites the shared field `Beams` re-sorted by |g|². If `GetDifractedBeamAmpriltudes` then reuses the old eigenvectors, diffracted-beam amplitudes are assigned to the wrong reflections. | below |
 | A2 | `BetheMethod.cs:2741–2742` vs `:3735, :3763` | The temporal-coherence envelope differs between STEM, $\exp[-\pi^2\lambda^2\delta^2(k_q^2-k^2)^2]$, and HRTEM (TCC and quasi-coherent), $\exp[-\tfrac12\pi^2\lambda^2\delta^2(\cdot)^2]$. The same `delta` acts √2 times larger in STEM. If δ is meant to be defined differently in the two paths, that should be stated. | [bloch-wave-imaging](bloch-wave-imaging.md) |
 | A3 | `BetheMethod.cs:1600–1608, 1630`, `EBSD/EBSD.cs:235, 1191` | For hexagonal lattices with master-pattern grid width G>512 (block width 3 or 5), a block centre can fall on an invalid cell (direction `null`); the whole block then shares the beam set chosen for [00−1]. | [kikuchi-dynamical](kikuchi-dynamical.md) §4-1 |
-| A4 | `BetheMethod.cs:2120–2168` `ComputeAbsorbedFluxBackground` | $N(z)=\sum_g|\psi_g|^2$ sums densities. After the 260829Cl row-scaling fix, the conserved quantity without absorption is $\sum_g P_g|\psi_g|^2$, so $D(t)\neq0$ is possible even with $U'=0$ (visible for tilted surfaces / HOLZ). | [kikuchi-dynamical](kikuchi-dynamical.md) §4-2 |
+| A4 | `BetheMethod.cs:2120–2168` `ComputeAbsorbedFluxBackground` | **Downgraded after further investigation (effectively B); see "A4 in detail" below.** $N(z)=\sum_g|\psi_g|^2$ sums densities, while the quantity conserved without absorption under row scaling is the current $J=\sum_g (P_g/P_0)|\psi_g|^2$. With $U'=0$, however, $N\ge1$ and `Max(0, …)` clips D to 0, so the originally stated symptom "$D\ne0$ even with $U'=0$" does not appear. What remains is a systematic underestimate of D by 0.01–0.3% with absorption (simplified Si, 20 kV calculation), and the doc claim that N decreases monotonically is false. | below, [kikuchi-dynamical](kikuchi-dynamical.md) §4-2 |
 | A5 | `Diffraction/Alchemi/AlchemiReduction.cs:146–171, 194` | Same kind of mismatch: $L_\mathrm{coh}$ counts $P_g/P_0$-weighted current while $Y_\mathrm{dyn}$ counts density. In the limit $\mu=\mu_{00}I$, Total $\neq\mu_{00}t/V_c$. Differs only for HOLZ beams and tilted surfaces. | [alchemi-ionization](alchemi-ionization.md) |
 | A6 | `AlchemiReduction.Yield :196` | $Y_\mathrm{dyn}$ may be missing a factor $2K/P_0\ (\approx1/\cos\theta_0)$ (derivation by Claude, needs checking). About 4.5e-4 at 30 mrad. | [alchemi-ionization](alchemi-ionization.md) |
 | A7 | `BetheMethod.cs:2292, 2370` | Diffracted amplitudes and PED decide whether to reuse the eigendecomposition from N, voltage and orientation only; changes to atoms, DW factors, Surface or model settings are not detected. | [bloch-wave](bloch-wave.md) Q5 |
@@ -58,6 +58,34 @@ Only the Rating formula was reproduced in Python (Si, 200 kV, near [001]; U0, ta
 - CBED (line 457) uses the same `Find_gVectors` call, so its order is unchanged. PED (line 2460) re-sorts its union by Rating, so even when its count equals N+1 the order mostly matches.
 - The STEM worker re-reads the `Beams` field 23 times after line 2536 (e.g. lines 2647, 2759, 2765). If `GetDifractedBeamAmpriltudes` recomputes on the same instance while STEM is running, `Beams` is replaced mid-run. The potential matrix (built at line 2536) and `qList` (line 2759) then refer to different beam sets, and with a different N this can index out of range. `IsSTEM_Busy` (line 317) exists, but `GetDifractedBeamAmpriltudes` does not check it.
 - Possible fixes (no code changed): keep STEM's beams in a local variable instead of the `Beams` field, or keep a reference to the beam array used for the eigendecomposition and add `ReferenceEquals(Beams, eigenBeams)` to the condition at line 2292.
+
+### A4 in detail (additional investigation, 2026-11-05)
+
+**Checking the equations**
+- The eigenproblem is row-scaled, $A=D_P^{-1}(D_Q+U)$ (`getEigenMatrix`, 260829Cl). For Hermitian $U$ and $P_g>0$ the eigenvalues are real and $J(z)=\sum_g (P_g/P_0)|\psi_g(z)|^2$ is conserved; $N(z)=\sum_g|\psi_g|^2$ is not.
+- In the EBSD master pattern the surface normal $\hat s$ and exit direction $\hat d$ satisfy $\hat d=-\hat s$ for every direction. The reference at lines 1579–1580 has $\hat d_\mathrm{ref}=-\hat s_\mathrm{ref}$, and both are mapped by the same rotation. `getVecK0` then gives $K_0=K\hat s$, so $P_0=2K$ and $P_g=2K+2\hat s\cdot g$.
+- Using $Q_g=-2K\hat s\cdot g-g^2$, $\varepsilon_g\equiv1-P_g/P_0=(Q_g+g^2)/(2K^2)$. For a reflection at the Bragg condition ($Q_g=0$), $\varepsilon_g=g^2/(2K^2)>0$.
+- Hence $N-J=\sum_g\varepsilon_g|\psi_g|^2$ is positive when strongly excited reflections are present, and $N\ge1$ is typical.
+- `ComputeAbsorbedFluxBackground` is called from one place only (line 1863), and there is no fixed (tilted) surface path, so $\varepsilon_g$ stays at the small values above.
+
+**Numerical check (simplified calculation by Claude)**
+The same $A=D_P^{-1}(D_Q+U)$, $\hat d=-\hat s$, Rating-ordered beam selection and P>0 filter were set up in Python. Conditions: Si, 20 kV, no DW, $U_0$ omitted from $K$; $f_e$ uses Doyle–Turner 4-Gaussian coefficients (Claude addition, to be checked).
+
+| Direction | N | max\|J−1\| without absorption | max\|N−1\| | ∫₀¹⁰⁰(1−N)dz |
+|---|---|---|---|---|
+| [011]+1° | 150 | 3.5e-14 | 1.3e-3 | −0.070 nm |
+| [001]+3° | 150 | 8.7e-15 | 1.0e-3 | −0.063 nm |
+| [123] | 150 | 3.2e-14 | 6.2e-3 | −0.348 nm |
+
+- Without absorption, $N\ge1$ in every case (minimum 1.00000). ∫(1−N) is negative, so `Max(0, …)` gives 0, which is the correct value of D.
+- With absorption ($[011]+1°$, $U'=0.05\,U$): at t = 5 / 20 / 100 nm, ∫(1−N) is smaller than ∫(1−J) by 0.25% / 0.13% / 0.03%. With $U'=0.1\,U$: 0.11% / 0.05% / 0.01%.
+- The absolute difference $\int\sum_g\varepsilon_g|\psi_g|^2dz$ depends on direction and varies with the Kikuchi bands. It therefore enters D as a very weak contrast, not as a uniform constant.
+
+**Which is right (needs the author's judgement)**
+- If electrons lost from the coherent current diffuse with the same normal velocity as the incident beam, their density is $1-J$. That differs from the code's $1-N$ by $\sum\varepsilon_g|\psi_g|^2$.
+- On the other hand, the doc says that "in the no-channelling limit, together with the coherent term, $dI/dz=\Sigma\sigma_n$". That holds identically when the coherent term is counted as a density ($\sigma_n|\psi(r_n)|^2$) and paired with $1-N$. With $1-J$ the sum becomes $\Sigma\sigma(1+\sum\varepsilon_g|\psi_g|^2)$. Oblique beams having a higher density is physical, so Claude does not consider a sum different from $\Sigma\sigma$ to be wrong in itself.
+- What is definitely wrong is the doc claim "$N(0)=1$ and it decreases monotonically through absorption" (line 2112). $N$ exceeds 1 and oscillates even without absorption.
+- A fix would be one line: replace $\sum_g C_g^j\overline{C_g^{j'}}$ in `T_jj'` with $\sum_g (P_g/P_0)C_g^j\overline{C_g^{j'}}$ (the function would need $P_g$ passed in). The effect is in the 0.01–0.3% range above.
 
 ## B: conditional / latent
 
