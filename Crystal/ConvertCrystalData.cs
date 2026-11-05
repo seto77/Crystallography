@@ -1359,12 +1359,18 @@ public class ConvertCrystalData
 
             if (shift.X != 0 || shift.Y != 0 || shift.Z != 0)
             {
-                var _x = Crystal2.Decompose(x, sgnum);
-                var _y = Crystal2.Decompose(y, sgnum);
-                var _z = Crystal2.Decompose(z, sgnum);
-                x = Crystal2.Compose(_x.Value + shift.X, _x.Error);
-                y = Crystal2.Compose(_y.Value + shift.Y, _y.Error);
-                z = Crystal2.Compose(_z.Value + shift.Z, _z.Error);
+                //var _x = Crystal2.Decompose(x, sgnum); // 261105Cl 変更前 (6 行)
+                //var _y = Crystal2.Decompose(y, sgnum);
+                //var _z = Crystal2.Decompose(z, sgnum);
+                //x = Crystal2.Compose(_x.Value + shift.X, _x.Error);
+                //y = Crystal2.Compose(_y.Value + shift.Y, _y.Error);
+                //z = Crystal2.Compose(_z.Value + shift.Z, _z.Error);
+                // 261105Cl 変更: x などは CIF の生の値 ("0.4689(2)")。Crystal2.Decompose は内部形式 (|誤差|) 用で括弧を読めず NaN になり、
+                // Compose が空文字を返すので、原点をずらした結晶の誤差つきの座標が全部消えていた (COD 2104403 など。tools/AdpCheck r3)。
+                // CIF の数値として読んでずらす。CIF の数値でないもの (分数 "1/4" など) は従来どおり Decompose で読む
+                string shiftText(string s, double d) => scaleValueText(s, 1, d) is { Length: > 0 } t ? t
+                    : Crystal2.Decompose(s, sgnum) is var (v, e) && !double.IsNaN(v) ? Crystal2.Compose(v + d, e) : s;
+                (x, y, z) = (shiftText(x, shift.X), shiftText(y, shift.Y), shiftText(z, shift.Z));
             }
 
             //次に異方性の温度散乱因子をさがす (等方性の温度因子は既に上のループで読み込まれている)
@@ -1851,8 +1857,10 @@ public class ConvertCrystalData
     /// 同じ形式の文字列を返す (不確かさも同じ係数)。Atoms2 のコンストラクタに CIF の生の値として渡す。
     /// Crystal2.Decompose は内部形式 (|誤差|) 用で CIF の括弧を読めないので使わない。指数を使わない InvariantCulture の書式で書く。
     /// 読めない文字列は換算できないので空 (= 未設定) を返す (未換算のまま別の型として採用しない)。
-    /// 値は、不確かさの有効数字 3〜4 桁目の位まで出す (不確かさの桁で丸めて値の精度を落とさないため)。</summary>
-    private static string scaleValueText(string s, double factor)
+    /// 値は、不確かさの有効数字 3〜4 桁目の位まで出す (不確かさの桁で丸めて値の精度を落とさないため)。
+    /// offset (261105Cl 追加) を足すと、原点の移動にも使える。係数 1 で指数が無いときは、元の小数の桁と不確かさの表記をそのまま使う。</summary>
+    //private static string scaleValueText(string s, double factor) // 261105Cl 変更前
+    private static string scaleValueText(string s, double factor, double offset = 0)
     {
         if (string.IsNullOrWhiteSpace(s))
             return s;
@@ -1872,8 +1880,15 @@ public class ConvertCrystalData
             v *= p;
             e *= p;
         }
-        v *= factor;
+        //v *= factor; // 261105Cl 変更前
+        v = v * factor + offset; // 261105Cl 変更: 原点の移動 (offset) も
         e *= Math.Abs(factor);
+        if (factor == 1 && !m.Groups[3].Success) // 261105Cl 追加: 平行移動だけなら元の桁で書く (0.336 + 0.25 を 0.5860000000000001 にしない)
+        {
+            var outDecimals = Math.Max(decimals, offset == 0 ? 0 : 3); // 原点の移動は 1/8 刻みなので小数 3 桁あれば表せる ("0" + 0.25 を "0" にしない)
+            var suText = su.Success ? "(" + long.Parse(su.Value, ci) * (long)Math.Pow(10, outDecimals - decimals) + ")" : "";
+            return v.ToString("F" + outDecimals, ci) + suText;
+        }
         if (double.IsNaN(e) || e <= 0)
             return v.ToString("0.####################", ci);
         var digits = Math.Clamp((int)Math.Ceiling(-Math.Log10(e)) + 3, 0, 20); // 不確かさの有効数字 3〜4 桁まで出す (値を不確かさの桁で丸めて精度を落とさないため)
