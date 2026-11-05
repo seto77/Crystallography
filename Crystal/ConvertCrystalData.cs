@@ -148,7 +148,8 @@ public class ConvertCrystalData
             }
             catch { }
         }
-        else if (filename.EndsWith("out", Ord))//SMAP形式を読み込んだとき
+        //else if (filename.EndsWith("out", Ord))//SMAP形式を読み込んだとき // 261105Cl 変更前
+        else if (filename.EndsWith("out", StringComparison.OrdinalIgnoreCase))//SMAP形式を読み込んだとき // 261105Cl 変更 (監査 A21): 大文字の ".OUT" も読む (xml の判定と同じく大文字小文字を区別しない)
         {
             var stringList = new List<string>();
             string strTemp;
