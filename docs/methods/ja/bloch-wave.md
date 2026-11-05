@@ -118,7 +118,7 @@ $f'$ は `AtomStatic.ES` の次のメソッドで、戻り値は $f^e$ と同じ
 
 被積分関数は $f(|\mathbf k-\mathbf g/2|)f(|\mathbf k+\mathbf g/2|)\,[1-e^{M(s^2-s_1^2-s_2^2)}]$ で、`getU` 側でさらに $e^{-Ms^2}$ を掛けるので合わせて Hall–Hirsch 型の $e^{-Ms^2} - e^{-M(s_1^2+s_2^2)}$ になる。被積分関数の $f$ は `ElasticFactorWithTail`（静的設定 `AbsorptionElasticModel`、既定 `TemariHybrid`、260922Cl）で、Peng → Mott–Bethe テールや Temari の $f_e$ を使う（実部の `es.Factor` には影響しない）。
 
-等方のときは、サイト内の等価位置で $M$ が同じなので $f'$ を 1 回だけ計算して使い回す。非等方・$g\neq0$ では等価位置ごとに数値積分をやり直す（L3901 の条件）。
+等方のときは、サイト内の等価位置で $M$ が同じなので $f'$ を 1 回だけ計算して使い回す。非等方・$g\neq0$ では等価位置ごとに数値積分をやり直す（L3902 の条件）。
 
 ### 2.5 キャッシュ `uDictionary`
 
@@ -322,7 +322,7 @@ $\mathbf v = \mathbf K + \mathbf g$、$q = |\mathbf K|^2 - |\mathbf v|^2$ とし
 ## 実装上の疑問点
 
 **Q1. U キャッシュのキーが検出器角を含まず、STEM 後に弾性経路が環状 U′ を読む可能性**
-`getU` のキーは `(compose(g), int.MaxValue)` で kV・inner/outer を含まない（L3865–3867, 3976–3978, 3997–3999）。`StemDoWork` は L2877 で Clear した後、`fillUq`（L2895）で **環状域 [detAngleInner, detAngleOuter] の U′** を通常の局所 U と同じキーで格納し、終了時に Clear しない。その後、同じインスタンス・同じ電圧で `GetDifractedBeamAmpriltudes` を呼ぶと（L2282 は電圧が変わったときしか Clear しない）、`Find_gVectors` 内の `getU`（L4451）がキャッシュを引き、吸収が全立体角 TDS ではなく ADF 検出器域の TDS になる。`GetHRTEMImage` は内部でこの関数を呼ぶ。CBED・PED・STEM・EBSD は冒頭で無条件 Clear するので影響しない。ReciPro が STEM と HRTEM/回折で同じ `BetheMethod` を共有しているかはこのリポジトリからは確認できない。
+`getU` のキーは `(compose(g), int.MaxValue)` で kV・inner/outer を含まない（L3865–3867, 3976–3978, 3997–3999）。`StemDoWork` は L2877 で Clear した後、`fillUq`（L2895）で **環状域 [detAngleInner, detAngleOuter] の U′** を通常の局所 U と同じキーで格納し、終了時に Clear しない。その後、同じインスタンス・同じ電圧で `GetDifractedBeamAmpriltudes` を呼ぶと（L2282 は電圧が変わったときしか Clear しない）、`Find_gVectors` 内の `getU`（L4466）がキャッシュを引き、吸収が全立体角 TDS ではなく ADF 検出器域の TDS になる。`GetHRTEMImage` は内部でこの関数を呼ぶ。CBED・PED・STEM・EBSD は冒頭で無条件 Clear するので影響しない。ReciPro が STEM と HRTEM/回折で同じ `BetheMethod` を共有しているかはこのリポジトリからは確認できない。
 
 **Q2. STEM と HRTEM で時間的コヒーレンス包絡の係数が 2 倍違う**
 HRTEM（L3735 準コヒーレント、L3763 TCC）は $\exp[-\tfrac12\pi^2\lambda^2\delta^2(q_1^2-q_2^2)^2]$、STEM の `Lenz`（L2741–2742）は $\exp[-\pi^2\lambda^2\delta^2(k_q^2-k^2)^2]$ で $\tfrac12$ が無い。$\delta$ を焦点ずれの rms（ガウス分布の標準偏差）とすると平均は前者になる。同じ「delta = Cc·ΔE/E」という入力が STEM では実効的に $\sqrt2$ 倍に効く。どちらかの定義（rms か 1/e 幅か）を明示する必要がある。詳細は [bloch-wave-imaging.md](bloch-wave-imaging.md)。
@@ -331,7 +331,7 @@ HRTEM（L3735 準コヒーレント、L3763 TCC）は $\exp[-\tfrac12\pi^2\lambd
 L3734 の β の項に「Ec 時間的インコヒーレンス」、L3735 の δ の項に「Es 空間的インコヒーレンス」とあるが逆。TCC 分岐（L3762–3763）は正しく書かれている。
 
 **Q4. `MottBetheMonopoleCoefficient` の doc コメントの単位**（数値は正しい）
-`AtomStatic.cs` L1210 は「s² = (sinθ/λ)² [Å⁻²]、f は [nm]」と書くが、Mott–Bethe の 0.023934 Å·Å⁻² を f[nm], s²[nm⁻²] に換算すると 0.1×0.023934/0.01 = 0.23934 で、0.2393366 は **s² が nm⁻²** の係数。`getU`（L3891）は nm⁻² の s2 を渡しているので数値は正しく、`ElasticFactorWithTail` 付近のコメント（「s² が nm⁻²・f が nm の規約」）とも一致する。L1210 の記述だけが食い違う。
+`AtomStatic.cs` L1210 は「s² = (sinθ/λ)² [Å⁻²]、f は [nm]」と書くが、Mott–Bethe の $f[\text{Å}] = 0.023934\,\Delta Z/s^2[\text{Å}^{-2}]$ を f[nm], s²[nm⁻²] に換算すると係数は 0.1×0.023934/0.01 = 0.23934 で、0.2393366 は **s² が nm⁻²** の係数。`getU`（L3893）は nm⁻² の s2 を渡しているので数値は正しく、`ElasticFactorWithTail` 付近のコメント（「s² が nm⁻²・f が nm の規約」）とも一致する。L1210 の記述だけが食い違う。
 
 **Q5. 固有値分解の再利用条件が結晶・モデルの変更を見ない**
 `GetDifractedBeamAmpriltudes`（L2292）と PED（L2370）は N・電圧・方位（PED は半角・step も）だけで再計算を判定し、原子・DW 因子・`Surface`・`ElasticIonModel`・`AbsorptionElasticModel` の変更を見ない。PED は冒頭で U キャッシュを Clear するが、固有値分解が再利用されれば新しい U は使われない。結晶を編集するたびに呼び出し側が `BetheMethod` を作り直す運用なら問題ない（要確認）。
@@ -340,9 +340,9 @@ L3734 の β の項に「Ec 時間的インコヒーレンス」、L3735 の δ 
 
 ## 要確認事項
 
-1. `Find_gVectors` の接平面座標による重複除去（L4473–4494）は、表面法線方向の成分だけが違うビーム（HOLZ 列などで $\mathbf g$ が $\mathbf n$ に平行な差を持つ組）を 1 本に減らす。線形化 Bethe 法の出射条件として意図どおりか。
+1. `Find_gVectors` の接平面座標による重複除去（L4475–4493）は、表面法線方向の成分だけが違うビーム（HOLZ 列などで $\mathbf g$ が $\mathbf n$ に平行な差を持つ組）を 1 本に減らす。線形化 Bethe 法の出射条件として意図どおりか。
 2. 非等方 DW のとき吸収の被積分関数 $1-e^{M(s^2-s_1^2-s_2^2)}$ に「g 方向の実効等方 B」を使っている（L3912 → `FactorImaginary(kV, s2, m)`）。TDS の中間散乱ベクトル $s_1, s_2$ は g 方向とは限らないので近似。許容範囲として扱ってよいか。
-3. `getU` のコメント「非弾性散乱因子 答えは無次元」（L3919）と、`FactorImaginary` の戻り値（nm、実部と同じ単位で足し合わされる）の食い違い。summary 側の記述を直すべきか。
+3. `getU` のコメント「非弾性散乱因子 答えは無次元」（L3918）と、`FactorImaginary` の戻り値（nm、実部と同じ単位で足し合わされる）の食い違い。summary 側の記述を直すべきか。
 4. CBED の出射位相 $e^{\pi i(P - 2k n_z)t}$（L589）の $-2k n_z$ 項の意図（全ビーム共通の位相で強度には効かない）。`Disks[].RawAmplitudes` の位相を使う下流があるか。
 5. `UseLocalSurfacePerBeamDirection = true` のまま CBED/STEM を走らせると、`getVecK0`（方向ごとの法線）と `reset_gVectors`（固定 `Surface`）で法線が食い違う。EBSD 用に立てたフラグが同じインスタンスに残る運用があるか。
 6. 定数の年代が混在（m0, e0 は 1986 年値、h は 2006 年値、λ の係数は別の数値）。意図的か。
