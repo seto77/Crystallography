@@ -206,7 +206,7 @@ ba-c,C2v^16,B2-2b,Bbm2,Bbm2,,B,,b,,m,2,,mm2,C2v,mmm,orthorhombic
 cab,C2v^16,B-2b2,B2mb,B2mb,,B,2,,,m,,b,2mm,C2v,mmm,orthorhombic
 -cba,C2v^16,C-2c2,C2cm,C2cm,,C,2,,,c,,m,2mm,C2v,mmm,orthorhombic
 bca,C2v^16,C-2c-2c,Cc2m,Cc2m,,C,,c,2,,,m,m2m,C2v,mmm,orthorhombic
-a-cb,C2v^16,A-2a-2a,Am2a,Am2a,,A,,m,2,,,a,mm2,C2v,mmm,orthorhombic
+a-cb,C2v^16,A-2a-2a,Am2a,Am2a,,A,,m,2,,,a,m2m,C2v,mmm,orthorhombic
 ,C2v^17,A2-2ac,Aea2,Aea2,,A,,b,,a,2,,mm2,C2v,mmm,orthorhombic
 ba-c,C2v^17,B2-2bc,Bbe2,Bbe2,,B,,b,,a,2,,mm2,C2v,mmm,orthorhombic
 cab,C2v^17,B-2bc2,B2eb,B2eb,,B,2,,,c,,b,2mm,C2v,mmm,orthorhombic
@@ -219,11 +219,11 @@ bca,C2v^18,F-2-2,Fm2m,Fm2m,,F,,m,2,,,m,m2m,C2v,mmm,orthorhombic
 ,C2v^19,F2-2d,Fdd2,Fdd2,,F,,d,,d,2,,mm2,C2v,mmm,orthorhombic
 cab,C2v^19,F-2d2,F2dd,F2dd,,F,2,,,d,,d,2mm,C2v,mmm,orthorhombic
 bca,C2v^19,F-2d-2d,Fd2d,Fd2d,,F,,d,2,,,d,m2m,C2v,mmm,orthorhombic
-,C2v^20,I2-2,Imm2,Imm2,,I,,m,,m,2,,2mm,C2v,mmm,orthorhombic
+,C2v^20,I2-2,Imm2,Imm2,,I,,m,,m,2,,mm2,C2v,mmm,orthorhombic
 cab,C2v^20,I-22,I2mm,I2mm,,I,2,,,m,,m,2mm,C2v,mmm,orthorhombic
-bca,C2v^20,I-2-2,Im2m,Im2m,,I,,m,2,,,m,mm2,C2v,mmm,orthorhombic
+bca,C2v^20,I-2-2,Im2m,Im2m,,I,,m,2,,,m,m2m,C2v,mmm,orthorhombic
 ,C2v^21,I2-2c,Iba2,Iba2,,I,,b,,a,2,,mm2,C2v,mmm,orthorhombic
-cab,C2v^21,I-2a2,I2cb,I2cb,,I,2,,,c,,b,m2m,C2v,mmm,orthorhombic
+cab,C2v^21,I-2a2,I2cb,I2cb,,I,2,,,c,,b,2mm,C2v,mmm,orthorhombic
 bca,C2v^21,I-2b-2b,Ic2a,Ic2a,,I,,c,2,,,a,m2m,C2v,mmm,orthorhombic
 ,C2v^22,I2-2a,Ima2,Ima2,,I,,m,,a,2,,mm2,C2v,mmm,orthorhombic
 ba-c,C2v^22,I2-2b,Ibm2,Ibm2,,I,,b,,m,2,,mm2,C2v,mmm,orthorhombic
@@ -310,7 +310,7 @@ bca,D2h^17,-B22b,Bbmm,B2/b2sub1/m2/m,,B,2,b,2s1,m,2,m,mmm,D2h,mmm,orthorhombic
 a-cb,D2h^17,-B2b2,Bmmb,B2/m2sub1/m2/b,,B,2,m,2s1,m,2,b,mmm,D2h,mmm,orthorhombic
 ,D2h^18,-C2bc2,Cmce,C2/m2/c2sub1/e,,C,2,m,2,c,2s1,a,mmm,D2h,mmm,orthorhombic
 ba-c,D2h^18,-C2bc2bc,Ccme,C2/c2/m2sub1/e,,C,2,c,2,m,2s1,b,mmm,D2h,mmm,orthorhombic
-cab,D2h^18,-A2ac2ac,Aema,A2sub1/e2/ma,,A,2s1,b,2,m,,a,mmm,D2h,mmm,orthorhombic
+cab,D2h^18,-A2ac2ac,Aema,A2sub1/e2/m2/a,,A,2s1,b,2,m,,a,mmm,D2h,mmm,orthorhombic
 -cba,D2h^18,-A22ac,Aeam,A2sub1/e2/a2/m,,A,2s1,c,2,a,2,m,mmm,D2h,mmm,orthorhombic
 bca,D2h^18,-B22bc,Bbem,B2/b2sub1/e2/m,,B,2,b,2s1,c,2,m,mmm,D2h,mmm,orthorhombic
 a-cb,D2h^18,-B2bc2,Bmeb,B2/m2sub1/e2/b,,B,2,m,2s1,a,2,b,mmm,D2h,mmm,orthorhombic
