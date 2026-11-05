@@ -524,6 +524,7 @@ public class Crystal : IEquatable<Crystal>, ICloneable, IComparable<Crystal>
         Atoms = atoms;
         for (int i = 0; i < atoms.Length; i++)
             Atoms[i].ResetSymmetry(symmetrySeriesNumber);
+        SyncDsfCell(); // 261105Cl 追加: 原子の温度因子にこの結晶の格子を持たせる (呼び出し側が古い格子で Dsf を作っていても揃う)
 
         AtomsP = Atoms.AsParallel();
 
@@ -569,7 +570,11 @@ public class Crystal : IEquatable<Crystal>, ICloneable, IComparable<Crystal>
         SymmetrySeriesNumber = cry.SymmetrySeriesNumber;
         Symmetry = SymmetryStatic.Symmetries[SymmetrySeriesNumber];
 
-        Atoms = cry.Atoms;
+        //Atoms = cry.Atoms; // 261105Cl 変更前
+        // 261105Cl 変更: 原子 (温度因子を含む) を複製して持つ。以前は元の結晶と同じ Atoms を共有していたため、複製側の編集や格子の同期が元の結晶を書き換えた
+        Atoms = [.. cry.Atoms.Select(a => (Atoms)a.Clone())];
+        SyncDsfCell();
+        Bethe = new BetheMethod(this); // 261105Cl 追加: 通常のコンストラクタ (this()) を通らないので Bethe が null のままで、複製した結晶の動力学計算・CBED が例外になっていた
 
         PublAuthorName = cry.PublAuthorName;
         Journal = cry.Journal;
@@ -699,6 +704,19 @@ public class Crystal : IEquatable<Crystal>, ICloneable, IComparable<Crystal>
         sigma12 = A * B * c2 * (CosAlpha * CosBeta - CosGamma);
         CellVolumeSquare = a2 * b2 * c2 * (1 - CosAlpha * CosAlpha - CosBeta * CosBeta - CosGamma * CosGamma + 2 * CosAlpha * CosBeta * CosGamma);
         Volume = Math.Sqrt(CellVolumeSquare);
+        SyncDsfCell(); // 261105Cl 追加: 格子が変わったら温度因子の係数も合わせる (XML 読込後の Reset、Deep.Copy 後の SetAxis もここを通る)
+    }
+
+    /// <summary>261105Cl 追加: 全原子の温度因子 (Dsf) に、この結晶の格子 (nm, rad) を持たせる。
+    /// U 型の異方性を無次元の β に直す係数 (2π² a*_i a*_j) と B_eq (Hamilton) の計量は Dsf.Cell から作るが、Cell は XML に保存されない ([XmlIgnore]) ため、
+    /// 結晶リストの読込・Deep.Copy の後は係数が 0 のままで、U 型の異方性が効かなかった (β = 0)。結晶の生成と SetAxis のたびに設定し直す。</summary>
+    private void SyncDsfCell()
+    {
+        if (Atoms == null) return;
+        var cell = CellValue;
+        foreach (var atoms in Atoms)
+            if (atoms?.Dsf != null)
+                atoms.Dsf.Cell = cell;
     }
     #endregion
 

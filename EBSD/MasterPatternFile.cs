@@ -292,7 +292,8 @@ public static class MasterPatternFile
     }
 
     /// <summary>結晶の同一性を表す文字列。格子定数 (nm, 6 桁)・角度 (度, 4 桁)・空間群の系列番号・
-    /// 原子ごとの Z / 座標 (5 桁) / 占有率 (4 桁) / 等方 B (nm², 6 桁) を並べる。名前は含めない (名前だけ変えた同じ結晶は同一とみなす)。</summary>
+    /// 原子ごとの Z / 座標 (5 桁) / 占有率 (4 桁) / 等方 B (nm², 6 桁) を並べる。異方性の原子はその後ろに β の 6 成分 (有効数字 7 桁) を足す (261105Cl)。
+    /// 名前は含めない (名前だけ変えた同じ結晶は同一とみなす)。</summary>
     public static string CrystalFingerprint(Crystal crystal)
     {
         ArgumentNullException.ThrowIfNull(crystal);
@@ -301,7 +302,17 @@ public static class MasterPatternFile
         sb.Append(string.Format(ci, "cell={0:F6},{1:F6},{2:F6},{3:F4},{4:F4},{5:F4};sg={6};",
             crystal.A, crystal.B, crystal.C, crystal.Alpha * 180 / Math.PI, crystal.Beta * 180 / Math.PI, crystal.Gamma * 180 / Math.PI, crystal.SymmetrySeriesNumber));
         foreach (var a in crystal.Atoms)
-            sb.Append(string.Format(ci, "{0}:{1:F5},{2:F5},{3:F5},{4:F4},{5:F6};", a.AtomicNumber, a.X, a.Y, a.Z, a.Occ, a.Dsf?.BisoEffective ?? 0));
+        {
+            //sb.Append(string.Format(ci, "{0}:{1:F5},{2:F5},{3:F5},{4:F4},{5:F6};", a.AtomicNumber, a.X, a.Y, a.Z, a.Occ, a.Dsf?.BisoEffective ?? 0)); // 261105Cl 変更前
+            sb.Append(string.Format(ci, "{0}:{1:F5},{2:F5},{3:F5},{4:F4},{5:F6}", a.AtomicNumber, a.X, a.Y, a.Z, a.Occ, a.Dsf?.BisoEffective ?? 0));
+            // 261105Cl 追加: 異方性の原子は β の 6 成分 (無次元, 11,22,33,12,23,31) も入れる。等価な B だけでは、非対角成分だけが違う結晶
+            // (構造因子は違う) を区別できない (Codex2 r3)。また 261105Cl の温度因子の修正 (β の非対角の係数・B_eq の式) の前に作った異方性の結晶のファイルは、
+            // ここが違うので読み込まれない (古い計算のパターンを受け入れない)。等方の原子は以前と同じ文字列なので、等方の結晶のファイルはそのまま読める。
+            // 数値だけをカンマで足すので、指紋を読む側 (tools/EbsdOccupancy の ParseFingerprint) は先頭の 5 つだけを読んで動く
+            if (a.Dsf is { UseIso: false } d)
+                sb.Append(string.Format(ci, ",{0:E6},{1:E6},{2:E6},{3:E6},{4:E6},{5:E6}", d.B11, d.B22, d.B33, d.B12, d.B23, d.B31));
+            sb.Append(';');
+        }
         return sb.ToString();
     }
 

@@ -94,7 +94,11 @@ public readonly struct SymmetryOperation
     /// <summary>260429Cl: 対称操作の線形部行列 R を直接空間ベクトルに適用して R·(x,y,z) を返す。
     /// 回転と回反 (-2=mirror, -3, -4, -6) の両方を扱う (回反は R(-n) = -R(+n) で実装)。
     /// trigonal/hex の hex 設定は非直交基底行列、それ以外 (cubic/tetragonal/orthorhombic および rho 設定) は直交基底。
-    /// 注意: <see cref="ConvertPlaneIndex(int, int, int)"/> は逆格子用 R^{-T} なので 3/4/6 回回転で行列が異なる。</summary>
+    /// 注意: <see cref="ConvertPlaneIndex(int, int, int)"/> は 3/4/6 回回転でこの行列と異なる。
+    /// //注意: <see cref="ConvertPlaneIndex(int, int, int)"/> は逆格子用 R^{-T} なので 3/4/6 回回転で行列が異なる。 // 261105Cl 変更前
+    /// 261105Cl 訂正: この ApplyMatrix の行列を R とすると、ConvertPlaneIndex は Rᵀ·h を返す (例: 4 回回転で ApplyMatrix = (−y, x, z)、ConvertPlaneIndex = (k, −h, l))。
+    /// 位置 R x + t の原子の異方性 DW は hᵀ(R β Rᵀ)h = (Rᵀh)ᵀ β (Rᵀh) なので、構造因子・getU で代表原子の β に当てる指数として正しい
+    /// (tools/AdpCheck sf で 4・3・6 回を含めて確認)。等価な面の集合としては群全体で {R⁻ᵀh} と同じ。「R⁻ᵀ に直す」と構造因子が壊れるので注意。</summary>
     public (double X, double Y, double Z) ApplyMatrix(double x, double y, double z)
     {
         if (Order == 1) return (x, y, z);

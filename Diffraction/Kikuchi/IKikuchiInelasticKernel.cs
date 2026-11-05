@@ -62,7 +62,8 @@ public sealed class KikuchiTdsEinsteinKernel : IKikuchiInelasticKernel
             int sub = BetheMethod.ElasticIonModel == ElasticIonModel.Neutral ? 0 : atoms.SubNumberElectron;
             _factor[i] = AtomStatic.ElectronScatteringPeng[atoms.AtomicNumber][sub].Factor;
             var dsf = atoms.Dsf;
-            var b = double.IsNaN(dsf.Biso) ? dsf.Biso000 : dsf.Biso; // v1 は等方 ADP のみ (設計 §3)
+            //var b = double.IsNaN(dsf.Biso) ? dsf.Biso000 : dsf.Biso; // v1 は等方 ADP のみ (設計 §3) // 261105Cl 変更前
+            var b = dsf.BisoEffective; // v1 は等方 ADP のみ (設計 §3)。261105Cl 変更: 非等方で Iso が 0 以下のときも B_eq (選択規則は Dsf.BisoEffective に集約)
             if (double.IsNaN(b) || b <= 1e-6)
             {
                 b = DefaultBiso; // 260805Cl: B=0/未設定 → 既定値で代用 (作者実機報告: B=0 結晶で全バンド消失)

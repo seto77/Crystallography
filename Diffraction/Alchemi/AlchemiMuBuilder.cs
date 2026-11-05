@@ -202,7 +202,8 @@ public sealed class AlchemiMuBuilder
                         if (dwf.UseIso)
                             m = dwf.Biso;
                         else if (index == (0, 0, 0))
-                            m = double.IsNaN(dwf.Biso) ? dwf.Biso000 : dwf.Biso;
+                            //m = double.IsNaN(dwf.Biso) ? dwf.Biso000 : dwf.Biso; // 261105Cl 変更前
+                            m = dwf.Biso000; // 261105Cl 変更: 非等方なら常にテンソルの B_eq (Dsf.BisoEffective と同じ規則)
                         else
                         {
                             //等価位置ごとに対称操作で指数を変換する = 非等方テンソルを軌道全体へ正しく展開する

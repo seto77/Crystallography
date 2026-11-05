@@ -370,8 +370,17 @@ public partial class Crystal2
         int i;
         if ((i = str.IndexOf("E", Ord)) > 0)
         {
-            _ = double.TryParse("1" + str[i..], style, culture, out expValue);
-            str = str[..i];
+            //_ = double.TryParse("1" + str[i..], style, culture, out expValue); // 261105Cl 変更前 (2 行)
+            //str = str[..i];
+            // 261105Cl 変更: 指数は NumberStyles.Float で読む。以前の style (= NumberStyles.Number) は指数を読めず、TryParse の失敗で expValue が 0 になり、
+            // 値も誤差も 0 になっていた。Compose は誤差つきの値を "2.500(10)E-1" の形で書くので、クリップボードで送った結晶の格子定数・座標・
+            // 温度因子がほぼ全部 0 になっていた (tools/AdpCheck r3)。CIF 1.1 の正式な形 "7.896E-1(13)" (内部形式 7.896E-1|13|) のように
+            // 指数の後ろに誤差があるときは、誤差を仮数の後ろへ移す。読めない指数は NaN を返す (0 にしない)
+            var exp = str[(i + 1)..];
+            var bar = exp.IndexOf('|');
+            str = bar >= 0 ? str[..i] + exp[bar..] : str[..i];
+            if (!double.TryParse("1E" + (bar >= 0 ? exp[..bar] : exp), NumberStyles.Float, culture, out expValue))
+                return (double.NaN, double.NaN);
         }
         string valStr;
         double err;
@@ -441,7 +450,13 @@ public partial class Crystal2
         if (s.Contains('E'))
         {
             int i = s.IndexOf('E');
-            _ = double.TryParse("1" + s[i..].ToString(), style, culture, out expValue);
+            //_ = double.TryParse("1" + s[i..].ToString(), style, culture, out expValue); // 261105Cl 変更前
+            // 261105Cl 変更: Decompose と同じく指数は NumberStyles.Float で読む (以前は 10 Å 以上の格子定数などが 0 になっていた)。指数の後ろの |誤差| は捨てる
+            var exp = s[(i + 1)..];
+            if (exp.IndexOf('|') is var bar and >= 0)
+                exp = exp[..bar];
+            if (!double.TryParse(string.Concat("1E", exp), NumberStyles.Float, culture, out expValue))
+                return double.NaN;
             s = s[..i];
         }
 
@@ -456,19 +471,27 @@ public partial class Crystal2
         if (double.IsNaN(val))
             return "";
         else if (double.IsNaN(err) || err <= 0)
-            return val.ToString();
+            //return val.ToString(); // 261105Cl 変更前
+            return val.ToString(culture); // 261105Cl 変更: 小数点がカンマの環境でも '.' で書く (ToBytes はカンマを表せず、値が壊れていた)。以下の ToString・Parse も同じ
         else
         {
             //まず、誤差を 23E-6 みたいな形にする
-            var temp = err.ToString("E1");
+            //var temp = err.ToString("E1"); // 261105Cl 変更前 (この下の 4 行は culture の指定を足しただけ)
+            //var errLog = Convert.ToInt32(temp[(temp.IndexOf("E", Ord) + 1)..]) - 1;
+            //var valStr = val.ToString("E15");
+            //var valLog = Convert.ToInt32(valStr[(valStr.IndexOf("E", Ord) + 1)..]);
+            var temp = err.ToString("E1", culture);
             var errStr = temp[..temp.IndexOf("E", Ord)].Replace(".", "");
-            var errLog = Convert.ToInt32(temp[(temp.IndexOf("E", Ord) + 1)..]) - 1;
+            var errLog = int.Parse(temp[(temp.IndexOf("E", Ord) + 1)..], NumberStyles.AllowLeadingSign, culture) - 1;
 
             //vを取りあえず十分な精度で出力する
-            var valStr = val.ToString("E15");
-            var valLog = Convert.ToInt32(valStr[(valStr.IndexOf("E", Ord) + 1)..]);
+            var valStr = val.ToString("E15", culture);
+            var valLog = int.Parse(valStr[(valStr.IndexOf("E", Ord) + 1)..], NumberStyles.AllowLeadingSign, culture);
 
-            var result = valLog >= errLog ? valStr[..(valLog - errLog + 2)] : val.ToString("E0")[..1];
+            //var result = valLog >= errLog ? valStr[..(valLog - errLog + 2)] : val.ToString("E0")[..1]; // 261105Cl 変更前
+            // 261105Cl 変更: 負の値は先頭の '-' の分だけ 1 桁短く切られ、誤差の桁が 1 つずれて 10 倍の誤差として読まれていた (tools/AdpCheck r3)
+            var sign = val < 0 ? 1 : 0;
+            var result = valLog >= errLog ? valStr[..(valLog - errLog + 2 + sign)] : val.ToString("E0", culture)[..(1 + sign)];
 
             if (valLog < errLog)
                 for (int i = 0; i < errLog - valLog; i++)
@@ -477,7 +500,8 @@ public partial class Crystal2
             result += "(" + errStr + ")";
 
             if (valLog != 0)
-                result += $"E{valLog}";
+                //result += $"E{valLog}"; // 261105Cl 変更前
+                result += "E" + valLog.ToString(culture); // 261105Cl 変更: 負号が U+2212 の環境でも '-' で書く
 
             return result;
         }

@@ -460,6 +460,12 @@ public class ConvertCrystalData
             if (l[1] < str[i].Split(" ", true)[0].Length)
                 l[1] = str[i].Split(" ", true)[0].Length;
 
+        // 261105Cl 追加: AMC の異方性の列は U(1,1) U(2,2) U(3,3) U(1,2) U(1,3) U(2,3) (B(i,j) も同じ) の順だが、Atoms2 と ReciPro の並びは
+        // (11, 22, 33, 12, 23, 31) (CIF の読込も [u11, u22, u33, u12, u23, u13] に並べ替えている)。以前は列の順のまま入れていたため、
+        // AMC 由来の結晶では 23 と 31 (13) が入れ替わっていた (同梱の AMCSD.cdb3 で、単斜晶 b 軸の 2 回軸上の原子が U23≠0・U13=0 になる型が 14,841 原子)
+        int column13 = str[n].IndexOf("1,3)", Ord), column23 = str[n].IndexOf("2,3)", Ord);
+        bool anisoColumn13Before23 = column13 >= 0 && column23 >= 0 && column13 < column23;
+
         var atoms = new List<Atoms2>();
         for (int i = n + 1; i < str.Length; i++)
         {//原子座標読み取りループ開始
@@ -508,8 +514,12 @@ public class ConvertCrystalData
 
             var aniso = new string[6];
             if (IsanisoUsed)
+            {
                 for (int k = 0; k < 6; k++)
                     aniso[k] = item[j++];
+                if (anisoColumn13Before23) // 261105Cl 追加: (12, 13, 23) → (12, 23, 31)
+                    (aniso[4], aniso[5]) = (aniso[5], aniso[4]);
+            }
             else
                 aniso = null;
 
@@ -951,7 +961,29 @@ public class ConvertCrystalData
                     RemoveRange(ref str, start, end - start);
                 }
                 else
-                    RemoveAt(ref str, start + 1);
+                {
+                    //RemoveAt(ref str, start + 1); // 261105Cl 変更前
+                    // 261105Cl 変更: loop_ の外の単独のタグは、値もいっしょに消す。値が ; で囲まれた複数行のときは閉じの ; の行まで。
+                    // 以前はタグの行だけを消して ; の文章を残したため、文章が直前のループの行として読まれ、ループ全体が読めなくなっていた。
+                    // SHELXL の CIF では _geom_special_details が _atom_site_aniso のループの直後に来るので、異方性の温度因子が全部捨てられていた
+                    // (tools/EbsdCheck/testdata/koseki_cif/888769.cif など。tools/AdpCheck realcif)
+                    var tag = start + 1;
+                    var last = tag;
+                    // 値はタグの次の「コメントでない行」にある。タグと値の間のコメント行もいっしょに消す (Codex2 r3。以前はタグとコメントだけを消して値を残していた)
+                    var next = tag + 1;
+                    while (next < str.Length && str[next].TrimStart().StartsWith('#'))
+                        next++;
+                    if (next < str.Length && str[next].StartsWith(';'))
+                    {
+                        last = next + 1;
+                        while (last < str.Length - 1 && !str[last].StartsWith(';'))
+                            last++;
+                    }
+                    else if (next < str.Length && str[tag].Trim().Split((char[])null, StringSplitOptions.RemoveEmptyEntries).Length == 1
+                        && !str[next].TrimStart().StartsWith('_') && !str[next].TrimStart().StartsWith("loop_", Ord) && !str[next].StartsWith("data_", Ord))
+                        last = next; // タグだけの行で、値が次の (コメントでない) 行にあるとき
+                    RemoveRange(ref str, tag, last - tag + 1);
+                }
             }
         }
 
@@ -968,12 +1000,16 @@ public class ConvertCrystalData
         var note = "";
         if (str[0].StartsWith("data", Ord))
             note = str[0];
-        for (int n = 0; n < str.Length; n++)
-        {
-            //全てのコメントを削除
-            while (str[n].StartsWith("#", Ord) && n < str.Length - 1)
-                RemoveAt(ref str, n);
-        }
+        //for (int n = 0; n < str.Length; n++) // 261105Cl 変更前 (5 行)
+        //{
+        //    //全てのコメントを削除
+        //    while (str[n].StartsWith("#", Ord) && n < str.Length - 1)
+        //        RemoveAt(ref str, n);
+        //}
+        // 261105Cl 変更: 全てのコメントを削除 (最後の行も)。以前は n < str.Length - 1 の条件で最後の行のコメントだけ残り、
+        // 前処理で末尾の _geom のループが除かれたあと最後に残る「# 10. MOLECULAR GEOMETRY」のような区切り (CCDC の CIF に多い) が、
+        // 直前のループ (_atom_site_aniso) のデータとして読まれ、異方性の温度因子が全部捨てられていた (tools/EbsdCheck/testdata/koseki_cif/818186_OAc.cif)
+        str = [.. str.Where(s => !s.StartsWith('#'))];
         for (int n = 0; n < str.Length; n++)
         {
             if (str[n].StartsWith(";", Ord))//;で始まる行を見つけたら
@@ -1384,21 +1420,47 @@ public class ConvertCrystalData
                 }
             }
 
-            //Bタイプが全て ”” だったら、Uタイプと判定
-            var isU = bIso.Length == 0 && b11.Length == 0 && b12.Length == 0 && b13.Length == 0 && b22.Length == 0 && b23.Length == 0 && b33.Length == 0;
-            //非等方性が全て ”” だったら、等方性と判断
-            var isIso = isU ?
-                u11.Length == 0 && u12.Length == 0 && u13.Length == 0 && u22.Length == 0 && u23.Length == 0 && u33.Length == 0 :
-                b11.Length == 0 && b12.Length == 0 && b13.Length == 0 && b22.Length == 0 && b23.Length == 0 && b33.Length == 0;
-
-            var iso = isU ? uIso : bIso;
-
+            ////Bタイプが全て ”” だったら、Uタイプと判定 // 261105Cl 変更前 (14 行)
+            //var isU = bIso.Length == 0 && b11.Length == 0 && b12.Length == 0 && b13.Length == 0 && b22.Length == 0 && b23.Length == 0 && b33.Length == 0;
+            ////非等方性が全て ”” だったら、等方性と判断
+            //var isIso = isU ?
+            //    u11.Length == 0 && u12.Length == 0 && u13.Length == 0 && u22.Length == 0 && u23.Length == 0 && u33.Length == 0 :
+            //    b11.Length == 0 && b12.Length == 0 && b13.Length == 0 && b22.Length == 0 && b23.Length == 0 && b33.Length == 0;
+            //
+            //var iso = isU ? uIso : bIso;
+            //
+            //if (iso.Length == 0)
+            //    iso = "0";
+            //
+            //string[] aniso = isU ? //11, 22, 33, 12, 23, 31の順番
+            //    [u11, u22, u33, u12, u23, u13] :
+            //    [b11, b22, b33, b12, b23, b13];
+            // 261105Cl 変更: 異方性があるときは U 型にそろえる。
+            // (1) CIF の _atom_site_aniso_B_ij は Å² の B (= 8π²U、CIF core 辞書) だが、ReciPro の B 型の異方性は無次元の β (exp(−hᵀβh)) なので、
+            //     以前のように B_ij をそのまま B 型として入れると DW が桁違いになっていた (格子の大きさで変わる。tools/AdpCheck cifb で 260 倍)。B_ij / 8π² = U_ij に直す。
+            // (2) 以前は _atom_site_B_iso_or_equiv があるだけで B 型と判定したため、B_iso と _atom_site_aniso_U_ij が並ぶ CIF では U_ij を捨てていた
+            bool anyAnisoU = u11.Length + u22.Length + u33.Length + u12.Length + u13.Length + u23.Length > 0;
+            bool anyAnisoB = b11.Length + b22.Length + b33.Length + b12.Length + b13.Length + b23.Length > 0;
+            const double bToU = 1 / (8 * Math.PI * Math.PI);
+            bool isU, isIso;
+            string iso;
+            string[] aniso; //11, 22, 33, 12, 23, 31の順番
+            if (anyAnisoU || anyAnisoB)
+            {
+                isU = true;
+                isIso = false;
+                aniso = anyAnisoU ? [u11, u22, u33, u12, u23, u13] : [.. new[] { b11, b22, b33, b12, b23, b13 }.Select(s => scaleValueText(s, bToU))];
+                iso = uIso.Length > 0 ? uIso : bIso.Length > 0 ? scaleValueText(bIso, bToU) : "0";
+            }
+            else
+            {
+                isU = bIso.Length == 0;
+                isIso = true;
+                iso = isU ? uIso : bIso;
+                aniso = isU ? [u11, u22, u33, u12, u23, u13] : [b11, b22, b33, b12, b23, b13];
+            }
             if (iso.Length == 0)
                 iso = "0";
-
-            string[] aniso = isU ? //11, 22, 33, 12, 23, 31の順番
-                [u11, u22, u33, u12, u23, u13] :
-                [b11, b22, b33, b12, b23, b13];
 
             if (atomicNumber > 0)
                 atoms.Add(new Atoms2(atomLabel, atomicNumber, 0, 0, [x, y, z], occ, isIso, isU, iso, aniso));
@@ -1785,6 +1847,40 @@ public class ConvertCrystalData
 
     #region CIFファイルへの変換
 
+    /// <summary>261105Cl 追加: CIF の数値の文字列 ("0.071(1)"、"-.0030(9)"、"1.2E-3(3)"、"1.2(3)E-3" など。括弧は仮数の最後の桁の標準不確かさ) に係数を掛けた、
+    /// 同じ形式の文字列を返す (不確かさも同じ係数)。Atoms2 のコンストラクタに CIF の生の値として渡す。
+    /// Crystal2.Decompose は内部形式 (|誤差|) 用で CIF の括弧を読めないので使わない。指数を使わない InvariantCulture の書式で書く。
+    /// 読めない文字列は換算できないので空 (= 未設定) を返す (未換算のまま別の型として採用しない)。
+    /// 値は、不確かさの有効数字 3〜4 桁目の位まで出す (不確かさの桁で丸めて値の精度を落とさないため)。</summary>
+    private static string scaleValueText(string s, double factor)
+    {
+        if (string.IsNullOrWhiteSpace(s))
+            return s;
+        // 不確かさは指数の前 ("7.896(13)E-1") と後ろ (CIF 1.1 の文法どおりの "7.896E-1(13)") のどちらでも読む。どちらも仮数の最後の桁に対する値
+        var m = Regex.Match(s.Trim(), @"^([+-]?(?:\d+\.?\d*|\.\d+))(?:\((\d+)\))?(?:[eE]([+-]?\d+))?(?:\((\d+)\))?$");
+        if (!m.Success || (m.Groups[2].Success && m.Groups[4].Success))
+            return "";
+        var ci = System.Globalization.CultureInfo.InvariantCulture;
+        var mantissa = m.Groups[1].Value;
+        var v = double.Parse(mantissa, System.Globalization.NumberStyles.Float, ci);
+        var decimals = mantissa.Contains('.') ? mantissa.Length - mantissa.IndexOf('.') - 1 : 0;
+        var su = m.Groups[2].Success ? m.Groups[2] : m.Groups[4];
+        var e = su.Success ? long.Parse(su.Value, ci) * Math.Pow(10, -decimals) : double.NaN;
+        if (m.Groups[3].Success)
+        {
+            var p = Math.Pow(10, int.Parse(m.Groups[3].Value, ci));
+            v *= p;
+            e *= p;
+        }
+        v *= factor;
+        e *= Math.Abs(factor);
+        if (double.IsNaN(e) || e <= 0)
+            return v.ToString("0.####################", ci);
+        var digits = Math.Clamp((int)Math.Ceiling(-Math.Log10(e)) + 3, 0, 20); // 不確かさの有効数字 3〜4 桁まで出す (値を不確かさの桁で丸めて精度を落とさないため)
+        var errDigits = (long)Math.Round(e * Math.Pow(10, digits));
+        return v.ToString("F" + digits, ci) + "(" + errDigits + ")";
+    }
+
     public static string ConvertToCIF(Crystal crystal)
     {
         var sb = new StringBuilder();
@@ -1828,14 +1924,24 @@ public class ConvertCrystalData
 
         #region 格子定数、対称性
         sb.AppendLine("_chemical_formula_sum '" + crystal.ChemicalFormulaSum + "'");
-        sb.AppendLine("_cell_length_a " + (crystal.A * 10).ToString("f6"));
-        sb.AppendLine("_cell_length_b " + (crystal.B * 10).ToString("f6"));
-        sb.AppendLine("_cell_length_c " + (crystal.C * 10).ToString("f6"));
-        sb.AppendLine("_cell_angle_alpha " + (crystal.Alpha / Math.PI * 180).ToString("f6"));
-        sb.AppendLine("_cell_angle_beta " + (crystal.Beta / Math.PI * 180).ToString("f6"));
-        sb.AppendLine("_cell_angle_gamma " + (crystal.Gamma / Math.PI * 180).ToString("f6"));
-        sb.AppendLine("_cell_volume " + (crystal.Volume * 1000).ToString("f6"));
-        sb.AppendLine("_exptl_crystal_density_diffrn " + crystal.Density.ToString("f6"));
+        //sb.AppendLine("_cell_length_a " + (crystal.A * 10).ToString("f6")); // 261105Cl 変更前 (8 行)
+        //sb.AppendLine("_cell_length_b " + (crystal.B * 10).ToString("f6"));
+        //sb.AppendLine("_cell_length_c " + (crystal.C * 10).ToString("f6"));
+        //sb.AppendLine("_cell_angle_alpha " + (crystal.Alpha / Math.PI * 180).ToString("f6"));
+        //sb.AppendLine("_cell_angle_beta " + (crystal.Beta / Math.PI * 180).ToString("f6"));
+        //sb.AppendLine("_cell_angle_gamma " + (crystal.Gamma / Math.PI * 180).ToString("f6"));
+        //sb.AppendLine("_cell_volume " + (crystal.Volume * 1000).ToString("f6"));
+        //sb.AppendLine("_exptl_crystal_density_diffrn " + crystal.Density.ToString("f6"));
+        // 261105Cl 変更: 数値は InvariantCulture で書く (小数点がカンマの環境では、正当な CIF の数値にならなかった)。原子の 2 つのループも同じ
+        var ci = System.Globalization.CultureInfo.InvariantCulture;
+        sb.AppendLine(ci, $"_cell_length_a {crystal.A * 10:f6}");
+        sb.AppendLine(ci, $"_cell_length_b {crystal.B * 10:f6}");
+        sb.AppendLine(ci, $"_cell_length_c {crystal.C * 10:f6}");
+        sb.AppendLine(ci, $"_cell_angle_alpha {crystal.Alpha / Math.PI * 180:f6}");
+        sb.AppendLine(ci, $"_cell_angle_beta {crystal.Beta / Math.PI * 180:f6}");
+        sb.AppendLine(ci, $"_cell_angle_gamma {crystal.Gamma / Math.PI * 180:f6}");
+        sb.AppendLine(ci, $"_cell_volume {crystal.Volume * 1000:f6}");
+        sb.AppendLine(ci, $"_exptl_crystal_density_diffrn {crystal.Density:f6}");
 
         var sym = crystal.Symmetry;
         sb.AppendLine("_space_group_IT_number " + sym.SpaceGroupNumber);
@@ -1912,8 +2018,13 @@ public class ConvertCrystalData
 
         foreach (var a in crystal.Atoms)
         {
-            var u = double.IsNaN(a.Dsf.Uiso) ? 0 : a.Dsf.Uiso * 100;
-            sb.AppendLine($" {a.Label} {AtomStatic.AtomicName(a.AtomicNumber)} {a.X:f6} {a.Y:f6} {a.Z:f6} {a.Occ:f6} {u:f6}");
+            //var u = double.IsNaN(a.Dsf.Uiso) ? 0 : a.Dsf.Uiso * 100; // 261105Cl 変更前
+            // 261105Cl 変更: 異方性の原子は、テンソルから求めた等価な等方 U (U_eq = B_eq/8π²、Hamilton / Fischer & Tillmanns) を書く。
+            // 以前は保存されている Iso をそのまま書いたため、異方性だけ入力した原子 (Iso=0) では 0 になっていた
+            var uRaw = a.Dsf.UseIso ? a.Dsf.Uiso : a.Dsf.BisoEffective / (8 * Math.PI * Math.PI);
+            var u = double.IsNaN(uRaw) ? 0 : uRaw * 100;
+            //sb.AppendLine($" {a.Label} {AtomStatic.AtomicName(a.AtomicNumber)} {a.X:f6} {a.Y:f6} {a.Z:f6} {a.Occ:f6} {u:f6}"); // 261105Cl 変更前
+            sb.AppendLine(ci, $" {a.Label} {AtomStatic.AtomicName(a.AtomicNumber)} {a.X:f6} {a.Y:f6} {a.Z:f6} {a.Occ:f6} {u:f6}"); // 261105Cl 変更: InvariantCulture
         }
 
 
@@ -1935,7 +2046,8 @@ public class ConvertCrystalData
                 var u23 = double.IsNaN(a.Dsf.U23) ? 0 : a.Dsf.U23 * 100;
                 var u31 = double.IsNaN(a.Dsf.U31) ? 0 : a.Dsf.U31 * 100;
                 var u12 = double.IsNaN(a.Dsf.U12) ? 0 : a.Dsf.U12 * 100;
-                sb.AppendLine($" {a.Label} {u11:f6} {u22:f6} {u33:f6} {u23:f6} {u31:f6} {u12:f6}");
+                //sb.AppendLine($" {a.Label} {u11:f6} {u22:f6} {u33:f6} {u23:f6} {u31:f6} {u12:f6}"); // 261105Cl 変更前
+                sb.AppendLine(ci, $" {a.Label} {u11:f6} {u22:f6} {u33:f6} {u23:f6} {u31:f6} {u12:f6}"); // 261105Cl 変更: InvariantCulture
             }
         }
         #endregion

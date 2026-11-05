@@ -3904,7 +3904,8 @@ public partial class BetheMethod
                             if (dsf.UseIso)
                                 m = dsf.Biso;
                             else if (index == (0, 0, 0))
-                                m = double.IsNaN(dsf.Biso) ? dsf.Biso000 : dsf.Biso;
+                                //m = double.IsNaN(dsf.Biso) ? dsf.Biso000 : dsf.Biso; // 261105Cl 変更前
+                                m = dsf.BisoEffective; // 261105Cl 変更: 非等方で Iso が 0 以下のときも B_eq (選択規則は Dsf.BisoEffective に集約)
                             else
                             {
                                 var (H, K, L) = atom.Operation.ConvertPlaneIndex(index);
@@ -4032,7 +4033,8 @@ public partial class BetheMethod
                     if (dsf.UseIso)
                         m = dsf.Biso;
                     else if (index == (0, 0, 0))
-                        m = double.IsNaN(dsf.Biso) ? dsf.Biso000 : dsf.Biso;
+                        //m = double.IsNaN(dsf.Biso) ? dsf.Biso000 : dsf.Biso; // 261105Cl 変更前
+                        m = dsf.BisoEffective; // 261105Cl 変更: 非等方で Iso が 0 以下のときも B_eq (選択規則は Dsf.BisoEffective に集約)
                     else
                     {
                         var (H, K, L) = atom.Operation.ConvertPlaneIndex(index);
