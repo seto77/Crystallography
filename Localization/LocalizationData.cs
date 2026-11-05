@@ -303,6 +303,8 @@ internal static class LocalizationData
         };
         reg["FormPolycrystallineDiffractionSimulator"] = new Localization.Entry[]
         {
+            // 261105Cl 追加 (監査 I13・I17・I25): 窓の題 (旧は全言語英語の "Powder Diffraction Simulator")。実験的な機能と明記する。括弧の語は主窓のメニュー「(experimental) Powder diffraction function」の各言語の訳に合わせた
+            new("this", "Text", "Powder Diffraction Simulator (experimental)", "粉末回折シミュレータ (実験的)", "Pulverbeugungssimulator (in Entwicklung)", "Simulateur de diffraction sur poudre (en développement)", "Simulador de difracción de polvo (en desarrollo)", "Simulador de difração de pó (em desenvolvimento)", "Simulatore di diffrazione da polveri (in sviluppo)", "Симулятор порошковой дифракции (в разработке)", "粉末衍射模拟器（开发中）", "粉末繞射模擬器（開發中）", "분말 회절 시뮬레이터 (개발 중)"), // 261105Cl 追加
             new("groupBoxCrystalProperty", "Text", "Crystal property", "結晶の物性", "Kristalleigenschaft", "Propriété du cristal", "Propiedad del cristal", "Propriedade do cristal", "Proprietà del cristallo", "Свойства кристалла", "晶体属性", "晶體性質", "결정 물성"),
             new("buttonSimulateDebyeRing", "Text", "Simulate Debye ring pattern", "デバイリングパターンをシミュレート", "Debye-Ring-Muster simulieren", "Simuler le diagramme d'anneaux de Debye", "Simular patrón de anillos de Debye", "Simular padrão de anéis de Debye", "Simula pattern ad anelli di Debye", "Моделировать картину колец Дебая", "模拟德拜环图样", "模擬德拜環圖樣", "디바이 링 패턴 시뮬레이션"),
             new("groupBoxOrientationFitting", "Text", "Fitting orientations", "フィッティング方位", "Fit-Orientierungen", "Orientations d'ajustement", "Orientaciones de ajuste", "Orientações de ajuste", "Orientazioni di fitting", "Подгонка ориентаций", "拟合取向", "擬合取向", "방위 피팅"),
