@@ -262,6 +262,12 @@ internal static class LocalizationData
             new("radioButtonCurrent", "Text", "Current projection", "現在の投影", "Aktuelle Projektion", "Projection actuelle", "Proyección actual", "Projeção atual", "Proiezione corrente", "Текущая проекция", "当前投影", "目前投影", "현재 투영"),
             new("groupBoxDirection", "Text", "Direction", "方向", "Richtung", "Direction", "Dirección", "Direção", "Direzione", "Направление", "方向", "方向", "방향"),
             new("label1", "Text", "Encode speed", "エンコード速度", "Kodiergeschwindigkeit", "Vitesse d'encodage", "Velocidad de codificación", "Velocidade de codificação", "Velocità di codifica", "Скорость кодирования", "编码速度", "編碼速度", "인코딩 속도"),
+            // 261105Cl 追加 (監査 G-25): 2026-06 以降に足した欄が表に無く、全言語で英語のままだった
+            new("checkBoxRotation", "Text", "Rotation", "回転", "Rotation", "Rotation", "Rotación", "Rotação", "Rotazione", "Вращение", "旋转", "旋轉", "회전"),
+            new("checkBoxTranslation", "Text", "Translation", "平行移動", "Translation", "Translation", "Traslación", "Translação", "Traslazione", "Перенос", "平移", "平移", "평행 이동"),
+            new("numericBoxTranslationSpeed", "HeaderText", "Speed", "速度", "Geschwindigkeit", "Vitesse", "Velocidad", "Velocidade", "Velocità", "Скорость", "速度", "速度", "속도"),
+            new("checkBoxIncludeFinalFrame", "Text", "Include final frame", "最終フレームを含める", "Endbild einschließen", "Inclure l'image finale", "Incluir fotograma final", "Incluir quadro final", "Includi ultimo fotogramma", "Включить последний кадр", "包含最后一帧", "包含最後一個影格", "마지막 프레임 포함"),
+            new("numericBoxQuality", "HeaderText", "Quality", "品質", "Qualität", "Qualité", "Calidad", "Qualidade", "Qualità", "Качество", "质量", "品質", "품질"),
         };
         reg["FormNumericUpdownControl"] = new Localization.Entry[]
         {
