@@ -92,6 +92,9 @@ public class ConvertCrystalData
 
             #region old code
             //プロパティ文字列が変更にたいする対処
+            // 261105Cl 修正: 開くだけで元のファイルを書き換えていた (全行を置換して同じファイルへ上書き。読み取り専用なら読込そのものが失敗し、
+            //  書き込みの途中で失敗すると原本が壊れる)。旧書式との互換の置換はメモリ上だけで行い、ファイルへは書き戻さない (PdiFile の 5c4c99a と同じ)
+            string xmlText; // 261105Cl 追加: 互換の置換を済ませた XML 本文
             try
             {
                 var reader = new StreamReader(filename, Encoding.GetEncoding("UTF-8"));
@@ -106,18 +109,20 @@ public class ConvertCrystalData
 
                 reader.Close();
 
-                var writer = new StreamWriter(filename, false, Encoding.GetEncoding("UTF-8"));
-                for (int i = 0; i < strList.Count; i++)
-                    writer.WriteLine(strList[i]);
-                writer.Flush();
-                writer.Close();
+                //var writer = new StreamWriter(filename, false, Encoding.GetEncoding("UTF-8")); // 261105Cl 変更前: 元のファイルへ書き戻していた
+                //for (int i = 0; i < strList.Count; i++)
+                //    writer.WriteLine(strList[i]);
+                //writer.Flush();
+                //writer.Close();
+                xmlText = string.Join(Environment.NewLine, strList); // 261105Cl 追加
             }
             catch { return null; };
             //プロパティ文字列が変更にたいする対処　ここまで
             #endregion old code
             try
             {
-                using var fs = new FileStream(filename, FileMode.Open);
+                //using var fs = new FileStream(filename, FileMode.Open); // 261105Cl 変更前
+                using var fs = new StringReader(xmlText); // 261105Cl 変更: 置換済みの本文から読む
                 var serializer = new System.Xml.Serialization.XmlSerializer(typeof(Crystal[]));
 
 
