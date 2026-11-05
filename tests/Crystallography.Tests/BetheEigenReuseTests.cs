@@ -118,4 +118,75 @@ Si1 Si 0.125 0.125 0.125 0.46
                 for (int i = 0; i < imageFresh[t][d].Length; i++)
                     Assert.True(Math.Abs(imageAfter[t][d][i] - imageFresh[t][d][i]) <= 1e-9 * scale, $"HRTEM 像 (厚さ {t}, デフォーカス {d}, 画素 {i})");
     }
+
+    /// <summary>261105Cl 追加: 小さな STEM (3×3 方向、4×4 画素) を走らせ、終わるまで whileRunning を繰り返し呼ぶ。返り値は結果と、実行中に呼べた回数</summary>
+    private static (StemSimulationResult Result, int Calls) RunStem(BetheMethod bethe, Matrix3D rot, Action whileRunning = null)
+    {
+        const int div = 3;
+        var sin = Math.Sin(0.010);
+        var directions = new Vector3DBase[div * div];
+        for (int h = 0; h < div; h++)
+            for (int w = 0; w < div; w++)
+            {
+                double x = (w - div / 2.0 + 0.5) / (div / 2.0 - 0.5) * sin, y = -(h - div / 2.0 + 0.5) / (div / 2.0 - 0.5) * sin;
+                directions[h * div + w] = new Vector3DBase(x, y, -Math.Sqrt(1 - x * x - y * y));
+            }
+        using var done = new ManualResetEventSlim();
+        Exception error = null;
+        void completed(object s, System.ComponentModel.RunWorkerCompletedEventArgs e) { error = e.Error; done.Set(); }
+        bethe.StemCompleted += completed;
+        var context = SynchronizationContext.Current;
+        SynchronizationContext.SetSynchronizationContext(null); // 完了通知をスレッドプールへ
+        int calls = 0;
+        try
+        {
+            bethe.RunSTEM(N, KV, 1.0e6, 3, 2, new System.Drawing.Size(4, 4), 0.05, 0, rot, [Thickness], [0.0], directions, 0.010, 0.040, 0.150);
+            while (whileRunning != null && !done.IsSet)
+            {
+                whileRunning();
+                calls++;
+            }
+            Assert.True(done.Wait(TimeSpan.FromMinutes(5)), "STEM が終わらない");
+        }
+        finally
+        {
+            SynchronizationContext.SetSynchronizationContext(context);
+            bethe.StemCompleted -= completed;
+        }
+        Assert.Null(error);
+        return (bethe.ResultStem, calls);
+    }
+
+    /// <summary>261105Cl 追加: STEM の実行中に、同じインスタンスで別の条件 (電圧・N・方位) の平行ビームの振幅を何度も求めても、
+    /// STEM の結果は邪魔の無いときと同じで、実行中に求めた振幅も新しいインスタンスと同じ (STEM は RunSTEM で作った専用の複製で走る)</summary>
+    [Fact]
+    public void StemAndDiffraction_OnSameInstanceConcurrently_DoNotInterfere()
+    {
+        var (crystal, rot) = TiltedSi();
+        var reference = RunStem(new BetheMethod(crystal), rot).Result;
+
+        var bethe = new BetheMethod(crystal);
+        var otherRot = Matrix3D.Rot(new Vector3DBase(0.2, 1, 0), 1.5 * Math.PI / 180);
+        var settings = new (int N, double KV, Matrix3D Rot)[] { (30, 300, otherRot), (N, KV, rot), (40, 120, rot) };
+        var during = new List<((int N, double KV, Matrix3D Rot) Setting, Dictionary<(int H, int K, int L), System.Numerics.Complex> Amp)>();
+        var (result, calls) = RunStem(bethe, rot, () =>
+        {
+            var s = settings[during.Count % settings.Length];
+            during.Add((s, Amplitudes(bethe.GetDifractedBeamAmpriltudes(s.N, s.KV, s.Rot, Thickness))));
+        });
+        Assert.True(calls > 0, "STEM の実行中に回折を計算できていない");
+
+        // STEM の結果は、邪魔の無い実行と同じ
+        foreach (var (got, exp, name) in new[] { (result.ImageBoth, reference.ImageBoth, "Both"), (result.ImageEla, reference.ImageEla, "Ela"), (result.ImageTDS, reference.ImageTDS, "TDS") })
+        {
+            var scale = exp.Planes.SelectMany(t => t).SelectMany(d => d).Max(Math.Abs);
+            for (int t = 0; t < exp.Planes.Length; t++)
+                for (int d = 0; d < exp.Planes[t].Length; d++)
+                    for (int i = 0; i < exp.Planes[t][d].Length; i++)
+                        Assert.True(Math.Abs(got.Planes[t][d][i] - exp.Planes[t][d][i]) <= 1e-9 * scale, $"STEM {name} (画素 {i}) が実行中の回折の計算で変わった ({calls} 回)");
+        }
+        // 実行中に求めた振幅は、新しいインスタンスで求めたものと同じ
+        foreach (var (s, amp) in during.Take(settings.Length))
+            AssertSameAmplitudes(Amplitudes(new BetheMethod(crystal).GetDifractedBeamAmpriltudes(s.N, s.KV, s.Rot, Thickness)), amp, $"STEM 実行中の回折 (N={s.N}, {s.KV} kV)");
+    }
 }

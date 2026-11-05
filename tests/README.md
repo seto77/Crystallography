@@ -43,7 +43,7 @@ python tests/Crystallography.Tests/Reference/generate_symmetry_reference.py
 | `HallSymbols_IdentifyGroupsUniquely` | 同じ標準 Hall 記号を持つ設定は、同じ群である |
 | `WyckoffPositions_MatchCctbx` | Wyckoff 位置の数、多重度、サイト対称。本番の判定 (`GetEquivalentAtomsPosition`) に Wyckoff 位置上の点を動かしてから渡し、多重度・サイト対称・文字が正しく返る |
 | `CifSpaceGroupSearchTests` | CIF 読み込みの空間群判定 (`SearchSGseriesNumberForCIF`) が、標準 Hall 記号、旧版の空白なし Hall 記号、H-M 記号のみ、のどれからでも正しい設定を返す。261105Cl 追加：H-M 記号が無く、空白なしの Hall 記号が複数の設定に当たる場合（`P32`、`P62`、`C22-1bc` など 8 通り × 2 設定）に、例外にならず、同じ群なら採り、違う群なら CIF の対称操作か番号で決まる（どちらも無ければ -1）。`ConvertFromCifText` で CIF 全体も読む |
-| `BetheEigenReuseTests` | 261105Cl 追加：同じ `BetheMethod` で Beams が置き換えられたあと（STEM・PED など）に平行ビームの振幅を求めても、新しいインスタンスと一致する（固有解を古い並び順のまま使い回さない）。実際に STEM を走らせた後の振幅と HRTEM 像も一致する（STEM が検出器の範囲に限った U' を U のキャッシュに残さない） |
+| `BetheEigenReuseTests` | 261105Cl 追加：同じ `BetheMethod` で Beams が置き換えられたあと（STEM・PED など）に平行ビームの振幅を求めても、新しいインスタンスと一致する（固有解を古い並び順のまま使い回さない）。実際に STEM を走らせた後の振幅と HRTEM 像も一致する（STEM が検出器の範囲に限った U' を U のキャッシュに残さない）。STEM の実行中に同じインスタンスで別の条件の回折を計算しても、STEM の結果も回折の結果も変わらない (261105Cl。STEM は専用の複製で走る) |
 | `MonoclinicWyckoffItaTests` | 261105Cl 追加：単斜晶 (No. 3–15) の全 57 設定で、Wyckoff 文字が ITA (2016) Vol. A と一致する。b 軸・c 軸の設定は ITA に印刷された特殊位置の座標 (頁つき) と、a 軸の設定と c-ba・ba-c・-acb の設定は ITA の変換 (Table 1.5.1.1、Table 1.5.4.4) で印刷された設定から写したものと比べる。写した設定の対称操作が写す先と一致すること、印刷された c 軸の設定が b 軸の設定を写したものと同じ点の集合であること (書き写しの確認) も確かめる |
 
 ## 既知の例外と要確認事項
