@@ -206,6 +206,7 @@ internal static class LocalizationData
         {
             new("label1", "Text", "Wavelength (= 1/k_vac): ", "波長 (= 1/k_vac): ", "Wellenlänge (= 1/k_vac): ", "Longueur d'onde (= 1/k_vac) : ", "Longitud de onda (= 1/k_vac): ", "Comprimento de onda (= 1/k_vac): ", "Lunghezza d'onda (= 1/k_vac): ", "Длина волны (= 1/k_vac): ", "波长 (= 1/k_vac): ", "波長 (= 1/k_vac)： ", "파장 (= 1/k_vac): "),
             new("buttonCopyToClipboard", "Text", "Copy to clipboard", "クリップボードにコピー", "In Zwischenablage kopieren", "Copier dans le presse-papiers", "Copiar al portapapeles", "Copiar p/ área de transf.", "Copia negli appunti", "Копировать в буфер обмена", "复制到剪贴板", "複製到剪貼簿", "클립보드로 복사"),
+            new("buttonSaveAsFile", "Text", "Save as CSV", "CSV で保存", "Als CSV speichern", "Enregistrer en CSV", "Guardar como CSV", "Salvar como CSV", "Salva come CSV", "Сохранить как CSV", "另存为 CSV", "另存為 CSV", "CSV로 저장"), // 261105Cl 追加: 訳が無く全言語で英語だった
             new("label4", "Text", "v/c: ", "v/c: ", "v/c: ", "v/c : ", "v/c: ", "v/c: ", "v/c: ", "v/c: ", "v/c: ", "v/c： ", "v/c: "),
             new("label5", "Text", "Acc. Voltage: ", "加速電圧: ", "Beschl.-Spannung: ", "Tension d'accél. : ", "Voltaje de acel.: ", "Tensão de aceleração: ", "Tensione acc.: ", "Уск. напряжение: ", "加速电压： ", "加速電壓： ", "가속 전압: "),
             new("label7", "Text", "Lattice volume: ", "格子体積: ", "Gittervolumen: ", "Volume de la maille : ", "Volumen de la red: ", "Volume da rede: ", "Volume reticolare: ", "Объём решётки: ", "晶胞体积： ", "晶格體積： ", "격자 부피: "),
@@ -334,6 +335,10 @@ internal static class LocalizationData
             new("buttonReplace", "Text", "Replace", "更新", "Ersetzen", "Remplacer", "Reemplazar", "Substituir", "Sostituisci", "Заменить", "替换", "取代", "교체"),
             new("buttonRename", "Text", "Rename", "名前の変更", "Umbenennen", "Renommer", "Cambiar nombre", "Renomear", "Rinomina", "Переименовать", "重命名", "重新命名", "이름 바꾸기"),
             new("buttonCancel", "Text", "Cancel", "キャンセル", "Abbrechen", "Annuler", "Cancelar", "Cancelar", "Annulla", "Отмена", "取消", "取消", "취소"),
+            // 261105Cl 追加: Add・OK・窓の題が訳されていなかった (Designer の直書きのまま全言語で英語)
+            new("buttonAdd", "Text", "Add", "追加", "Hinzufügen", "Ajouter", "Añadir", "Adicionar", "Aggiungi", "Добавить", "添加", "新增", "추가"), // 261105Cl
+            new("buttonOK", "Text", "OK", "OK", "OK", "OK", "Aceptar", "OK", "OK", "OK", "确定", "確定", "확인"), // 261105Cl
+            new("this", "Text", "Preset list", "プリセット一覧", "Voreinstellungsliste", "Liste des préréglages", "Lista de preajustes", "Lista de predefinições", "Elenco dei preset", "Список пресетов", "预设列表", "預設清單", "프리셋 목록"), // 261105Cl
             new("checkBoxManageList", "Text", "Manage the preset list", "プリセット一覧を管理", "Voreinstellungsliste verwalten", "Gérer la liste des préréglages", "Gestionar la lista de preajustes", "Gerenciar a lista de predefinições", "Gestisci l'elenco dei preset", "Управление списком пресетов", "管理预设列表", "管理預設清單", "프리셋 목록 관리"),
         };
         reg["FormSpotIDv1Results"] = new Localization.Entry[]
