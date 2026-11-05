@@ -127,7 +127,8 @@ internal static class LocalizationData
         {
             new("radioButtonCTF_coherent", "Text", "Coherent imaging", "コヒーレント結像", "Kohärente Abbildung", "Imagerie cohérente", "Imagen coherente", "Imagem coerente", "Imaging coerente", "Когерентное изображение", "相干成像", "同調成像", "결맞음 결상"),
             new("radioButtonCTF_Incoherent", "Text", "Incoherent imaging", "インコヒーレント結像", "Inkohärente Abbildung", "Imagerie incohérente", "Imagen incoherente", "Imagem incoerente", "Imaging incoerente", "Некогерентное изображение", "非相干成像", "非同調成像", "비결맞음 결상"),
-            new("buttonCopyGraph", "Text", "Copy", "コピー", "Kopieren", "Copier", "Copiar", "Copiar", "Copia", "Копировать", "复制", "複製", "복사"),
+            //new("buttonCopyGraph", "Text", "Copy", "コピー", "Kopieren", "Copier", "Copiar", "Copiar", "Copia", "Копировать", "复制", "複製", "복사"), // 261105Cl 変更前
+            new("buttonCopyGraph", "Text", "Copy", "クリップボードにコピー", "Kopieren", "Copier", "Copiar", "Copiar", "Copia", "Копировать", "复制", "複製", "복사"), // 261105Cl 変更 (作者決定 K4-D2: ボタンは「クリップボードにコピー」 (右から左の流れに単独で置かれ幅に余裕がある))
             // 261105Cl 追加 (監査 K5): 窓の題が全言語で英語 ("CTF (Contrast Transfer Function)") だった。開くチェックボックス (FormImageSimulator.checkBoxCTF) の各言語の名前に揃える
             new("this", "Text", "Contrast Transfer Function (CTF)", "コントラスト伝達関数 (CTF)", "Kontrastübertragungsfunktion (CTF)", "Fonction de transfert de contraste (CTF)", "Función de transferencia de contraste (CTF)", "Função de transferência de contraste (CTF)", "Funzione di trasferimento del contrasto (CTF)", "Функция передачи контраста (CTF)", "衬度传递函数 (CTF)", "對比傳遞函數 (CTF)", "콘트라스트 전달 함수 (CTF)"), // 261105Cl
             new("numericBoxMaxU1", "HeaderText", "Max u", "最大 u", "Max. u", "u max.", "u máx.", "u máx.", "u max", "Макс. u", "最大 u", "最大 u", "최대 u"),
