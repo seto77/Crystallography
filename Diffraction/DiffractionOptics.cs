@@ -36,19 +36,22 @@ public static class DiffractionOptics
             //var sw = new StreamWriter(filename);
             //sw.Write(str);
             //sw.Close();
-            File.WriteAllText(filename, str); // 260718Cl: 同上 (StreamWriter リーク対策)
-
-            fi = new FileInfo(filename)
-            {
-                CreationTime = ct,
-                LastWriteTime = lwt
-            };
+            //File.WriteAllText(filename, str); // 260718Cl: 同上 (StreamWriter リーク対策) // 261105Cl 変更前 (下の 5 行も)
+            //
+            //fi = new FileInfo(filename)
+            //{
+            //    CreationTime = ct,
+            //    LastWriteTime = lwt
+            //};
+            // 261105Cl 変更: 旧版の要素名の置き換えはメモリ上だけで行い、元のファイルには書き戻さない (開くだけで .prm が書き換わり、時刻だけ元に戻していた。
+            //  PdiFile・結晶リスト XML と同じ直し方)。読むのは置き換えた本文から
 
             System.Xml.Serialization.XmlSerializer serializer = new(typeof(Parameter));
             //var fs = new FileStream(filename, FileMode.Open);
             //var prm = (Parameter)serializer.Deserialize(fs);
             //fs.Close();
-            using var fs = new FileStream(filename, FileMode.Open); // 260718Cl: Deserialize 例外時 (不正XML) に FileStream がリークし、ユーザーがファイル修正後に再読込できなくなるため using 化
+            //using var fs = new FileStream(filename, FileMode.Open); // 260718Cl: Deserialize 例外時 (不正XML) に FileStream がリークし、ユーザーがファイル修正後に再読込できなくなるため using 化 // 261105Cl 変更前
+            using var fs = new StringReader(str); // 261105Cl 変更: 置き換えた本文から読む
             var prm = (Parameter)serializer.Deserialize(fs);
 
             return prm;
