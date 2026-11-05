@@ -161,6 +161,7 @@ public class EOS
                 IsothermalPressure.Vinet => Vinet(KT0, Kp0, cellV0, cellV),
                 IsothermalPressure.AP2 => AP2(KT0, Kp0, Ze, cellV0, cellV),
                 IsothermalPressure.Keane => Keane(KT0, Kp0, KpInfinity, cellV0, cellV),
+                IsothermalPressure.Vinet3 => Vinet3rd(KT0, Vinet3rd_Ita, Vinet3rd_Beta, Vinet3rd_Psi, cellV0, cellV), // 261105Cl 追加 (この case が無く、T_dependence_BM + Vinet3 で圧力が 0 になっていた)
                 _ => 0
             };
         }

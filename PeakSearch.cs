@@ -159,7 +159,10 @@ public class PeakFunction : IComparable
             double gl2 = GammaFunction.gamma(Rl - 0.5);
             double a1 = Math.Pow(2, 1 / Rl);
             double a2 = Math.Pow(2, 1 / Rh);
-            return ((gh2 / (Math.Sqrt(-1 + a2) * gh1) + (A * gl2) / (Math.Sqrt(-1 + a1) * gl1)) * Hk * Int * Math.Sqrt(Math.PI)) / (2 * (1 + A));
+            //return ((gh2 / (Math.Sqrt(-1 + a2) * gh1) + (A * gl2) / (Math.Sqrt(-1 + a1) * gl1)) * Hk * Int * Math.Sqrt(Math.PI)) / (2 * (1 + A));
+            // 261105Cl A → e^A。低角側の半値半幅は Hk/(1+e^-A)、高角側は Hk/(1+e^A) (Z1, Z2 参照) なので、∫f dx = √π·Hk·Int/(2(1+e^A))·[Γ(Rh-½)/(Γ(Rh)√(2^(1/Rh)-1)) + e^A·Γ(Rl-½)/(Γ(Rl)√(2^(1/Rl)-1))]
+            var expA = Math.Exp(A); // 261105Cl 追加
+            return ((gh2 / (Math.Sqrt(-1 + a2) * gh1) + (expA * gl2) / (Math.Sqrt(-1 + a1) * gl1)) * Hk * Int * Math.Sqrt(Math.PI)) / (2 * (1 + expA)); // 261105Cl
         }
         else
             return 0;
@@ -192,7 +195,8 @@ public class PeakFunction : IComparable
         var _eta = 1 - eta;
         d[0] = tmp6 * (eta * tmp4 + _eta * tmp5);
         d[1] = Int * tmp6 * (tmp4 - tmp5);
-        d[2] = -2 * Int * (eta * (tmp2 - tmp3) / PI / (tmp2 + tmp3) / (tmp2 + tmp3) + _eta * (tmp2 - 2 * tmp3 * Ln2) / (tmp2 * tmp2) * tmp5);
+        //d[2] = -2 * Int * (eta * (tmp2 - tmp3) / PI / (tmp2 + tmp3) / (tmp2 + tmp3) + _eta * (tmp2 - 2 * tmp3 * Ln2) / (tmp2 * tmp2) * tmp5);
+        d[2] = -2 * Int * (eta * (tmp2 - tmp3) / PI / (tmp2 + tmp3) / (tmp2 + tmp3) + _eta * (tmp2 - 2 * tmp3 * Ln2) / (tmp2 * tmp2) * tmp5 / PI); // 261105Cl ガウス項の /PI が抜けて π 倍になっていた (tmp5 = √(π·ln2)·exp(..) なので √(ln2/π) にするには /π が要る)
         d[3] = Int * 8 * tmp6 * (X - x) / tmp2 * (-eta * tmp4 * tmp4 - _eta * Ln2 * tmp5);
     }
     //Pseudo Voigt ここまで
