@@ -2486,6 +2486,12 @@ public partial class BetheMethod
     { // 261105Cl 追加
         // 261105Cl 追記: その後 STEM は RunSTEM で作る専用の複製 (自分の uDictionary を持つ) で走るようにしたので、共有のキャッシュはもう汚れない。下の Clear は念のため残す (次の計算で U を作り直すだけ)
         uDictionary.Clear(); // 261105Cl 追加
+        // 261105Cl 追加: STEM は専用の複製で走るので、このインスタンスの Beams は計算の後も以前の値のままだった。計算の後に bm.Beams を読む呼び出し側
+        //  (tools/EdxCheck の fixture・extcompare など) のために、成功したときだけ、使ったビームの一覧をここで 1 回だけ渡す (完了の処理なので計算の途中には書かない)。
+        //  回折の固有解は Beams の参照が変われば作り直される (eigenBeams) ので、STEM の並びの Beams と古い固有解は混ざらない
+        if (e.Error is null && !e.Cancelled && lastStemRun?.Beams is { } stemBeams) // 261105Cl
+            Beams = stemBeams; // 261105Cl
+        lastStemRun = null; // 261105Cl
         StemCompleted?.Invoke(sender, e); // 261105Cl
     } // 261105Cl 追加
 
@@ -2535,6 +2541,7 @@ public partial class BetheMethod
         //  CBED の結果を読む ReciPro の Spot ID を乱さないため)。結果 (ResultStem) だけを、worker の最後にこのインスタンスへ公開する。
         var stem = (BetheMethod)MemberwiseClone(); // 261105Cl 追加
         stem.stemOwner = this; // 261105Cl 追加
+        stem.lastStemRun = null; // 261105Cl 追加 (MemberwiseClone で前回の複製への参照を引き継がない)
         stem.uDictionary = []; // 261105Cl 追加
         stem.Beams = null; // 261105Cl 追加
         stem.MaxNumOfBloch = maxNumOfBloch; // 261105Cl 追加
@@ -2544,6 +2551,7 @@ public partial class BetheMethod
         stem.Thicknesses = (double[])thicknesses.Clone(); // 261105Cl 追加
         stem.Surface = new Vector3D(Surface); // 261105Cl 追加 (Surface は可変のオブジェクト)
         stem.CrystalRotation = new Matrix3D(Crystal.RotationMatrix); // 261105Cl 追加: 像の原点のずらし (StemDoWork) に使う結晶の向き
+        lastStemRun = stem; // 261105Cl 追加: 完了時に、使ったビームの一覧をこのインスタンスへ渡すため (Stem_RunWorkerCompleted)
         //bwSTEM.RunWorkerAsync((solver, thread, cs, delta, sliceThickness, convergenceAngle, detAngleInner, detAngleOuter, thicknesses, defocusses, imageSize, resolution, sourceSize, ionization, ionData, runId));//260801Cl 変更前 (1 チャネル)
         //bwSTEM.RunWorkerAsync((solver, thread, cs, delta, sliceThickness, convergenceAngle, detAngleInner, detAngleOuter, Thicknesses, (double[])defocusses.Clone(), imageSize, resolution, sourceSize, requests, ionData, runId)); // 261105Cl 変更前
         bwSTEM.RunWorkerAsync((solver, thread, cs, delta, sliceThickness, convergenceAngle, detAngleInner, detAngleOuter, stem.Thicknesses, (double[])defocusses.Clone(), imageSize, resolution, sourceSize, requests, ionData, runId, stem)); // 261105Cl stem を追加
@@ -2551,6 +2559,9 @@ public partial class BetheMethod
 
     /// <summary>261105Cl 追加: STEM 専用の複製 (RunSTEM で作る) のとき、結果を公開する元のインスタンス。それ以外は null</summary>
     private BetheMethod stemOwner;
+
+    /// <summary>261105Cl 追加: 直近の RunSTEM が作った専用の複製 (完了時に Beams を受け取るため)。それ以外は null</summary>
+    private BetheMethod lastStemRun;
 
     /// <summary>261105Cl 追加: STEM 専用の複製が持つ、RunSTEM を呼んだ時点の結晶の向き (Crystal.RotationMatrix)。それ以外は null</summary>
     private Matrix3D CrystalRotation;
