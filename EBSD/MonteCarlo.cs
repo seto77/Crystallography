@@ -28,6 +28,15 @@ public class MonteCarlo
         /// 特に低エネルギー領域や EBSD で扱う BSE エネルギー範囲での精度が JoyLuo1989 より高い。
         /// </summary>
         JablonskiModified2008, // 260331Cl コメント追加
+
+        /// <summary>
+        /// 261106Cl 追加: 相対論 Bethe 式 (ICRU 37 の電子の衝突阻止能、密度効果なし) に Joy-Luo (1989) の低エネルギー補正
+        /// J′ = J/(1 + kJ/E) をかけたもの。非相対論の極限では <see cref="JoyLuo1989"/> と同じ式になる。
+        /// 検証 (261106Cl、.project-guidance/ReciPro/ReciPro_BeamInteraction.md §5.2): CSDA 飛程は NIST ESTAR に対し
+        /// C/Al/Si/Cu/Au の 10–300 keV で 0.96–1.03 (Au 10 keV のみ 0.90)。阻止能は Shinotsuka et al. (2012) の光学データ計算に対し
+        /// 2–30 keV で 0.89–1.10 (Ag を除く 13 元素)。JablonskiModified2008 は同じ比較で 0.66–1.17、TEM 域では相対論が無く飛程が最大 +28 %。
+        /// </summary>
+        BetheRelativisticJoyLuo,
     }
 
     public enum ElasticScatteringModels
@@ -348,7 +357,8 @@ public class MonteCarlo
     /// <param name="atoms">Mott/NIST sampler 用の元素組成。null のときは平均 Z 近似のまま扱う。</param>
     public MonteCarlo(
         double z, double a, double _ρ, double kev, double tilt, double thresholdKev = 2,
-        StoppingPowerModels stoppingPowerModel = StoppingPowerModels.JablonskiModified2008,
+        // StoppingPowerModels stoppingPowerModel = StoppingPowerModels.JablonskiModified2008, // 261106Cl 変更前
+        StoppingPowerModels stoppingPowerModel = StoppingPowerModels.BetheRelativisticJoyLuo, // 261106Cl 既定を相対論 Bethe + Joy-Luo へ (作者判断 261106、AskUserQuestion)
         ElasticScatteringModels elasticScatteringModel = ElasticScatteringModels.MottNistSampler2023,
         InelasticScatteringModels inelasticScatteringModel = InelasticScatteringModels.DiscreteBulkDiimfpApproximation,
         double? valenceElectronCount = null,
@@ -1235,9 +1245,23 @@ public class MonteCarlo
     /// <summary>
     /// 選択された阻止能モデルに基づき dE/ds [keV/nm] (負値) を返す。
     /// JoyLuo1989: 修正 Bethe 式。JablonskiModified2008: TPP-2M の IMFP を用いた経験式。
+    /// BetheRelativisticJoyLuo (261106Cl 追加・既定): 相対論 Bethe 式 + Joy-Luo の J′ 補正。
     /// </summary>
     private double GetStoppingPower(double kev, double mv2)
     {
+        if (StoppingPowerModel == StoppingPowerModels.BetheRelativisticJoyLuo) // 261106Cl 追加
+        {
+            // S/ρ [MeV cm²/g] = 0.153536 (Z/A)/β² [ln(τ²(τ+2) / (2 (J′/mc²)²)) + F⁻(τ)]、F⁻ = 1 − β² + (τ²/8 − (2τ+1) ln2)/(τ+1)²
+            // (ICRU Report 37 (1984) の電子の衝突阻止能、密度効果 δ は 1 MeV 未満で無視できるので省く)。0.153536 = 2π N_A r_e² mc² [MeV cm²/mol]。
+            // J′ = J/(1 + kJ/E) は Joy & Luo (1989) の低エネルギー補正 (k は上の JoyLuo1989 と同じ)。τ→0 で JoyLuo1989 の式に一致する。
+            const double mc2Kev = 510.99895;
+            double tau = kev / mc2Kev, beta2 = 1 - 1 / ((1 + tau) * (1 + tau));
+            double jKev = J / 1000.0, jEff = jKev / (1 + k * jKev / kev);
+            double fMinus = 1 - beta2 + (tau * tau / 8 - (2 * tau + 1) * Math.Log(2)) / ((tau + 1) * (tau + 1));
+            double sMass = 0.153536 * Z / A / beta2 * (Math.Log(tau * tau * (tau + 2) / (2 * (jEff / mc2Kev) * (jEff / mc2Kev))) + fMinus);
+            return -sMass * ρ * 1e-4; // MeV/cm → keV/nm は ×1e-4
+        }
+
         if (StoppingPowerModel == StoppingPowerModels.JoyLuo1989)
             return coeff3 / mv2 * Math.Log(1.166 * k + 0.583 / UniversalConstants.eV_joule / J * mv2);
 
