@@ -1121,6 +1121,10 @@ public partial class DiffractionProfile2 : ICloneable
         var targetProfile = new Profile();
         for (int i = 0; i < profile.Pt.Count; i++)
             targetProfile.Pt.Add(new PointD(profile.Pt[i].X, profile.Pt[i].Y));
+        // 261105Cl 追加: 誤差 Err も写す (旧は捨てていたので、Kα2 除去後のプロファイルは誤差を持たず、IPAnalyzer の CSV が誤差列を書けなかった)
+        var hasErr = profile.Err.Count == profile.Pt.Count && profile.Err.Count > 0; // 261105Cl
+        if (hasErr)
+            targetProfile.Err = [.. profile.Err]; // 261105Cl
 
         double startY = profile.Pt[0].Y * 2 / 3;
 
@@ -1134,8 +1138,16 @@ public partial class DiffractionProfile2 : ICloneable
                 targetProfile.Pt[i] -= new PointD(0, startY * ratio);
 
             if (theta > targetProfile.Pt[0].X)
+            { // 261105Cl 波括弧を追加 (誤差の更新を同じ条件に入れるため)
                 //targetProfile.Pt[i].Y -= targetProfile.GetValue(theta, 2, 1) * ratio;
                 targetProfile.Pt[i] -= new PointD(0, targetProfile.GetValue(theta, 2, 1) * ratio);
+                // 261105Cl 追加: 引いた量 (θ' での値 × ratio) の誤差を二乗和で加える
+                if (hasErr)
+                {
+                    var e = profile.GetErr(theta) * ratio; // 261105Cl
+                    targetProfile.Err[i] = new PointD(targetProfile.Err[i].X, Math.Sqrt(targetProfile.Err[i].Y * targetProfile.Err[i].Y + e * e)); // 261105Cl
+                }
+            } // 261105Cl
         }
         return targetProfile;
     }
