@@ -304,6 +304,9 @@ public partial class BetheMethod
     public Complex[] EigenValues { get; set; }
     public Complex[] EigenVectors { get; set; }
     public Complex[] EigenVectorsInverse { get; set; }
+    /// <summary>261105Cl 追加: <see cref="EigenValues"/>/<see cref="EigenVectors"/>/<see cref="EigenVectorsInverse"/> を求めたときの <see cref="Beams"/> 配列 (参照で比べる)。
+    /// STEM・PED・CBED や外部のコードが Beams を別の配列 (同じ反射を別の順に並べたものなど) に置き換えたあとは、固有解を使い回さない。</summary>
+    private Beam[] eigenBeams;
 
     public DVec[] EigenValuesPED { get; set; }
     public DMat[] EigenVectorsPED { get; set; }
@@ -2289,7 +2292,13 @@ public partial class BetheMethod
         var vecK0 = getVecK0(k_vac, u0);
 
         int dim;
-        if (MaxNumOfBloch != maxNumOfBloch || AccVoltage != voltage || EigenValues == null || Beams.Length != EigenValues.Length || EigenVectors == null || !rotation.Equals(BaseRotation))
+        //if (MaxNumOfBloch != maxNumOfBloch || AccVoltage != voltage || EigenValues == null || Beams.Length != EigenValues.Length || EigenVectors == null || !rotation.Equals(BaseRotation)) // 261105Cl 変更前
+        // 261105Cl 修正: STEM (StemDoWork) は Beams を |g|² 順に並べ替えた別の配列で置き換え、固有解は消さない。N・電圧・方位が同じだと上の条件を通り、
+        //  Find_gVectors の順で作った固有ベクトルの振幅を、並び順の違う Beams に入れていた (透過波 000 以外の反射の強度・位相が入れ替わる。
+        //  HRTEM → STEM → HRTEM、回折 → STEM → 回折 で同じ Crystal.Bethe を使うと起きる。Si 200 kV・[001] から 0.5°・N=50 で 37/50 反射が誤り)。
+        //  PED が Beams を置き換えたときも同じ。固有解を作ったときの Beams 配列のままでなければ作り直す。
+        if (MaxNumOfBloch != maxNumOfBloch || AccVoltage != voltage || EigenValues == null || Beams.Length != EigenValues.Length || EigenVectors == null || !rotation.Equals(BaseRotation)
+            || !ReferenceEquals(Beams, eigenBeams)) // 261105Cl
         {
             MaxNumOfBloch = maxNumOfBloch;
             AccVoltage = voltage;
@@ -2317,6 +2326,7 @@ public partial class BetheMethod
                 EigenVectors = ((DMat)evd.EigenVectors).Values;
                 EigenVectorsInverse = ((DMat)evd.EigenVectors.Inverse()).Values;
             }
+            eigenBeams = Beams; // 261105Cl 追加: この固有解がどの Beams 配列 (並び順) に対応するか
         }
 
         dim = Beams.Length;
