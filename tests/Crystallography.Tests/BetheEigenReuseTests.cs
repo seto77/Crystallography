@@ -67,4 +67,55 @@ Si1 Si 0.125 0.125 0.125 0.46
         var fresh = Amplitudes(new BetheMethod(crystal).GetDifractedBeamAmpriltudes(N, KV, rot, Thickness));
         AssertSameAmplitudes(fresh, after, "Beams を並べ替えた後");
     }
+
+    /// <summary>261105Cl 追加: 実際に STEM を (小さな像・少ない入射方向で) 走らせ、同じインスタンスで振幅と HRTEM 像を求め直す。
+    /// 固有解の使い回し (A1b) に加え、STEM が検出器の角度範囲に限った U' を通常の U と同じ鍵で uDictionary に残す件 (A1) も確かめる。</summary>
+    [Fact]
+    public void AmplitudesAndHrtem_AfterStemOnSameInstance_MatchFreshInstance()
+    {
+        var (crystal, rot) = TiltedSi();
+        var bethe = new BetheMethod(crystal);
+        double[] thicknesses = [Thickness], defocusses = [0, -40];
+        var aperture = (R: 0.040, X: 0.0, Y: 0.0);
+        var size = new System.Drawing.Size(16, 16);
+        double[][][] hrtem(BetheMethod b)
+        {
+            b.GetHRTEMImage(N, KV, rot, aperture, size, 0.02, 1.0e6, 0.0001, 3, thicknesses, defocusses);
+            return b.ResultHRTEM.Image;
+        }
+        bethe.GetDifractedBeamAmpriltudes(N, KV, rot, Thickness);
+        hrtem(bethe);
+
+        // STEM: 3×3 の入射方向 (収束半角 10 mrad)、検出器 40–150 mrad、4×4 画素
+        const int div = 3;
+        var sin = Math.Sin(0.010);
+        var directions = new Vector3DBase[div * div];
+        for (int h = 0; h < div; h++)
+            for (int w = 0; w < div; w++)
+            {
+                double x = (w - div / 2.0 + 0.5) / (div / 2.0 - 0.5) * sin, y = -(h - div / 2.0 + 0.5) / (div / 2.0 - 0.5) * sin;
+                directions[h * div + w] = new Vector3DBase(x, y, -Math.Sqrt(1 - x * x - y * y));
+            }
+        using var done = new ManualResetEventSlim();
+        Exception error = null;
+        bethe.StemCompleted += (s, e) => { error = e.Error; done.Set(); };
+        var context = SynchronizationContext.Current;
+        SynchronizationContext.SetSynchronizationContext(null); // 完了通知をスレッドプールへ (テストのスレッドを待たせても詰まらない)
+        try { bethe.RunSTEM(N, KV, 1.0e6, 3, 2, new System.Drawing.Size(4, 4), 0.05, 0, rot, thicknesses, [0.0], directions, 0.010, 0.040, 0.150); }
+        finally { SynchronizationContext.SetSynchronizationContext(context); }
+        Assert.True(done.Wait(TimeSpan.FromMinutes(5)), "STEM が終わらない");
+        Assert.Null(error);
+
+        var after = Amplitudes(bethe.GetDifractedBeamAmpriltudes(N, KV, rot, Thickness));
+        var imageAfter = hrtem(bethe);
+
+        var fresh = new BetheMethod(crystal);
+        AssertSameAmplitudes(Amplitudes(fresh.GetDifractedBeamAmpriltudes(N, KV, rot, Thickness)), after, "STEM の後");
+        var imageFresh = hrtem(fresh);
+        var scale = imageFresh.SelectMany(t => t).SelectMany(d => d).Max(Math.Abs);
+        for (int t = 0; t < imageFresh.Length; t++)
+            for (int d = 0; d < imageFresh[t].Length; d++)
+                for (int i = 0; i < imageFresh[t][d].Length; i++)
+                    Assert.True(Math.Abs(imageAfter[t][d][i] - imageFresh[t][d][i]) <= 1e-9 * scale, $"HRTEM 像 (厚さ {t}, デフォーカス {d}, 画素 {i})");
+    }
 }

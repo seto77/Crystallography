@@ -2476,7 +2476,17 @@ public partial class BetheMethod
     #region STEM シミュレーション
     private void Stem_ProgressChanged(object sender, ProgressChangedEventArgs e) => StemProgressChanged?.Invoke(sender, e);
 
-    private void Stem_RunWorkerCompleted(object sender, RunWorkerCompletedEventArgs e) => StemCompleted?.Invoke(sender, e);
+    //private void Stem_RunWorkerCompleted(object sender, RunWorkerCompletedEventArgs e) => StemCompleted?.Invoke(sender, e); // 261105Cl 変更前
+    // 261105Cl 修正: STEM は TDS の吸収ポテンシャル U'(q+g_i−g_j) を ADF 検出器の角度範囲 [inner, outer] に限って求め、通常の U と同じ鍵
+    //  (compose(g), int.MaxValue) で uDictionary に入れたまま終わっていた (StemDoWork の Clear は計算の前だけ)。電圧が同じだと
+    //  GetDifractedBeamAmpriltudes は uDictionary を空にしないので、STEM の後に同じ Crystal.Bethe で求めた回折・HRTEM の吸収が、
+    //  検出器の範囲に限った U' と全立体角の U' の混ざった行列になっていた (implementation-questions A1。Si 200 kV・[001]・N=100・
+    //  検出器 40–150 mrad の後で |ψ000|² 0.894、正しくは 0.834)。成功・取り消し・失敗のどれで終わっても空にする。
+    private void Stem_RunWorkerCompleted(object sender, RunWorkerCompletedEventArgs e) // 261105Cl
+    { // 261105Cl 追加
+        uDictionary.Clear(); // 261105Cl 追加
+        StemCompleted?.Invoke(sender, e); // 261105Cl
+    } // 261105Cl 追加
 
     public void CancelSTEM()
     {
