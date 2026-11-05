@@ -53,7 +53,9 @@ internal static class LocalizationData
             new("checkBoxRectangleIsBothSide", "Text", "Both Side", "両側", "Beide Seiten", "Les deux côtés", "Ambos lados", "Ambos os lados", "Entrambi i lati", "Обе стороны", "双侧", "兩側", "양쪽"),
             new("buttonSaveMask", "Text", "Save mask", "マスクを保存", "Maske speichern", "Enregistrer le masque", "Guardar máscara", "Salvar máscara", "Salva maschera", "Сохранить маску", "保存掩模", "儲存遮罩", "마스크 저장"),
             new("buttonApplyMask", "Text", "Mask", "マスク", "Maske", "Masque", "Máscara", "Mascarar", "Maschera", "Маска", "掩模", "遮罩", "마스크"),
-            new("groupBoxGeometry", "Text", "Geometry", "SEM-EBSD設定", "Geometrie", "Géométrie", "Geometría", "Geometria", "Geometria", "Геометрия", "几何", "幾何", "기하구조"),
+            //new("groupBoxGeometry", "Text", "Geometry", "SEM-EBSD設定", "Geometrie", "Géométrie", "Geometría", "Geometria", "Geometria", "Геометрия", "几何", "幾何", "기하구조"), // 261105Cl 変更前
+            // 261105Cl 変更 (監査 K10): 粉末回折の検出器の傾き (φ, τ) の欄。ja が EBSD のタブ名の写し「SEM-EBSD設定」だった。ja の既存の言い方「(回転/検出器)ジオメトリ」に揃える
+            new("groupBoxGeometry", "Text", "Geometry", "ジオメトリ", "Geometrie", "Géométrie", "Geometría", "Geometria", "Geometria", "Геометрия", "几何", "幾何", "기하구조"), // 261105Cl
             new("checkBoxInitialBackground", "Text", "Set initial background", "初期背景を設定", "Anfangshintergrund festlegen", "Définir le fond initial", "Definir fondo inicial", "Definir fundo inicial", "Imposta sfondo iniziale", "Задать начальный фон", "设置初始背景", "設定初始背景", "초기 배경 설정"),
             new("buttonSaveBackGround", "Text", "Save", "保存", "Speichern", "Enregistrer", "Guardar", "Salvar", "Salva", "Сохранить", "保存", "儲存", "저장"),
             new("tabPage1", "Text", "Detector condition", "検出器の条件", "Detektorbedingung", "Condition du détecteur", "Condición del detector", "Condição do detector", "Condizione del rivelatore", "Условия детектора", "探测器条件", "偵測器條件", "검출기 조건"),
@@ -122,6 +124,8 @@ internal static class LocalizationData
             new("radioButtonCTF_coherent", "Text", "Coherent imaging", "コヒーレント結像", "Kohärente Abbildung", "Imagerie cohérente", "Imagen coherente", "Imagem coerente", "Imaging coerente", "Когерентное изображение", "相干成像", "同調成像", "결맞음 결상"),
             new("radioButtonCTF_Incoherent", "Text", "Incoherent imaging", "インコヒーレント結像", "Inkohärente Abbildung", "Imagerie incohérente", "Imagen incoherente", "Imagem incoerente", "Imaging incoerente", "Некогерентное изображение", "非相干成像", "非同調成像", "비결맞음 결상"),
             new("buttonCopyGraph", "Text", "Copy", "コピー", "Kopieren", "Copier", "Copiar", "Copiar", "Copia", "Копировать", "复制", "複製", "복사"),
+            // 261105Cl 追加 (監査 K5): 窓の題が全言語で英語 ("CTF (Contrast Transfer Function)") だった。開くチェックボックス (FormImageSimulator.checkBoxCTF) の各言語の名前に揃える
+            new("this", "Text", "Contrast Transfer Function (CTF)", "コントラスト伝達関数 (CTF)", "Kontrastübertragungsfunktion (CTF)", "Fonction de transfert de contraste (CTF)", "Función de transferencia de contraste (CTF)", "Função de transferência de contraste (CTF)", "Funzione di trasferimento del contrasto (CTF)", "Функция передачи контраста (CTF)", "衬度传递函数 (CTF)", "對比傳遞函數 (CTF)", "콘트라스트 전달 함수 (CTF)"), // 261105Cl
             new("numericBoxMaxU1", "HeaderText", "Max u", "最大 u", "Max. u", "u max.", "u máx.", "u máx.", "u max", "Макс. u", "最大 u", "最大 u", "최대 u"),
         };
         reg["FormCalculator"] = new Localization.Entry[]
@@ -155,8 +159,13 @@ internal static class LocalizationData
         };
         reg["FormDiffractionSimulatorDynamicCompression"] = new Localization.Entry[]
         {
-            new("label2", "Text", "Front", "前面", "Vorne", "Avant", "Frente", "Frente", "Fronte", "Спереди", "正面", "前面", "앞면"),
-            new("label3", "Text", "Back", "戻る", "Hinten", "Arrière", "Atrás", "Trás", "Retro", "Назад", "背面", "背面", "뒷면"),
+            //new("label2", "Text", "Front", "前面", "Vorne", "Avant", "Frente", "Frente", "Fronte", "Спереди", "正面", "前面", "앞면"), // 261105Cl 変更前
+            //new("label3", "Text", "Back", "戻る", "Hinten", "Arrière", "Atrás", "Trás", "Retro", "Назад", "背面", "背面", "뒷면"), // 261105Cl 変更前
+            // 261105Cl 変更 (監査 K7): 圧縮領域の前方・後方の境界の深さ (ツールチップは「前方境界」「後方境界」)。ja の「戻る」・ru の «Назад» は操作の「戻る」の意味だった
+            new("label2", "Text", "Front", "前方", "Vorne", "Avant", "Frente", "Frente", "Fronte", "Спереди", "正面", "前面", "앞면"), // 261105Cl
+            new("label3", "Text", "Back", "後方", "Hinten", "Arrière", "Atrás", "Trás", "Retro", "Сзади", "背面", "背面", "뒷면"), // 261105Cl
+            // 261105Cl 追加 (監査 K5): 窓の題が全言語で英語だった。開くメニュー (回折シミュレータの dynamicCompressionToolStripMenuItem) の各言語の名前に揃える
+            new("this", "Text", "Dynamic Compression", "動的圧縮", "Dynamische Kompression", "Compression dynamique", "Compresión dinámica", "Compressão dinâmica", "Compressione dinamica", "Динамическое сжатие", "动态压缩", "動態壓縮", "동적 압축"), // 261105Cl
             new("groupBoxCompressedRotation", "Text", "Rotation distribution", "回転分布", "Rotationsverteilung", "Distrib. de rotation", "Distrib. de rotación", "Distrib. de rotação", "Distrib. di rotazione", "Распр. поворотов", "旋转分布", "旋轉分布", "회전 분포"),
             new("groupBoxReleasedRotation", "Text", "Rotation distribution", "回転分布", "Rotationsverteilung", "Distrib. de rotation", "Distrib. de rotación", "Distrib. de rotação", "Distrib. di rotazione", "Распр. поворотов", "旋转分布", "旋轉分布", "회전 분포"),
             new("numericBoxEOS_Kprime", "HeaderText", "K'0", "K'0", "K'0", "K'0", "K'0", "K'0", "K\\'0", "K'0", "K'0", "K'0", "K'0"),
@@ -191,12 +200,15 @@ internal static class LocalizationData
             new("label2", "Text", "Min int.", "最小強度", "Min. Int.", "Int. min.", "Int. mín.", "Int. mín.", "Int. min", "Мин. инт.", "最小强度", "最小強度", "최소 강도"),
             new("label1", "Text", "Max int.", "最大強度", "Max. Int.", "Int. max.", "Int. máx.", "Int. máx.", "Int. max", "Макс. инт.", "最大强度", "最大強度", "최대 강도"),
             new("label4", "Text", "Brightness", "明るさ", "Helligkeit", "Luminosité", "Brillo", "Brilho", "Luminosità", "Яркость", "亮度", "亮度", "밝기"),
-            new("label10", "Text", "Opacity", "透明度", "Deckkraft", "Opacité", "Opacidad", "Opacidade", "Opacità", "Непрозрачность", "不透明度", "不透明度", "불투명도"),
+            //new("label10", "Text", "Opacity", "透明度", "Deckkraft", "Opacité", "Opacidad", "Opacidade", "Opacità", "Непрозрачность", "不透明度", "不透明度", "불투명도"), // 261105Cl 変更前
+            new("label10", "Text", "Opacity", "不透明度", "Deckkraft", "Opacité", "Opacidad", "Opacidade", "Opacità", "Непрозрачность", "不透明度", "不透明度", "불투명도"), // 261105Cl 変更 (監査 K3): ja「透明度」は意味が逆 (ツールチップは「不透明度(0-100%)」)
             new("label22", "Text", "Scale 2", "スケール 2", "Maßstab 2", "Échelle 2", "Escala 2", "Escala 2", "Scala 2", "Масштаб 2", "比例 2", "比例尺 2", "배율 2"),
             new("label23", "Text", "Scale 1", "スケール 1", "Maßstab 1", "Échelle 1", "Escala 1", "Escala 1", "Scala 1", "Масштаб 1", "比例 1", "比例尺 1", "배율 1"),
             new("label24", "Text", "Gradient", "スケール", "Gradient", "Dégradé", "Gradiente", "Gradiente", "Gradiente", "Градиент", "渐变", "漸層", "그라데이션"),
             new("sizeControl1", "HeaderText", "Detector", "検出器", "Detektor", "Détecteur", "Detector", "Detector", "Rivelatore", "Детектор", "探测器", "偵測器", "검출기"),
-            new("numericBoxFootX", "HeaderText", "Foot:  fx", "裾:  fx", "Fuß:  fx", "Pied :  fx", "Pie:  fx", "Pé:  fx", "Piede:  fx", "Подн.:  fx", "脚点:  fx", "落點:  fx", "푸트:  fx"),
+            //new("numericBoxFootX", "HeaderText", "Foot:  fx", "裾:  fx", "Fuß:  fx", "Pied :  fx", "Pie:  fx", "Pé:  fx", "Piede:  fx", "Подн.:  fx", "脚点:  fx", "落點:  fx", "푸트:  fx"), // 261105Cl 変更前
+            // 261105Cl 変更 (監査 K9): Foot は試料から検出器面へ下ろした垂線の足。ja「裾」はピークの裾の意味。この窓のツールチップ・回折シミュレータ・IPAnalyzer の ja「垂線の足」に揃える
+            new("numericBoxFootX", "HeaderText", "Foot:  fx", "垂線の足:  fx", "Fuß:  fx", "Pied :  fx", "Pie:  fx", "Pé:  fx", "Piede:  fx", "Подн.:  fx", "脚点:  fx", "落點:  fx", "푸트:  fx"), // 261105Cl
             new("numericBoxPixelSize", "HeaderText", "pix. size", "画素サイズ", "Pix.-Größe", "taille pix.", "tam. píx.", "tam. pix.", "dim. pixel", "разм. пикс.", "像素大小", "像素大小", "픽셀 크기"),
             new("checkBoxDetectorSizePosition", "Text", "Set detector area && overlapped image.", "検出器領域と重畳画像を設定", "Detektorbereich && überlagertes Bild festlegen.", "Définir la zone du détecteur && l'image superposée.", "Definir área del detector && imagen superpuesta.", "Definir área do detector && imagem sobreposta.", "Imposta area del rivelatore && immagine sovrapposta.", "Задать область детектора && наложенное изображение.", "设置探测器区域 && 叠加图像。", "設定偵測器區域與重疊影像。", "검출기 영역 && 중첩 이미지 설정."),
             new("numericBoxCameraLength2", "HeaderText", "Camera length 2", "カメラ長 2", "Kameralänge 2", "Longueur de caméra 2", "Longitud de cámara 2", "Comprimento da câmera 2", "Lunghezza camera 2", "Длина камеры 2", "相机长度 2", "相機長度 2", "카메라 길이 2"),
@@ -254,6 +266,8 @@ internal static class LocalizationData
             new("ColumnNaturalAbundance", "HeaderText", "Natural Abundance (%)", "天然存在比 (%)", "Natürliche Häufigkeit (%)", "Abondance naturelle (%)", "Abundancia natural (%)", "Abundância natural (%)", "Abbondanza naturale (%)", "Природная распространённость (%)", "天然丰度 (%)", "天然豐度 (%)", "천연 존재비 (%)"),
             new("ColumnCustomAbundance", "HeaderText", "Custom Abundance (%)", "存在比を指定 (%)", "Benutzerdef. Häufigkeit (%)", "Abondance personnalisée (%)", "Abundancia personalizada (%)", "Abundância personalizada (%)", "Abbondanza personalizzata (%)", "Пользовательская распространённость (%)", "自定义丰度 (%)", "自訂豐度 (%)", "사용자 지정 존재비 (%)"),
             new("buttonCancel", "Text", "Cancel", "キャンセル", "Abbrechen", "Annuler", "Cancelar", "Cancelar", "Annulla", "Отмена", "取消", "取消", "취소"),
+            // 261105Cl 追加 (監査 K5): 窓の題がクラス名 "FormIsotopeComposition" のまま全言語に出ていた。列見出しの「存在度/存在比」と同じ語で
+            new("this", "Text", "Isotope Abundance", "同位体存在度", "Isotopenhäufigkeit", "Abondance isotopique", "Abundancia isotópica", "Abundância isotópica", "Abbondanza isotopica", "Изотопная распространённость", "同位素丰度", "同位素豐度", "동위원소 존재비"), // 261105Cl
         };
         reg["FormMovie"] = new Localization.Entry[]
         {
@@ -322,7 +336,8 @@ internal static class LocalizationData
             new("label54", "Text", "motor speed", "モータ速度", "Motordrehzahl", "vitesse du moteur", "velocidad del motor", "vel. do motor", "velocità motore", "скорость мотора", "电机转速", "馬達轉速", "모터 속도"),
             new("label49", "Text", "step", "ステップ", "Schritt", "pas", "paso", "passo", "passo", "шаг", "步长", "步進", "스텝"),
             new("label56", "Text", "motor speed", "モータ速度", "Motordrehzahl", "vitesse du moteur", "velocidad del motor", "vel. do motor", "velocità motore", "скорость мотора", "电机转速", "馬達轉速", "모터 속도"),
-            new("groupBoxPatterns", "Text", "Simulated / refference patterns", "シミュレーション / 参照パターン", "Simulierte / Referenzmuster", "Motifs simulés / de référence", "Patrones simulados / de referencia", "Padrões simulados / de referência", "Pattern simulati / di riferimento", "Смоделированные / эталонные картины", "模拟 / 参考图样", "模擬／參考圖樣", "시뮬레이션 / 참조 패턴"),
+            //new("groupBoxPatterns", "Text", "Simulated / refference patterns", "シミュレーション / 参照パターン", "Simulierte / Referenzmuster", "Motifs simulés / de référence", "Patrones simulados / de referencia", "Padrões simulados / de referência", "Pattern simulati / di riferimento", "Смоделированные / эталонные картины", "模拟 / 参考图样", "模擬／參考圖樣", "시뮬레이션 / 참조 패턴"), // 261105Cl 変更前 (英語の誤字 refference)
+            new("groupBoxPatterns", "Text", "Simulated / reference patterns", "シミュレーション / 参照パターン", "Simulierte / Referenzmuster", "Motifs simulés / de référence", "Patrones simulados / de referencia", "Padrões simulados / de referência", "Pattern simulati / di riferimento", "Смоделированные / эталонные картины", "模拟 / 参考图样", "模擬／參考圖樣", "시뮬레이션 / 참조 패턴"), // 261105Cl 変更 (監査 K25)
             new("groupBoxAppearance", "Text", "Appearance", "表示", "Darstellung", "Apparence", "Apariencia", "Aparência", "Aspetto", "Вид", "外观", "外觀", "외관"),
             new("label26", "Text", "Scale 2", "スケール 2", "Maßstab 2", "Échelle 2", "Escala 2", "Escala 2", "Scala 2", "Масштаб 2", "比例 2", "比例尺 2", "배율 2"),
             new("label30", "Text", "Gradient", "スケール", "Gradient", "Dégradé", "Gradiente", "Gradiente", "Gradiente", "Градиент", "渐变", "漸層", "그라데이션"),
@@ -332,7 +347,8 @@ internal static class LocalizationData
         };
         reg["FormPresets"] = new Localization.Entry[]
         {
-            new("label1", "Text", "Name", "結晶名", "Name", "Nom", "Nombre", "Nome", "Nome", "Имя", "名称", "名稱", "이름"),
+            //new("label1", "Text", "Name", "結晶名", "Name", "Nom", "Nombre", "Nome", "Nome", "Имя", "名称", "名稱", "이름"), // 261105Cl 変更前
+            new("label1", "Text", "Name", "名前", "Name", "Nom", "Nombre", "Nome", "Nome", "Имя", "名称", "名稱", "이름"), // 261105Cl 変更 (監査 K8): プリセットの名前の欄。ja「結晶名」は誤り
             new("buttonDelete", "Text", "Delete", "削除", "Löschen", "Supprimer", "Eliminar", "Excluir", "Elimina", "Удалить", "删除", "刪除", "삭제"),
             new("buttonReplace", "Text", "Replace", "更新", "Ersetzen", "Remplacer", "Reemplazar", "Substituir", "Sostituisci", "Заменить", "替换", "取代", "교체"),
             new("buttonRename", "Text", "Rename", "名前の変更", "Umbenennen", "Renommer", "Cambiar nombre", "Renomear", "Rinomina", "Переименовать", "重命名", "重新命名", "이름 바꾸기"),
@@ -353,6 +369,8 @@ internal static class LocalizationData
             new("angleBetweenPhoto12DataGridViewTextBoxColumn", "HeaderText", "Angle Between Photo 1 & 2", "写真1と2の間の角度", "Winkel zwischen Foto 1 & 2", "Angle entre photos 1 et 2", "Ángulo entre foto 1 y 2", "Ângulo entre fotos 1 e 2", "Angolo tra foto 1 e 2", "Угол между фото 1 и 2", "照片 1 与 2 间夹角", "相片 1 與 2 之間的夾角", "사진 1 & 2 사이 각도"),
             new("angleBetweenPhoto23DataGridViewTextBoxColumn", "HeaderText", "Angle Between Photo 2 & 3", "写真2と3の間の角度", "Winkel zwischen Foto 2 & 3", "Angle entre photos 2 et 3", "Ángulo entre foto 2 y 3", "Ângulo entre fotos 2 e 3", "Angolo tra foto 2 e 3", "Угол между фото 2 и 3", "照片 2 与 3 间夹角", "相片 2 與 3 之間的夾角", "사진 2 & 3 사이 각도"),
             new("angleBetweenPhoto31DataGridViewTextBoxColumn", "HeaderText", "Angle Between Photo 3 & 1", "写真3と1の間の角度", "Winkel zwischen Foto 3 & 1", "Angle entre photos 3 et 1", "Ángulo entre foto 3 y 1", "Ângulo entre fotos 3 e 1", "Angolo tra foto 3 e 1", "Угол между фото 3 и 1", "照片 3 与 1 间夹角", "相片 3 與 1 之間的夾角", "사진 3 & 1 사이 각도"),
+            // 261105Cl 追加 (監査 K5): 窓の題が旧クラス名 "FormTEMIDResults" のまま全言語に出ていた
+            new("this", "Text", "Spot ID v1 results", "Spot ID v1 の結果", "Spot ID v1 – Ergebnisse", "Résultats de Spot ID v1", "Resultados de Spot ID v1", "Resultados do Spot ID v1", "Risultati di Spot ID v1", "Результаты Spot ID v1", "Spot ID v1 结果", "Spot ID v1 結果", "Spot ID v1 결과"), // 261105Cl
         };
         reg["FormSpotIDv2Details"] = new Localization.Entry[]
         {
@@ -360,6 +378,8 @@ internal static class LocalizationData
             new("label2", "Text", "W to E", "W → E", "W nach O", "O vers E", "O a E", "W para E", "O a E", "З на В", "W to E", "W 至 E", "W → E"),
             new("label3", "Text", "SW to NE ", "SW → NE ", "SW nach NO ", "SO vers NE ", "SO a NE ", "SW para NE ", "SO a NE ", "ЮЗ на СВ ", "SW to NE ", "SW 至 NE ", "SW → NE "),
             new("label4", "Text", "NW to SE", "NW → SE", "NW nach SO", "NO vers SE", "NO a SE", "NW para SE", "NO a SE", "СЗ на ЮВ", "NW to SE", "NW 至 SE", "NW → SE"),
+            // 261105Cl 追加 (監査 K5): 窓の題が旧クラス名 "FormSpotDetails" のまま全言語に出ていた。開くチェックボックス (FormSpotIDV2.checkBoxDetailsOfSpot) の各言語の名前に揃える
+            new("this", "Text", "Details of the spot", "選択スポットの詳細", "Reflex-Details", "Détails tache", "Detalles punto", "Detalhes spot", "Dettagli spot", "Детали рефлекса", "衍射点详情", "繞射點詳情", "스폿 상세"), // 261105Cl
         };
         reg["FormStrain"] = new Localization.Entry[]
         {
@@ -381,8 +401,12 @@ internal static class LocalizationData
             new("labelX1", "Text", "X:", "X:", "X:", "X :", "X:", "X:", "X:", "X:", "X:", "X：", "X:"),
             new("toolStripMenuItemLogScaleX", "Text", "Log Scale", "対数スケール", "Logarithmische Skala", "Échelle log.", "Escala logarítmica", "Escala logarítmica", "Scala logaritmica", "Лог. шкала", "对数刻度", "對數刻度", "로그 스케일"),
             new("toolStripMenuItemLogScaleY", "Text", "Log Scale", "対数スケール", "Logarithmische Skala", "Échelle log.", "Escala logarítmica", "Escala logarítmica", "Scala logaritmica", "Лог. шкала", "对数刻度", "對數刻度", "로그 스케일"),
-            new("toolStripMenuItemScaleLineX", "Text", "Scale Line", "スケールバー", "Maßstabslinie", "Ligne d'échelle", "Línea de escala", "Linha de escala", "Linea di scala", "Масштабная линия", "网格线", "比例尺線", "눈금선"),
-            new("toolStripMenuItemScaleLineY", "Text", "Scale Line", "スケールバー", "Maßstabslinie", "Ligne d'échelle", "Línea de escala", "Linha de escala", "Linea di scala", "Масштабная линия", "比例尺", "比例尺線", "눈금선"),
+            //new("toolStripMenuItemScaleLineX", "Text", "Scale Line", "スケールバー", "Maßstabslinie", "Ligne d'échelle", "Línea de escala", "Linha de escala", "Linea di scala", "Масштабная линия", "网格线", "比例尺線", "눈금선"), // 261105Cl 変更前
+            //new("toolStripMenuItemScaleLineY", "Text", "Scale Line", "スケールバー", "Maßstabslinie", "Ligne d'échelle", "Línea de escala", "Linha de escala", "Linea di scala", "Масштабная линия", "比例尺", "比例尺線", "눈금선"), // 261105Cl 変更前
+            // 261105Cl 変更 (監査 K24): 実際は目盛りの位置に引く補助線 (グリッド線。DivisionLineX/YVisible、ツールチップも "gridlines")。
+            //   英語の "Scale Line" と ja「スケールバー」・zh-Hans の Y「比例尺」などは縮尺の線/棒と読めるので、全言語をグリッド線にする (ko「눈금선」はもともとグリッド線の意味)
+            new("toolStripMenuItemScaleLineX", "Text", "Gridlines", "グリッド線", "Gitterlinien", "Lignes de grille", "Líneas de cuadrícula", "Linhas de grade", "Linee della griglia", "Линии сетки", "网格线", "網格線", "눈금선"), // 261105Cl
+            new("toolStripMenuItemScaleLineY", "Text", "Gridlines", "グリッド線", "Gitterlinien", "Lignes de grille", "Líneas de cuadrícula", "Linhas de grade", "Linee della griglia", "Линии сетки", "网格线", "網格線", "눈금선"), // 261105Cl
             new("label1", "Text", "Range  ", "範囲  ", "Bereich  ", "Plage  ", "Intervalo  ", "Intervalo  ", "Intervallo  ", "Диапазон  ", "范围  ", "範圍  ", "범위  "),
             new("labelX2", "Text", "X:", "X:", "X:", "X :", "X:", "X:", "X:", "X:", "X:", "X：", "X:"),
             new("labelY2", "Text", "Y:", "Y:", "Y:", "Y :", "Y:", "Y:", "Y:", "Y:", "Y:", "Y：", "Y:"),
@@ -395,20 +419,33 @@ internal static class LocalizationData
             new("thousandsSeparatorToolStripMenuItem", "Text", "Thousands Separator", "桁区切り", "Tausendertrennzeichen", "Séparateur de milliers", "Separador de miles", "Separador de milhares", "Separatore delle migliaia", "Разделитель тысяч", "千位分隔符", "千位分隔符號", "천 단위 구분 기호"),
             new("toolStripMenuItemRestrictLimit", "Text", "Restrict limit", "範囲を制限", "Grenze einschränken", "Restreindre la limite", "Restringir límite", "Restringir limite", "Restringi limite", "Ограничить предел", "限制范围", "限制範圍", "한계 제한"),
             new("toolStripMenuItem1", "Text", "      Maximum", "      最大", "      Maximum", "      Maximum", "      Máximo", "      Máximo", "      Massimo", "      Максимум", "      最大值", "      最大值", "      최대"),
-            new("toolStripMenuItem2", "Text", "      Mimimum", "      最小", "      Minimum", "      Minimum", "      Mínimo", "      Mínimo", "      Minimo", "      Минимум", "      最小值", "      最小值", "      최소"),
-            new("allowMouseContlolToolStripMenuItem", "Text", "Allow Mouse Contlol", "マウス操作を許可", "Maussteuerung erlauben", "Autoriser le contrôle par la souris", "Permitir control con el ratón", "Permitir controle pelo mouse", "Consenti controllo del mouse", "Разрешить управление мышью", "允许鼠标控制", "允許滑鼠控制", "마우스 제어 허용"),
+            //new("toolStripMenuItem2", "Text", "      Mimimum", "      最小", "      Minimum", "      Minimum", "      Mínimo", "      Mínimo", "      Minimo", "      Минимум", "      最小值", "      最小值", "      최소"), // 261105Cl 変更前
+            //new("allowMouseContlolToolStripMenuItem", "Text", "Allow Mouse Contlol", "マウス操作を許可", "Maussteuerung erlauben", "Autoriser le contrôle par la souris", "Permitir control con el ratón", "Permitir controle pelo mouse", "Consenti controllo del mouse", "Разрешить управление мышью", "允许鼠标控制", "允許滑鼠控制", "마우스 제어 허용"), // 261105Cl 変更前
+            // 261105Cl 変更 (監査 K25): 英語の誤字 Mimimum・Contlol (英語の UI もこの表で上書きされる)
+            new("toolStripMenuItem2", "Text", "      Minimum", "      最小", "      Minimum", "      Minimum", "      Mínimo", "      Mínimo", "      Minimo", "      Минимум", "      最小值", "      最小值", "      최소"), // 261105Cl
+            new("allowMouseContlolToolStripMenuItem", "Text", "Allow Mouse Control", "マウス操作を許可", "Maussteuerung erlauben", "Autoriser le contrôle par la souris", "Permitir control con el ratón", "Permitir controle pelo mouse", "Consenti controllo del mouse", "Разрешить управление мышью", "允许鼠标控制", "允許滑鼠控制", "마우스 제어 허용"), // 261105Cl
             new("toolStripMenuItem3", "Text", "      Mouse Speed", "      マウス速度", "      Mausgeschwindigkeit", "      Vitesse de la souris", "      Velocidad del ratón", "      Velocidade do mouse", "      Velocità del mouse", "      Скорость мыши", "      鼠标速度", "      滑鼠速度", "      마우스 속도"),
             new("toolStripMenuItem4", "Text", "      Direction", "      方向", "      Richtung", "      Direction", "      Dirección", "      Direção", "      Direzione", "      Направление", "      方向", "      方向", "      방향"),
         };
         reg["SaclaControl"] = new Localization.Entry[]
         {
-            new("label3", "Text", "Foot", "裾", "Fuß", "Pied", "Pie", "Pé", "Piede", "Подножие", "足点", "足點", "기저"),
+            //new("label3", "Text", "Foot", "裾", "Fuß", "Pied", "Pie", "Pé", "Piede", "Подножие", "足点", "足點", "기저"), // 261105Cl 変更前
+            // 261105Cl 変更 (監査 K9): ja「裾」はピークの裾の意味。この部品のツールチップと同じ「足点」に (他の窓の「垂線の足」は 4 文字で、
+            //   右隣の x 欄 (x=53) まで 47 px しかなく重なるため)。この部品はどのアプリからも使われていない
+            new("label3", "Text", "Foot", "足点", "Fuß", "Pied", "Pie", "Pé", "Piede", "Подножие", "足点", "足點", "기저"), // 261105Cl
             new("groupBoxDetectorProperty", "Text", "Detector property", "検出器の特性", "Detektoreigenschaft", "Propriété du détecteur", "Propiedad del detector", "Propriedade do detector", "Proprietà del rivelatore", "Свойства детектора", "探测器属性", "偵測器性質", "검출기 속성"),
-            new("numericBoxPixelWidth", "HeaderText", "Width", "線幅", "Breite", "Largeur", "Anchura", "Largura", "Larghezza", "Ширина", "宽度", "寬度", "너비"),
+            //new("numericBoxPixelWidth", "HeaderText", "Width", "線幅", "Breite", "Largeur", "Anchura", "Largura", "Larghezza", "Ширина", "宽度", "寬度", "너비"), // 261105Cl 変更前
+            new("numericBoxPixelWidth", "HeaderText", "Width", "幅", "Breite", "Largeur", "Anchura", "Largura", "Larghezza", "Ширина", "宽度", "寬度", "너비"), // 261105Cl 変更 (監査 K9): 検出器の横のピクセル数。ja「線幅」は誤り (Height は「高さ」)
             new("numericBoxPixelHeight", "HeaderText", "Height", "高さ", "Höhe", "Hauteur", "Altura", "Altura", "Altezza", "Высота", "高度", "高度", "높이"),
             new("numericBoxPixelSize", "HeaderText", "Pix. size", "画素サイズ", "Pix.-Größe", "Taille pix.", "Tam. píx.", "Tam. pix.", "Dim. pixel", "Разм. пикс.", "像素大小", "像素大小", "픽셀 크기"),
             new("groupBoxOpticalProperty", "Text", "Optical property", "光学的性質", "Optische Eigenschaft", "Propriété optique", "Propiedad óptica", "Propriedade óptica", "Proprietà ottica", "Оптические свойства", "光学性质", "光學性質", "광학적 성질"),
             new("numericBoxDistance", "HeaderText", "Camera length 2", "カメラ長 2", "Kameralänge 2", "Longueur de caméra 2", "Longitud de cámara 2", "Comprimento da câmera 2", "Lunghezza camera 2", "Длина камеры 2", "相机长度 2", "相機長度 2", "카메라 길이 2"),
+        };
+        // 261105Cl 追加 (監査 K5): ReciPro の結晶データベースの窓の題が全言語で英語 "Crystal Database" だった。開くボタン (FormMain.toolStripButtonDatabase) の
+        //   各言語の名前に揃える。CSManager など同名の FormCrystalDatabase を持つアプリと衝突しないよう、キーは名前空間つきの型名 (FullName)
+        reg["ReciPro.FormCrystalDatabase"] = new Localization.Entry[]
+        {
+            new("this", "Text", "Crystal Database", "結晶データベース", "Kristalldatenbank", "Base de données", "Base de datos de cristales", "Banco de cristais", "Database cristalli", "База кристаллов", "晶体数据库", "晶體資料庫", "결정 데이터베이스"), // 261105Cl
         };
     }
 }
