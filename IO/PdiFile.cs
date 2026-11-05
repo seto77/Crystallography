@@ -32,6 +32,11 @@ public static class XYFile
         //OriginalFormatType  -> SrcAxisMode
         //OriginalWaveLength  -> SrcWaveLength
         //OriginalTakeoffAngle　-> SrcTakeoffAngle
+        // 261105Cl 修正: 開くだけで元ファイルを書き換えていた。全行に Replace("pt", "Pt") を掛けて同じファイルへ上書き保存するため、
+        //  名前やコメント中の "pt" まで "Pt" に変わっていた (例: "Sample opt" → "Sample oPt")。
+        //  旧書式との互換のための置換はメモリ上だけで行い、ファイルへは書き戻さない。
+        //  "pt" → "Pt" は旧版の要素名 <pt> (現 Profile.Pt) を読むためのものなので、要素タグ <pt>, </pt>, <pt /> だけに限る。
+        string xmlText = null; // 261105Cl 追加: 互換の置換を済ませた XML 本文 (ファイルは書き換えない)
         try//まずXMLのタグを変更
         {
             using var reader = new StreamReader(fileName, Encoding.GetEncoding("UTF-8"));
@@ -42,17 +47,19 @@ public static class XYFile
                 tempstr = tempstr.Replace("OriginalFormatType", "SrcAxisMode");
                 tempstr = tempstr.Replace("OriginalWaveLength", "SrcWaveLength");
                 tempstr = tempstr.Replace("OriginalTakeoffAngle", "SrcTakeoffAngle");
-                tempstr = tempstr.Replace("pt", "Pt");
+                //tempstr = tempstr.Replace("pt", "Pt"); // 261105Cl 変更前
+                tempstr = System.Text.RegularExpressions.Regex.Replace(tempstr, @"(</?)pt(?=[\s/>])", "$1Pt"); // 261105Cl
                 strList.Add(tempstr);
             }
 
             reader.Close();
 
-            using var writer = new StreamWriter(fileName, false, Encoding.GetEncoding("UTF-8"));
-            for (int i = 0; i < strList.Count; i++)
-                writer.WriteLine(strList[i]);
-            writer.Flush();
-            writer.Close();
+            //using var writer = new StreamWriter(fileName, false, Encoding.GetEncoding("UTF-8")); // 261105Cl 変更前: 元ファイルへ書き戻していた
+            //for (int i = 0; i < strList.Count; i++)
+            //    writer.WriteLine(strList[i]);
+            //writer.Flush();
+            //writer.Close();
+            xmlText = string.Join(Environment.NewLine, strList); // 261105Cl 追加
         }
         catch { };
 
@@ -63,9 +70,10 @@ public static class XYFile
             if (version == 2)
             {
                 var serializer = new System.Xml.Serialization.XmlSerializer(typeof(DiffractionProfile2[]));
-                fs = new FileStream(fileName, FileMode.Open);
-                DiffractionProfile2[] dp = (DiffractionProfile2[])serializer.Deserialize(fs);
-                fs.Close();
+                //fs = new FileStream(fileName, FileMode.Open); // 261105Cl 変更前
+                //DiffractionProfile2[] dp = (DiffractionProfile2[])serializer.Deserialize(fs);
+                //fs.Close();
+                DiffractionProfile2[] dp = (DiffractionProfile2[])serializer.Deserialize(new StringReader(xmlText)); // 261105Cl: 置換済みの本文から読む
                 if (dp.Length > 0)
                     return dp;
                 else
@@ -74,10 +82,11 @@ public static class XYFile
             else //バージョン1
             {
                 var serializer = new System.Xml.Serialization.XmlSerializer(typeof(DiffractionProfile[]));
-                fs = new FileStream(fileName, FileMode.Open);
-                DiffractionProfile[] dp = (DiffractionProfile[])serializer.Deserialize(fs);
+                //fs = new FileStream(fileName, FileMode.Open); // 261105Cl 変更前
+                //DiffractionProfile[] dp = (DiffractionProfile[])serializer.Deserialize(fs);
+                //fs.Close();
+                DiffractionProfile[] dp = (DiffractionProfile[])serializer.Deserialize(new StringReader(xmlText)); // 261105Cl: 置換済みの本文から読む
 
-                fs.Close();
                 if (dp.Length > 0)
                     return dp.Select(e => e.ConvertToDiffractionProfile2()).ToArray();
                 else
@@ -91,26 +100,31 @@ public static class XYFile
             try
             {
                 var serializer = new System.Xml.Serialization.XmlSerializer(typeof(DiffractionProfile[]));
-                var reader = new StreamReader(fileName, Encoding.UTF8);
-                var strList = new List<string>();
-                string tempstr;
-                while ((tempstr = reader.ReadLine()) != null)
-                    strList.Add(tempstr);
-                reader.Close();
-                StreamWriter writer = new StreamWriter(fileName, false, Encoding.UTF8);
-                for (int i = 0; i < strList.Count; i++)
-                {
-                    if (strList[i].EndsWith("\0"))
-                        writer.WriteLine(strList[i].TrimEnd('\0'));
-                    else
-                        writer.WriteLine(strList[i]);
-                }
-
-                writer.Flush();
-                writer.Close();
-                fs = new System.IO.FileStream(fileName, System.IO.FileMode.Open);
-                var dp = (DiffractionProfile[])serializer.Deserialize(fs);
-                fs.Close();
+                // 261105Cl 変更前: ここでも行末の '\0' を除いた内容で元ファイルを上書きしていた
+                //var reader = new StreamReader(fileName, Encoding.UTF8);
+                //var strList = new List<string>();
+                //string tempstr;
+                //while ((tempstr = reader.ReadLine()) != null)
+                //    strList.Add(tempstr);
+                //reader.Close();
+                //StreamWriter writer = new StreamWriter(fileName, false, Encoding.UTF8);
+                //for (int i = 0; i < strList.Count; i++)
+                //{
+                //    if (strList[i].EndsWith("\0"))
+                //        writer.WriteLine(strList[i].TrimEnd('\0'));
+                //    else
+                //        writer.WriteLine(strList[i]);
+                //}
+                //
+                //writer.Flush();
+                //writer.Close();
+                //fs = new System.IO.FileStream(fileName, System.IO.FileMode.Open);
+                //var dp = (DiffractionProfile[])serializer.Deserialize(fs);
+                //fs.Close();
+                // 261105Cl 変更: 同じ処理 (各行の行末の '\0' を除く) をメモリ上で行い、そこから読む。元ファイルは書き換えない。
+                //  旧コードは先頭の置換を書き戻した後のファイルを読んでいたので、置換済みの xmlText を使えば同じ内容になる。
+                var trimmed = string.Join(Environment.NewLine, xmlText.Split(Environment.NewLine).Select(s => s.TrimEnd('\0'))); // 261105Cl
+                var dp = (DiffractionProfile[])serializer.Deserialize(new StringReader(trimmed)); // 261105Cl
                 if (dp.Length > 0)
                     return dp.Select(e => e.ConvertToDiffractionProfile2()).ToArray();
                 else return Array.Empty<DiffractionProfile2>();
