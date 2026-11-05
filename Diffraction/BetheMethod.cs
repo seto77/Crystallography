@@ -2475,6 +2475,7 @@ public partial class BetheMethod
     }
     //260801Cl 旧シグネチャ: public void RunSTEM(..., Solver solver = Solver.Auto, int thread = 1)
     //260801Cl 旧シグネチャ2 (v0a): public void RunSTEM(..., Solver solver = Solver.Auto, int thread = 1, StemIonizationRequest ionization = null) — 1 チャネルのみ
+    //261105Cl 追加: sourceSize = 実効光源サイズの半値全幅 FWHM (nm)、resolution = 1 画素の大きさ (nm)。像は FWHM = sourceSize の Gaussian でぼかす
     public void RunSTEM(int maxNumOfBloch, double voltage, double cs, double delta, double sliceThickness, Size imageSize, double resolution, double sourceSize,
         Matrix3D baseRotation, double[] thicknesses, double[] defocusses,
         Vector3DBase[] beamDirections, double convergenceAngle, double detAngleInner, double detAngleOuter,
@@ -3368,12 +3369,16 @@ public partial class BetheMethod
         });
 
         //ガウスブラーを適用
+        // 261105Cl 修正: sourceSize は実効光源サイズの半値全幅 (FWHM。FormImageSimulator は STEM_SourceSizeFWHM を渡す) だが、
+        //  GaussianBlurFast の第 3 引数は半値半幅 (HWHM。カーネル exp(−d²·ln2/hwhm²)) なので、ぼかしが 2 倍に広がっていた。FWHM/2 を渡す。
         if (sourceSize > 0)
             for (int t = 0; t < Thicknesses.Length; t++)
                 for (int d = 0; d < dLen; d++)
                 {
-                    ImageProcess.GaussianBlurFast(ref image_ela[t][d], width, sourceSize / resolution);
-                    ImageProcess.GaussianBlurFast(ref image_tds[t][d], width, sourceSize / resolution);
+                    //ImageProcess.GaussianBlurFast(ref image_ela[t][d], width, sourceSize / resolution); // 261105Cl 変更前
+                    //ImageProcess.GaussianBlurFast(ref image_tds[t][d], width, sourceSize / resolution); // 261105Cl 変更前
+                    ImageProcess.GaussianBlurFast(ref image_ela[t][d], width, sourceSize / resolution / 2); // 261105Cl
+                    ImageProcess.GaussianBlurFast(ref image_tds[t][d], width, sourceSize / resolution / 2); // 261105Cl
                 }
 
         //260802Cl 追加: 弾性・TDS は非負量なので、丸め/有限 q 打切り由来の小負値だけ 0 へ寄せる。
@@ -3561,7 +3566,8 @@ public partial class BetheMethod
             if (sourceSize > 0)
                 for (int t = 0; t < Thicknesses.Length; t++)
                     for (int d = 0; d < dLen; d++)
-                        ImageProcess.GaussianBlurFast(ref image_edx[t][d], width, sourceSize / resolution);
+                        //ImageProcess.GaussianBlurFast(ref image_edx[t][d], width, sourceSize / resolution); // 261105Cl 変更前
+                        ImageProcess.GaussianBlurFast(ref image_edx[t][d], width, sourceSize / resolution / 2); // 261105Cl 修正: sourceSize は FWHM、引数は HWHM (弾性・TDS 像と同じ)
 
             //丸め/有限 q 打切り由来の小負値のみ clamp (量は MinPixelBeforeClamp で診断可視化)
             for (int t = 0; t < Thicknesses.Length; t++)
