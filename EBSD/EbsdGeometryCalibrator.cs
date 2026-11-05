@@ -211,9 +211,11 @@ public static class EbsdGeometryCalibrator
         if (maxStages > 0 && scales.Length > maxStages) scales = scales[..maxStages]; //260922Cl 追加
         var startOffsets = StartOffsets[..Math.Clamp(startCount, 1, StartOffsets.Length)]; //260922Cl 追加 ([0] は context の幾何そのもの)
 
+        double side = geom0.SignedCameraLength; // 261105Cl 追加 (監査 F13): 検出器がどちら側にあるか (試行幾何も同じ側で作る)
         EbsdDetectorGeometry MakeGeom(double u, double v, double ld)
         {
-            var (dx, dy, dz) = EbsdDetectorGeometry.FromPatternCenter(u, v, Math.Exp(ld), detTilt);
+            // var (dx, dy, dz) = EbsdDetectorGeometry.FromPatternCenter(u, v, Math.Exp(ld), detTilt); // 261105Cl 変更前: 標準配置を決め打ち (反対側の検出器は最初の試行から鏡像の側で評価していた)
+            var (dx, dy, dz) = EbsdDetectorGeometry.FromPatternCenter(u, v, Math.Exp(ld), detTilt, side); // 261105Cl 変更
             return new EbsdDetectorGeometry(detTilt, dx, dy, dz, pixelSize, imgW, imgH, xm, smpTilt);
         }
         bool OutOfSoftBounds(double u, double v, double lnDd, out double penalty)

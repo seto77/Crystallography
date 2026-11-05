@@ -296,7 +296,8 @@ public static class EbsdOrientationSearch
                     var g0 = GeomOf(c);
                     var res = EbsdGeometryCalibrator.Run(context with { Geometry = g0, Rotation = c.Rotation }, detW, detH, cancel, null,
                         startCount: o.CalibrateStarts, maxStages: o.CalibrateStages);
-                    var (gx, gy, gz) = EbsdDetectorGeometry.FromPatternCenter(res.PatternCenterU, res.PatternCenterV, res.CameraLength, g0.DetTilt);
+                    // var (gx, gy, gz) = EbsdDetectorGeometry.FromPatternCenter(res.PatternCenterU, res.PatternCenterV, res.CameraLength, g0.DetTilt); // 261105Cl 変更前
+                    var (gx, gy, gz) = EbsdDetectorGeometry.FromPatternCenter(res.PatternCenterU, res.PatternCenterV, res.CameraLength, g0.DetTilt, g0.SignedCameraLength); // 261105Cl 変更 (監査 F13): 元の幾何と同じ側へ戻す
                     var gNew = new EbsdDetectorGeometry(g0.DetTilt, gx, gy, gz, g0.PixelSize, g0.WidthPx, g0.HeightPx, g0.XMirror, g0.SampleTilt);
                     c.Rotation = res.Rotation;
                     c.Geometry = gNew;
