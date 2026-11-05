@@ -1518,15 +1518,44 @@ public class ConvertCrystalData
         int symmetrySeriesNumber = -1;
         if (SgNameHall != "")
         {
-            var hall = SgNameHall.Replace(" ", "");
+            // 261105Cl 修正: Hall 記号では空白が区切りの意味を持つ (例 'P 3 2' = P312 と 'P 32' = P3_2)。旧実装は CIF 側の空白を除き、
+            //   空白なしの表 (SpaceGroupHallStr) と比べていたため、P312 → P3_2、P622 → P6_2 に誤って割り当てていた。また表の表記が標準
+            //   (ITA/spglib) と異なる 57 設定では一致せず H-M 経路に落ちていた。標準表記 (SpaceGroupHallStandardStr, 空白あり) と、
+            //   連続する空白を 1 つにまとめた文字列どうしで比べる。空白なしの表記 (旧版が書き出した CIF など) は、空白を除いた比較で
+            //   1 つの設定に決まる場合だけ受け付ける。
+            //var hall = SgNameHall.Replace(" ", ""); // 261105Cl 変更前
+            //for (int i = 0; i < SymmetryStatic.TotalSpaceGroupNumber; i++)
+            //    if (hall == SymmetryStatic.Symmetries[i].SpaceGroupHallStr)
+            //    {
+            //        symmetrySeriesNumber = i;
+            //        break;
+            //    }
+            //if (symmetrySeriesNumber != -1)
+            //    return symmetrySeriesNumber;
+            static string normalizeHall(string s) => string.Join(" ", s.Split([' ', '\t'], StringSplitOptions.RemoveEmptyEntries));
+            var hall = normalizeHall(SgNameHall);
             for (int i = 0; i < SymmetryStatic.TotalSpaceGroupNumber; i++)
-                if (hall == SymmetryStatic.Symmetries[i].SpaceGroupHallStr)
+                if (hall == normalizeHall(SymmetryStatic.Symmetries[i].SpaceGroupHallStandardStr))
+                    return i;
+
+            // 空白なしの比較は、標準表記と従来表記 (SpaceGroupHallStr。旧版が CIF に書き出していた表記) の両方で行う。
+            // 'P32' (P3_2 と P312) や 'P62' (P6_2 と P622) のように複数の設定に当たるときは採らず、H-M 記号で決める。
+            var compact = hall.Replace(" ", "");
+            foreach (var standard in new[] { true, false })
+            {
+                int hit = -1, hitCount = 0;
+                for (int i = 0; i < SymmetryStatic.TotalSpaceGroupNumber; i++)
                 {
-                    symmetrySeriesNumber = i;
-                    break;
+                    var s = SymmetryStatic.Symmetries[i];
+                    if (compact == (standard ? s.SpaceGroupHallStandardStr : s.SpaceGroupHallStr).Replace(" ", ""))
+                    {
+                        hit = i;
+                        hitCount++;
+                    }
                 }
-            if (symmetrySeriesNumber != -1)
-                return symmetrySeriesNumber;
+                if (hitCount == 1)
+                    return hit;
+            }
         }
 
         SgNameHM = SgNameHM.TrimStart(' ').TrimEnd(' ');
@@ -1795,12 +1824,33 @@ public class ConvertCrystalData
         else if (temp == "I2/b" && isBeta90 && isGamma90) SgNameHM = "I 2/b 1 1";
         #endregion
 
+        // 261105Cl 追加: 完全記号 (例 'P 21/b 21/n 21/m', 'F 41/d -3 2/m :2', 'R -3 2/m :R') と完全に一致する設定を先に探す。
+        //   下の部分一致は短縮記号の表 (SpaceGroupListWithoutSpace) だけを見るため、直方晶・正方晶・立方晶の非標準設定や原点選択 2 を
+        //   完全記号で書いた CIF は一致せず、番号による救済で標準設定 (原点選択 1) になっていた。
+        //   同じ完全記号の設定が複数あるときは、菱面体軸/六方晶軸 (セルの形) と原点選択で絞る。それでも残る場合 (Cmme とその ba-c 設定の
+        //   ように H-M 記号だけでは区別できない組) は最初の設定を採る。一致しなければ従来どおり下の部分一致に進む。
+        var fullName = SgNameHM.Replace(" ", "");
+        var fullHits = new List<int>();
+        for (int i = 1; i < SymmetryStatic.TotalSpaceGroupNumber; i++)
+            if (SymmetryStatic.Symmetries[i].SpaceGroupHMfullStr.Replace(" ", "") == fullName)
+                fullHits.Add(i);
+        if (fullHits.Count > 0)
+        {
+            static string hmOf(int i) => SymmetryStatic.Symmetries[i].SpaceGroupHMStr;
+            IEnumerable<int> narrowed = fullHits;
+            if (narrowed.Any(i => hmOf(i).Contains("Rho", Ord)))
+                narrowed = narrowed.Where(i => hmOf(i).Contains(isRhomboShape ? "Rho" : "Hex", Ord));
+            if (narrowed.Any(i => hmOf(i).Contains("(1)", Ord) || hmOf(i).Contains("(2)", Ord)))
+                narrowed = narrowed.Where(i => hmOf(i).Contains(IsOrigineChoice2 ? "(2)" : "(1)", Ord));
+            symmetrySeriesNumber = narrowed.DefaultIfEmpty(fullHits[0]).First();
+        }
+
         //文字列を含んでいて、かつ、文字数が少ない空間群を選択する (C1とC121などを見分けるため)
 
         int length = int.MaxValue;
         var sg = SymmetryStatic.SpaceGroupListWithoutSpace;
         Replace(ref SgNameHM, " ", "");
-        for (int i = 0; i < SymmetryStatic.TotalSpaceGroupNumber; i++)
+        for (int i = 0; fullHits.Count == 0 && i < SymmetryStatic.TotalSpaceGroupNumber; i++) // 261105Cl: 完全記号で決まったときは部分一致を行わない
         {
             if (sg[i].Length < length)
             {
@@ -1833,7 +1883,12 @@ public class ConvertCrystalData
 
         if (SpaceGroupNumber >= 1 && SpaceGroupNumber <= 230)
             //if (symmetrySeriesNumber >= 1 || SpaceGroupNumber != SymmetryStatic.Symmetries[symmetrySeriesNumber].SpaceGroupNumber)
-            if (symmetrySeriesNumber == -1 || symmetrySeriesNumber >= 1 || SpaceGroupNumber != SymmetryStatic.Symmetries[symmetrySeriesNumber].SpaceGroupNumber)
+            //if (symmetrySeriesNumber == -1 || symmetrySeriesNumber >= 1 || SpaceGroupNumber != SymmetryStatic.Symmetries[symmetrySeriesNumber].SpaceGroupNumber) // 261105Cl 変更前
+            // 261105Cl 修正: 条件の `symmetrySeriesNumber >= 1 ||` により、H-M 記号で設定が見つかっても常に「その番号の最初の設定」で
+            //   上書きしていた (Hall 記号の無い CIF で P 1 21/n 1 → P 1 21/c 1、P b n m → Pnma など、530 設定中 299 設定)。
+            //   CIF の対称操作による後段の確認は原点の移動しか探さないため、誤った設定のまま原子が展開されていた。
+            //   H-M 記号で見つからない (-1, 0) か、見つかった設定の番号が CIF の番号と食い違うときだけ、番号で救済する。
+            if (symmetrySeriesNumber <= 0 || SpaceGroupNumber != SymmetryStatic.Symmetries[symmetrySeriesNumber].SpaceGroupNumber)
                 for (int i = 0; i < SymmetryStatic.TotalSpaceGroupNumber; i++)
                     if (SymmetryStatic.Symmetries[i].SpaceGroupNumber == SpaceGroupNumber)
                     {
@@ -1951,7 +2006,9 @@ public class ConvertCrystalData
         hm = hm.Replace("Hex", "");
         hm = hm.Replace("Rho", "");
         sb.AppendLine("_symmetry_space_group_name_H-M '" + hm + "'");
-        sb.AppendLine("_symmetry_space_group_name_Hall '" + sym.SpaceGroupHallStr + "'");
+        //sb.AppendLine("_symmetry_space_group_name_Hall '" + sym.SpaceGroupHallStr + "'"); // 261105Cl 変更前
+        // 261105Cl 修正: 空白なしの Hall 記号は標準外で、P312 が 'P32' (= P3_2) と読まれるなど他のソフトで誤解釈される。標準表記を書き出す。
+        sb.AppendLine("_symmetry_space_group_name_Hall '" + sym.SpaceGroupHallStandardStr + "'");
         #endregion
 
         #region 原子の等価位置
