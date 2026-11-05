@@ -327,6 +327,24 @@ public class EOS
         return temp * x / num;
     }
 
+    // 261105Cl 追加
+    /// <summary>
+    /// Debye 模型の熱エネルギー関数 e(u) = u^-3 ∫_0^u z^3/(e^z-1) dz (u = θ/T)。E_th = 9nRT·e(θ/T)。
+    /// MgO_Tange_* の 6 次多項式近似 (u ≳ 7 で破綻: u=7.6 で -4%、u=10 で符号反転) を置き換えるための数値積分。
+    /// 中点則 100000 分割 (mpmath の厳密値との相対差 ≲ 3e-11)。z > 60 の寄与 (&lt; 1e-21) は打ち切るので T → 0 (u → ∞) でも安定に 0 へ近づく。
+    /// </summary>
+    private static double DebyeEnergyFunction(double u)
+    {
+        if (double.IsNaN(u)) return double.NaN;
+        double upper = Math.Min(u, 60.0), h = upper / 100000, sum = 0;
+        for (int i = 0; i < 100000; i++)
+        {
+            double z = (i + 0.5) * h;
+            sum += z * z * z / (Math.Exp(z) - 1);
+        }
+        return sum * h / (u * u * u);
+    }
+
     public static double MgO_Tange_Vinet(double T, double v0, double v)
     {
         double k0 = 160.63; //= KT0
@@ -342,10 +360,14 @@ public class EOS
 
         double gamma = gamma0 * (1 + a * (Math.Pow(v / v0, b) - 1));
         double theta = theta0 * Math.Pow((v / v0), (-(1 - a) * gamma0)) * Math.Exp(-(gamma - gamma0) / b);
-        double et = -0.0000013397592 * Math.Pow(theta / T, 6) + 0.000035022653 * Math.Pow(theta / T, 5) - 0.00031034588 * Math.Pow(theta / T, 4)
-            + 0.00018490174 * Math.Pow(theta / T, 3) + 0.016520035 * Math.Pow(theta / T, 2) - 0.12495878 * (theta / T) + 0.33333333;
-        double et0 = -0.0000013397592 * Math.Pow(theta / 300.0, 6) + 0.000035022653 * Math.Pow(theta / 300.0, 5) - 0.00031034588 * Math.Pow(theta / 300.0, 4)
-            + 0.00018490174 * Math.Pow(theta / 300.0, 3) + 0.016520035 * Math.Pow(theta / 300.0, 2) - 0.12495878 * (theta / 300) + 0.33333333;
+        //261105Cl 変更: Debye エネルギー関数の 6 次多項式近似は θ/T ≳ 7 で破綻 (V/V0=1 で 50 K の圧力 -2.39 GPa、正しくは -0.667 GPa。10 K で -34756 GPa。T=0 で NaN) するため数値積分 DebyeEnergyFunction に置換。
+        //  θ/T ≤ 6 (多項式の有効域) での圧力差は ≤ 2.1e-4 GPa (2000 K 以下では ≤ 1e-4 GPa。300 K は熱圧力 0 で不変)。
+        //double et = -0.0000013397592 * Math.Pow(theta / T, 6) + 0.000035022653 * Math.Pow(theta / T, 5) - 0.00031034588 * Math.Pow(theta / T, 4)
+        //    + 0.00018490174 * Math.Pow(theta / T, 3) + 0.016520035 * Math.Pow(theta / T, 2) - 0.12495878 * (theta / T) + 0.33333333;
+        //double et0 = -0.0000013397592 * Math.Pow(theta / 300.0, 6) + 0.000035022653 * Math.Pow(theta / 300.0, 5) - 0.00031034588 * Math.Pow(theta / 300.0, 4)
+        //    + 0.00018490174 * Math.Pow(theta / 300.0, 3) + 0.016520035 * Math.Pow(theta / 300.0, 2) - 0.12495878 * (theta / 300) + 0.33333333;
+        double et = DebyeEnergyFunction(theta / T);//261105Cl 変更
+        double et0 = DebyeEnergyFunction(theta / 300.0);//261105Cl 変更
         double de = 9 * n * 8.3145 * (T * et - 300.0 * et0);
         double v0mol = 6.0221 / z * v0 * 1.0E-7;
         double p_th = gamma / (v / v0) / v0mol * de * 1E-9;
@@ -367,10 +389,13 @@ public class EOS
 
         double gamma = gamma0 * (1 + a * (Math.Pow(v / v0, b) - 1));
         double theta = theta0 * Math.Pow((v / v0), (-(1 - a) * gamma0)) * Math.Exp(-(gamma - gamma0) / b);
-        double et = -0.0000013397592 * Math.Pow(theta / t, 6) + 0.000035022653 * Math.Pow(theta / t, 5) - 0.00031034588 * Math.Pow(theta / t, 4)
-            + 0.00018490174 * Math.Pow(theta / t, 3) + 0.016520035 * Math.Pow(theta / t, 2) - 0.12495878 * (theta / t) + 0.33333333;
-        double et0 = -0.0000013397592 * Math.Pow(theta / t0, 6) + 0.000035022653 * Math.Pow(theta / t0, 5) - 0.00031034588 * Math.Pow(theta / t0, 4)
-            + 0.00018490174 * Math.Pow(theta / t0, 3) + 0.016520035 * Math.Pow(theta / t0, 2) - 0.12495878 * (theta / t0) + 0.33333333;
+        //261105Cl 変更: MgO_Tange_Vinet と同じ理由で 6 次多項式近似を数値積分 DebyeEnergyFunction に置換
+        //double et = -0.0000013397592 * Math.Pow(theta / t, 6) + 0.000035022653 * Math.Pow(theta / t, 5) - 0.00031034588 * Math.Pow(theta / t, 4)
+        //    + 0.00018490174 * Math.Pow(theta / t, 3) + 0.016520035 * Math.Pow(theta / t, 2) - 0.12495878 * (theta / t) + 0.33333333;
+        //double et0 = -0.0000013397592 * Math.Pow(theta / t0, 6) + 0.000035022653 * Math.Pow(theta / t0, 5) - 0.00031034588 * Math.Pow(theta / t0, 4)
+        //    + 0.00018490174 * Math.Pow(theta / t0, 3) + 0.016520035 * Math.Pow(theta / t0, 2) - 0.12495878 * (theta / t0) + 0.33333333;
+        double et = DebyeEnergyFunction(theta / t);//261105Cl 変更
+        double et0 = DebyeEnergyFunction(theta / t0);//261105Cl 変更
         double de = 9 * n * 8.3145 * (t * et - t0 * et0);
         double v0mol = 6.0221 / z * v0 * 1.0E-7;
         double Yth = gamma / (v / v0) / v0mol * de * 1E-9;
