@@ -321,16 +321,20 @@ public class Euler
         if (SinTheta == 0)
         {
             psi = 0;
-            if (EulerMatrix.E11 == 0 && EulerMatrix.E12 > 0)
-                phi = Math.PI / 2.0;
-            else if (EulerMatrix.E11 == 0 && EulerMatrix.E12 < 0)
-                phi = -Math.PI / 2.0;
-            else if (EulerMatrix.E11 == 1)
-                phi = 0;
-            else if (EulerMatrix.E11 == -1)
-                phi = Math.PI;
-            else
-                phi = Math.Acos(EulerMatrix.E11);
+            //261105Cl 変更 (監査 #8): Θ=0 (c∥ビーム) では E11=cos(Φ+Ψ), E12=−sin(Φ+Ψ)、Θ=π では E11=cos(Φ−Ψ), E12=sin(Φ−Ψ)。
+            //  Ψ=0 とおいて Φ を符号つきで求める。旧コードは Acos(E11) (常に 0〜π) と E12 の符号の取り違えで Φ の符号が逆になり、
+            //  その後に角度を入れると結晶が飛んでいた
+            //if (EulerMatrix.E11 == 0 && EulerMatrix.E12 > 0)
+            //    phi = Math.PI / 2.0;
+            //else if (EulerMatrix.E11 == 0 && EulerMatrix.E12 < 0)
+            //    phi = -Math.PI / 2.0;
+            //else if (EulerMatrix.E11 == 1)
+            //    phi = 0;
+            //else if (EulerMatrix.E11 == -1)
+            //    phi = Math.PI;
+            //else
+            //    phi = Math.Acos(EulerMatrix.E11);
+            phi = EulerMatrix.E33 > 0 ? Math.Atan2(-EulerMatrix.E12, EulerMatrix.E11) : Math.Atan2(EulerMatrix.E12, EulerMatrix.E11); // 261105Cl
             return (phi, theta, psi);
         }
 
@@ -419,7 +423,8 @@ public class Euler
         }
         catch
         {
-            return [.. initialAngles];
+            //return [.. initialAngles]; // 261105Cl 変更前: 可変の角度だけを返していたので、固定の角度があると並びがずれ (要素数も settings より少ない)、呼び出し側で別の軸に代入されていた
+            return [.. settings.Select(s => s.Angle)]; // 261105Cl 変更 (監査 G-20): 最小化に失敗したら全軸の初期 (固定) 角度を settings の順で返す
         }
     }
 
