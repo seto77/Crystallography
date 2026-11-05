@@ -789,7 +789,9 @@ public class Crystal : IEquatable<Crystal>, ICloneable, IComparable<Crystal>
     public double GetAngleAxes(int u1, int v1, int w1, int u2, int v2, int w2)
     {
         if (A * B * C == 0 || (u1 == 0 && v1 == 0 && w1 == 0) || (u2 == 0 && v2 == 0 && w2 == 0) || (u1 == u2 && v1 == v2 && w1 == w2)) return 0;
-        return Math.Acos(1.0 / GetLengthAxis(u1, v1, w1) / GetLengthAxis(u2, v2, w2) * (u1 * u2 * A * A + v1 * v2 * B * B + w1 * w2 * C * C + (v1 * w2 + w1 * v2) * B * C * Math.Cos(Alpha) + (w1 * u2 + u1 * w2) * C * A * Math.Cos(Beta) + (u1 * v2 + v1 * u2) * A * B * Math.Cos(Gamma)));
+        //return Math.Acos(1.0 / GetLengthAxis(u1, v1, w1) / GetLengthAxis(u2, v2, w2) * (u1 * u2 * A * A + v1 * v2 * B * B + w1 * w2 * C * C + (v1 * w2 + w1 * v2) * B * C * Math.Cos(Alpha) + (w1 * u2 + u1 * w2) * C * A * Math.Cos(Beta) + (u1 * v2 + v1 * u2) * A * B * Math.Cos(Gamma))); // 261105Cl 変更前
+        // 261105Cl 変更: 平行・反平行 ([111] と [222] など) では丸めで cos が ±1 をわずかに超え、Acos が NaN になっていた (立方晶の |u|,|v|,|w| ≤ 3 で 2 割) ので [-1, 1] に収める
+        return Math.Acos(Math.Clamp(1.0 / GetLengthAxis(u1, v1, w1) / GetLengthAxis(u2, v2, w2) * (u1 * u2 * A * A + v1 * v2 * B * B + w1 * w2 * C * C + (v1 * w2 + w1 * v2) * B * C * Math.Cos(Alpha) + (w1 * u2 + u1 * w2) * C * A * Math.Cos(Beta) + (u1 * v2 + v1 * u2) * A * B * Math.Cos(Gamma)), -1, 1));
     }
 
     /// <summary>面の垂線と軸のなす角</summary>
@@ -803,7 +805,8 @@ public class Crystal : IEquatable<Crystal>, ICloneable, IComparable<Crystal>
     public double GetAnglePlaneAxis(int h, int k, int l, int u, int v, int w)
     {
         if (A * B * C == 0 || (h == 0 && k == 0 && l == 0) || (u == 0 && v == 0 && w == 0)) return 0;
-        return Math.Acos(GetLengthPlane(h, k, l) / GetLengthAxis(u, v, w) * (h * u + k * v + l * w));
+        //return Math.Acos(GetLengthPlane(h, k, l) / GetLengthAxis(u, v, w) * (h * u + k * v + l * w)); // 261105Cl 変更前
+        return Math.Acos(Math.Clamp(GetLengthPlane(h, k, l) / GetLengthAxis(u, v, w) * (h * u + k * v + l * w), -1, 1)); // 261105Cl 変更: 法線と軸が平行・反平行のとき NaN にならないよう [-1, 1] に収める
     }
 
     /// <summary>2面から成る晶帯軸</summary>
