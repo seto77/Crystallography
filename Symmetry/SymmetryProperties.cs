@@ -105,7 +105,9 @@ public sealed class SymmetryProperties
 
         string lat = sym.LatticeTypeStr;
         (CrystalFamilyStr, LatticeSystemStr, BravaisTypeStr) = LatticeDescriptors(sym.CrystalSystemNumber, lat);
-        ArithmeticCrystalClassStr = pg + lat;
+        //ArithmeticCrystalClassStr = pg + lat; // 261105Cl 変更前: 点群の記号に向きが無いので 312P/321P が両方「32P」など 6 組が同じ記号になり、
+        //                                       非標準設定では中心化の記号が設定のもの (A2/m の「2/mA」、I2/a の「2/mI」) になって 73 類より多くなった (検査で 91 種)
+        ArithmeticCrystalClassStr = ArithmeticCrystalClass(itno) ?? pg + lat; // 261105Cl 変更: IT 番号から決める (設定に依らない)
         PattersonSymmetryStr = Patterson(sym, lat);
     }
     #endregion
@@ -225,6 +227,34 @@ public sealed class SymmetryProperties
     #endregion
 
     #region 格子記述子 / Patterson
+    /// <summary>261105Cl 追加: IT 番号 (1..230) から算術結晶類 (73 類) の記号を返す。範囲外は null。
+    /// 記号は標準設定の点群 + 格子 (ITA の表記)。向きで分かれる 6 組 (312P/321P, 3m1P/31mP, -31mP/-3m1P, -6m2P/-62mP, -42mP/-4m2P, -42mI/-4m2I)
+    /// を区別し、非標準設定 (A2/m, I2/a, Bmm2 など) も標準設定の記号にする。Amm2 型 (38–41) は mm2A (ITA の 2mmC と同じ類)。</summary>
+    private static string ArithmeticCrystalClass(int itno) => itno switch
+    {
+        1 => "1P", 2 => "-1P",
+        3 or 4 => "2P", 5 => "2C", 6 or 7 => "mP", 8 or 9 => "mC", 10 or 11 or 13 or 14 => "2/mP", 12 or 15 => "2/mC",
+        >= 16 and <= 19 => "222P", 20 or 21 => "222C", 22 => "222F", 23 or 24 => "222I",
+        >= 25 and <= 34 => "mm2P", >= 35 and <= 37 => "mm2C", >= 38 and <= 41 => "mm2A", 42 or 43 => "mm2F", >= 44 and <= 46 => "mm2I",
+        >= 47 and <= 62 => "mmmP", >= 63 and <= 68 => "mmmC", 69 or 70 => "mmmF", >= 71 and <= 74 => "mmmI",
+        >= 75 and <= 78 => "4P", 79 or 80 => "4I", 81 => "-4P", 82 => "-4I", >= 83 and <= 86 => "4/mP", 87 or 88 => "4/mI",
+        >= 89 and <= 96 => "422P", 97 or 98 => "422I", >= 99 and <= 106 => "4mmP", >= 107 and <= 110 => "4mmI",
+        >= 111 and <= 114 => "-42mP", >= 115 and <= 118 => "-4m2P", 119 or 120 => "-4m2I", 121 or 122 => "-42mI",
+        >= 123 and <= 138 => "4/mmmP", >= 139 and <= 142 => "4/mmmI",
+        >= 143 and <= 145 => "3P", 146 => "3R", 147 => "-3P", 148 => "-3R",
+        149 or 151 or 153 => "312P", 150 or 152 or 154 => "321P", 155 => "32R",
+        156 or 158 => "3m1P", 157 or 159 => "31mP", 160 or 161 => "3mR",
+        162 or 163 => "-31mP", 164 or 165 => "-3m1P", 166 or 167 => "-3mR",
+        >= 168 and <= 173 => "6P", 174 => "-6P", 175 or 176 => "6/mP", >= 177 and <= 182 => "622P", >= 183 and <= 186 => "6mmP",
+        187 or 188 => "-6m2P", 189 or 190 => "-62mP", >= 191 and <= 194 => "6/mmmP",
+        195 or 198 => "23P", 196 => "23F", 197 or 199 => "23I",
+        200 or 201 or 205 => "m-3P", 202 or 203 => "m-3F", 204 or 206 => "m-3I",
+        207 or 208 or 212 or 213 => "432P", 209 or 210 => "432F", 211 or 214 => "432I",
+        215 or 218 => "-43mP", 216 or 219 => "-43mF", 217 or 220 => "-43mI",
+        >= 221 and <= 224 => "m-3mP", >= 225 and <= 228 => "m-3mF", 229 or 230 => "m-3mI",
+        _ => null,
+    };
+
     private static (string Family, string LatticeSystem, string Bravais) LatticeDescriptors(int crystalSystem, string lat)
     {
         // crystalSystem: 1 triclinic .. 7 cubic。trigonal は格子で hexagonal/rhombohedral が分かれる。
