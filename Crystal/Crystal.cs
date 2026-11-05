@@ -2038,10 +2038,13 @@ public class Crystal : IEquatable<Crystal>, ICloneable, IComparable<Crystal>
     /// <summary>指定した原子(target)の近辺にある原子を探索し、相対座標(絶対座標でないことに注意)、距離、ラベルを返す.</summary>
     /// <param name="target"></param>
     /// <param name="maxLength"> nm 単位</param>
+    /// <param name="position">探索の中心 (分率座標)。null なら target の第 1 等価位置 (target.Atom[0])。261105Cl 追加</param>
     /// <returns></returns>
-    public List<(double X, double Y, double Z, double Distance, string Label)> Search(Atoms target, double maxLength)
+    //public List<(double X, double Y, double Z, double Distance, string Label)> Search(Atoms target, double maxLength) // 261105Cl 変更前のシグネチャ
+    public List<(double X, double Y, double Z, double Distance, string Label)> Search(Atoms target, double maxLength, Vector3DBase position = null)
     {
-        Vector3DBase pos = MatrixReal * target.Atom[0];
+        //Vector3DBase pos = MatrixReal * target.Atom[0]; // 261105Cl 変更前: 常に第 1 等価位置の周り (構造ビューアでダブルクリックした原子が別の等価位置でも)
+        Vector3DBase pos = MatrixReal * (position ?? target.Atom[0]); // 261105Cl 変更
         var maxLen2 = maxLength * maxLength;
         var result = new List<(double X, double Y, double Z, double Distance, string Label)>();
         //まず、隣り合った単位格子の原子位置をすべて探索してresultリストに全部入れる 
