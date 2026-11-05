@@ -248,7 +248,9 @@ internal static class LocalizationData
         };
         reg["FormIsotopeComposition"] = new Localization.Entry[]
         {
-            new("ColumnAtomicWeight", "HeaderText", "Atomic Weight", "原子量", "Atomgewicht", "Masse atomique", "Peso atómico", "Peso atômico", "Peso atomico", "Атомный вес", "原子量", "原子量", "원자량"),
+            //new("ColumnAtomicWeight", "HeaderText", "Atomic Weight", "原子量", "Atomgewicht", "Masse atomique", "Peso atómico", "Peso atômico", "Peso atomico", "Атомный вес", "原子量", "原子量", "원자량"), // 261105Cl 変更前
+            // 261105Cl 変更 (監査 A23): この列は同位体の質量数 (AtomStatic.IsotopeAbundance のキー。54, 56, 57, 58 など) で、原子量ではない
+            new("ColumnAtomicWeight", "HeaderText", "Mass Number", "質量数", "Massenzahl", "Nombre de masse", "Número másico", "Número de massa", "Numero di massa", "Массовое число", "质量数", "質量數", "질량수"),
             new("ColumnNaturalAbundance", "HeaderText", "Natural Abundance (%)", "天然存在比 (%)", "Natürliche Häufigkeit (%)", "Abondance naturelle (%)", "Abundancia natural (%)", "Abundância natural (%)", "Abbondanza naturale (%)", "Природная распространённость (%)", "天然丰度 (%)", "天然豐度 (%)", "천연 존재비 (%)"),
             new("ColumnCustomAbundance", "HeaderText", "Custom Abundance (%)", "存在比を指定 (%)", "Benutzerdef. Häufigkeit (%)", "Abondance personnalisée (%)", "Abundancia personalizada (%)", "Abundância personalizada (%)", "Abbondanza personalizzata (%)", "Пользовательская распространённость (%)", "自定义丰度 (%)", "自訂豐度 (%)", "사용자 지정 존재비 (%)"),
             new("buttonCancel", "Text", "Cancel", "キャンセル", "Abbrechen", "Annuler", "Cancelar", "Cancelar", "Annulla", "Отмена", "取消", "取消", "취소"),
