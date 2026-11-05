@@ -445,13 +445,14 @@ internal static class LocalizationData
         };
         reg["FormStrain"] = new Localization.Entry[]
         {
-            new("groupBoxStrain", "Text", "Strain", "ひずみ", "Verzerrung", "Déformation", "Deformación", "Deformação", "Deformazione", "Деформация", "应变", "應變", "변형"),
+            //new("groupBoxStrain", "Text", "Strain", "ひずみ", "Verzerrung", "Déformation", "Deformación", "Deformação", "Deformazione", "Деформация", "应变", "應變", "변형"), // 261106Cl 変更前
+            new("groupBoxStrain", "Text", "Strain", "歪み", "Verzerrung", "Déformation", "Deformación", "Deformação", "Deformazione", "Деформация", "应变", "應變", "변형"), // 261106Cl 変更 (ja の「ひずみ」を多い方の「歪み」に統一)
             new("groupBoxStress", "Text", "Stress", "応力", "Spannung", "Contrainte", "Tensión", "Tensão", "Sforzo", "Напряжение", "应力", "應力", "응력"),
             new("groupBoxElasticConstant", "Text", "Elastic constant", "弾性定数", "Elastische Konstante", "Constante élastique", "Constante elástica", "Constante elástica", "Costante elastica", "Константа упругости", "弹性常数", "彈性常數", "탄성 상수"),
             new("groupBoxCellConstants", "Text", "Cell constants", "格子定数", "Gitterkonstanten", "Constantes de maille", "Constantes de celda", "Constantes da célula", "Costanti di cella", "Параметры ячейки", "晶胞参数", "晶胞常數", "격자 상수"),
             new("buttonApply", "Text", "Apply", "適用", "Anwenden", "Appliquer", "Aplicar", "Aplicar", "Applica", "Применить", "应用", "套用", "적용"),
             //new("this", "Text", "Strain Control", "格子ひずみ (invisible)", "Verzerrungssteuerung", "Contrôle de la déformation", "Control de deformación", "Controle de deformação", "Controllo della deformazione", "Управление деформацией", "应变控制", "應變控制", "변형 제어"), // 261105Cl 変更前
-            new("this", "Text", "Strain control", "格子ひずみ (invisible)", "Verzerrungssteuerung", "Contrôle de la déformation", "Control de deformación", "Controle de deformação", "Controllo della deformazione", "Управление деформацией", "应变控制", "應變控制", "변형 제어"), // 261105Cl 変更 (作者決定 K5: 英語の表示を sentence case に)
+            new("this", "Text", "Strain control", "格子歪み (invisible)", "Verzerrungssteuerung", "Contrôle de la déformation", "Control de deformación", "Controle de deformação", "Controllo della deformazione", "Управление деформацией", "应变控制", "應變控制", "변형 제어"), // 261105Cl 変更 (作者決定 K5: 英語の表示を sentence case に) / 261106Cl 変更 (ja「ひずみ」→「歪み」)
         };
         reg["FormSuperStructure"] = new Localization.Entry[]
         {
