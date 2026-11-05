@@ -213,6 +213,8 @@ internal static class LocalizationData
             new("checkBoxDetectorSizePosition", "Text", "Set detector area && overlapped image.", "検出器領域と重畳画像を設定", "Detektorbereich && überlagertes Bild festlegen.", "Définir la zone du détecteur && l'image superposée.", "Definir área del detector && imagen superpuesta.", "Definir área do detector && imagem sobreposta.", "Imposta area del rivelatore && immagine sovrapposta.", "Задать область детектора && наложенное изображение.", "设置探测器区域 && 叠加图像。", "設定偵測器區域與重疊影像。", "검출기 영역 && 중첩 이미지 설정."),
             new("numericBoxCameraLength2", "HeaderText", "Camera length 2", "カメラ長 2", "Kameralänge 2", "Longueur de caméra 2", "Longitud de cámara 2", "Comprimento da câmera 2", "Lunghezza camera 2", "Длина камеры 2", "相机长度 2", "相機長度 2", "카메라 길이 2"),
             new("checkBoxSchematicDiagram", "Text", "Schematic diagram", "模式図", "Schemazeichnung", "Schéma de principe", "Diagrama esquemático", "Diagrama esquemático", "Schema", "Схем. диаграмма", "示意图", "示意圖", "개략도"),
+            // 261105Cl 追加 (作者決定 K7): 窓の題が全言語で英語だった。ja はマニュアルの呼び名、他は回折シミュレータの「検出器ジオメトリ」の枠の各言語の名前に揃える
+            new("this", "Text", "Detector geometry", "検出器ジオメトリ", "Detektorgeometrie", "Géométrie du détecteur", "Geometría del detector", "Geometria do detector", "Geometria del rivelatore", "Геометрия детектора", "探测器几何", "偵測器幾何", "검출기 기하"), // 261105Cl
         };
         reg["FormDiffractionSpotInfo"] = new Localization.Entry[]
         {
