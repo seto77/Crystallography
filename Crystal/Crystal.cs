@@ -582,12 +582,24 @@ public class Crystal : IEquatable<Crystal>, ICloneable, IComparable<Crystal>
 
         GetFormulaAndDensity();
 
-        Bonds = cry.Bonds;
-
-        LatticePlanes = cry.LatticePlanes;
-        Bounds = cry.Bounds;
-
-        ElasticStiffnessArray = cry.ElasticStiffnessArray;
+        //Bonds = cry.Bonds; // 261105Cl 変更前 (4 行)
+        //LatticePlanes = cry.LatticePlanes;
+        //Bounds = cry.Bounds;
+        //ElasticStiffnessArray = cry.ElasticStiffnessArray;
+        // 261105Cl 変更 (監査 #21): 結合・境界面・格子面・弾性定数を複製して持つ (以前は元の結晶と共有し、複製側の編集が元を書き換えた)。
+        // XML に保存できる型なので Deep.Copy で複製し、境界面・格子面はこの結晶に結び付け直す (通常のコンストラクタと同じ Reset(this))。
+        // 方位・EOS・歪み・応力も引き継ぐ (以前は方位が単位行列に戻り、EOS などが消えた)
+        Bonds = cry.Bonds == null ? null : [.. cry.Bonds.Select(b => Deep.Copy(b))];
+        LatticePlanes = cry.LatticePlanes == null ? null : [.. cry.LatticePlanes.Select(p => Deep.Copy(p))];
+        Bounds = cry.Bounds == null ? null : [.. cry.Bounds.Select(b => Deep.Copy(b))];
+        if (Bounds != null) foreach (var b in Bounds) b.Reset(this);
+        if (LatticePlanes != null) foreach (var p in LatticePlanes) p.Reset(this);
+        ElasticStiffnessArray = cry.ElasticStiffnessArray?.ToArray();
+        RotationMatrix = new Matrix3D(cry.RotationMatrix);
+        EOSCondition = cry.EOSCondition == null ? null : Deep.Copy(cry.EOSCondition);
+        Strain = new Matrix3D(cry.Strain);
+        Stress = new Matrix3D(cry.Stress);
+        HillCoefficient = cry.HillCoefficient;
         ElementValences = cry.ElementValences?.ToArray() ?? []; // 261025Cl 追加: 複製 (ReciPro の Duplicate など) でも、化学組成フォームで手入力した価数を引き継ぐ (Clone と同じ)
     }
 
