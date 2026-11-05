@@ -183,9 +183,9 @@ The doc of `EbsdOrientationSearch.SaturateCap` says "determined by a coefficient
 
 The last stage of `EbsdIndexer.Index` regards candidates with `MisorientationDeg(c.Rotation, current.Rotation)` (without `properSymmetries`) below 3° as duplicates. Symmetry-equivalent orientations remain as separate candidates and can consume the top `maxCandidates` slots (the doc states explicitly that "symmetry equivalents may be included", so this can also be read as by design).
 
-### I-I3 The starting point of geometry calibration depends on the sign convention of `FromPatternCenter`
+### I-I3 The starting point of geometry calibration depends on the sign convention of `FromPatternCenter` (**checked: no problem within the UI range**)
 
-As in §8.1, calibration builds the geometry from $(u_F, v_F, \ln DD)$ with `FromPatternCenter`. Under the condition of G-I1 in [ebsd-geometry.md](ebsd-geometry.md) (configurations with $\mathbf n\cdot\mathbf C<0$), starting point [0] (which should be "the current geometry itself") does not coincide with the current geometry.
+As in §8.1, calibration builds the geometry from $(u_F, v_F, \ln DD)$ with `FromPatternCenter`. For a configuration with $\mathbf n\cdot\mathbf C<0$ starting point [0] would not coincide with the current geometry, but within the `FormEBSD` operating range (sample tilt ≤ 0, default −70°, `DetY` = −35 mm) $\mathbf n\cdot\mathbf C>0$ always holds and starting point [0] coincides with the current geometry (G-I1 in [ebsd-geometry.md](ebsd-geometry.md)).
 
 ---
 

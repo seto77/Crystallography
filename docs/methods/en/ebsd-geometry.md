@@ -24,7 +24,7 @@ $$ p_y \tan\tau \ge p_z . $$
 
 $$ d = p_y\sin\tau - p_z\cos\tau \quad(\text{in MC, updated as } d \mathrel{+}= s\,(v_y\sin\tau - v_z\cos\tau)). $$
 
-  The vacuum side is the $-y$, $+z$ side (for $\tau>0$).
+  The vacuum side is the $-y$, $+z$ side for $\tau>0$ and the $+y$, $+z$ side for $\tau<0$. **The UI (`FormEBSD`) sample tilt is in $[-90^\circ,0^\circ]$, default $-70^\circ$**, so in practice it is the latter (detector on the $+y$ side, default `DetY` = −35 mm).
 
 ### 1.2 Sample frame (sample)
 
@@ -160,7 +160,7 @@ $$ Y_d\cos\delta + Z_d\sin\delta = -v_F,\qquad Y_d\sin\delta - Z_d\cos\delta = -
 
 $$ \Rightarrow\ Y_d = -(v_F\cos\delta + DD\sin\delta),\quad Z_d = -v_F\sin\delta + DD\cos\delta. $$
 
-The second equation means $\mathbf n\cdot\mathbf C = +DD$. For its relation to the doc's "assumes the standard configuration signed L = −DD", see question G-I1 in §5.
+The second equation means $\mathbf n\cdot\mathbf C = +DD$. The $L$ in the doc's "standard configuration signed L = −DD" is `FormEBSD.SignedCameraLength` $=Y_d\sin\delta-Z_d\cos\delta=-\mathbf n\cdot\mathbf C$, so they agree (G-I1, G-I2 in §5).
 
 ### 3.5 Band center line ↔ plane normal
 
@@ -212,17 +212,19 @@ which is rotated into the crystal frame by $R^{-1}$. It agrees with $-R_x(\tau)\
 
 ## 5. Implementation questions
 
-### G-I1 `FromPatternCenter` returns a configuration with $\mathbf n\cdot\mathbf C=+DD$
+### G-I1 `FromPatternCenter` returns only the configuration with $\mathbf n\cdot\mathbf C=+DD$ (**checked: no problem within the UI range**)
 
-- Basis: the formulas of §3.4. The round trip `GetPatternCenter` → `FromPatternCenter` is the identity only when $\mathbf n\cdot\mathbf C>0$.
-- Counterexample (formulas evaluated as-is in Python when writing the `docs`): for $\delta=90^\circ$, $(X_d,Y_d,Z_d)=(1,20,5)$, $\mathbf n\cdot\mathbf C=-20$, and after the round trip it becomes $(1,-20,5)$.
-- Physical orientation: with the MC sample definition of §1.1 ($\tau=+70^\circ$), the sample-frame $z$ component of the exit direction at the detector center is $+17.1$ for $(1,20,5)$ (above the sample surface = the visible side) and $-20.5$ for $(1,-20,5)$ (below the surface). That is, for $\tau>0$ a configuration with the detector on the exit side has $\mathbf n\cdot\mathbf C<0$, and `FromPatternCenter` returns it to the mirror-image side.
-- Places possibly affected: `MakeGeom` in `EbsdGeometryCalibrator.Run` (which turns the calibration starting point $(u_{F0},v_{F0},\ln DD_0)$ back into a geometry with `FromPatternCenter`), and the candidate calibration in `EbsdOrientationSearch` (L299).
-- Unverified assumption: the sign conventions of $\tau$ and $Y_d$ in the UI (`FormEBSD`, not in this repository). If configurations in actual use have $\mathbf n\cdot\mathbf C>0$ (for example $\tau<0$), there is no problem, and the doc's "signed L = −DD" refers to $L \equiv Y_d\sin\delta - Z_d\cos\delta\,(=-\mathbf n\cdot\mathbf C)$. It would be good to state explicitly in the comment which meaning is intended.
+- Formula (§3.4): the round trip `GetPatternCenter` → `FromPatternCenter` is the identity only when $\mathbf n\cdot\mathbf C>0$. A configuration with $\mathbf n\cdot\mathbf C<0$ (e.g. $\delta=90^\circ$, $(X_d,Y_d,Z_d)=(1,20,5)$) is mirrored to $(1,-20,5)$ by the round trip (checked by evaluating the formulas in Python).
+- Conventions in `FormEBSD` (seto77/ReciPro, checked at `2add19b`, 2026-11-05):
+  - Sample tilt `numericBoxSampleTilt`: range $[-90^\circ, 0^\circ]$, **default $-70^\circ$**. Passed with the same sign to MC (`new MonteCarlo(..., sampleTilt, ...)`, `sampleTilt = SmpTilt`) and to `BuildDetectorGeometry` (`SampleTilt = SmpTilt`).
+  - Detector: default `DetTilt` = 90°, `DetY` = −35 mm, `DetZ` = 30 mm (`numericBoxYofDet` / `numericBoxZofDet`).
+  - `FormEBSD.SignedCameraLength` $= Y_d\sin\delta - Z_d\cos\delta\ (=-\mathbf n\cdot\mathbf C)$. Comment: "in the standard configuration (DetTilt=90°, DetY<0) this is −CameraLength2 — the same convention as 'standard configuration signed L = −DD' in `EbsdDetectorGeometry.FromPatternCenter`".
+- For the default configuration, $\mathbf n\cdot\mathbf C = +35 = +DD$, the round trip is the identity $(0,-35,30)$, and the sample-frame $z$ component of the exit direction at the detector center is $+22.6$ ($\tau=-70^\circ$, above the sample surface). For $\tau<0$ the vacuum side of §1.1 is the $+y$ side, and the detector sits on the $+y$ side ($Y_d<0$).
+- Conclusion: within the UI operating range ($\tau\le0$, detector on the exit side) $\mathbf n\cdot\mathbf C>0$ always holds, so geometries built through `FromPatternCenter` in `EbsdGeometryCalibrator` and `EbsdOrientationSearch` are correct. The remaining caveat is only an `EbsdDetectorGeometry` constructed outside the UI with $\tau>0$ (detector at $Y_d>0$). Suggest stating "assumes $\mathbf n\cdot\mathbf C>0$" in `FromPatternCenter`, or passing $\operatorname{sgn}(\mathbf n\cdot\mathbf C)$ of the original geometry as an argument (suggestion; code unchanged).
 
-### G-I2 "signed L" in the doc of `EbsdDetectorGeometry` is undefined
+### G-I2 The definition of "signed L" in the doc of `EbsdDetectorGeometry` is not in the same file (**checked**)
 
-As above, the doc of `FromPatternCenter` says "standard configuration signed L = −DD" without giving the definition of $L$, so reading it as $\mathbf n\cdot\mathbf C$ gives the opposite of the code.
+"signed L" is `FormEBSD.SignedCameraLength` $=Y_d\sin\delta - Z_d\cos\delta = -\mathbf n\cdot\mathbf C$. The second equation of `FromPatternCenter`, $Y_d\sin\delta - Z_d\cos\delta = -DD$, is exactly this, so the code and the doc agree. Reading only the Crystallography side one may misread it as $L=\mathbf n\cdot\mathbf C$; adding a one-line definition to the doc would help.
 
 ---
 

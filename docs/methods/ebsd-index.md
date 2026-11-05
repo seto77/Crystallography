@@ -26,8 +26,8 @@ This is a draft written by Claude from the code (2026-11-05). Not yet reviewed b
 
 | ID | 要旨 / Summary | 文書 / Doc |
 |---|---|---|
-| G-I1 | `FromPatternCenter` は $\mathbf n\cdot\mathbf C=+DD$ の配置を返す。$\tau>0$ で検出器が射出側にある配置（$\mathbf n\cdot\mathbf C<0$）では PC 経由の往復で DetY の符号が反転する / returns the $\mathbf n\cdot\mathbf C=+DD$ branch; round trip flips DetY when $\mathbf n\cdot\mathbf C<0$ | 1 |
-| G-I2 | doc の「signed L = −DD」の $L$ が未定義 / "signed L" undefined in the doc | 1 |
+| G-I1 | **確認済み・UI の範囲では問題なし**: `FromPatternCenter` は $\mathbf n\cdot\mathbf C=+DD$ 前提。`FormEBSD` は試料傾斜 ≤ 0（既定 −70°）・`DetY` = −35 mm で常に満たす。UI 外で $\tau>0$ の幾何を作ると鏡像化するので前提の明記を提案 / **checked, fine within the UI range**: assumes $\mathbf n\cdot\mathbf C>0$, always true for `FormEBSD` (tilt ≤ 0, default −70°, DetY = −35 mm); suggest documenting the assumption | 1 |
+| G-I2 | **確認済み**: 「signed L」= `FormEBSD.SignedCameraLength` $=-\mathbf n\cdot\mathbf C$ で整合。定義を doc に足すと親切 / **checked**: "signed L" is `FormEBSD.SignedCameraLength`; consistent | 1 |
 | M-I1 | 正方格子の対角鏡映 2 種の名前（コメント）が入れ替わっている（常に対で使うので結果に影響なし） / diagonal-mirror labels swapped (no functional effect) | 2 |
 | C-I1 | CSDA 経路で脱出区間の連続損失を引かない / CSDA omits the loss on the escaping flight | 3 |
 | C-I2 | `Depth` は「脱出直前の最後の事象の深さ」で、doc の「源の深さ」との対応は呼び出し側次第 / `Depth` is the last-event depth | 3 |
@@ -36,7 +36,7 @@ This is a draft written by Claude from the code (2026-11-05). Not yet reviewed b
 | P-I2 | 単一スライスの model 2 は $\Delta t$ で割らない / single-slice model 2 is not divided by $\Delta t$ | 4 |
 | I-I1 | `SaturateCap` の doc（プラトー 0.4–1.0）と値（8）が合わない / doc vs value mismatch | 5 |
 | I-I2 | pair-angle の重複除去が対称を考慮しない / duplicate removal ignores symmetry | 5 |
-| I-I3 | 幾何較正の開始点が G-I1 の符号規約に依存する / calibration start depends on G-I1 | 5 |
+| I-I3 | **確認済み・UI の範囲では問題なし**（G-I1 と同じ理由） / **checked, fine within the UI range** (same reason as G-I1) | 5 |
 
 ## 要確認事項 / Items to confirm
 

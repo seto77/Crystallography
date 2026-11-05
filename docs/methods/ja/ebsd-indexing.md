@@ -183,9 +183,9 @@ $-\mathrm{ZNCC}$。参照は `DisplayReference`（表示中の値、ユーザー
 
 `EbsdIndexer.Index` の最終段は `MisorientationDeg(c.Rotation, current.Rotation)`（`properSymmetries` なし）で 3° 未満を重複とみなす。対称等価な方位は別の候補として残り、上位 `maxCandidates` 枠を消費しうる（doc に「対称等価は含まれ得る」と明記されているので仕様とも読める）。
 
-### I-I3 幾何較正の開始点が `FromPatternCenter` の符号規約に依存する
+### I-I3 幾何較正の開始点が `FromPatternCenter` の符号規約に依存する（**確認済み: UI の範囲では問題なし**）
 
-§8.1 の通り、較正は $(u_F, v_F, \ln DD)$ から `FromPatternCenter` で幾何を作る。[ebsd-geometry.md](ebsd-geometry.md) の G-I1 の条件（$\mathbf n\cdot\mathbf C<0$ の配置）では、開始点 [0]（「現在の幾何そのもの」のはず）が現在の幾何と一致しない。
+§8.1 の通り、較正は $(u_F, v_F, \ln DD)$ から `FromPatternCenter` で幾何を作る。$\mathbf n\cdot\mathbf C<0$ の配置なら開始点 [0] が現在の幾何と一致しないが、`FormEBSD` の運用範囲（試料傾斜 ≤ 0、既定 −70°、`DetY` = −35 mm）では常に $\mathbf n\cdot\mathbf C>0$ で、開始点 [0] は現在の幾何に一致する（[ebsd-geometry.md](ebsd-geometry.md) の G-I1）。
 
 ---
 

@@ -24,7 +24,7 @@ $$ p_y \tan\tau \ge p_z . $$
 
 $$ d = p_y\sin\tau - p_z\cos\tau \quad(\text{MC では } d \mathrel{+}= s\,(v_y\sin\tau - v_z\cos\tau) \text{ で更新}). $$
 
-  真空側は $-y$・$+z$ 側である（$\tau>0$ のとき）。
+  真空側は $\tau>0$ なら $-y$・$+z$ 側、$\tau<0$ なら $+y$・$+z$ 側。**UI（`FormEBSD`）の試料傾斜は $[-90^\circ,0^\circ]$、既定 $-70^\circ$** なので、実運用は後者（検出器は $+y$ 側、既定 `DetY` = −35 mm）。
 
 ### 1.2 試料系（sample）
 
@@ -160,7 +160,7 @@ $$ Y_d\cos\delta + Z_d\sin\delta = -v_F,\qquad Y_d\sin\delta - Z_d\cos\delta = -
 
 $$ \Rightarrow\ Y_d = -(v_F\cos\delta + DD\sin\delta),\quad Z_d = -v_F\sin\delta + DD\cos\delta. $$
 
-第 2 式は $\mathbf n\cdot\mathbf C = +DD$ を意味する。doc の「標準配置 signed L = −DD を仮定」との関係は §5 の疑問点 G-I1 を参照。
+第 2 式は $\mathbf n\cdot\mathbf C = +DD$ を意味する。doc の「標準配置 signed L = −DD」の $L$ は `FormEBSD.SignedCameraLength` $=Y_d\sin\delta-Z_d\cos\delta=-\mathbf n\cdot\mathbf C$ で、整合している（§5 の G-I1・G-I2）。
 
 ### 3.5 バンド中心線 ↔ 面法線
 
@@ -212,17 +212,19 @@ $$ \mathbf d^{\rm s} = \bigl(-x_m p_x - X_d,\ \ y_c\,p_y + y_0,\ \ z_c\,p_y + z_
 
 ## 5. 実装上の疑問点
 
-### G-I1 `FromPatternCenter` が $\mathbf n\cdot\mathbf C=+DD$ の配置を返す
+### G-I1 `FromPatternCenter` は $\mathbf n\cdot\mathbf C=+DD$ の配置だけを返す（**確認済み: UI の範囲では問題なし**）
 
-- 根拠: §3.4 の式。`GetPatternCenter` → `FromPatternCenter` の往復は $\mathbf n\cdot\mathbf C>0$ のときだけ恒等になる。
-- 反例（`docs` 作成時に式をそのまま Python で評価）: $\delta=90^\circ$、$(X_d,Y_d,Z_d)=(1,20,5)$ では $\mathbf n\cdot\mathbf C=-20$、往復後は $(1,-20,5)$。
-- 物理的な向き: §1.1 の MC の試料定義（$\tau=+70^\circ$）では、検出器中心の射出方向の試料系 $z$ 成分は $(1,20,5)$ で $+17.1$（試料表面より上 = 見える側）、$(1,-20,5)$ で $-20.5$（表面より下）。つまり $\tau>0$ で検出器が射出側にある配置は $\mathbf n\cdot\mathbf C<0$ になり、`FromPatternCenter` はそれを鏡像の側へ戻す。
-- 影響しうる箇所: `EbsdGeometryCalibrator.Run` の `MakeGeom`（較正の開始点 $(u_{F0},v_{F0},\ln DD_0)$ を `FromPatternCenter` で幾何に戻す）、`EbsdOrientationSearch` の候補較正（L299）。
-- 未確認の前提: UI（`FormEBSD`、このリポジトリに無い）での $\tau$ と $Y_d$ の符号の取り方。実運用の配置が $\mathbf n\cdot\mathbf C>0$（たとえば $\tau<0$）なら問題は無く、doc の「signed L = −DD」は $L \equiv Y_d\sin\delta - Z_d\cos\delta\,(=-\mathbf n\cdot\mathbf C)$ を指していることになる。どちらの意味かをコメントに明記するのがよい。
+- 式（§3.4）: `GetPatternCenter` → `FromPatternCenter` の往復は $\mathbf n\cdot\mathbf C>0$ のときだけ恒等になる。$\mathbf n\cdot\mathbf C<0$ の配置（例: $\delta=90^\circ$、$(X_d,Y_d,Z_d)=(1,20,5)$）は往復で $(1,-20,5)$ へ鏡像化される（式を Python で評価して確認）。
+- `FormEBSD`（seto77/ReciPro、`2add19b` 2026-11-05 で確認）の規約:
+  - 試料傾斜 `numericBoxSampleTilt`: 範囲 $[-90^\circ, 0^\circ]$、**既定 $-70^\circ$**。MC（`new MonteCarlo(..., sampleTilt, ...)`、`sampleTilt = SmpTilt`）と `BuildDetectorGeometry`（`SampleTilt = SmpTilt`）に同じ符号で渡す。
+  - 検出器: 既定 `DetTilt` = 90°、`DetY` = −35 mm、`DetZ` = 30 mm（`numericBoxYofDet` / `numericBoxZofDet`）。
+  - `FormEBSD.SignedCameraLength` $= Y_d\sin\delta - Z_d\cos\delta\ (=-\mathbf n\cdot\mathbf C)$。コメント: 「標準配置 (DetTilt=90°, DetY<0) では −CameraLength2 になる — `EbsdDetectorGeometry.FromPatternCenter` の『標準配置 signed L = −DD』と同一規約」。
+- 既定配置で評価すると $\mathbf n\cdot\mathbf C = +35 = +DD$、往復は恒等 $(0,-35,30)$、検出器中心の射出方向の試料系 $z$ 成分は $+22.6$（$\tau=-70^\circ$、試料表面より上）。$\tau<0$ では §1.1 の真空側は $+y$ 側になり、検出器は $+y$ 側（$Y_d<0$）に置かれる。
+- 結論: $\tau\le0$・検出器が射出側という UI の運用範囲では $\mathbf n\cdot\mathbf C>0$ が常に成り立ち、`EbsdGeometryCalibrator`・`EbsdOrientationSearch` の `FromPatternCenter` 経由の幾何は正しい。残る注意点は、`EbsdDetectorGeometry` を UI 以外から $\tau>0$（検出器 $Y_d>0$）で作った場合だけ。`FromPatternCenter` に「$\mathbf n\cdot\mathbf C>0$ を前提」と明記するか、元の幾何の $\operatorname{sgn}(\mathbf n\cdot\mathbf C)$ を引数で受け取るとよい（提案、コード未変更）。
 
-### G-I2 `EbsdDetectorGeometry` の doc 中の「signed L」が未定義
+### G-I2 `EbsdDetectorGeometry` の doc 中の「signed L」の定義が同じファイルに無い（**確認済み**）
 
-上記の通り、`FromPatternCenter` の doc の「標準配置 signed L = −DD」は $L$ の定義が書かれていないため、$\mathbf n\cdot\mathbf C$ と読むとコードと逆になる。
+「signed L」は `FormEBSD.SignedCameraLength` $=Y_d\sin\delta - Z_d\cos\delta = -\mathbf n\cdot\mathbf C$ のこと。`FromPatternCenter` の第 2 式 $Y_d\sin\delta - Z_d\cos\delta = -DD$ はまさにこれで、コードと doc は整合している。Crystallography 側だけを読むと $L=\mathbf n\cdot\mathbf C$ と誤読しうるので、doc に定義を一行足すとよい。
 
 ---
 
