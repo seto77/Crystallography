@@ -2760,7 +2760,13 @@ public partial class BetheMethod
             var tmp1 = -PiI * lambda * ((k2 - kq2) * defocus + cs * lambda2 * (k2 * k2 - kq2 * kq2) / 2);
             //色収差の部分
             var tmp2 = Math.PI * lambda * delta * (kq2 - k2);
-            tmp2 = -tmp2 * tmp2;
+            //tmp2 = -tmp2 * tmp2; // 261105Cl 変更前
+            // 261105Cl 修正: ½ が抜けていた。delta は焦点ぶれの標準偏差 δ = Cc·σ_V/V (σ_V = ΔV_FWHM/2.355。GetHRTEMImage と ReciPro の
+            //  FormImageSimulator.Delta と同じ δ)。焦点のずれ f が標準偏差 δ のガウス分布に従うとき、二つの部分波 (k と kq) の位相差
+            //  exp(−iπλ f X) (X = k²−kq²、上の tmp1 の defocus の項) の平均は ⟨exp(−iπλ f X)⟩ = exp(−½(πλδX)²)。
+            //  以前は exp(−(πλδX)²) で、δ を √2 倍したのと同じだった (200 kV・Cc 1.4 mm・ΔV 0.8 eV で、10/20/25 mrad の縁の包絡が
+            //  0.915/0.242/0.031、正しくは 0.957/0.492/0.177)。HRTEM 側 (下の Quasi-coherent と TCC) は ½ が付いている。
+            tmp2 = -tmp2 * tmp2 / 2; // 261105Cl
             return Exp(tmp1 + tmp2);
         }
 
@@ -3757,8 +3763,8 @@ public partial class BetheMethod
                     var qSq = (k + g.Vec.ToPointD).Length2;
                     gList.Add((g.Psi, k + g.Vec.ToPointD, defocusses.Select(defocus =>
                         Exp(-PiI * rambda * qSq * (cs * rambdaSq * qSq / 2.0 + defocus))//球面収差
-                        * Math.Exp(-PiSq * betaSq * qSq * (defocus + rambdaSq * cs * qSq) * (defocus + rambdaSq * cs * qSq))//Ec 時間的インコヒーレンス
-                        * Math.Exp(-PiSq * rambdaSq * deltaSq * qSq * qSq / 2)//Es 空間的インコヒーレンス
+                        * Math.Exp(-PiSq * betaSq * qSq * (defocus + rambdaSq * cs * qSq) * (defocus + rambdaSq * cs * qSq))//Es 空間的インコヒーレンス (β: 照射の収束半角) // 261105Cl コメント修正: 旧「Ec 時間的」(下の行と逆になっていた。計算は不変)
+                        * Math.Exp(-PiSq * rambdaSq * deltaSq * qSq * qSq / 2)//Ec 時間的インコヒーレンス (δ: 焦点ぶれ) // 261105Cl コメント修正: 旧「Es 空間的」
                          ).ToArray()));
                 }
 
