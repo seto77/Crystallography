@@ -48,6 +48,14 @@
     <InternalsVisibleTo Include="EbsdSourceStudy" />
   </ItemGroup>
 
+  <!-- 261105Cl 追加: tests/ (回帰テスト。独立したテストプロジェクト) を本体のビルドに取り込まない。
+       SDK 形式の既定グロブはリポジトリ直下以下の全 .cs を拾うため、除外しないとテストコードが Crystallography.dll に入る。 -->
+  <ItemGroup>
+    <Compile Remove="tests\**" />
+    <EmbeddedResource Remove="tests\**" />
+    <None Remove="tests\**" />
+  </ItemGroup>
+
   <!-- 260604Cl: NIST elastic PCHIP データ。旧 96 個の生成 .cs (ushort[][]/float[][] コレクション式) を
        Brotli 圧縮バイナリリソースへ集約。実行時は NistElasticPchipResource が元素単位で展開 (ビット完全等価)。 -->
   <ItemGroup>

@@ -1403,13 +1403,28 @@ new(-4,-1,(0,1,0),((3.0/8.0),(1.0/8.0),(3.0/8.0)),(0,0,0)),//487
                 indices.Add((+i, +h, -l));//
                 indices.Add((+k, +i, -l));//
 
-                indices.Add((-k, -h, +l));//
-                indices.Add((-h, -i, +l));//
-                indices.Add((-i, -k, +l));//
+                // 261105Cl 修正: -62m の向き (P-62m, P-62c) を区別していなかった (常に -6m2 の組を返していた)。
+                //   2 回軸が a 軸方向 (StrSE2p に 2) なら -62m。組は対称操作 h·R から導出。
+                if (sym.StrSE2p.Contains('2'))// -62mの場合
+                {
+                    indices.Add((+k, +h, +l));//
+                    indices.Add((+h, +i, +l));//
+                    indices.Add((+i, +k, +l));//
 
-                indices.Add((-k, -h, -l));//
-                indices.Add((-h, -i, -l));//
-                indices.Add((-i, -k, -l));//
+                    indices.Add((+k, +h, -l));//
+                    indices.Add((+h, +i, -l));//
+                    indices.Add((+i, +k, -l));//
+                }
+                else// -6m2の場合
+                {
+                    indices.Add((-k, -h, +l));//
+                    indices.Add((-h, -i, +l));//
+                    indices.Add((-i, -k, +l));//
+
+                    indices.Add((-k, -h, -l));//
+                    indices.Add((-h, -i, -l));//
+                    indices.Add((-i, -k, -l));//
+                }
                 break;
 
             case 27:// 6/mmm
@@ -1944,15 +1959,32 @@ new(-4,-1,(0,1,0),((3.0/8.0),(1.0/8.0),(3.0/8.0)),(0,0,0)),//487
                 break;
 
             case 14: //-42m
-                indices.Add((+u, +v, +w));
-                indices.Add((-u, -v, +w));
-                indices.Add((+v, +u, +w));
-                indices.Add((-v, -u, +w));
+                // 261105Cl 修正: -4m2 の向き (P-4m2, P-4c2, P-4b2, P-4n2, I-4m2, I-4c2) を区別していなかった (常に -42m の組を返していた)。
+                //   GenerateEquivalentPlanes の case 14 と同じ条件 (StrSE2p に 2 があれば -42m) で分岐する。各組は対称操作 R·u から導出。
+                if (sym.StrSE2p.Contains('2'))// -42mの場合
+                {
+                    indices.Add((+u, +v, +w));
+                    indices.Add((-u, -v, +w));
+                    indices.Add((+v, +u, +w));
+                    indices.Add((-v, -u, +w));
 
-                indices.Add((-v, +u, -w));
-                indices.Add((+v, -u, -w));
-                indices.Add((+u, -v, -w));
-                indices.Add((-u, +v, -w));
+                    indices.Add((-v, +u, -w));
+                    indices.Add((+v, -u, -w));
+                    indices.Add((+u, -v, -w));
+                    indices.Add((-u, +v, -w));
+                }
+                else// -4m2の場合
+                {
+                    indices.Add((+u, +v, +w));
+                    indices.Add((-u, -v, +w));
+                    indices.Add((+u, -v, +w));
+                    indices.Add((-u, +v, +w));
+
+                    indices.Add((+v, -u, -w));
+                    indices.Add((-v, +u, -w));
+                    indices.Add((+v, +u, -w));
+                    indices.Add((-v, -u, -w));
+                }
                 break;
 
             case 15: //4/mmm
@@ -2222,6 +2254,27 @@ new(-4,-1,(0,1,0),((3.0/8.0),(1.0/8.0),(3.0/8.0)),(0,0,0)),//487
                 break;
 
             case 26://-6m2
+                // 261105Cl 修正: -62m の向き (P-62m, P-62c) を区別していなかった (常に -6m2 の組を返していた)。
+                //   GenerateEquivalentPlanes の case 26 と同じ条件で分岐する。-62m の組は対称操作 R·u から導出。-6m2 側は従来どおり。
+                if (sym.StrSE2p.Contains('2'))// -62mの場合
+                {
+                    indices.Add((+u, +v, +w));
+                    indices.Add((-v, u - v, w));
+                    indices.Add((-u + v, -u, w));
+
+                    indices.Add((v, u, -w));
+                    indices.Add((u - v, -v, -w));
+                    indices.Add((-u, -u + v, -w));
+
+                    indices.Add((u, v, -w));
+                    indices.Add((-v, u - v, -w));
+                    indices.Add((-u + v, -u, -w));
+
+                    indices.Add((v, u, w));
+                    indices.Add((u - v, -v, w));
+                    indices.Add((-u, -u + v, w));
+                    break;
+                }
                 indices.Add((+u, +v, +w));
                 indices.Add((-v, u - v, w));
                 indices.Add((-u + v, -u, w));

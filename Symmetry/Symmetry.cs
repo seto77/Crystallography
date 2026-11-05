@@ -13,6 +13,10 @@ public readonly struct Symmetry
     public string SpaceGroupHMsubStr { get; }
     public string SpaceGroupSFStr { get; }
     public string SpaceGroupHallStr { get; }
+    /// <summary>261105Cl 追加: 標準表記の Hall 記号 (ITA/spglib と同じ、空白あり。例 "-P 2ybc", "P 3 2")。CIF の読み書きに使う。
+    /// <see cref="SpaceGroupHallStr"/> は従来の空白なし表記 (表示用) で、空白を除くと "P 3 2" (P312) と "P 32" (P3_2) が同じ "P32" になるなど
+    /// 群を一意に表せない場合がある。</summary>
+    public string SpaceGroupHallStandardStr { get; }
     public string SpaceGroupHMStr { get; }
     public string SpaceGroupHMfullStr { get; }
     public string MainAxis { get; }
@@ -53,6 +57,7 @@ public readonly struct Symmetry
             SpaceGroupHMsubStr = str[0];
             SpaceGroupSFStr = str[1];
             SpaceGroupHallStr = str[2];
+            SpaceGroupHallStandardStr = str.Length > 17 ? str[17] : str[2]; // 261105Cl 追加
             SpaceGroupHMStr = str[3];
             SpaceGroupHMfullStr = str[4];
             MainAxis = str[5];
@@ -83,7 +88,7 @@ public readonly struct Symmetry
         }
         else
         {
-            SpaceGroupHMsubStr = SpaceGroupSFStr = SpaceGroupHallStr = SpaceGroupHMStr = SpaceGroupHMfullStr = MainAxis =
+            SpaceGroupHMsubStr = SpaceGroupSFStr = SpaceGroupHallStr = SpaceGroupHallStandardStr = SpaceGroupHMStr = SpaceGroupHMfullStr = MainAxis = // 261105Cl SpaceGroupHallStandardStr を追加
             LatticeTypeStr = StrSE1p = StrSE1v = StrSE2p = StrSE2v = StrSE3p = StrSE3v = PointGroupHMStr =
             PointGroupSFStr = LaueGroupStr = CrystalSystemStr = "";
 
