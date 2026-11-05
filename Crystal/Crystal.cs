@@ -601,6 +601,9 @@ public class Crystal : IEquatable<Crystal>, ICloneable, IComparable<Crystal>
         Stress = new Matrix3D(cry.Stress);
         HillCoefficient = cry.HillCoefficient;
         ElementValences = cry.ElementValences?.ToArray() ?? []; // 261025Cl 追加: 複製 (ReciPro の Duplicate など) でも、化学組成フォームで手入力した価数を引き継ぐ (Clone と同じ)
+        // 261105Cl 追加 (監査 A13): 読み込み時の格子定数 (「Revert cell constants」の戻り先) も引き継ぐ。以前は 0 のままで、複製した結晶では Revert が何もしなかった
+        (InitialA, InitialB, InitialC, InitialAlpha, InitialBeta, InitialGamma) = (cry.InitialA, cry.InitialB, cry.InitialC, cry.InitialAlpha, cry.InitialBeta, cry.InitialGamma);
+        (InitialA_err, InitialB_err, InitialC_err, InitialAlpha_err, InitialBeta_err, InitialGamma_err) = (cry.InitialA_err, cry.InitialB_err, cry.InitialC_err, cry.InitialAlpha_err, cry.InitialBeta_err, cry.InitialGamma_err);
     }
 
     #endregion コンストラクタ
@@ -2015,6 +2018,7 @@ public class Crystal : IEquatable<Crystal>, ICloneable, IComparable<Crystal>
             Beta_err = InitialBeta_err;
             Gamma_err = InitialGamma_err;
             SetAxis();
+            GetFormulaAndDensity(); // 261105Cl 追加 (監査 A13): 体積が変わるので密度も計算し直す (以前は Revert 後も編集後の格子の密度が残った)
         }
     }
     #endregion
