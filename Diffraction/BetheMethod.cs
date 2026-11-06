@@ -270,6 +270,13 @@ public partial class BetheMethod
     /// </summary>
     public static BeamBoundaryTieMode BeamBoundaryTieMode { get; set; } = BeamBoundaryTieMode.DropGroup;
 
+    /// <summary>261107Cl 追加 (研究用の口、既定 null = 何もしない): 後方散乱の源に元素ごとの倍率 κ(Z, E[keV]) を掛ける。
+    /// 掛ける所は EBSD のマスターの局所源 σ_n と、annular (inner/outer を指定した) 吸収因子の原子ごとの寄与 (= 後方 TDS 行列 CreateMasterPatternMuBack)。
+    /// 動力学の吸収 (全立体角の FactorImaginary) には掛けない (源の相対強度だけの感度模型。前方 + 後方の収支は保たれない)。
+    /// 用途 = EBSD 見直し G5: 第一 Born の源 (σ_back,Born) を Mott (NIST) の後方断面積に合わせた κ = σ_back,Mott/σ_back,Born の席占有率 q への効きを測る。
+    /// ⚠ uDictionary の鍵には入らないので、設定を変えたら ClearUCache すること (マスターの経路は muBack の前後で空にする)。⚠ 製品の経路では設定しない</summary>
+    public static Func<int, double, double> BackscatterSourceScaleForResearch { get; set; }
+
     /// <summary>U のキャッシュ (uDictionary) を破棄する。260613Cl 追加: ElasticIonModel 切替後に再計算なしで表示を更新する経路向け。
     /// 261106Ch: U に依存する平行回折・PED の固有解も無効化する。公開 API で原子や ADP を変更した後にも呼ぶ。</summary>
     // public void ClearUCache() => uDictionary.Clear(); // 261106Ch 変更前
@@ -1589,6 +1596,7 @@ public partial class BetheMethod
                     int sub = _elasticIonModel == ElasticIonModel.Neutral ? 0 : atoms.SubNumberElectron;
                     var fBack = AtomStatic.ElectronScatteringPeng[atoms.AtomicNumber][sub].FactorImaginaryAnnular(AccVoltage, zeroVec, m, Math.PI / 2, Math.PI, 30, 12);
                     double sigma = sigmaScale * atoms.Occ * fBack;
+                    if (BackscatterSourceScaleForResearch != null) sigma *= BackscatterSourceScaleForResearch(atoms.AtomicNumber, AccVoltage); // 261107Cl 追加 (研究用の口、既定 null)
                     foreach (var _ in atoms.Atom)
                         sigmaArray[siteIndex++] = sigma;
                 }
@@ -4103,6 +4111,8 @@ public partial class BetheMethod
 
                             imag = m == 0 ? 0 : double.IsNaN(inner * outer) ? es.FactorImaginary(kV, s2, m) :
                                 h is null ? es.FactorImaginaryAnnular(kV, g.Vec, m, inner, outer, nTheta, nPhi) : es.FactorImaginaryAnnular(kV, g.Vec, h.Vec, m, inner, outer, nTheta, nPhi);//非弾性散乱因子 答えは無次元
+                            if (BackscatterSourceScaleForResearch != null && !double.IsNaN(inner * outer)) // 261107Cl 追加 (研究用の口、既定 null): annular の分だけ元素ごとの倍率
+                                imag *= BackscatterSourceScaleForResearch(atoms.AtomicNumber, kV);
                         }
                     }
                     var d = Exp(-m * s2 + TwoPiI * (atom * index)) * atoms.Occ; //20240524 位相項 (TwoPiI・・・)の符号をプラスに変更 (これで、対称心の結晶の計算が上手くいくはず 三菱・中村)
