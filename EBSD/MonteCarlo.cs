@@ -731,9 +731,14 @@ public class MonteCarlo
     }
 
     /// <summary>261106Cl 追加: 進行方向 (vX,vY,vZ) を極角 cosθ・一様な方位角で曲げる (弾性散乱と同じ回転の式。毎回正規化する)</summary>
+    /// <summary>261106Cl 追加 (診断専用・既定 false): true にすると GOS の非弾性事象で向きを変えない (損失・率・経路はそのまま)。
+    /// 曲がりの効果だけを切り分ける対照 (EBSD 見直し G4、Si004 の「GOS 曲がり無効」) に使う。研究用の道具からリフレクションで立てる。製品の経路では触らない</summary>
+    internal static bool GosDeflectionDisabledForDiagnostics = false;
+
     internal void DeflectDirection(ref double vX, ref double vY, ref double vZ, double cosθ)
     {
-        if (cosθ >= 1) return;
+        // if (cosθ >= 1) return; // 261106Cl 変更前
+        if (cosθ >= 1 || GosDeflectionDisabledForDiagnostics) return;
         // 261106Cl codex2 第 6 回: 弾性と同じ回転の式は −z 近傍の分岐で入射方向の小さな横成分を捨て、指定の θ を保たなかった。
         //   安定な直交基底 (v に最も直交に近い座標軸との外積) で回す形に変更: v' = cosθ·v + sinθ (cosφ·e1 + sinφ·e2)
         // double a = sinθ * cosφ, b = sinθ * sinφ, vZ1 = vZ + 1;
