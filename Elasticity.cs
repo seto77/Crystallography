@@ -104,7 +104,8 @@ namespace Crystallography
             // ij は 1 始まりの 2 桁 (例 14 = c14)
             void set(int ij, double v) { int i = ij / 10 - 1, j = ij % 10 - 1; r[i, j] = r[j, i] = v; fix[i, j] = fix[j, i] = true; }
             double v(int ij) => r[ij / 10 - 1, ij % 10 - 1];
-            void zero(params int[] ijs) { foreach (var ij in ijs) set(ij, 0); }
+            // void zero(params int[] ijs) { foreach (var ij in ijs) set(ij, 0); } // 261106Ch 変更前
+            void zero(params System.ReadOnlySpan<int> ijs) { foreach (var ij in ijs) set(ij, 0); } // 261106Ch: 固定引数の一時配列を不要にする。
             double k = mode == Mode.Compliance ? 2 : 1;          // c56 = c14 ↔ s56 = 2s14、c46 = −c15 ↔ s46 = −2s15
             double f66 = mode == Mode.Compliance ? 2 : 0.5;      // c66 = (c11 − c12)/2 ↔ s66 = 2(s11 − s12)
 

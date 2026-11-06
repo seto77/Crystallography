@@ -433,7 +433,8 @@ public static class EbsdRadonIndexer
 
         //var survivors = new List<(double S, int Di, int Pi)>(); //260922Cl 変更前
         var survivors = new List<(double S, int Di, int Pi, int Zi)>(); //260922Cl: Z の格子番号も持つ
-        var lockObj = new object();
+        // var lockObj = new object(); // 261106Ch 変更前
+        var lockObj = new System.Threading.Lock(); // 261106Ch: この検索内だけで共有するロック。
         int coarseDone = 0; //260725Cl: 進捗通知用 (粗探索が総時間の大半)
         const int keepPerMerge = 600;
         var parallelOptions = new System.Threading.Tasks.ParallelOptions { CancellationToken = cancel }; //260725Ch: 無効化された探索を全ワーカーで停止し、OCEをそのまま呼び出し側へ返す

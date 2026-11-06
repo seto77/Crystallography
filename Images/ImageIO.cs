@@ -184,6 +184,93 @@ public static partial class ImageIO
     {
         str = str.TrimEnd('\n');
         str = str.TrimEnd('\r');
+        if (!File.Exists(str))
+            return false;
+
+        Ring.Comments = "";
+        Ring.SequentialImageIntensities = null;
+        Ring.SequentialImageEnergy = null;
+        Ring.SequentialImageNames = null;
+        Ring.SequentialImagePulsePower = null;
+
+        // (261106Ch) 未認識だけを早期終了。読込関数が false を返した場合も従来どおり原画像を保存する。
+        var result = ReadImageData(str, flag);
+        if (result is null)
+            return false;
+
+        Ring.IntensityOriginal = [.. Ring.Intensity];
+        Ring.SrcImgSizeOriginal = new Size(Ring.SrcImgSize.Width, Ring.SrcImgSize.Height);
+        return result.Value;
+    }
+
+    /// <summary>形式別の読込。null は未認識、true/false は選択した読込関数の結果。(261106Ch) 追加</summary>
+    private static bool? ReadImageData(string str, bool? flag)
+    {
+        // .img と mar の大小文字の扱い、カルチャ依存の小文字化は既存の判定仕様を維持する。
+        if (str.EndsWith("img"))
+            return ReadImg(str);
+
+        string lower = str.ToLower();
+        string ext = Path.GetExtension(str).TrimStart(['.']);
+        return lower switch
+        {
+            _ when lower.EndsWith("stl") || lower.EndsWith("osc") => Raxis4(str),
+            _ when ext.StartsWith('0') && IsTiffImage(str) => RayonixSX200(str),
+            _ when lower.EndsWith(".ccd") => Brucker(str),
+            _ when lower.EndsWith(".gel") => Gel(str),
+            _ when lower.EndsWith(".ipf") => Ipf(str),
+            _ when ext.StartsWith("mar") => MAR(str),
+            _ when lower.EndsWith(".mccd") => Mccd(str),
+            _ when lower.EndsWith(".his") => IsITEXImage(str) ? ITEX(str) : HIS(str),
+            _ when lower.EndsWith("ipa") && str != "ClipBoard.ipa" => IPA(str),
+            _ when lower.EndsWith("bmp") || lower.EndsWith("jpg") || lower.EndsWith("png") => GeneralImage(str),
+            _ when lower.EndsWith("tif") || lower.EndsWith("tiff") => Tiff(str, flag),
+            _ when lower.EndsWith("h5") => HDF5(str, flag),
+            _ when lower.EndsWith("dm3") || lower.EndsWith("dm4") => DM(str),
+            _ when lower.EndsWith("raw") => RadIcon(str),
+            _ when lower.EndsWith("smv") => SMV(str),
+            _ when lower.EndsWith("mrc") => MRC(str),
+            _ when lower.EndsWith("nxs") => NXS(str),
+            _ => null
+        };
+    }
+
+    /// <summary>.img の副ファイルとヘッダーを優先順に判定する。null は未認識。(261106Ch) 追加</summary>
+    private static bool? ReadImg(string str)
+    {
+        if (File.Exists(str[..^3] + "inf"))
+        {
+            using var reader = new StreamReader(str[..^3] + "inf");
+            var lines = new List<string>();
+            string line;
+            while ((line = reader.ReadLine()) != null)
+                lines.Add(line);
+            if (lines.Count == 0 || !lines[0].Contains("BAS_IMAGE_FILE", StringComparison.Ordinal))
+                return null; // 不正な .inf が存在する場合は .tem / ヘッダーへフォールバックしない。
+            return BAS2000or2500(str, [.. lines]);
+        }
+        if (File.Exists(str[..^3] + "tem"))
+            return FujiFDL(str);
+
+        return str switch
+        {
+            _ when IsRAxisImage(str) => Raxis4(str),
+            _ when IsRintRapid2UnrollImage(str) => RintRapid2Unroll(str),
+            _ when IsADXVImage(str) => ADXV(str),
+            _ when IsRigakuPXD(str) => RigakuPXD(str),
+            _ when IsITEXImage(str) => ITEX(str),
+            _ when IsADSCImage(str) => ADSC(str),
+            _ when IsTiffImage(str) => Tiff(str),
+            _ => null
+        };
+    }
+
+    #region (261106Ch) 変更前: ReadImage の形式判定と読込をまとめた実装
+    /*
+    public static bool ReadImage(string str, bool? flag = null)
+    {
+        str = str.TrimEnd('\n');
+        str = str.TrimEnd('\r');
         
         if (!File.Exists(str))
             return false;
@@ -285,6 +372,8 @@ public static partial class ImageIO
 
         return result;
     }
+    */
+    #endregion
 
     #region SMV
     private static bool SMV(string filename)
@@ -633,6 +722,93 @@ public static partial class ImageIO
             var obj = t.Tag["ImageList"].Tag["1"].Tag["ImageData"].Tag["Data"].Values;
             if (obj != null && obj.Length != 0)
             {
+                // (261106Ch) dynamic の添字アクセスを型付き配列に分離。型変換・書込の順序は維持する。
+                Array intensity;
+                if (obj[0].GetType() == typeof(float))
+                {
+                    if (obj.Length == imageHeight * imageWidth)
+                        intensity = obj.Select(v => (float)v).ToArray();
+                    else
+                    {
+                        Ring.DigitalMicrographProperty.IsFFT = true;
+                        intensity = DecodeDigitalMicrographFft(obj.Select(v => (float)v).ToArray(), imageWidth, imageHeight);
+                    }
+                }
+                else if (obj[0].GetType() == typeof(uint))
+                    intensity = obj.Select(v => (uint)v).ToArray();
+                else if (obj[0].GetType() == typeof(int))
+                    intensity = obj.Select(v => (int)v).ToArray();
+                else
+                    return false;
+
+                CopyDigitalMicrographIntensity(intensity, imageWidth * imageHeight);
+            }
+            //Ring.BitsPerPixels = t.BitsPerSampleGray;
+            Ring.ImageType = Ring.ImageTypeEnum.DM;
+        }
+        catch (Exception e) //260712Cl 破損 DM ファイルの例外を捕捉し false を返す (旧: コメントアウトされ未処理クラッシュだった)
+        {
+            MessageBox.Show(e.Message);
+            return false;
+        }
+        return true;
+    }
+
+    /// <summary>DM の複素FFT配列を表示用の強度配列へ展開する。(261106Ch) 追加</summary>
+    private static double[] DecodeDigitalMicrographFft(float[] values, int width, int height)
+    {
+        var intensity = new double[height * width];
+        for (int i = 0; i < values.Length; i += 2)
+        {
+            int row = (i / 2) / (width / 2 + 1);
+            int col = (i / 2) % (width / 2 + 1);
+            // 積・和を float で計算した後に double へ広げる従来の丸めを維持する。
+            var magnitude = Math.Sqrt(values[i] * values[i] + values[i + 1] * values[i + 1]);
+            if (col == 0)
+                intensity[row * width + width / 2] = magnitude;
+            else if (width % 2 == 0 && col == width / 2)
+                intensity[row * width] = magnitude;
+            else if (height % 2 == 0 && row == 0)
+            {
+                intensity[width / 2 + col] = magnitude;
+                intensity[width / 2 - col] = magnitude;
+            }
+            else
+            {
+                intensity[row * width + width / 2 + col] = magnitude;
+                int mirrorRow = height % 2 == 0 ? height - row : height - row - 1;
+                intensity[mirrorRow * width + width / 2 - col] = magnitude;
+            }
+        }
+        return intensity;
+    }
+
+    /// <summary>DM の型付き配列を既存の強度バッファへコピーする。(261106Ch) 追加</summary>
+    private static void CopyDigitalMicrographIntensity(Array intensity, int count)
+    {
+        if (Ring.Intensity.Length != count)
+            Ring.Intensity = new double[count];
+        // サイズ一致時の配列再利用と、不正な短い配列での部分書込・例外を従来どおり保つ。
+        switch (intensity)
+        {
+            case float[] values:
+                for (int i = 0; i < count; i++) Ring.Intensity[i] = values[i];
+                break;
+            // CLR は int[] と uint[] の型パターンを互換とするため、符号を実際の配列型で判定する。
+            case uint[] values when intensity.GetType() == typeof(uint[]):
+                for (int i = 0; i < count; i++) Ring.Intensity[i] = values[i];
+                break;
+            case int[] values:
+                for (int i = 0; i < count; i++) Ring.Intensity[i] = values[i];
+                break;
+            case double[] values:
+                for (int i = 0; i < count; i++) Ring.Intensity[i] = values[i];
+                break;
+        }
+    }
+
+    #region (261106Ch) 変更前: DM の dynamic による変換とコピー
+    /*
                 dynamic intensity;
 
                 //object o = t.Tag["ImageList"].Tag["1"].Tag["ImageData"].Tag["Data"].Values[0];
@@ -682,17 +858,8 @@ public static partial class ImageIO
                     Ring.Intensity = new double[imageHeight * imageWidth];
                 for (int i = 0; i < imageHeight * imageWidth; i++)
                     Ring.Intensity[i] = intensity[i];
-            }
-            //Ring.BitsPerPixels = t.BitsPerSampleGray;
-            Ring.ImageType = Ring.ImageTypeEnum.DM;
-        }
-        catch (Exception e) //260712Cl 破損 DM ファイルの例外を捕捉し false を返す (旧: コメントアウトされ未処理クラッシュだった)
-        {
-            MessageBox.Show(e.Message);
-            return false;
-        }
-        return true;
-    }
+    */
+    #endregion
     #endregion
 
     #region MRC

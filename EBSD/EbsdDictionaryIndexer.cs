@@ -93,7 +93,8 @@ public static class EbsdDictionaryIndexer
 
         int keepPerThread = Math.Max(64, coarseKeep * 4);
         var survivors = new List<(double S, int Di, int Pi)>();
-        var lockObj = new object();
+        // var lockObj = new object(); // 261106Ch 変更前
+        var lockObj = new System.Threading.Lock(); // 261106Ch: この検索内だけで共有するロック。
         int coarseDone = 0; //260725Cl: 進捗通知用 (粗段が総時間の大半)
         var parallelOptions = new System.Threading.Tasks.ParallelOptions { CancellationToken = cancel }; //260725Ch: OCEをAggregateException化せず、TPL全ワーカーへ中止を伝播
         //260725Cl: square 格子は面内回転分解プロジェクション (球点毎に Lambert 極座標を 1 回計算、面内 120 回は sector 折り返しのみ —

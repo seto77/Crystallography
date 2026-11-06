@@ -220,9 +220,10 @@ public partial class Profile : ICloneable
            }
            */
 
+        samples: // (261106Ch) 一致したサンプルは外側の次の反復へ進む。
         for (int n = 0; n < x.Length; n++)
         {
-            bool flag = true;
+            // bool flag = true; // (261106Ch) 旧: 補間の要否をフラグで伝播。
             //まず点の位置を探す
             int position = 0;//この値と この値+1の間のindexにxが存在する
             if (Pt[0].X > x[n])
@@ -234,76 +235,77 @@ public partial class Profile : ICloneable
                     if (Pt[i + 1].X == x[n])
                     {
                         value[n] = Pt[i + 1].Y;
-                        flag = false;
-                        break;
+                        // flag = false; // (261106Ch) 旧コード
+                        // break;
+                        continue samples; // (261106Ch) 補間を省き、次のサンプルへ。
                     }
                     else if (Pt[i].X <= x[n] && x[n] <= Pt[i + 1].X)
                     {
                         position = i;
                         break;
                     }
-            if (flag)
+            // if (flag) // (261106Ch) 旧: 以下の補間処理を一段囲んでいた。
+            // {
+            //次に、この点から前後にPointNumだけ近い点を探す
+            var pt = new List<PointD>();
+
+            if (eachside)//両側でなるべく均等な点数がほしいとき
             {
-                //次に、この点から前後にPointNumだけ近い点を探す
-                var pt = new List<PointD>();
-
-                if (eachside)//両側でなるべく均等な点数がほしいとき
+                int i = 1;
+                while (pt.Count < pointNum)
                 {
-                    int i = 1;
-                    while (pt.Count < pointNum)
-                    {
-                        if (position - i + 1 >= 0)
-                            pt.Add(Pt[position - i + 1]);
-                        if (position + i < Pt.Count)
-                            pt.Add(Pt[position + i]);
-                        i++;
-                    }
-                }
-                else//とにかく近い点を見つけるとき
-                {
-                    for (int i = Math.Max(position - pointNum, 0); i < Math.Min(position + pointNum + 1, Pt.Count); i++)
-                        pt.Add(Pt[i]);
-                    while (pt.Count > pointNum)
-                        pt.RemoveAt(Math.Abs(pt[0].X - x[n]) > Math.Abs(pt[^1].X - x[n]) ? 0 : pt.Count - 1);
-                }
-
-                if (pt.Count < pointNum)
-                {
-                    pointNum = pt.Count;
-                    if (order > pointNum - 1)
-                        order = pointNum - 1;
-                }
-
-                //計算精度のため、xの範囲を1から+2に変換する 式は X = c1 x + c2;
-                double c1 = 1.0 / (pt[^1].X - pt[0].X);
-                double c2 = 1 - pt[0].X * c1;
-
-                var m = new DenseMatrix(pointNum, order + 1);
-                var y = new DenseMatrix(pointNum, 1);
-                for (int j = 0; j < pointNum; j++)
-                {
-                    y[j, 0] = pt[j].Y;
-                    for (int i = 0; i < order + 1; i++)
-                        m[j, i] = Math.Pow(c1 * pt[j].X + c2, i);
-                }
-
-                var a = (m.TransposeThisAndMultiply(m)).Inverse() * m.TransposeThisAndMultiply(y);
-                if (a == null || a.ColumnCount == 0)
-                    value[n] = pt[position >= 0 ? position : 0].Y;
-                else
-                {
-                    if (shareSameFunction)
-                    {
-                        for (int i = 0; i < value.Length; i++)
-                            for (int j = 0; j < order + 1; j++)
-                                value[i] += a[j, 0] * Math.Pow(c1 * x[i] + c2, j);
-                        return value;
-                    }
-                    value[n] = 0;
-                    for (int j = 0; j < order + 1; j++)
-                        value[n] += a[j, 0] * Math.Pow(c1 * x[n] + c2, j);
+                    if (position - i + 1 >= 0)
+                        pt.Add(Pt[position - i + 1]);
+                    if (position + i < Pt.Count)
+                        pt.Add(Pt[position + i]);
+                    i++;
                 }
             }
+            else//とにかく近い点を見つけるとき
+            {
+                for (int i = Math.Max(position - pointNum, 0); i < Math.Min(position + pointNum + 1, Pt.Count); i++)
+                    pt.Add(Pt[i]);
+                while (pt.Count > pointNum)
+                    pt.RemoveAt(Math.Abs(pt[0].X - x[n]) > Math.Abs(pt[^1].X - x[n]) ? 0 : pt.Count - 1);
+            }
+
+            if (pt.Count < pointNum)
+            {
+                pointNum = pt.Count;
+                if (order > pointNum - 1)
+                    order = pointNum - 1;
+            }
+
+            //計算精度のため、xの範囲を1から+2に変換する 式は X = c1 x + c2;
+            double c1 = 1.0 / (pt[^1].X - pt[0].X);
+            double c2 = 1 - pt[0].X * c1;
+
+            var m = new DenseMatrix(pointNum, order + 1);
+            var y = new DenseMatrix(pointNum, 1);
+            for (int j = 0; j < pointNum; j++)
+            {
+                y[j, 0] = pt[j].Y;
+                for (int i = 0; i < order + 1; i++)
+                    m[j, i] = Math.Pow(c1 * pt[j].X + c2, i);
+            }
+
+            var a = (m.TransposeThisAndMultiply(m)).Inverse() * m.TransposeThisAndMultiply(y);
+            if (a == null || a.ColumnCount == 0)
+                value[n] = pt[position >= 0 ? position : 0].Y;
+            else
+            {
+                if (shareSameFunction)
+                {
+                    for (int i = 0; i < value.Length; i++)
+                        for (int j = 0; j < order + 1; j++)
+                            value[i] += a[j, 0] * Math.Pow(c1 * x[i] + c2, j);
+                    return value;
+                }
+                value[n] = 0;
+                for (int j = 0; j < order + 1; j++)
+                    value[n] += a[j, 0] * Math.Pow(c1 * x[n] + c2, j);
+            }
+            // } // (261106Ch) 旧 if (flag) の終端
         }
         return value;
     }

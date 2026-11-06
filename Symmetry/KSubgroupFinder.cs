@@ -350,7 +350,8 @@ public static class KSubgroupFinder
             long rem = combo;
             for (int t = 0; t < k; t++) { offsets[t] = (int)(rem % n); rem /= n; }
 
-            var seed = new List<int> { pg.E * n };
+            // var seed = new List<int> { pg.E * n }; // 261106Ch 変更前
+            List<int> seed = [with(capacity: k + 1), pg.E * n]; // 261106Ch: 恒等元と生成元 k 個の容量を確保。
             for (int t = 0; t < k; t++) seed.Add(gens[t] * n + offsets[t]);
 
             var closure = ClosureQ(seed, q.MulQ, size, m);
@@ -864,11 +865,13 @@ public static class KSubgroupFinder
                 }
             }
 
+            candidateShift: // 261106Ch: 不一致ならこの原点シフト候補を直ちに棄却する。
             foreach (var qc in qCands)
             {
                 var setA = new HashSet<string>();
-                bool ok = true;
-                for (int i = 0; i < m && ok; i++)
+                // bool ok = true; // 261106Ch 変更前
+                // for (int i = 0; i < m && ok; i++) // 261106Ch 変更前
+                for (int i = 0; i < m; i++) // 261106Ch
                 {
                     var rq = RationalMatrix.MulVec(RationalMatrix.FromInt(rChild[i]), qc);
                     var shift = RationalMatrix.SubVec(rq, qc); // (R-I)q
@@ -876,11 +879,13 @@ public static class KSubgroupFinder
                     foreach (var cc in cand.Centering)
                     {
                         var key = KeyOfK(rChild[i], RationalMatrix.ModVec1(RationalMatrix.AddVec(t2, cc)));
-                        if (!setB.Contains(key)) { ok = false; break; }
+                        // if (!setB.Contains(key)) { ok = false; break; } // 261106Ch 変更前
+                        if (!setB.Contains(key)) continue candidateShift; // 261106Ch
                         setA.Add(key);
                     }
                 }
-                if (ok && setA.Count == setB.Count) return qc;
+                // if (ok && setA.Count == setB.Count) return qc; // 261106Ch 変更前
+                if (setA.Count == setB.Count) return qc; // 261106Ch
             }
         }
 
