@@ -273,8 +273,14 @@ public class MonteCarlo
 
     /// <summary>DiscreteBulkDiimfpApproximation 用のエネルギー損失サンプラー。低損失・プラズモン・高損失テールの 3 成分混合 PDF から CDF を構築し、逆関数法でサンプリングする。</summary>
     // private sealed class BulkLossSamplerEntry(double minLossKev, double lossStepKev, double[] cumulativeProbabilities) // 260401Cl 旧シグネチャ
-    private sealed class BulkLossSamplerEntry(double minLossKev, double lossStepKev, double[] cumulativeProbabilities, byte[] guideTable) // 260401Cl GuideTable 追加
+    // private sealed class BulkLossSamplerEntry(double minLossKev, double lossStepKev, double[] cumulativeProbabilities, byte[] guideTable) // 260401Cl GuideTable 追加 // 261106Cl 旧シグネチャ
+    private sealed class BulkLossSamplerEntry(double minLossKev, double lossStepKev, double[] cumulativeProbabilities, byte[] guideTable,
+        double targetMeanLossKev = double.NaN, double pdfMeanLossKev = double.NaN) // 261106Cl 診断用の 2 項を追加 (既定引数)
     {
+        /// <summary>261106Cl 追加: 輸送表が宣言した平均損失 S·λ_in (keV)。混合比が飽和すると <see cref="PdfMeanLossKev"/> と食い違う</summary>
+        public readonly double TargetMeanLossKev = targetMeanLossKev;
+        /// <summary>261106Cl 追加: 保存した混合 PDF の平均損失 (keV)。ビン内一様の逆変換で実際に実現される平均</summary>
+        public readonly double PdfMeanLossKev = pdfMeanLossKev;
         /// <summary>260401Cl 損失スペクトルの最小エネルギー損失 (keV)。バンドギャップ以上の値</summary>
         public readonly double MinLossKev = minLossKev;
         /// <summary>260401Cl CDF の 1 ビンあたりのエネルギー幅 (keV)</summary>
@@ -729,7 +735,9 @@ public class MonteCarlo
             guide[k] = (byte)Math.Max(0, bin > 0 ? bin - 1 : 0);
         }
         // return new BulkLossSamplerEntry(minLossEv * 0.001, lossStepEv * 0.001, cumulativeProbabilities); // 260401Cl 旧
-        return new BulkLossSamplerEntry(minLossEv * 0.001, lossStepEv * 0.001, cumulativeProbabilities, guide); // 260401Cl GuideTable 追加
+        // return new BulkLossSamplerEntry(minLossEv * 0.001, lossStepEv * 0.001, cumulativeProbabilities, guide); // 260401Cl GuideTable 追加 // 261106Cl 変更前
+        return new BulkLossSamplerEntry(minLossEv * 0.001, lossStepEv * 0.001, cumulativeProbabilities, guide,
+            meanLossEv * 0.001, MeanLossEv(combinedPdf, minLossEv, lossStepEv) * 0.001); // 261106Cl 宣言値と PDF の平均を診断用に保存 (混合比の飽和を隠さない)
     }
 
     /// <summary>3 つの確率密度関数を重み付き線形結合する。destination[i] = w1·pdf1[i] + w2·pdf2[i] + w3·pdf3[i]</summary>
@@ -1432,14 +1440,34 @@ public class MonteCarlo
             upper = Array.BinarySearch(entry.CumulativeProbabilities, target);
             if (upper < 0) upper = ~upper;
         }
-        upper = Math.Clamp(upper, 1, entry.CumulativeProbabilities.Length - 1);
-        int lower = upper - 1;
-        var p0 = entry.CumulativeProbabilities[lower];
+        // 261106Cl 変更前: CDF はビン右端までの累積なのにビン中心を対応させ、第 0 ビンを捨てて左へ外挿していた → 負の損失 (0.1–1.3 % の事象) と平均の偏り
+        // upper = Math.Clamp(upper, 1, entry.CumulativeProbabilities.Length - 1);
+        // int lower = upper - 1;
+        // var p0 = entry.CumulativeProbabilities[lower];
+        // var p1 = entry.CumulativeProbabilities[upper];
+        // var l0 = entry.MinLossKev + (lower + 0.5) * entry.LossStepKev;
+        // var l1 = entry.MinLossKev + (upper + 0.5) * entry.LossStepKev;
+        // var lossKev = p1 > p0 ? l0 + (target - p0) * (l1 - l0) / (p1 - p0) : l0;
+        // 261106Cl ビン境界に合わせた逆変換: F_{j-1} < u ≤ F_j のビン j の中で一様に引く (F_{-1} = 0)。平均は PDF の平均 (ビン中心) と一致し、損失は常に MinLoss 以上
+        upper = Math.Clamp(upper, 0, entry.CumulativeProbabilities.Length - 1);
+        var p0 = upper > 0 ? entry.CumulativeProbabilities[upper - 1] : 0.0;
         var p1 = entry.CumulativeProbabilities[upper];
-        var l0 = entry.MinLossKev + (lower + 0.5) * entry.LossStepKev;
-        var l1 = entry.MinLossKev + (upper + 0.5) * entry.LossStepKev;
-        var lossKev = p1 > p0 ? l0 + (target - p0) * (l1 - l0) / (p1 - p0) : l0;
+        var frac = p1 > p0 ? Math.Clamp((target - p0) / (p1 - p0), 0.0, 1.0) : 0.5;
+        var lossKev = entry.MinLossKev + (upper + frac) * entry.LossStepKev;
         return Math.Min(lossKev, currentKev);
+    }
+
+    /// <summary>261106Cl 追加 (診断用): Bulk サンプラーの指定エネルギーでの宣言平均 S·λ_in と、保存した PDF の平均 (= 実現される平均) [keV]。
+    /// 両者の比が 1 から外れる条件は、3 成分の混合で宣言平均に届かない (混合比が飽和している) ことを示す。</summary>
+    internal (double TargetMeanLossKev, double PdfMeanLossKev) GetBulkLossSamplerMoments(double currentKev)
+    {
+        if (BulkLossSamplerCache.Length == 0)
+            return (double.NaN, double.NaN);
+        int energyIndex = (int)Math.Round(currentKev * 100.0);
+        if ((uint)energyIndex >= (uint)BulkLossSamplerCache.Length)
+            energyIndex = BulkLossSamplerCache.Length - 1;
+        var entry = BulkLossSamplerCache[energyIndex];
+        return entry == null ? (double.NaN, double.NaN) : (entry.TargetMeanLossKev, entry.PdfMeanLossKev);
     }
 
     /// <summary>
