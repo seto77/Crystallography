@@ -136,6 +136,12 @@ public sealed class EbsdPatternProjector
                 var plane = neg[i] ? negPlane : posPlane;
                 double wf = (a + lim) * invStep - 0.5, hf = (lim - b) * invStep - 0.5;
                 int w0 = (int)Math.Floor(wf), h0 = (int)Math.Floor(hf);
+                //261107Cl 追加: 補間の隅が辺を越える画素 (結晶の赤道の近く) だけ、反対の半球を読む継ぎ目対応の補間へ回す。格子の中の画素は下の従来の式のまま
+                if (w0 < 0 || w0 > gs - 2 || h0 < 0 || h0 > gs - 2)
+                {
+                    output[i] = MasterPattern.InterpolatePlaneSquareSeam(plane, neg[i] ? posPlane : negPlane, gs, a, b);
+                    continue;
+                }
                 double fw = wf - w0, fh = hf - h0;
                 int w1 = Math.Clamp(w0 + 1, 0, gs - 1), h1 = Math.Clamp(h0 + 1, 0, gs - 1);
                 w0 = Math.Clamp(w0, 0, gs - 1); h0 = Math.Clamp(h0, 0, gs - 1);
@@ -211,7 +217,8 @@ public sealed class EbsdPatternProjector
                     //260724Cl (/simplify): インライン展開していた Lambert 逆写像+バイリニアを hex 分岐と同方針で共有ヘルパへ委譲
                     //(数式は同一: 旧 edgeRadius=√(π/2·(1−|z|)) は SphereToRoscaLambertSquare の radialScale 経由の式と等価。ヘルパ内で正規化される)
                     var (a, b) = MasterPattern.SphereToRoscaLambertSquare(dx, dy, Math.Abs(dz));
-                    output[i] = MasterPattern.InterpolatePlaneSquare(plane, gs, a, b);
+                    // output[i] = MasterPattern.InterpolatePlaneSquare(plane, gs, a, b); // 261107Cl 変更前 (辺の外は端の値で止める)
+                    output[i] = MasterPattern.InterpolatePlaneSquareSeam(plane, posZ ? (hasNeg ? negPlane : null) : (hasPos ? posPlane : null), gs, a, b); // 261107Cl 継ぎ目 (赤道) では反対の半球を読む
                 }
             }
         }

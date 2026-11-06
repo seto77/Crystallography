@@ -621,6 +621,36 @@ public sealed class MasterPattern
         return (float)((1 - fw) * (1 - fh) * v00 + fw * (1 - fh) * v10 + (1 - fw) * fh * v01 + fw * fh * v11);
     }
 
+    /// <summary>261107Cl 追加: 正方格子の補間の隅 (hh, ww) を実際に読む平面の添字に直す。格子の外 (−1 または gridSize) は辺について鏡映した端のセル
+    /// (= 端止めと同じ添字) にし、<paramref name="useOther"/> = 一方向だけ外 (正方形の辺 = 赤道を越えた) なら反対の半球の平面を読む。
+    /// 両方向に外 (正方形の角) は赤道を 2 回越えて同じ半球に戻る扱い。両半球とも (x, y, |z|) で同じ (a, b) を使うので、辺の外の隣は反対の半球の同じ辺のセル
+    /// (EBSD 見直し G6: 辺の外を端の値で止める 0 次の補間は赤道で O(h) の誤差になっていた。辺・角・赤道の両側を解析関数で照合済み)</summary>
+    internal static int SeamCorner(int hh, int ww, int gridSize, out bool useOther)
+    {
+        bool ow = ww < 0 || ww > gridSize - 1, oh = hh < 0 || hh > gridSize - 1;
+        useOther = ow ^ oh;
+        int mw = ww < 0 ? 0 : ww > gridSize - 1 ? gridSize - 1 : ww, mh = hh < 0 ? 0 : hh > gridSize - 1 ? gridSize - 1 : hh;
+        return mh * gridSize + mw;
+    }
+
+    /// <summary>261107Cl 追加: <see cref="InterpolatePlaneSquare"/> の継ぎ目対応版。補間の 4 隅が格子の中なら <see cref="InterpolatePlaneSquare"/> と同じ値 (同じ式)、
+    /// 辺を越える隅は反対の半球の平面 <paramref name="otherPlane"/> の鏡映のセルを読む (<see cref="SeamCorner"/>)。
+    /// <paramref name="otherPlane"/> が無い (片方の半球しか無い) ときは従来どおり端の値で止める</summary>
+    public static float InterpolatePlaneSquareSeam(float[] plane, float[] otherPlane, int gridSize, double a, double b)
+    {
+        if (plane == null || plane.Length != gridSize * gridSize || gridSize <= 0)
+            return 0;
+        var step = 2.0 * SquareLimit / gridSize;
+        var w = (a + SquareLimit) / step - 0.5;
+        var h = (SquareLimit - b) / step - 0.5;
+        int w0 = (int)Math.Floor(w), h0 = (int)Math.Floor(h);
+        if (otherPlane == null || otherPlane.Length != plane.Length || (w0 >= 0 && w0 <= gridSize - 2 && h0 >= 0 && h0 <= gridSize - 2))
+            return InterpolatePlaneSquare(plane, gridSize, a, b); //格子の中 (または反対の半球が無い) は従来と同じ
+        double fw = w - w0, fh = h - h0;
+        double V(int hh, int ww) { int k = SeamCorner(hh, ww, gridSize, out bool o); return (o ? otherPlane : plane)[k]; }
+        return (float)((1 - fw) * (1 - fh) * V(h0, w0) + fw * (1 - fh) * V(h0, w0 + 1) + (1 - fw) * fh * V(h0 + 1, w0) + fw * fh * V(h0 + 1, w0 + 1));
+    }
+
     /// <summary>Rosca-Lambert 等積正方形上の座標を球面方向へ変換する。</summary>
     public static Vector3DBase RoscaLambertToSphereSquare(double a, double b, Hemisphere hemisphere)
     {

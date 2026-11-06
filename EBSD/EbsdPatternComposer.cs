@@ -42,6 +42,28 @@ public sealed class EbsdPatternComposer
     int[] lookupIdx = [];
     float[] lookupWt = [];
     bool[] lookupPosZ = [];
+
+    /// <summary>261107Cl 追加: 継ぎ目の画素 (検索表の添字が負 = ~((h0+1)(gs+1) + (w0+1))、BuildLookupTable) の双一次補間。
+    /// 隅が辺を越えたら反対の半球の平面の鏡映のセルを読む (<see cref="MasterPattern.SeamCorner"/>)。反対の平面が無ければ端止め (従来と同じ値)</summary>
+    private static double SeamBilinear(float[] plane, float[] other, int code, int gs, float fw, float fh)
+    {
+        int w0 = code % (gs + 1) - 1, h0 = code / (gs + 1) - 1;
+        bool has = other != null && other.Length >= gs * gs;
+        double V(int hh, int ww) { int k = MasterPattern.SeamCorner(hh, ww, gs, out bool o); return (o && has ? other : plane)[k]; }
+        return (1 - fw) * (1 - fh) * V(h0, w0) + fw * (1 - fh) * V(h0, w0 + 1) + (1 - fw) * fh * V(h0 + 1, w0) + fw * fh * V(h0 + 1, w0 + 1);
+    }
+
+    /// <summary>261107Cl 追加: <see cref="SeamBilinear(float[], float[], int, int, float, float)"/> のポインタ版 (other は null 可)</summary>
+    private static unsafe double SeamBilinear(float* plane, float* other, int code, int gs, float fw, float fh)
+    {
+        int w0 = code % (gs + 1) - 1, h0 = code / (gs + 1) - 1;
+        int k00 = MasterPattern.SeamCorner(h0, w0, gs, out bool o00), k10 = MasterPattern.SeamCorner(h0, w0 + 1, gs, out bool o10);
+        int k01 = MasterPattern.SeamCorner(h0 + 1, w0, gs, out bool o01), k11 = MasterPattern.SeamCorner(h0 + 1, w0 + 1, gs, out bool o11);
+        bool has = other != null;
+        double v00 = (o00 && has ? other : plane)[k00], v10 = (o10 && has ? other : plane)[k10];
+        double v01 = (o01 && has ? other : plane)[k01], v11 = (o11 && has ? other : plane)[k11];
+        return (1 - fw) * (1 - fh) * v00 + fw * (1 - fh) * v10 + (1 - fw) * fh * v01 + fw * fh * v11;
+    }
     int lookupGridSize; // 260325Cl: Apply で idx+gridSize の復元に使用
     MasterPattern.Types lookupGridType; // 260331Cl: 六方格子モードかどうか
 
@@ -188,6 +210,17 @@ public sealed class EbsdPatternComposer
                         double gw = (a + sqLim) * invStep - 0.5, gh = (sqLim - b) * invStep - 0.5;
                         int w0 = (int)Math.Floor(gw), h0 = (int)Math.Floor(gh);
                         double fw = gw - w0, fh = gh - h0;
+                        //261107Cl 追加: 補間の隅が辺 (= 赤道) を越える画素は、端止めの前の左上の位置を負の符号で添字の欄に入れる (SeamCode)。
+                        //  検索表を読む側はこの画素だけ反対の半球を読む継ぎ目対応の補間 (SeamBilinear) を使う。格子の中の画素は下の従来のまま (ビットで同じ)
+                        if (w0 < 0 || w0 >= gridMax || h0 < 0 || h0 >= gridMax)
+                        {
+                            pIdx0[i] = ~((h0 + 1) * (gridSize + 1) + (w0 + 1)); // w0, h0 ∈ [−1, gridSize − 1]
+                            int is2 = i * 2;
+                            pWt0[is2] = (float)fw;
+                            pWt0[is2 + 1] = (float)fh;
+                            dx += dxStep; dy += dyStep; dz += dzStep;
+                            continue;
+                        }
                         if (w0 < 0) { w0 = 0; fw = 0; } else if (w0 >= gridMax) { w0 = gridMax - 1; fw = 1; }
                         if (h0 < 0) { h0 = 0; fh = 0; } else if (h0 >= gridMax) { h0 = gridMax - 1; fh = 1; }
 
@@ -963,7 +996,9 @@ public sealed class EbsdPatternComposer
                                 if (weight < 1e-15) continue;
                                 var plane = posZ ? posPlanes[wIdx] : negPlanes[wIdx];//260718Cl 事前展開した配列を参照
                                 if (plane == null || plane.Length == 0) continue;
-                                double intensity = (mpW0 * plane[idx] + mpW1 * plane[idx + 1]) * mpFh1 + (mpW0 * plane[idx + gs] + mpW1 * plane[idx + gs + 1]) * mpFh;
+                                // double intensity = (mpW0 * plane[idx] + mpW1 * plane[idx + 1]) * mpFh1 + (mpW0 * plane[idx + gs] + mpW1 * plane[idx + gs + 1]) * mpFh; // 261107Cl 変更前
+                                double intensity = idx < 0 ? SeamBilinear(plane, posZ ? negPlanes[wIdx] : posPlanes[wIdx], ~idx, gs, mpFw, mpFh) // 261107Cl 継ぎ目の画素
+                                    : (mpW0 * plane[idx] + mpW1 * plane[idx + 1]) * mpFh1 + (mpW0 * plane[idx + gs] + mpW1 * plane[idx + gs + 1]) * mpFh;
                                 sum += weight * intensity * aE; //260920Cl 変更: A(E) を末尾に掛ける (無効時は 1.0 なので丸めも含めて従来と同一) 
                                 if (hasA) acc.Add(weight, weight * planeMeans[wIdx], aE); //260921Cl 追加
                                 if (fA > 0) sumMean += weight * sMean; // 260919Cl 追加 / 260920Cl 変更: 半球平均 → 全球平均
@@ -1081,6 +1116,7 @@ public sealed class EbsdPatternComposer
                     int i2 = i * 2;
                     float fw = pWt0[i2], fh = pWt0[i2 + 1];
                     float w0 = (1 - fw), w1 = fw;
+                    if (idx < 0) { pVal0[i] = scaleFactor * SeamBilinear(plane, pPosZ0[i] ? (hasNeg ? pNeg0 : null) : (hasPos ? pPos0 : null), ~idx, gs, fw, fh); return; } // 261107Cl 継ぎ目の画素
                     pVal0[i] = scaleFactor * ((w0 * plane[idx] + w1 * plane[idx + 1]) * (1 - fh)
                              + (w0 * plane[idx + gs] + w1 * plane[idx + gs + 1]) * fh);
                 });
@@ -1225,7 +1261,10 @@ public sealed class EbsdPatternComposer
                                 if (planeScaleFactor < 1e-30) continue;
                                 var plane = posZ ? posPlanes[wIdx] : negPlanes[wIdx];//260718Cl 事前展開した配列を参照
                                 if (plane == null || plane.Length == 0) continue;
-                                double intensity = (mpW0 * plane[idx] + mpW1 * plane[idx + 1]) * mpFh1
+                                // double intensity = (mpW0 * plane[idx] + mpW1 * plane[idx + 1]) * mpFh1 // 261107Cl 変更前
+                                //                  + (mpW0 * plane[idx + gs] + mpW1 * plane[idx + gs + 1]) * mpFh;
+                                double intensity = idx < 0 ? SeamBilinear(plane, posZ ? negPlanes[wIdx] : posPlanes[wIdx], ~idx, gs, mpFw, mpFh) // 261107Cl 継ぎ目の画素
+                                                 : (mpW0 * plane[idx] + mpW1 * plane[idx + 1]) * mpFh1
                                                  + (mpW0 * plane[idx + gs] + mpW1 * plane[idx + gs + 1]) * mpFh;
                                 sum += weight * intensity * planeScaleFactor * aE; //260920Cl 変更: A(E) を末尾に掛ける (無効時は 1.0 なので丸めも含めて従来と同一) 
                                 if (hasA) { double W = weight * planeScaleFactor; acc.Add(W, W * planeMeans[wIdx], aE); } //260921Cl 追加
@@ -1310,6 +1349,13 @@ public sealed class EbsdPatternComposer
                     int i2 = i * 2;
                     float fw = pWt0[i2], fh = pWt0[i2 + 1];
                     float w0 = (1 - fw), w1 = fw;
+                    if (idx < 0) // 261107Cl 継ぎ目の画素
+                    {
+                        double si = SeamBilinear(plane, pPosZ0[i] ? (hasNeg ? pNeg0 : null) : (hasPos ? pPos0 : null), ~idx, gs, fw, fh);
+                        if (hasPlanePrev) si -= SeamBilinear(planePrev, pPosZ0[i] ? (hasNegPrev ? pNegPrev0 : null) : (hasPosPrev ? pPosPrev0 : null), ~idx, gs, fw, fh);
+                        pVal0[i] = Math.Max(0.0, si);
+                        return;
+                    }
                     double intensity = (w0 * plane[idx] + w1 * plane[idx + 1]) * (1 - fh)
                                      + (w0 * plane[idx + gs] + w1 * plane[idx + gs + 1]) * fh;
                     if (hasPlanePrev)
@@ -1481,10 +1527,16 @@ public sealed class EbsdPatternComposer
                                 var plane = posZ ? posPlanes[wIdx] : negPlanes[wIdx];//260718Cl 事前展開した配列を参照
                                 if (plane == null || plane.Length == 0) continue;
                                 var planePrevious = di > 0 ? posZ ? posPlanes[wIdx - 1] : negPlanes[wIdx - 1] : null;//260718Cl 事前展開した配列を参照 (di>0 なら wIdx-1 = 同 energy の di-1)
-                                double intensity = (mpW0 * plane[idx] + mpW1 * plane[idx + 1]) * mpFh1
+                                // double intensity = (mpW0 * plane[idx] + mpW1 * plane[idx + 1]) * mpFh1 // 261107Cl 変更前
+                                //                  + (mpW0 * plane[idx + gs] + mpW1 * plane[idx + gs + 1]) * mpFh;
+                                double intensity = idx < 0 ? SeamBilinear(plane, posZ ? negPlanes[wIdx] : posPlanes[wIdx], ~idx, gs, mpFw, mpFh) // 261107Cl 継ぎ目の画素
+                                                 : (mpW0 * plane[idx] + mpW1 * plane[idx + 1]) * mpFh1
                                                  + (mpW0 * plane[idx + gs] + mpW1 * plane[idx + gs + 1]) * mpFh;
                                 if (planePrevious != null && planePrevious.Length > 0)
-                                    intensity -= (mpW0 * planePrevious[idx] + mpW1 * planePrevious[idx + 1]) * mpFh1
+                                    // intensity -= (mpW0 * planePrevious[idx] + mpW1 * planePrevious[idx + 1]) * mpFh1 // 261107Cl 変更前
+                                    //          + (mpW0 * planePrevious[idx + gs] + mpW1 * planePrevious[idx + gs + 1]) * mpFh;
+                                    intensity -= idx < 0 ? SeamBilinear(planePrevious, posZ ? negPlanes[wIdx - 1] : posPlanes[wIdx - 1], ~idx, gs, mpFw, mpFh) // 261107Cl 継ぎ目の画素
+                                             : (mpW0 * planePrevious[idx] + mpW1 * planePrevious[idx + 1]) * mpFh1
                                              + (mpW0 * planePrevious[idx + gs] + mpW1 * planePrevious[idx + gs + 1]) * mpFh;
                                 sum += weight * Math.Max(0.0, intensity) / depthWidths[di] * aE; //260920Cl 変更: A(E) を末尾に掛ける (無効時は 1.0 なので丸めも含めて従来と同一) //260726Cl: 区間平均 ΔM/Δt
                                 //if (hasA) acc.Add(weight / depthWidths[di], weight * planeMeans[wIdx], aE); //260921Cl 追加 (planeMeans は既に /Δt 済みなので m = weight·M̄) //260921Cl 変更前 (深さ写像 A2)
