@@ -2987,6 +2987,60 @@ new(4.86738014,0.319974401,4.58872425,
             return (1 - w) * PengSum(s2) + w * mottBethe;
         }
 
+        /// <summary>261107Cl 追加: <see cref="ElasticFactorWithTail"/> が滑らかでない s [Å⁻¹] の一覧 (昇順)。
+        /// テールの継ぎ目 (<see cref="TailJoinLow"/>・<see cref="TailJoinHigh"/>、smoothstep なので 2 階微分が跳ぶ)、TemariHybrid の切替 (中性原子の s = 6、値が ≤ 0.041 % 跳ぶ)、
+        /// Mott–Bethe 側の f_x の [0, Z] へのクランプが効き始める s (元素ごとに一度だけ探す)。annular の θ 積分を折れ目で区切るのに使う
+        /// (EBSD 見直し G6: 区切らないと 10 keV・30 keV の後方の積分が θ 30 点で最大 4e-5 しか収束しなかった)</summary>
+        private double[] KinkS => kinkS ??= FindKinkS();
+        private double[] kinkS;
+        private double[] FindKinkS()
+        {
+            var list = new List<double>();
+            if (NeutralXray != null) { list.Add(TailJoinLow); list.Add(TailJoinHigh); }
+            if (Valence == 0 && AtomicNumber > 0 && TemariScattering(AtomicNumber) != null) list.Add(TemariSMaxAngstromInv); //BetheMethod.AbsorptionElasticModel は呼び出し時に変わりうるので、切替の候補は常に入れる (区切りが余分でも値は変わらない)
+            if (NeutralXray != null)
+            {
+                //f_x(s) = c + Σ A exp(−s²B) が 0 を下回る・Z を上回る境目を、テール側 (s ≥ TailJoinLow) で 0.01 Å⁻¹ 刻みに探して二分法で詰める
+                double Fx(double s) { double fx = NeutralXray.ConstantC; foreach (var (A, B) in NeutralXray.Prms) fx += A * Math.Exp(-s * s * B); return fx; }
+                int State(double s) { double fx = Fx(s); return fx < 0 ? -1 : fx > AtomicNumber ? 1 : 0; }
+                double prev = TailJoinLow; int st = State(prev);
+                for (double s = TailJoinLow + 0.01; s <= 60; s += 0.01)
+                {
+                    int now = State(s);
+                    if (now != st)
+                    {
+                        double lo = prev, hi = s;
+                        for (int it = 0; it < 60; it++) { double mid = (lo + hi) / 2; if (State(mid) == st) lo = mid; else hi = mid; }
+                        list.Add((lo + hi) / 2); st = now;
+                    }
+                    prev = s;
+                }
+            }
+            list.Sort();
+            return [.. list];
+        }
+
+        /// <summary>261107Cl 追加: θ ∈ [inner, outer] の Gauss–Legendre 積分を、<see cref="KinkS"/> に対応する角 θ = 2 asin(s/k0) (g = 0 の散乱角) で区切って行う。
+        /// 区切りが区間の中に無いときは従来の 1 区間の積分そのもの (値はビットで同じ)。区切りがあるときは各区間に nTheta 点ずつ。
+        /// g ≠ 0 では折れ目の角が φ によって少しずれるので完全には消えないが、g = 0 の主要な折れ目は消える</summary>
+        /// <param name="k0">波数 [nm⁻¹] (1/λ)</param>
+        private double IntegrateThetaSplitAtKinks(Func<double, double> f, double k0, double inner, double outer, int nTheta)
+        {
+            var kinks = KinkS;
+            List<double> cuts = null;
+            foreach (var s in kinks)
+            {
+                double x = 10 * s / k0; // s [Å⁻¹] → 10·s [nm⁻¹]、散乱角 θ で s = k0 sin(θ/2)
+                if (!(x < 1)) continue;
+                double th = 2 * Math.Asin(x);
+                if (th > inner && th < outer) (cuts ??= []).Add(th);
+            }
+            if (cuts == null) return GaussLegendreRule.Integrate(f, inner, outer, nTheta);
+            double sum = 0, a = inner;
+            foreach (var b in cuts) { sum += GaussLegendreRule.Integrate(f, a, b, nTheta); a = b; }
+            return sum + GaussLegendreRule.Integrate(f, a, outer, nTheta);
+        }
+
         #endregion
 
         /// <summary>局所形式の非弾性散乱因子 (TDS吸収ポテンシャル)。260811Cl 変更: Gauss 型専用の解析閉形式から**数値積分**へ。
@@ -3229,7 +3283,8 @@ new(4.86738014,0.319974401,4.58872425,
             double gx2 = g.X / 2, gy2 = g.Y / 2, gz2 = g.Z / 2;
             double gLen2 = (g.X * g.X + g.Y * g.Y + g.Z * g.Z) / 4;
 
-            var result = GaussLegendreRule.Integrate(θ =>
+            // var result = GaussLegendreRule.Integrate(θ => // 261107Cl 変更前 (θ を 1 区間で積分。閉じは "}, inner, outer, nTheta);")
+            var result = IntegrateThetaSplitAtKinks(θ =>
             {
                 var (sinθ, cosθ) = Math.SinCos(θ);
                 double kSinθ = k0 * sinθ, kCosθmk0 = k0 * cosθ - k0;
@@ -3250,7 +3305,7 @@ new(4.86738014,0.319974401,4.58872425,
                     double f_kMinusG = ElasticFactorWithTail(kMinusG / 100, useTail), f_kPlusG = ElasticFactorWithTail(kPlusG / 100, useTail);
                     return f_kMinusG * f_kPlusG * (1 - Math.Exp(m * (gLen2 - kMinusG - kPlusG)));
                 }, 0, 2 * Math.PI, nPhi) * sinθ;
-            }, inner, outer, nTheta);
+            }, k0, inner, outer, nTheta); // 261107Cl 変更: 折れ目 (テールの継ぎ目・Temari の切替・f_x のクランプ) の角で区切る
             return gamma * k0 / 2 * result * 0.01;
         }
 
@@ -3283,7 +3338,8 @@ new(4.86738014,0.319974401,4.58872425,
             double dgx = gx - hx, dgy = gy - hy, dgz = gz - hz;
             double g_h = (dgx * dgx + dgy * dgy + dgz * dgz) / 4;
 
-            return gamma * k0 / 2 * GaussLegendreRule.Integrate(θ =>
+            // return gamma * k0 / 2 * GaussLegendreRule.Integrate(θ => // 261107Cl 変更前 (θ を 1 区間で積分。閉じは "}, inner, outer, nTheta);")
+            return gamma * k0 / 2 * IntegrateThetaSplitAtKinks(θ =>
             {
                 var (sinθ, cosθ) = Math.SinCos(θ);
                 double kSinθ = k0 * sinθ, kCosθmk0 = k0 * cosθ - k0;
@@ -3300,7 +3356,7 @@ new(4.86738014,0.319974401,4.58872425,
                     double f_k_g = ElasticFactorWithTail(k_g, useTail), f_k_h = ElasticFactorWithTail(k_h, useTail);
                     return f_k_g * f_k_h * 0.01 * (1 - Math.Exp(m * (g_h - k_g * 100 - k_h * 100)));
                 }, 0, 2 * Math.PI, nPhi) * sinθ;
-            }, inner, outer, nTheta);
+            }, k0, inner, outer, nTheta); // 261107Cl 変更: 折れ目 (テールの継ぎ目・Temari の切替・f_x のクランプ) の角で区切る
         }
 
         /// <summary>非局所形式の非弾性散乱因子　近軸近似(ビーム径射角ゼロ) Flat Ewald球近似 遅いので、没?</summary>
