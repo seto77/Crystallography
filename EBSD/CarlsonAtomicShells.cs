@@ -3,7 +3,8 @@ namespace Crystallography;
 /// <summary>
 /// 261106Cl 追加: 原子の殻ごとの電子数とイオン化 (束縛) エネルギー [eV] (Z = 1–100)。
 /// <see cref="MonteCarlo.InelasticScatteringModels.PenelopeGos2018"/> の GOS (Liljequist の δ 振動子) の殻の定義に使う。
-/// <para>出典: T. A. Carlson, *Photoelectron and Auger Spectroscopy* (Plenum, New York, 1975) — PENELOPE 2018 §3.2.1 と同じ表。
+/// <para>出典: T. A. Carlson, *Photoelectron and Auger Spectroscopy* (Plenum, New York, 1975)。PENELOPE 2018 §3.2.1 も Carlson を使うが、
+/// 同じ出典に由来する<b>別の収録表</b>で数値と占有が一部異なる (例: O の K 端 543.1 対 PENELOPE の 538 eV、Cu の 3d/4s 占有 9/2 対 10/1。261106Cl codex2 第 6 回)。
 /// 数値は Geant4 の <c>G4AtomicShells.cc</c> (source/materials、"I(i) from T.A.Carlson") から機械的に転記した
 /// (生成スクリプト = <c>C:/tmp/ebsd_occ/ebsd_review_261106/gos/gen_carlson.py</c>)。
 /// This product includes software developed by Members of the Geant4 Collaboration ( http://cern.ch/geant4 ).

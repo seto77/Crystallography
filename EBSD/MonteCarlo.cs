@@ -480,7 +480,8 @@ public class MonteCarlo
         {
             // 規格化の不成立 (S_target < S_内殻 → a ≤ 0) を追跡の範囲 (ThresholdKev より上) で許さない。
             // 黙って非弾性率 0 にすると、その帯の電子がエネルギーを失わず弾性散乱だけで歩き続け、追跡が終わらない (261106Cl 実測: 旧 Jablonski の S で Al が停止)
-            int first = Math.Max(1, (int)Math.Floor(ThresholdKev * 1000.0) + 1);
+            // int first = Math.Max(1, (int)Math.Floor(ThresholdKev * 1000.0) + 1); // 261106Cl 変更前: E = 100.1 eV は 100 eV の節点を使うのに監査から漏れていた
+            int first = Math.Max(1, (int)Math.Round(ThresholdKev * 1000.0)); // 到達しうる節点 (round(E[eV]) ≥ round(しきい値)) を全部監査する
             for (int i = first; i < GosOuterScale.Length; i++)
                 if (!(GosOuterScale[i] > 0))
                     throw new InvalidOperationException($"PenelopeGos2018: {i} eV で阻止能への規格化が成立しない (既定の阻止能 {StoppingPowerModel} が GOS の内殻だけの阻止能を下回る)。阻止能の模型を {StoppingPowerModels.BetheRelativisticJoyLuo} にするか、しきい値を上げること");
@@ -722,15 +723,34 @@ public class MonteCarlo
     }
 
     /// <summary>261106Cl 追加: 進行方向 (vX,vY,vZ) を極角 cosθ・一様な方位角で曲げる (弾性散乱と同じ回転の式。毎回正規化する)</summary>
-    private void DeflectDirection(ref double vX, ref double vY, ref double vZ, double cosθ)
+    internal void DeflectDirection(ref double vX, ref double vY, ref double vZ, double cosθ)
     {
         if (cosθ >= 1) return;
+        // 261106Cl codex2 第 6 回: 弾性と同じ回転の式は −z 近傍の分岐で入射方向の小さな横成分を捨て、指定の θ を保たなかった。
+        //   安定な直交基底 (v に最も直交に近い座標軸との外積) で回す形に変更: v' = cosθ·v + sinθ (cosφ·e1 + sinφ·e2)
+        // double a = sinθ * cosφ, b = sinθ * sinφ, vZ1 = vZ + 1;
+        // if (vZ1 < Th) { vX = a; vY = b; vZ = -cosθ; return; }
+        // double m11 = 1 - vX * vX / vZ1, m22 = 1 - vY * vY / vZ1, m12 = -vX * vY / vZ1, m13 = vX, m23 = vY;
+        // double nx = m11 * a + m12 * b + m13 * cosθ, ny = m12 * a + m22 * b + m23 * cosθ, nz = -m13 * a - m23 * b + vZ * cosθ;
         double sinθ = Math.Sqrt(Math.Max(0, 1 - cosθ * cosθ));
         var (sinφ, cosφ) = Math.SinCos(2 * Math.PI * Rnd.NextDouble());
-        double a = sinθ * cosφ, b = sinθ * sinφ, vZ1 = vZ + 1;
-        if (vZ1 < Th) { vX = a; vY = b; vZ = -cosθ; return; }
-        double m11 = 1 - vX * vX / vZ1, m22 = 1 - vY * vY / vZ1, m12 = -vX * vY / vZ1, m13 = vX, m23 = vY;
-        double nx = m11 * a + m12 * b + m13 * cosθ, ny = m12 * a + m22 * b + m23 * cosθ, nz = -m13 * a - m23 * b + vZ * cosθ;
+        RotateDirection(ref vX, ref vY, ref vZ, cosθ, sinθ, cosφ, sinφ);
+    }
+
+    /// <summary>261106Cl 追加: 単位ベクトル v を極角 (cosθ, sinθ)・方位角 (cosφ, sinφ) だけ回して正規化する (単体検査のため乱数を引かない形に分けた)</summary>
+    internal static void RotateDirection(ref double vX, ref double vY, ref double vZ, double cosθ, double sinθ, double cosφ, double sinφ)
+    {
+        // e1 = normalize(a × v)、a は v と最も平行でない座標軸。e2 = v × e1
+        double ax = 0, ay = 0, az = 0;
+        double avx = Math.Abs(vX), avy = Math.Abs(vY), avz = Math.Abs(vZ);
+        if (avx <= avy && avx <= avz) ax = 1; else if (avy <= avz) ay = 1; else az = 1;
+        double e1x = ay * vZ - az * vY, e1y = az * vX - ax * vZ, e1z = ax * vY - ay * vX;
+        double l1 = Math.Sqrt(e1x * e1x + e1y * e1y + e1z * e1z);
+        e1x /= l1; e1y /= l1; e1z /= l1;
+        double e2x = vY * e1z - vZ * e1y, e2y = vZ * e1x - vX * e1z, e2z = vX * e1y - vY * e1x;
+        double nx = cosθ * vX + sinθ * (cosφ * e1x + sinφ * e2x);
+        double ny = cosθ * vY + sinθ * (cosφ * e1y + sinφ * e2y);
+        double nz = cosθ * vZ + sinθ * (cosφ * e1z + sinφ * e2z);
         double len = Math.Sqrt(nx * nx + ny * ny + nz * nz);
         vX = nx / len; vY = ny / len; vZ = nz / len;
     }

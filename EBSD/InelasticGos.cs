@@ -165,13 +165,14 @@ internal sealed class InelasticGos
     /// <summary>
     /// 振動子 k の遠い衝突のエネルギー e での量: 修正後の共鳴エネルギー W'_k と打ち切り Q'_k (式 3.78・3.80)、
     /// 損失の区間 [U_k, B] (B = min(3W'_k − 2U_k, (e+U_k)/2)) と、切った三角分布の 0 次・1 次モーメント M0・M1 (切らなければ 1・W'_k)。
-    /// 価電子は δ(W − W_cb) で、W_cb ≤ e/2 のときだけ開く。閉じていれば false。
+    /// 価電子は δ(W − W_cb) で、W_cb &lt; e のとき開く (261106Cl 変更: 旧は W_cb ≤ e/2)。閉じていれば false。
     /// </summary>
     internal bool Distant(int k, double e, out double wk, out double qk, out double bMax, out double m0, out double m1)
     {
         wk = W[k]; qk = k == 0 ? W[0] : U[k]; bMax = wk; m0 = 1; m1 = wk;
         if (!(F[k] > 0) || !(wk > 0)) return false;
-        if (k == 0) return wk <= 0.5 * e;
+        // if (k == 0) return wk <= 0.5 * e; // 261106Cl 変更前: 交換の上限 E/2 を価電子の集団励起にも掛けていた (Au は 60 eV 未満で全経路が閉じた)
+        if (k == 0) return wk < e; // 261106Cl codex2 第 6 回: 価電子の遠い δ 励起は E > W_cb (かつ Q₋ < Q_cb、呼び出し側) で開く。W ≤ E/2 は近い衝突だけ (PenRed と同じ)
         if (!(e > U[k])) return false;
         double wdis = 3 * W[k] - 2 * U[k];
         if (!(e > wdis))
