@@ -108,6 +108,15 @@ public class MonteCarlo
         /// 検討の経緯は .project-guidance/ReciPro/ReciPro_EBSD_密度行列定式化_案d.md §2.4。</para>
         /// </summary>
         DiscreteDrudeValenceInnerShell,
+
+        /// <summary>
+        /// 261106Cl 追加 (研究用・既定ではない): PENELOPE 2018 §3.2 準拠の GOS 模型 (<see cref="InelasticGos"/>)。
+        /// 殻ごとの δ 振動子 (Carlson 1975 の殻、Sternheimer の共鳴エネルギー)、内殻の遠い衝突の三角分布、遠い縦・横の相互作用、
+        /// 交換を含む近い衝突 (Møller) から、損失と<b>散乱角</b>を同じ事象として引く (他の離散模型は非弾性で向きを変えない)。
+        /// 内殻の率を保ち外側を一律に倍して既定の阻止能 S に規格化し、λ_in はその結果 (TPP-2M は使わない)。
+        /// 方針 = .project-guidance/ReciPro/ReciPro_EBSD_ゼロからの見直し_計画_261106.md §5 (codex2 と収束、作者が「GOS 一模型へ集約」を選択)。
+        /// </summary>
+        PenelopeGos2018,
     }
     #endregion
 
@@ -217,6 +226,14 @@ public class MonteCarlo
     private readonly MottElasticMixtureEntry[] MottElasticMixtureCache = [];
     /// <summary>(260331Ch) 軽量な bulk DIIMFP 近似 sampler cache</summary>
     private readonly BulkLossSamplerEntry[] BulkLossSamplerCache = [];
+
+    /// <summary>261106Cl 追加: <see cref="InelasticScatteringModels.PenelopeGos2018"/> の GOS 模型 (他の模型では null)</summary>
+    internal readonly InelasticGos Gos;
+    /// <summary>261106Cl 追加: GOS の経路 (3·振動子数) の累積確率 (規格化後)。λ_in と同じ 1 eV 刻み、添字 = round(E[eV])。閉じたエネルギーは null。
+    /// 抽選も同じ節点のエネルギーで行い、率・経路の選択・損失と角度の分布を同じ E で対応させる (codex2 第 5 回の指摘 ③)</summary>
+    private readonly double[][] GosChannelCdfCache = [];
+    /// <summary>261106Cl 追加 (診断用): GOS の外側の率の倍率 a(E) = (S − S_内殻)/S_外側。1 eV 刻み。a ≤ 0 (不成立) の点は NaN で、そのエネルギーの非弾性率は 0 になる</summary>
+    internal readonly double[] GosOuterScale = [];
     /// <summary>260922Cl 追加: <see cref="InelasticScatteringModels.DiscreteDrudeValenceInnerShell"/> の損失サンプラー (対数等間隔のエネルギー点ごと)</summary>
     private readonly DrudeLossSamplerEntry[] DrudeLossSamplerCache = [];
     /// <summary>260922Cl 追加: <see cref="DrudeLossSamplerCache"/> のエネルギー点 [keV] (昇順、対数等間隔)</summary>
@@ -445,8 +462,31 @@ public class MonteCarlo
         tan = Math.Tan(tilt);
         (sin, cos) = Math.SinCos(tilt);
         MottElasticMixtureCache = BuildMottElasticMixtureCache(); // (260331Ch)
+        if (InelasticScatteringModel == InelasticScatteringModels.PenelopeGos2018) //261106Cl 追加: 輸送表 (λ_in) より先に作る
+        {
+            var composition = new List<(int Z, double Count)>();
+            if (atoms != null)
+                foreach (var atom in atoms)
+                    composition.Add((atom.AtomicNumber, atom.Multiplicity * atom.Occ));
+            if (composition.Count == 0)
+                composition.Add(((int)Math.Round(Z), 1.0));
+            double electronsPerNm3 = A > 0 ? ρ / A * UniversalConstants.A * 1E-21 * Z : 0; // ρ·N_A·Z/A: 他の量 (TPP-2M・阻止能) と同じ電子密度
+            Gos = new InelasticGos(composition, electronsPerNm3, J, zi => EstimateElementValenceElectronCount(zi));
+            GosOuterScale = new double[Math.Max(1, (int)Math.Ceiling(InitialKev * 1000.0)) + 1];
+            GosChannelCdfCache = new double[GosOuterScale.Length][];
+        }
         TransportParameterCache = BuildTransportParameterCache(); // (260331Ch)
-        BulkLossSamplerCache = BuildBulkLossSamplerCache(); // (260331Ch) 簡易 bulk DIIMFP sampler
+        if (Gos != null) //261106Cl 追加
+        {
+            // 規格化の不成立 (S_target < S_内殻 → a ≤ 0) を追跡の範囲 (ThresholdKev より上) で許さない。
+            // 黙って非弾性率 0 にすると、その帯の電子がエネルギーを失わず弾性散乱だけで歩き続け、追跡が終わらない (261106Cl 実測: 旧 Jablonski の S で Al が停止)
+            int first = Math.Max(1, (int)Math.Floor(ThresholdKev * 1000.0) + 1);
+            for (int i = first; i < GosOuterScale.Length; i++)
+                if (!(GosOuterScale[i] > 0))
+                    throw new InvalidOperationException($"PenelopeGos2018: {i} eV で阻止能への規格化が成立しない (既定の阻止能 {StoppingPowerModel} が GOS の内殻だけの阻止能を下回る)。阻止能の模型を {StoppingPowerModels.BetheRelativisticJoyLuo} にするか、しきい値を上げること");
+        }
+        // BulkLossSamplerCache = BuildBulkLossSamplerCache(); // (260331Ch) 簡易 bulk DIIMFP sampler // 261106Cl 変更前
+        if (Gos == null) BulkLossSamplerCache = BuildBulkLossSamplerCache(); // (260331Ch) 簡易 bulk DIIMFP sampler / 261106Cl GOS では使わないので作らない
         if (InelasticScatteringModel == InelasticScatteringModels.DiscreteDrudeValenceInnerShell) //260922Cl 追加
             (DrudeLossSamplerEnergiesKev, DrudeLossSamplerCache) = BuildDrudeLossSamplerCache();
     }
@@ -625,6 +665,76 @@ public class MonteCarlo
     /// 1 eV 刻みで TransportParameters を事前計算し配列に格納する。
     /// シミュレーション中は配列インデックスアクセスだけで α, σ_el, λ_el, dE/ds, λ_in, &lt;ΔE&gt; を取得でき、毎ステップの再計算を回避する。
     /// </summary>
+    /// <summary>261106Cl 追加: GOS の経路ごとの率 [1/nm] と阻止能 [eV/nm] を出し、内殻 (率を保つ) と外側 (倍率 a) に分けて合計する。
+    /// a = (S_target − S_内殻)/S_外側。S_target は既定の阻止能 [eV/nm]。a ≤ 0・非有限なら不成立 (NaN)</summary>
+    private (double OuterScale, double[] Rate) GosNormalizedRates(double eEv, double sTargetEvPerNm)
+    {
+        int m = 3 * Gos.Count;
+        var rate = new double[m];
+        var st = new double[m];
+        Gos.Rates(eEv, rate, st);
+        double sIn = 0, sOut = 0;
+        for (int i = 0; i < m; i++)
+            if (Gos.IsInner[i / 3]) sIn += st[i]; else sOut += st[i];
+        double a = sOut > 0 ? (sTargetEvPerNm - sIn) / sOut : double.NaN;
+        if (!(a > 0) || !double.IsFinite(a)) return (double.NaN, rate);
+        for (int i = 0; i < m; i++)
+            if (!Gos.IsInner[i / 3]) rate[i] *= a;
+        return (a, rate);
+    }
+
+    /// <summary>261106Cl 追加: GOS の規格化後の λ_in [nm] (<paramref name="sp"/> は既定の阻止能 [keV/nm、負])。不成立なら NaN (= そのエネルギーで非弾性が起きない)</summary>
+    private double GosInelasticMeanFreePathNm(double kev, double sp)
+    {
+        // 輸送表は 1 eV の節点 (kev = energyEv·0.001) でだけ呼ばれる。同じ節点で経路の累積確率も保存する
+        var (a, rate) = GosNormalizedRates(kev * 1000.0, -sp * 1000.0);
+        int idx = (int)Math.Round(kev * 1000.0);
+        bool onGrid = (uint)idx < (uint)GosOuterScale.Length;
+        if (onGrid) GosOuterScale[idx] = a;
+        if (double.IsNaN(a)) return double.NaN;
+        double total = 0;
+        foreach (var r in rate) total += r;
+        if (!(total > 0)) return double.NaN;
+        if (onGrid)
+        {
+            var cdf = new double[rate.Length];
+            double c = 0;
+            for (int j = 0; j < rate.Length; j++) { c += rate[j] / total; cdf[j] = c; }
+            cdf[^1] = 1.0;
+            GosChannelCdfCache[idx] = cdf;
+        }
+        return 1.0 / total;
+    }
+
+    /// <summary>261106Cl 追加: GOS の非弾性事象を 1 つ引く。損失 [keV] と散乱角の余弦を返す (閉じたエネルギーでは損失 0・曲げない)。
+    /// 経路の選択・損失・角度は、λ_in を出したのと同じ 1 eV の節点のエネルギーで引く</summary>
+    internal (double LossKev, double CosTheta) SampleGosEvent(double currentKev)
+    {
+        int idx = (int)Math.Round(currentKev * 1000.0);
+        if ((uint)idx >= (uint)GosChannelCdfCache.Length) idx = GosChannelCdfCache.Length - 1;
+        var cdf = GosChannelCdfCache[idx];
+        if (cdf == null) return (0, 1);
+        double u = Rnd.NextDouble();
+        int j = 0;
+        while (j < cdf.Length - 1 && cdf[j] < u) j++;
+        var (w, cosθ) = Gos.Sample(j / 3, (InelasticGos.Channel)(j % 3), idx, Rnd);
+        return (Math.Min(w * 0.001, currentKev), cosθ);
+    }
+
+    /// <summary>261106Cl 追加: 進行方向 (vX,vY,vZ) を極角 cosθ・一様な方位角で曲げる (弾性散乱と同じ回転の式。毎回正規化する)</summary>
+    private void DeflectDirection(ref double vX, ref double vY, ref double vZ, double cosθ)
+    {
+        if (cosθ >= 1) return;
+        double sinθ = Math.Sqrt(Math.Max(0, 1 - cosθ * cosθ));
+        var (sinφ, cosφ) = Math.SinCos(2 * Math.PI * Rnd.NextDouble());
+        double a = sinθ * cosφ, b = sinθ * sinφ, vZ1 = vZ + 1;
+        if (vZ1 < Th) { vX = a; vY = b; vZ = -cosθ; return; }
+        double m11 = 1 - vX * vX / vZ1, m22 = 1 - vY * vY / vZ1, m12 = -vX * vY / vZ1, m13 = vX, m23 = vY;
+        double nx = m11 * a + m12 * b + m13 * cosθ, ny = m12 * a + m22 * b + m23 * cosθ, nz = -m13 * a - m23 * b + vZ * cosθ;
+        double len = Math.Sqrt(nx * nx + ny * ny + nz * nz);
+        vX = nx / len; vY = ny / len; vZ = nz / len;
+    }
+
     private TransportParameters[] BuildTransportParameterCache()
     {
         int maxEnergyEv = Math.Max(1, (int)Math.Ceiling(InitialKev * 1000.0));
@@ -1045,7 +1155,9 @@ public class MonteCarlo
         //阻止能 (Joy and Luo 1989) (kev/nm単位)
         // var sp = coeff3 / mv2 * Math.Log(1.166 * k + 0.583 / UniversalConstants.eV_joule / J * mv2); // (260331Ch) 旧 Joy-Luo 直書き
         var sp = GetStoppingPower(kev, mv2); // (260331Ch)
-        var λ_in = GetInelasticMeanFreePathAngstrom(kev * 1000.0) * 0.1; // (260331Ch) TPP-2M の IMFP [A] -> [nm]
+        // var λ_in = GetInelasticMeanFreePathAngstrom(kev * 1000.0) * 0.1; // (260331Ch) TPP-2M の IMFP [A] -> [nm] // 261106Cl 変更前
+        var λ_in = Gos != null ? GosInelasticMeanFreePathNm(kev, sp) // 261106Cl GOS は S に規格化した率から λ_in を出す
+            : GetInelasticMeanFreePathAngstrom(kev * 1000.0) * 0.1; // (260331Ch) TPP-2M の IMFP [A] -> [nm]
         var meanLossKev = λ_in > 0 && sp < 0 ? -sp * λ_in : double.NaN; // (260331Ch) 平均的には <ΔE>/λ_in = stopping power を満たす
         // 260401Cl 追加: ホットループ内の除算・Math.Log を事前計算で排除
         var elasticRate = λ_el > 0 ? 1.0 / λ_el : 0.0;
@@ -1403,6 +1515,7 @@ public class MonteCarlo
             // 260401Cl DiscreteExponentialLoss の分岐を除去
             InelasticScatteringModels.DiscreteBulkDiimfpApproximation => SampleBulkLossKev(currentKev, meanLossKev),
             InelasticScatteringModels.DiscreteDrudeValenceInnerShell => SampleDrudeLossKev(currentKev, meanLossKev), //260922Cl 追加
+            InelasticScatteringModels.PenelopeGos2018 => SampleGosEvent(currentKev).LossKev, //261106Cl 追加 (損失だけが要る呼び出し用。追跡ループは角度も使う)
             _ => 0.0,
         };
         return Math.Min(lossKev, currentKev);
@@ -1592,6 +1705,12 @@ public class MonteCarlo
                     }
                 }
             }
+            else if (Gos != null) //261106Cl 追加: GOS は損失と曲がりを同じ事象から
+            {
+                var (lossKev, cosθ) = SampleGosEvent(trajectory[^1].e);
+                nextEnergy = Math.Max(trajectory[^1].e - lossKev, 0.0);
+                DeflectDirection(ref vX, ref vY, ref vZ, cosθ);
+            }
             else
             {
                 nextEnergy = Math.Max(trajectory[^1].e - SampleInelasticLossKev(trajectory[^1].e, parameters.MeanInelasticLossKev), 0.0); // (260331Ch)
@@ -1779,7 +1898,10 @@ public class MonteCarlo
                 lastInelasticEnergyBeforeLoss = e;
                 lastInelasticDirection = new V3(vX, vY, vZ);
                 // e = Math.Max(e - SampleInelasticLossKev(e, parameters.MeanInelasticLossKev), 0.0); // (260331Ch) 260919Cl 変更前
-                var lossKev = SampleInelasticLossKev(e, parameters.MeanInelasticLossKev); // 260919Cl 変更: 損失を先に決め、局在判定に使う
+                // var lossKev = SampleInelasticLossKev(e, parameters.MeanInelasticLossKev); // 260919Cl 変更: 損失を先に決め、局在判定に使う // 261106Cl 変更前
+                // 261106Cl GOS は損失と散乱角を同じ事象から引く (他の模型は cosθ = 1 = 曲げない)。LastInelasticDirection は衝突前の向きのまま
+                var (lossKev, inelasticCosθ) = Gos != null ? SampleGosEvent(e) : (SampleInelasticLossKev(e, parameters.MeanInelasticLossKev), 1.0);
+                DeflectDirection(ref vX, ref vY, ref vZ, inelasticCosθ);
                 // 260919Cl 追加: 非弾性散乱は運動量移行 (局在) で判定。内殻/高損失は常に、価電子励起は q > q_c の割合だけ源をリセットする
                 var pDecoherence = InelasticDecoherenceProbability(e, lossKev);
                 if (pDecoherence >= 1 || (pDecoherence > 0 && Rnd.NextDouble() < pDecoherence)) { hasLastDecoherenceEvent = true; lastDecoherenceDepth = d; coherentInelasticCount = 0; coherentAngularVariance = 0; coherentPathLength = 0; } // p=0/1 では乱数を引かない / 260920Cl 干渉性区間の累積もリセット
