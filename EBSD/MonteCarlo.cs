@@ -711,15 +711,23 @@ public class MonteCarlo
     /// 経路の選択・損失・角度は、λ_in を出したのと同じ 1 eV の節点のエネルギーで引く</summary>
     internal (double LossKev, double CosTheta) SampleGosEvent(double currentKev)
     {
+        var ev = SampleGosEventDetail(currentKev);
+        return (ev.LossKev, ev.CosTheta);
+    }
+
+    /// <summary>261106Cl 追加: <see cref="SampleGosEvent"/> の詳細版 (二次電子の検証用)。振動子 k・経路・反跳エネルギー Q [eV]・角度に使った W [eV] も返す。
+    /// 閉じたエネルギーでは (0, 1, −1, −1, 0, 0)</summary>
+    internal (double LossKev, double CosTheta, int Oscillator, int Channel, double QEv, double WAngleEv) SampleGosEventDetail(double currentKev)
+    {
         int idx = (int)Math.Round(currentKev * 1000.0);
         if ((uint)idx >= (uint)GosChannelCdfCache.Length) idx = GosChannelCdfCache.Length - 1;
         var cdf = GosChannelCdfCache[idx];
-        if (cdf == null) return (0, 1);
+        if (cdf == null) return (0, 1, -1, -1, 0, 0);
         double u = Rnd.NextDouble();
         int j = 0;
         while (j < cdf.Length - 1 && cdf[j] < u) j++;
-        var (w, cosθ) = Gos.Sample(j / 3, (InelasticGos.Channel)(j % 3), idx, Rnd);
-        return (Math.Min(w * 0.001, currentKev), cosθ);
+        var (w, cosθ, q, wAngle) = Gos.SampleDetailed(j / 3, (InelasticGos.Channel)(j % 3), idx, Rnd);
+        return (Math.Min(w * 0.001, currentKev), cosθ, j / 3, j % 3, q, wAngle);
     }
 
     /// <summary>261106Cl 追加: 進行方向 (vX,vY,vZ) を極角 cosθ・一様な方位角で曲げる (弾性散乱と同じ回転の式。毎回正規化する)</summary>

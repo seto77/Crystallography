@@ -40,6 +40,12 @@ internal sealed class InelasticGos
     internal readonly double[] W;
     /// <summary>内殻 (率を保つ側) か</summary>
     internal readonly bool[] IsInner;
+    /// <summary>261106Cl 追加: Bote–Salvat の副殻の番号 (1=K, 2..4=L1..L3, 5..9=M1..M5)。対応しない振動子は 0</summary>
+    internal readonly int[] BoteSubshell;
+    /// <summary>261106Cl 追加: 振動子の元素の原子の割合 (価電子の振動子は 0)</summary>
+    internal readonly double[] AtomFraction;
+    /// <summary>261106Cl 追加: Bote–Salvat の副殻 K, L1, L2, L3, M1..M5 の電子数 (Carlson の殻との対応の検査に使う)</summary>
+    private static readonly int[] BoteSubshellElectrons = [2, 2, 2, 4, 2, 2, 4, 4, 6];
     /// <summary>振動子の元素 (価電子の振動子は 0)</summary>
     internal readonly int[] ElementZ;
     /// <summary>振動子の殻の番号 (<see cref="CarlsonAtomicShells"/> の並び = K, L1, L2, L3, M1, …。価電子の振動子は −1)</summary>
@@ -73,7 +79,7 @@ internal sealed class InelasticGos
         if (!(sumN > 0)) throw new ArgumentException("InelasticGos: 組成が空");
 
         double fcb = 0;
-        var bound = new List<(double f, double u, int z, int shell)>();
+        var bound = new List<(double f, double u, int z, int shell, double x, bool full)>(); // 261106Cl x = 原子の割合、full = 価電子へ回していない殻
         foreach (var (zi, ni) in byElement)
         {
             double x = ni / sumN;
@@ -95,7 +101,7 @@ internal sealed class InelasticGos
                 left[i] -= take; remaining -= take;
             }
             for (int i = 0; i < ue.Length; i++)
-                if (left[i] > 1e-12) bound.Add((x * left[i], ue[i], zi, i));
+                if (left[i] > 1e-12) bound.Add((x * left[i], ue[i], zi, i, x, left[i] == ne[i]));
         }
         Z = sumNZ / sumN;
         AtomsPerNm3 = electronsPerNm3 / Z;
@@ -104,11 +110,22 @@ internal sealed class InelasticGos
 
         int n = bound.Count + 1;
         F = new double[n]; U = new double[n]; W = new double[n]; IsInner = new bool[n]; ElementZ = new int[n]; ShellIndex = new int[n];
+        BoteSubshell = new int[n]; AtomFraction = new double[n];
         F[0] = fcb; U[0] = 0; W[0] = fcb > 0 ? Math.Sqrt(fcb / Z) * OmegaP : 0; IsInner[0] = false; ShellIndex[0] = -1;
         for (int k = 1; k < n; k++)
         {
-            (F[k], U[k], ElementZ[k], ShellIndex[k]) = bound[k - 1];
-            IsInner[k] = U[k] >= InnerShellThresholdEv;
+            bool full;
+            (F[k], U[k], ElementZ[k], ShellIndex[k], AtomFraction[k], full) = bound[k - 1];
+            // 261106Cl codex2 第 6 回: K〜M5 は Bote–Salvat の総率に規格化する。対応は Carlson の並び (K, L1, L2, L3, M1..M5) と
+            //   電子数 (2,2,2,4,2,2,4,4,6) が一致し、価電子へ回していない殻だけ。端は Bote–Salvat にそろえる (率の閾値を一致させるため)
+            int s = ShellIndex[k];
+            if (full && ElementZ[k] <= 99 && s < BoteSubshellElectrons.Length && s < BoteSalvat.SubshellCount(ElementZ[k])
+                && CarlsonAtomicShells.Electrons[ElementZ[k] - 1][s] == BoteSubshellElectrons[s])
+            {
+                BoteSubshell[k] = s + 1;
+                U[k] = BoteSalvat.EdgeEv(ElementZ[k], s + 1);
+            }
+            IsInner[k] = BoteSubshell[k] > 0 || U[k] >= InnerShellThresholdEv;
         }
 
         // 式 (3.64): Z ln I = f_cb ln W_cb + Σ f_k ln √((aU_k)² + (2/3)(f_k/Z)Ω_p²) を a について解く (左辺は a の増加関数)
@@ -241,15 +258,36 @@ internal sealed class InelasticGos
                 var (b0, b1) = CloseIntegrals(ep, am, w2);
                 rate[i + 2] = cf * (b0 - a0); stopping[i + 2] = cf * (b1 - a1);
             }
+            // 261106Cl 追加: Bote–Salvat に対応した殻は、3 経路の和を総率 N·x·σ_BS に合わせる (経路の内訳と損失・角度の分布は GOS のまま)
+            if (BoteSubshell[k] > 0)
+            {
+                double gosRate = rate[i] + rate[i + 1] + rate[i + 2];
+                double bsRate = AtomsPerNm3 * AtomFraction[k] * BoteSalvat.SigmaNm2(ElementZ[k], BoteSubshell[k], e);
+                if (gosRate > 0)
+                {
+                    double g2 = bsRate / gosRate;
+                    for (int ch = 0; ch < 3; ch++) { rate[i + ch] *= g2; stopping[i + ch] *= g2; }
+                }
+                else if (bsRate > 0)
+                    throw new InvalidOperationException($"InelasticGos: Z={ElementZ[k]} の副殻 {BoteSubshell[k]} で Bote–Salvat の率は正なのに GOS の経路が閉じている (E = {e} eV)");
+            }
         }
     }
 
     /// <summary>経路 (振動子 k・種類) を決めたあとの損失 W [eV] と散乱角の余弦を引く (エネルギー e [eV]。率を出したのと同じ e を渡すこと)</summary>
     internal (double W, double CosTheta) Sample(int k, Channel ch, double e, Random rnd)
     {
+        var (w, c, _, _) = SampleDetailed(k, ch, e, rnd);
+        return (w, c);
+    }
+
+    /// <summary>261106Cl 追加: <see cref="Sample"/> の詳細版。反跳エネルギー Q と、角度 (と二次電子の方向、式 3.137) に使う W (遠い衝突は W'_k、近い衝突は W) も返す。
+    /// 閉じた経路は (0, 1, 0, 0)</summary>
+    internal (double W, double CosTheta, double Q, double WAngle) SampleDetailed(int k, Channel ch, double e, Random rnd)
+    {
         if (ch == Channel.Close)
         {
-            if (!Close(k, e, out double w1, out double w2)) return (0, 1);
+            if (!Close(k, e, out double w1, out double w2)) return (0, 1, 0, 0);
             double ep = e + U[k], a = MollerA(e);
             double fmax = 1 + 1.25 * a; // r = W/(E'−W) ∈ [0,1] で r²−r ≤ 0、r + (W/E')² ≤ 1.25
             for (int it = 0; it < 100000; it++)
@@ -258,11 +296,11 @@ internal sealed class InelasticGos
                 double r = w / (ep - w);
                 double fm = 1 + r * r - r + a * (r + w * w / (ep * ep)); // 式 3.87
                 if (rnd.NextDouble() * fmax <= fm)
-                    return (w, CosTheta(e, w, w)); // 近い衝突は Q = W (二体の極限)
+                    return (w, CosTheta(e, w, w), w, w); // 近い衝突は Q = W (二体の極限)
             }
             throw new InvalidOperationException("InelasticGos: 近い衝突の棄却が尽きた");
         }
-        if (!Distant(k, e, out double wk, out double qk, out double b, out _, out _)) return (0, 1);
+        if (!Distant(k, e, out double wk, out double qk, out double b, out _, out _)) return (0, 1, 0, 0);
         // 損失: 価電子 = δ(W−W_cb)、束縛殻 = 三角分布 p ∝ (D − W) を [U_k, B] で切ったもの。x = D − W の密度は ∝ x なので x² を一様に
         double wloss = wk;
         if (k > 0)
@@ -270,13 +308,13 @@ internal sealed class InelasticGos
             double d = 3 * wk - 2 * U[k], x0 = d - b, x1 = d - U[k];
             wloss = d - Math.Sqrt(x0 * x0 + rnd.NextDouble() * (x1 * x1 - x0 * x0));
         }
-        if (ch == Channel.DistantTransverse) return (wloss, 1); // 横の相互作用では曲げない (§3.2.2)
         // 縦: Q を ∝ 1/(Q(Q+2mc²)) で [Q₋, Q'_k] から引く。角度は修正後の共鳴エネルギー W'_k で決める (式 3.83)
         double qm = QMinus(e, wk);
-        if (!(qm < qk)) return (wloss, 1);
+        if (ch == Channel.DistantTransverse) return (wloss, 1, qm, wk); // 横の相互作用では曲げない (§3.2.2、Q = Q₋)
+        if (!(qm < qk)) return (wloss, 1, qm, wk);
         double y0 = Math.Log(qm / (qm + 2 * Mc2)), y1 = Math.Log(qk / (qk + 2 * Mc2));
         double ey = Math.Exp(y0 + rnd.NextDouble() * (y1 - y0));
         double q = 2 * Mc2 * ey / (1 - ey);
-        return (wloss, CosTheta(e, wk, q));
+        return (wloss, CosTheta(e, wk, q), q, wk);
     }
 }
