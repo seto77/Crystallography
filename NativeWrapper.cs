@@ -1144,6 +1144,8 @@ public static partial class NativeWrapper
     /// EBSD強度とTDSバックグラウンドを一括計算する。 (260316Cl 追加)
     /// 弾性信号 (S行列) と TDS (M行列) で同じ F_{jj'}(t) を共有し、
     /// exp(λt) の重複計算を排除する。C†×U×C は Eigen BLAS で高速に実行。
+    /// 261106Ch: sigma が空なら局所源は原子0個として intensity に厚さ数分の0を返す。
+    /// TDS は muBack から独立に計算するので、この場合 phaseNG も空でよい。
     /// </summary>
     public static unsafe (double[] intensity, double[] tdsIntensity) EBSDSolverWithTDS(
         Complex[] eigenValues, Complex[] eigenVectors, Complex[] alpha,
@@ -1166,7 +1168,9 @@ public static partial class NativeWrapper
         return (intensity, tdsIntensity);
     }
 
-    /// <summary>bLen を明示し、大きめの作業配列を再利用できるようにした overload。 (260321Ch)</summary>
+    /// <summary>bLen を明示し、大きめの作業配列を再利用できるようにした overload。 (260321Ch)
+    /// 261106Ch: sigma が空なら局所源は0。TDSはmuBackから独立に計算し、両出力の厚さ数は維持する。
+    /// </summary>
     public static unsafe (double[] intensity, double[] tdsIntensity) EBSDSolverWithTDS(
         int bLen, Complex[] eigenValues, Complex[] eigenVectors, Complex[] alpha,
         Complex[] phaseNG, double[] sigma, Complex[] muBack, double tdsCoeff, double[] thicknesses)

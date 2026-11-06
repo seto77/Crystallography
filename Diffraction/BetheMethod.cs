@@ -270,8 +270,16 @@ public partial class BetheMethod
     /// </summary>
     public static BeamBoundaryTieMode BeamBoundaryTieMode { get; set; } = BeamBoundaryTieMode.DropGroup;
 
-    /// <summary>U のキャッシュ (uDictionary) を破棄する。260613Cl 追加: ElasticIonModel 切替後に再計算なしで表示を更新する経路向け。</summary>
-    public void ClearUCache() => uDictionary.Clear();
+    /// <summary>U のキャッシュ (uDictionary) を破棄する。260613Cl 追加: ElasticIonModel 切替後に再計算なしで表示を更新する経路向け。
+    /// 261106Ch: U に依存する平行回折・PED の固有解も無効化する。公開 API で原子や ADP を変更した後にも呼ぶ。</summary>
+    // public void ClearUCache() => uDictionary.Clear(); // 261106Ch 変更前
+    public void ClearUCache()
+    {
+        uDictionary.Clear();
+        // 261106Ch: U に依存する固有解も無効化する。公開 API で原子・ADP を変更した後の明示的な破棄にも使える。
+        eigenSettings = null;
+        pedEigenSettings = null;
+    }
 
     /// <summary>単位胞の正味電荷 Σ(Multiplicity·Occ·Valence) を返す。260613Cl 追加: IonFull の電荷中性 (Σq=0) チェック用。</summary>
     public double NetCellCharge()
@@ -307,6 +315,15 @@ public partial class BetheMethod
     /// <summary>261105Cl 追加: <see cref="EigenValues"/>/<see cref="EigenVectors"/>/<see cref="EigenVectorsInverse"/> を求めたときの <see cref="Beams"/> 配列 (参照で比べる)。
     /// STEM・PED・CBED や外部のコードが Beams を別の配列 (同じ反射を別の順に並べたものなど) に置き換えたあとは、固有解を使い回さない。</summary>
     private Beam[] eigenBeams;
+
+    /// <summary>261106Ch 追加: 固有解を実際に作った条件。共有の AccVoltage/BaseRotation は別の計算でも更新されるため、
+    /// 再利用の根拠にできない。方位・表面は参照でなく値を保存し、Surface のその場の書換えも検出する。</summary>
+    [Serializable]
+    private sealed record DiffractionEigenSettings(int MaxNumOfBloch, double Voltage,
+        (double, double, double, double, double, double, double, double, double) Rotation,
+        (double, double, double) Surface, ElasticIonModel IonModel, AbsorptionElasticModel AbsorptionModel,
+        int CandidateMultiplier, BeamBoundaryTieMode BoundaryTieMode);
+    private DiffractionEigenSettings eigenSettings, pedEigenSettings; // 261106Ch 追加
 
     public DVec[] EigenValuesPED { get; set; }
     public DMat[] EigenVectorsPED { get; set; }
@@ -1845,7 +1862,9 @@ public partial class BetheMethod
 
                         if (EigenEnabled && muBackFiltered != null)
                         {
-                            var result = NativeWrapper.EBSDSolverWithTDS(bLen, eigenValues, eigenVectors, alpha, phaseFiltered, sigmaArray, muBackFiltered, tdsCoeff, Thicknesses); // (260321Ch)
+                            // var result = NativeWrapper.EBSDSolverWithTDS(bLen, eigenValues, eigenVectors, alpha, phaseFiltered, sigmaArray, muBackFiltered, tdsCoeff, Thicknesses); // 261106Ch previous
+                            // 261106Ch: 非局所源があれば局所値は Disk 格納で使われない。原子源0個として省略し、計算済み判定用の0配列は保持する。
+                            var result = NativeWrapper.EBSDSolverWithTDS(bLen, eigenValues, eigenVectors, alpha, Array.Empty<Complex>(), Array.Empty<double>(), muBackFiltered, tdsCoeff, Thicknesses);
                             intensity = result.intensity;
                             background = result.tdsIntensity;
                         }
@@ -1855,7 +1874,11 @@ public partial class BetheMethod
                         }
                         else
                         {
-                            intensity = EBSDSolverManaged(bLen, nAtoms, eigenValues, eigenVectors, alpha, phaseFiltered, sigmaArray, Thicknesses);
+                            // intensity = EBSDSolverManaged(bLen, nAtoms, eigenValues, eigenVectors, alpha, phaseFiltered, sigmaArray, Thicknesses); // 261106Ch 変更前
+                            // 261106Ch: native と同様、非局所源で置換される局所計算を省く。0配列は計算済みセルの印として残す。
+                            intensity = muBackFiltered is null
+                                ? EBSDSolverManaged(bLen, nAtoms, eigenValues, eigenVectors, alpha, phaseFiltered, sigmaArray, Thicknesses)
+                                : new double[Thicknesses.Length];
                             if (muBackFiltered != null)
                                 background = ComputeTDSMatrixBackground(bLen, eigenValues, eigenVectors, alpha, muBackFiltered, tdsCoeff, Thicknesses);
                         }
@@ -1863,7 +1886,10 @@ public partial class BetheMethod
                         // 260919Cl 追加: 吸収で失われたフラックスを拡散背景として再注入 (局所源・非局所源のどちらにも同じ量を足す)
                         if (IncludeAbsorbedFluxBackground)
                         {
-                            var diffuse = ComputeAbsorbedFluxBackground(bLen, eigenValues, eigenVectors, alpha, sigmaSum, Thicknesses);
+                            // var diffuse = ComputeAbsorbedFluxBackground(bLen, eigenValues, eigenVectors, alpha, sigmaSum, Thicknesses); // 261106Ch 変更前
+                            var pOverP0 = new double[bLen]; // 261106Ch: 行割りした Bloch 系の生存フラックスを使う (再注入 opt-in のみ)
+                            for (int g = 0; g < bLen; g++) pOverP0[g] = beams[g].P / beams[0].P;
+                            var diffuse = ComputeAbsorbedFluxBackground(bLen, eigenValues, eigenVectors, alpha, sigmaSum, Thicknesses, pOverP0);
                             var dst = background ?? intensity; // 非局所源が有るときは intensity は使われない (Disk 格納部で background が優先)
                             for (int t = 0; t < diffuse.Length; t++) dst[t] += diffuse[t];
                         }
@@ -2100,7 +2126,8 @@ public partial class BetheMethod
                 for (int jp = 0; jp < bLen; jp++)
                 {
                     var lam = lambda[j * bLen + jp];
-                    var F = lam.MagnitudeSquared() < 1e-30 ? thick : (Exp(lam * thick) - One) / lam;
+                    // var F = lam.MagnitudeSquared() < 1e-30 ? thick : (Exp(lam * thick) - One) / lam; // 261106Ch 変更前
+                    var F = BlochWaveIntegral.Evaluate(lam, thick); // 261106Ch: |λt| に基づく安定な厚さ積分
                     sum += S[j * bLen + jp] * F;
                 }
             intensity[t] = Math.Max(0, sum.Real);
@@ -2113,6 +2140,8 @@ public partial class BetheMethod
 
     /// <summary>
     /// 260919Cl 追加: 吸収で干渉性チャネルから失われたフラックスの、拡散背景としての寄与 D(t) (各厚さ、tLen 個)。
+    /// 261106Ch: pOverP0 を渡す本番経路は N(z) を J(z)=Σ_g(P_g/P_0)|ψ_g|² に置き換える。
+    /// 行割りした方程式では J が無吸収で保存される。以下の密度 N の説明は pOverP0=null の旧規約だけに当たる。
     /// 干渉性の波の単位胞平均密度 N(z) = Σ_g |ψ_g(z)|² = Re Σ_jj' T_jj' exp(λ_jj' z)、T_jj' = α_j conj(α_j') Σ_g C_g^j conj(C_g^j')、
     /// λ_jj' = 2πi(γ_j − conj γ_j') (EBSDSolverManaged と同じ)。N(0) = 1 で吸収により単調減少する。
     /// 失われた分 1 − N(z) は方向情報を持たない拡散電子として、原子で平均の後方散乱率 Σσ_n を持つ:
@@ -2120,11 +2149,14 @@ public partial class BetheMethod
     /// チャネリングが無い極限 (|ψ|²≡1) では干渉性項と合わせて dI/dz = Σσ_n となり、フラックスが保存する。
     /// 晶帯軸では 1s 状態の吸収が大きく N が速く減るので D も大きい。再注入は同じ方向 k に足されるため、晶帯軸の相対輝度はほぼ変わらない (実測: Si 不変、Fe3O4 で僅増)。
     /// </summary>
-    private static double[] ComputeAbsorbedFluxBackground(int bLen, Complex[] eigenValues, Complex[] eigenVectors, Complex[] alpha, double sigmaSum, double[] thicknesses)
+    // private static double[] ComputeAbsorbedFluxBackground(int bLen, Complex[] eigenValues, Complex[] eigenVectors, Complex[] alpha, double sigmaSum, double[] thicknesses) // 261106Ch 旧シグネチャ
+    private static double[] ComputeAbsorbedFluxBackground(int bLen, Complex[] eigenValues, Complex[] eigenVectors, Complex[] alpha, double sigmaSum, double[] thicknesses, double[] pOverP0 = null) // 261106Ch: null は旧密度規約
     {
         int tLen = thicknesses.Length;
         var result = new double[tLen];
         if (!(sigmaSum > 0) || bLen <= 0) return result;
+        if (pOverP0 != null && pOverP0.Length < bLen) // 261106Ch: 反射と重みの対応を途中で欠落させない
+            throw new ArgumentException("Flux weights must cover every beam.", nameof(pOverP0));
         int bLen2 = bLen * bLen;
         var T = Shared.Rent(bLen2); // T_jj' = α_j conj(α_j') Σ_g C_g^j conj(C_g^j')。Hermitian (T_j'j = conj T_jj') なので jp ≤ j だけ作る (ArrayPool: 方向ごとの並列呼び出し)
         var expGamma = Shared.Rent(bLen * tLen); // E[j,t] = exp(2πi γ_j t)。exp(λ_jj' t) = E[j,t]·conj(E[j',t]) なので指数は bLen·tLen 回で済む
@@ -2137,8 +2169,14 @@ public partial class BetheMethod
                 for (int jp = 0; jp <= j; jp++)
                 {
                     Complex g = 0;
-                    for (int gi = 0; gi < bLen; gi++)
-                        g += eigenVectors[j * bLen + gi] * eigenVectors[jp * bLen + gi].Conjugate();
+                    // for (int gi = 0; gi < bLen; gi++) // 261106Ch 変更前: 密度の和は非等Pで保存しない
+                    //     g += eigenVectors[j * bLen + gi] * eigenVectors[jp * bLen + gi].Conjugate();
+                    if (pOverP0 == null) // 261106Ch: 旧ハーネスの密度規約を保持
+                        for (int gi = 0; gi < bLen; gi++)
+                            g += eigenVectors[j * bLen + gi] * eigenVectors[jp * bLen + gi].Conjugate();
+                    else
+                        for (int gi = 0; gi < bLen; gi++)
+                            g += pOverP0[gi] * eigenVectors[j * bLen + gi] * eigenVectors[jp * bLen + gi].Conjugate();
                     T[j * bLen + jp] = aj * alpha[jp].Conjugate() * g;
                 }
             }
@@ -2258,7 +2296,8 @@ public partial class BetheMethod
                     {
                         // var lam = TwoPiI * (gammaJ - eigenValues[jp].Conjugate()); // 260922Cl 変更前 (λ_{jj'})
                         var lam = TwoPiI * (eigenValues[jp] - gammaJ.Conjugate()); // 260922Cl 修正: λ_{j'j}
-                        var F = lam.MagnitudeSquared() < 1e-30 ? thick : (Exp(lam * thick) - One) / lam;
+                        // var F = lam.MagnitudeSquared() < 1e-30 ? thick : (Exp(lam * thick) - One) / lam; // 261106Ch 変更前
+                        var F = BlochWaveIntegral.Evaluate(lam, thick); // 261106Ch: |λt| に基づく安定な厚さ積分
                         sum += M[j * bLen + jp] * F;
                     }
                 }
@@ -2282,7 +2321,12 @@ public partial class BetheMethod
     /// <returns></returns>
     public Beam[] GetDifractedBeamAmpriltudes(int maxNumOfBloch, double voltage, Matrix3D rotation, double thickness)
     {
-        if (AccVoltage != voltage)
+        var settings = new DiffractionEigenSettings(maxNumOfBloch, voltage, rotation.Tuple, Surface.Tuple,
+            ElasticIonModel, AbsorptionElasticModel, BeamCandidateMultiplier, BeamBoundaryTieMode); // 261106Ch 追加
+        // if (AccVoltage != voltage) // 261106Ch 変更前: 模型の切替後も以前の U と固有解が残った
+        // 261106Ch: U は hkl・電圧・模型の関数。方位・表面・N だけの変更では再計算せず従来の cache 利得を保つ。
+        if (AccVoltage != voltage || eigenSettings == null || settings.IonModel != eigenSettings.IonModel
+            || settings.AbsorptionModel != eigenSettings.AbsorptionModel)
             uDictionary.Clear();
 
         //波数を計算
@@ -2297,9 +2341,12 @@ public partial class BetheMethod
         //  Find_gVectors の順で作った固有ベクトルの振幅を、並び順の違う Beams に入れていた (透過波 000 以外の反射の強度・位相が入れ替わる。
         //  HRTEM → STEM → HRTEM、回折 → STEM → 回折 で同じ Crystal.Bethe を使うと起きる。Si 200 kV・[001] から 0.5°・N=50 で 37/50 反射が誤り)。
         //  PED が Beams を置き換えたときも同じ。固有解を作ったときの Beams 配列のままでなければ作り直す。
+        // if (MaxNumOfBloch != maxNumOfBloch || AccVoltage != voltage || EigenValues == null || Beams.Length != EigenValues.Length || EigenVectors == null || !rotation.Equals(BaseRotation)
+        //     || !ReferenceEquals(Beams, eigenBeams)) // 261106Ch 変更前
         if (MaxNumOfBloch != maxNumOfBloch || AccVoltage != voltage || EigenValues == null || Beams.Length != EigenValues.Length || EigenVectors == null || !rotation.Equals(BaseRotation)
-            || !ReferenceEquals(Beams, eigenBeams)) // 261105Cl
+            || !ReferenceEquals(Beams, eigenBeams) || settings != eigenSettings) // 261106Ch: 表面と模型も固有解の条件
         {
+            eigenSettings = null; // 261106Ch 追加: 途中で失敗した解を次の呼び出しで再利用しない
             MaxNumOfBloch = maxNumOfBloch;
             AccVoltage = voltage;
             BaseRotation = new Matrix3D(rotation);
@@ -2327,16 +2374,18 @@ public partial class BetheMethod
                 EigenVectorsInverse = ((DMat)evd.EigenVectors.Inverse()).Values;
             }
             eigenBeams = Beams; // 261105Cl 追加: この固有解がどの Beams 配列 (並び順) に対応するか
+            eigenSettings = settings; // 261106Ch 追加: 固有値分解に成功してから条件を記録
         }
 
         dim = Beams.Length;
 
-        var psi0 = new DVec(new Complex[dim]) { [0] = 1 };//入射面での波動関数を定義
-
-        var alpha = new DMat(dim, dim, EigenVectorsInverse).Multiply(psi0);//アルファベクトルを求める
-
+        // var psi0 = new DVec(new Complex[dim]) { [0] = 1 };//入射面での波動関数を定義 (261106Ch 変更前)
+        // var alpha = new DMat(dim, dim, EigenVectorsInverse).Multiply(psi0);//アルファベクトルを求める (261106Ch 変更前)
+        // 261106Ch: 入射波は e0 なので alpha = V^-1 e0 は column-major 逆行列の第一列そのもの。
+        // 公開の逆行列は保持し、厚さを変えるたびの dense GEMV と一時ベクトルを省く。
         //ガンマの対称行列×アルファを作成
-        var gamma_alpha = new DVec([.. ValueEnumerable.Range(0, dim).Select(n => Exp(TwoPiI * EigenValues[n] * thickness) * alpha[n])]);
+        // var gamma_alpha = new DVec([.. ValueEnumerable.Range(0, dim).Select(n => Exp(TwoPiI * EigenValues[n] * thickness) * alpha[n])]); // 261106Ch 変更前
+        var gamma_alpha = new DVec([.. ValueEnumerable.Range(0, dim).Select(n => Exp(TwoPiI * EigenValues[n] * thickness) * EigenVectorsInverse[n])]);
 
         //出射面での境界条件を考慮した位相にする (20230827)
         var p = new DiagonalMatrix(dim, dim, [.. Beams.Select(b => Exp(PiI * b.P * thickness))]);
@@ -2364,6 +2413,8 @@ public partial class BetheMethod
     /// <returns></returns>
     public Beam[] GetPrecessionElectronDiffraction(int maxNumOfBloch, double voltage, Matrix3D baseRotation, double thickness, double semiangle, int step)
     {
+        var settings = new DiffractionEigenSettings(maxNumOfBloch, voltage, baseRotation.Tuple, Surface.Tuple,
+            ElasticIonModel, AbsorptionElasticModel, BeamCandidateMultiplier, BeamBoundaryTieMode); // 261106Ch 追加
         //波数を計算
         var kvac = UniversalConstants.Convert.EnergyToElectronWaveNumber(voltage);
         //U0を計算
@@ -2377,9 +2428,14 @@ public partial class BetheMethod
 
         var stepP = ParallelEnumerable.Range(0, step).WithDegreeOfParallelism(useEigen ? Environment.ProcessorCount : Math.Max(1, Environment.ProcessorCount / 4));
 
+        // if (MaxNumOfBloch != maxNumOfBloch || AccVoltage != voltage || EigenValuesPED == null || EigenValuesPED.Length != step
+        //     || EigenVectorsPED == null || EigenVectorsPED.Length != step || semiangle != SemianglePED || !baseRotation.Equals(BaseRotation)) // 261106Ch 変更前
+        // 261106Ch: PED(A) → 平行ビーム(B) → PED(B) では共有フィールドは B でも PED 固有解は A のまま。
         if (MaxNumOfBloch != maxNumOfBloch || AccVoltage != voltage || EigenValuesPED == null || EigenValuesPED.Length != step
-            || EigenVectorsPED == null || EigenVectorsPED.Length != step || semiangle != SemianglePED || !baseRotation.Equals(BaseRotation))
+            || EigenVectorsPED == null || EigenVectorsPED.Length != step || semiangle != SemianglePED || !baseRotation.Equals(BaseRotation)
+            || settings != pedEigenSettings)
         {
+            pedEigenSettings = null; // 261106Ch 追加: 途中で失敗した配列を有効な固有解として扱わない
             MaxNumOfBloch = maxNumOfBloch;
             AccVoltage = voltage;
             BaseRotation = new Matrix3D(baseRotation);
@@ -2417,6 +2473,7 @@ public partial class BetheMethod
                     EigenVectorsInversePED[k] = (DMat)EigenVectorsPED[k].Inverse();
                 }
             });
+            pedEigenSettings = settings; // 261106Ch 追加: 全方位の固有値分解に成功してから条件を記録
         }
 
         //各方向でのbeamの振幅を求める
@@ -2425,10 +2482,13 @@ public partial class BetheMethod
             if (EigenValuesPED[k] is not null)
             {
                 var len = EigenValuesPED[k].Count;
-                var psi0 = new DVec(new Complex[len]) { [0] = 1 };//入射面での波動関数を定義
-                var alpha = EigenVectorsInversePED[k].Multiply(psi0);//アルファベクトルを求める
-                                                                     //ガンマの対称行列×アルファを作成
-                var gamma_alpha = new DVec([.. ValueEnumerable.Range(0, len).Select(n => Exp(TwoPiI * EigenValuesPED[k][n] * thickness) * alpha[n])]);
+                // var psi0 = new DVec(new Complex[len]) { [0] = 1 };//入射面での波動関数を定義 (261106Ch 変更前)
+                // var alpha = EigenVectorsInversePED[k].Multiply(psi0);//アルファベクトルを求める (261106Ch 変更前)
+                // 261106Ch: alpha = V^-1 e0 は第一列。逆行列を公開する既存 API は変えない。
+                var inverseValues = EigenVectorsInversePED[k].Values;
+                //ガンマの対称行列×アルファを作成
+                // var gamma_alpha = new DVec([.. ValueEnumerable.Range(0, len).Select(n => Exp(TwoPiI * EigenValuesPED[k][n] * thickness) * alpha[n])]); // 261106Ch 変更前
+                var gamma_alpha = new DVec([.. ValueEnumerable.Range(0, len).Select(n => Exp(TwoPiI * EigenValuesPED[k][n] * thickness) * inverseValues[n])]);
                 //深さZにおけるψを求める
                 var psi_atZ = EigenVectorsPED[k].Multiply(gamma_alpha);
                 for (int i = 0; i < BeamsPED[k].Length && i < len; i++)
@@ -3805,6 +3865,9 @@ public partial class BetheMethod
         var tLen = thicknesses.Length;
 
         var _images = new double[tLen][][];
+        Complex[] tccPhase = null; // 261106Ch: 固定した方位・絞り・焦点で厚さに依らない Kai(g,d) だけを保持 (O(ND))。
+        PointD[] tccVectors = null; // 261106Ch: 対の幾何を反射ごとに保持 (O(N))。
+        double[] tccLengthsSquared = null; // 261106Ch
         for (int t = 0; t < tLen; t++)
         {
             var beams = GetDifractedBeamAmpriltudes(BlochNum, AccVol, rot, thicknesses[t]);//2回目以降は固有値計算済みなので高速
@@ -3825,32 +3888,66 @@ public partial class BetheMethod
 
             else//Transmission cross coefficient modelの時
             {
-                var vecDic = new Dictionary<(int H, int K, int L), PointD>();
+                // 261106Ch: 各厚さでは Psi だけが変わり、採用反射とレンズ位相は共通。
+                // 全ペアの TCC (O(N²D)) や全厚さの係数は保持せず、位相の重複 exp を除く。
+                if (tccPhase is null)
+                {
+                    tccPhase = new Complex[beams.Length * defLen];
+                    tccVectors = new PointD[beams.Length];
+                    tccLengthsSquared = new double[beams.Length];
+                    for (int g = 0; g < beams.Length; g++)
+                    {
+                        tccVectors[g] = k + beams[g].Vec.ToPointD;
+                        double qSq = tccLengthsSquared[g] = tccVectors[g].Length2;
+                        for (int d = 0; d < defLen; d++)
+                            tccPhase[g * defLen + d] = Exp(-PiI * rambda * qSq * (cs * rambdaSq * qSq / 2.0 + defocusses[d]));
+                    }
+                }
+                //var vecDic = new Dictionary<(int H, int K, int L), PointD>(); // 261106Ch 変更前
+                // 261106Ch: TCC の同じ差反射 q = g-h を先に足す。位相 exp(2πiq·r) はペアに依らないので、
+                // 有限和の並べ替えだけで画素ごとの加算を全ペア数から異なる q の数へ減らす (近似・打ち切りを加えない)。
+                var termIndex = new Dictionary<(int H, int K, int L), int>();
                 for (var gNum = 0; gNum < beams.Length; gNum++)
                     for (var hNum = gNum; hNum < beams.Length; hNum++)
                     {
                         Beam g = beams[gNum], h = beams[hNum];
-                        PointD q1 = k + g.Vec.ToPointD, q2 = k + h.Vec.ToPointD;
-                        double q1Sq = q1.Length2, q2Sq = q2.Length2;
+                        // PointD q1 = k + g.Vec.ToPointD, q2 = k + h.Vec.ToPointD; // 261106Ch 変更前
+                        // double q1Sq = q1.Length2, q2Sq = q2.Length2; // 261106Ch 変更前
+                        PointD q1 = tccVectors[gNum], q2 = tccVectors[hNum]; // 261106Ch
+                        double q1Sq = tccLengthsSquared[gNum], q2Sq = tccLengthsSquared[hNum];
                         //gNum==hNumの時は、g.Psi.Magnitude2() が画素に伝わるだけなので、最後に強度を0~2^16に規格化する場合は、あってもなくても関係ない
                         var psi = gNum == hNum ? g.Psi.MagnitudeSquared() : 2 * g.Psi * Conjugate(h.Psi);
 
                         //indexが同じものがあるかどうかを検索し、無い場合のみvecを計算する
                         var index = (g.H - h.H, g.K - h.K, g.L - h.L);
-                        if (!vecDic.TryGetValue(index, out var vec))
+                        //if (!vecDic.TryGetValue(index, out var vec)) // 261106Ch 変更前
+                        //{
+                        //    vec = (g.Vec - h.Vec).ToPointD;
+                        //    vecDic.Add(index, vec);
+                        //}
+                        if (!termIndex.TryGetValue(index, out var term)) // 261106Ch
                         {
-                            vec = (g.Vec - h.Vec).ToPointD;
-                            vecDic.Add(index, vec);
+                            term = gList.Count;
+                            termIndex.Add(index, term);
+                            gList.Add((One, (g.Vec - h.Vec).ToPointD, new Complex[defLen]));
                         }
 
-                        var lenz = defocusses.Select(defocus =>
-                            Exp(-PiI * rambda * q1Sq * (cs * rambdaSq * q1Sq / 2.0 + defocus)) *  //Kai1
-                            Exp(PiI * rambda * q2Sq * (cs * rambdaSq * q2Sq / 2.0 + defocus)) *  //kai2
-                            Math.Exp(-PiSq * betaSq * (defocus * (q1 - q2) + rambdaSq * cs * (q1Sq * q1 - q2Sq * q2)).Length2) *  //Es 空間的インコヒーレンス
-                            Math.Exp(-PiSq * rambdaSq * deltaSq * (q1Sq - q2Sq) * (q1Sq - q2Sq) / 2.0) //Ec 時間的インコヒーレンス
-                            ).ToArray();
-
-                        gList.Add((psi, vec, lenz));
+                        // 261106Ch 変更前: 同じ Kai を各ペア・厚さで再計算し、ペアごとの一時 lenz 配列を作っていた。
+                        // var lenz = defocusses.Select(defocus =>
+                        //     Exp(-PiI * rambda * q1Sq * (cs * rambdaSq * q1Sq / 2.0 + defocus)) *  //Kai1
+                        //     Exp(PiI * rambda * q2Sq * (cs * rambdaSq * q2Sq / 2.0 + defocus)) *  //kai2
+                        //     Math.Exp(-PiSq * betaSq * (defocus * (q1 - q2) + rambdaSq * cs * (q1Sq * q1 - q2Sq * q2)).Length2) *  //Es
+                        //     Math.Exp(-PiSq * rambdaSq * deltaSq * (q1Sq - q2Sq) * (q1Sq - q2Sq) / 2.0) //Ec
+                        //     ).ToArray();
+                        // gList.Add((psi, vec, lenz)); // q 集約前の実装
+                        var temporal = Math.Exp(-PiSq * rambdaSq * deltaSq * (q1Sq - q2Sq) * (q1Sq - q2Sq) / 2.0); // 261106Ch: Ec は焦点に依らない
+                        var coefficients = gList[term].Lenz; // 261106Ch: Psi を係数へ畳み込み、solver に渡す Psi は 1
+                        for (int d = 0; d < defLen; d++)
+                        {
+                            var lenz = tccPhase[gNum * defLen + d] * Conjugate(tccPhase[hNum * defLen + d]) *
+                                Math.Exp(-PiSq * betaSq * (defocusses[d] * (q1 - q2) + rambdaSq * cs * (q1Sq * q1 - q2Sq * q2)).Length2) * temporal;
+                            coefficients[d] += psi * lenz; // 261106Ch: g,h の加算順と光学因子の乗算順を保つ
+                        }
                     }
             }
             //gListを並び替え
@@ -3862,6 +3959,9 @@ public partial class BetheMethod
 
             //imagesを初期化
             _images[t] = [.. defocusses.Select(d => new double[width * height])];
+            // 261106Ch: 絞りを通る反射がなければ強度は全画素で 0。native wrapper は空の係数配列では
+            // defocus 数を復元できず 0/0 になるため、初期化したゼロ像をそのまま保持する。
+            if (gList.Count == 0) continue;
 
             //各ピクセルの計算
             double cX = width / 2.0, cY = height / 2.0;

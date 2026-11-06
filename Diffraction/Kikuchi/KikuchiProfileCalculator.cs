@@ -730,7 +730,8 @@ public static class KikuchiProfileCalculator
     private static Complex Fjj(in Complex gammaJ, in Complex gammaJp, double t)
     {
         var lam = 2 * Math.PI * Complex.ImaginaryOne * (gammaJ - Complex.Conjugate(gammaJp));
-        return lam.MagnitudeSquared() < 1e-30 ? t : (Complex.Exp(lam * t) - Complex.One) / lam;
+        // return lam.MagnitudeSquared() < 1e-30 ? t : (Complex.Exp(lam * t) - Complex.One) / lam; // 261106Ch 変更前
+        return BlochWaveIntegral.Evaluate(lam, t); // 261106Ch: 薄膜・近縮退での桁落ちを避ける
     }
 
     #endregion

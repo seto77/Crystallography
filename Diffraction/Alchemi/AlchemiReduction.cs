@@ -68,8 +68,9 @@ public sealed class AlchemiReduction
 
     private readonly int _b;
     private readonly Complex[] _d;          // D = C·diag(α)、column-major D[g + j*b]
-    private readonly Complex[] _invLambda;  // 1/λ_{jj'}、[j' + j*b] (縮退は 0)
-    private readonly bool[] _degenerate;    // λ ≈ 0 (ロピタルで F → t)
+    private readonly Complex[] _invLambda;  // 1/λ_{jj'}、[j' + j*b] (λ が厳密に 0 のときだけ 0) // 261106Ch
+    // private readonly bool[] _degenerate;    // λ ≈ 0 (ロピタルで F → t) // 261106Ch 変更前
+    private readonly Complex[] _lambda; // 261106Ch 追加: 小引数判定は厚さに依存する λt で行う
     private readonly Complex[] _eigen;
     private readonly double[] _t;
     private readonly AbsorptionSource _absorption;// 虚部の出所 (再注入してよいのは TDS だけ)
@@ -120,16 +121,20 @@ public sealed class AlchemiReduction
         }
 
         //λ_{jj'} = 2πi(γ_j − γ_{j'}*) を逆数で持つ (縮約の内側では除算をしない)。
-        //λ ≈ 0 (縮退 = 吸収ゼロの対角など) は F → t (ロピタル)。判定は EBSDSolverManaged:1876 と同じ基準
+        //λ ≈ 0 (縮退 = 吸収ゼロの対角など) は F → t (ロピタル)。判定は EBSDSolverManaged:1876 と同じ基準 // 261106Ch 変更前
+        //261106Ch: λ を保持して厚さごとの |λt| で級数へ切り替える。逆数は厳密な λ=0 だけ特別扱いする。
         _invLambda = GC.AllocateUninitializedArray<Complex>(bLen * bLen);
-        _degenerate = new bool[bLen * bLen];
+        // _degenerate = new bool[bLen * bLen]; // 261106Ch 変更前
+        _lambda = GC.AllocateUninitializedArray<Complex>(bLen * bLen); // 261106Ch
         for (int j = 0; j < bLen; j++)
             for (int jp = 0; jp < bLen; jp++)
             {
                 var lam = TwoPiI * (eigenValues[j] - Complex.Conjugate(eigenValues[jp]));
                 int i = jp + j * bLen;
-                _degenerate[i] = lam.Real * lam.Real + lam.Imaginary * lam.Imaginary < 1e-30;
-                _invLambda[i] = _degenerate[i] ? Complex.Zero : Complex.One / lam;
+                // _degenerate[i] = lam.Real * lam.Real + lam.Imaginary * lam.Imaginary < 1e-30; // 261106Ch 変更前
+                // _invLambda[i] = _degenerate[i] ? Complex.Zero : Complex.One / lam; // 261106Ch 変更前
+                _lambda[i] = lam; // 261106Ch
+                _invLambda[i] = lam == Complex.Zero ? Complex.Zero : Complex.One / lam; // 261106Ch: λ単独のしきい値で長い厚さを縮退扱いしない
             }
     }
 
@@ -264,7 +269,11 @@ public sealed class AlchemiReduction
                 for (int jp = 0; jp < b; jp++)
                 {
                     int i = jp + col;
-                    var f = _degenerate[i] ? thick : (uj * Complex.Conjugate(u[jp]) - Complex.One) * _invLambda[i];
+                    // var f = _degenerate[i] ? thick : (uj * Complex.Conjugate(u[jp]) - Complex.One) * _invLambda[i]; // 261106Ch 変更前
+                    var z = _lambda[i] * thick; // 261106Ch: 厚さあたり b 個の exp と事前計算した逆数は維持する
+                    var f = (z.Real * z.Real + z.Imaginary * z.Imaginary) <= BlochWaveIntegral.SeriesLimitSquared
+                        ? BlochWaveIntegral.Series(z, thick)
+                        : (uj * Complex.Conjugate(u[jp]) - Complex.One) * _invLambda[i];
                     sum += s[i] * f;
                 }
             }

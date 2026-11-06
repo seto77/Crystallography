@@ -47,6 +47,19 @@ python tests/Crystallography.Tests/Reference/generate_symmetry_reference.py
 | `MonoclinicWyckoffItaTests` | 261105Cl 追加：単斜晶 (No. 3–15) の全 57 設定で、Wyckoff 文字が ITA (2016) Vol. A と一致する。b 軸・c 軸の設定は ITA に印刷された特殊位置の座標 (頁つき) と、a 軸の設定と c-ba・ba-c・-acb の設定は ITA の変換 (Table 1.5.1.1、Table 1.5.4.4) で印刷された設定から写したものと比べる。写した設定の対称操作が写す先と一致すること、印刷された c 軸の設定が b 軸の設定を写したものと同じ点の集合であること (書き写しの確認) も確かめる |
 | `AffineGenParseTests` | 261105Cl 追加：`AffineGen.Parse` (対称操作の x,y,z 表記) が、読める式 (係数、分数、空白) を正しく読み、読めない式 (小数、大文字、`*`、括弧、分母 0、項の無い符号、空、桁あふれ) は `FormatException` ですぐに止まる (以前は無限ループや黙った誤読) |
 
+261106Ch 追加: `BethePedReuseTests` は、PED → 別条件の平行ビーム回折 → PED の切替 (方位・電圧・ビーム数)、表面ベクトルの成分変更、吸収因子の模型変更、公開 API での ADP 変更と `ClearUCache()` の後に、新しいインスタンスの結果と一致することを確認します。厚さだけを変えたときの固有解の再利用と、歳差角ゼロで平行ビーム強度へ戻る極限も検査します。模型を変更するテストは他のテストと並列実行しません。
+
+261106Ch 追加の物理・数値検証:
+
+- `BlochWaveIntegralTests`: 弱吸収・近縮退・複素干渉の厚さ積分を、波動関数からの直接Simpson求積と比較します。
+- `EbsdAbsorbedFluxTests`: Pの異なる2波系で、無吸収なら再注入がゼロ、吸収時はP重み付き流束の損失になることを確かめます。
+- `HrtemTccTests`: HRTEM TCCを全順序対の直接和と比較し、完全コヒーレンス極限と空の対物絞りも検査します。native経路を検証するときは、実際のテスト出力先へnative DLLをコピーし、ログの `NativeWrapper.Enabled=True` を確認してください。
+
+261106Ch 追調査の検証:
+
+- `EbsdLocalSourceSkipTests`: 既存の2つのnative APIで、空のsigmaによる局所源0・非局所TDS不変を直接波のSimpson積分と照合します。等間隔・非等間隔・弱吸収・空/ゼロ厚さを含み、nativeが無い環境は明示的にSkipします。旧DLLと更新DLLの両方で確認できます。
+- `HrtemTccTests.Tcc_OffAxisApertureAndLargePhase_MatchesDirectOrderedPairs`: 偏心絞り、負/大きいCs、複数厚さ・焦点で、位相再利用後の像を独立した全順序対の和と比較します。
+
 ## 既知の例外と要確認事項
 
 - **Wyckoff 文字**：cctbx の参照設定（基底変換が恒等）でだけ比べています。非標準設定の文字は基底変換の取り方に依存し、cctbx と spglib でも一致しない場合があるためです。
