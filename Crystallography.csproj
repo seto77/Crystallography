@@ -2,7 +2,9 @@
 
   <PropertyGroup>
     <OutputType>Library</OutputType>
-    <TargetFramework>net10.0-windows</TargetFramework>
+    <!-- 261106Ch: retain the .NET 10 target for migration history. <TargetFramework>net10.0-windows</TargetFramework> -->
+    <TargetFramework>net11.0-windows</TargetFramework>
+    <LangVersion>15.0</LangVersion><!-- 261106Ch: use the .NET 11 language version explicitly. -->
     <UseWindowsForms>true</UseWindowsForms>
     <!-- 260725Cl 削除: <AssemblyVersion>/<FileVersion> の静的値 (旧値 2026.7.23.1630)。
          VS 拡張 Automatic Versions がビルド毎に書き換えるだけの行で、出荷物には一切使われていなかった:
