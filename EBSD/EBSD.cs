@@ -197,6 +197,9 @@ public class EBSD
     //public bool IsBuilding => bwMasterPattern.IsBusy || masterPatternBethe?.bwEBSD?.IsBusy == true || masterPatternBethe?.bwEBSDNew?.IsBusy == true; // (260321Ch) 新旧どちらの EBSD worker でも build 中と見なす
     public bool IsBuilding => bwMasterPattern.IsBusy || masterPatternBethe?.bwEBSDNew?.IsBusy == true; // (260327Ch) 旧 bwEBSD はお蔵入りにしたので ebsdNew 側だけを見る
 
+    /// <summary>261107Cl 追加: MasterPattern の構築で前計算を同時に持つ代表方向の数 (<see cref="BetheMethod.EbsdRepresentativeChunkSize"/> へ渡す)。0 (既定) = 自動。</summary>
+    public int MasterPatternRepresentativeChunkSize { get; set; } = 0;
+
     /// <summary>MasterPattern 作成中の進捗通知。</summary>
     public event EventHandler<MasterPatternProgressChangedEventArgs> MasterPatternProgressChanged;
 
@@ -234,7 +237,8 @@ public class EBSD
         {
             EbsdRepresentativeDirectionBlockSize = currentMasterPatternBuildRequest.GridSize <= 512 ? 1
                 : currentMasterPatternBuildRequest.GridSize <= 1024 ? 3 : 5, // (260321Ch) 解像度に応じて 1 / 3 / 5 をその場で決める
-            UseLocalSurfacePerBeamDirection = false // (260321Ch) 新経路では結晶を回すので、既存 worker 側の局所表面近似は使わない
+            UseLocalSurfacePerBeamDirection = false, // (260321Ch) 新経路では結晶を回すので、既存 worker 側の局所表面近似は使わない
+            EbsdRepresentativeChunkSize = MasterPatternRepresentativeChunkSize // 261107Cl 追加
         };
         masterPatternBethe.EBSD_ProgressChanged += MasterPatternBethe_EBSD_ProgressChanged;
         masterPatternBethe.EBSD_Completed += MasterPatternBethe_EBSD_Completed;

@@ -309,6 +309,54 @@ public partial class BetheMethod
     /// </summary>
     public int EbsdRepresentativeDirectionBlockSize { get; set; } = 3; // (260321Ch)
 
+    /// <summary>261107Cl 追加: MasterPattern 経路 (RunEBSDNew) で、前計算 (ビーム・ポテンシャル行列・位相・後方 TDS 行列) を同時に持つ代表方向の数。
+    /// 0 (既定) なら <see cref="EbsdRepresentativeChunkBudgetBytes"/> に収まるよう自動で決める。値 (強度) は塊の大きさに依らない。</summary>
+    public int EbsdRepresentativeChunkSize { get; set; } = 0;
+
+    /// <summary>261107Cl 追加: MasterPattern 経路 (RunEBSDNew) で、結晶の対称で方向を畳む (既定 true)。false なら全方向を独立に解く
+    /// (任意方向の直接計算で、渡す方向の並びが MasterPattern の格子でないとき。真の結晶のまま使える)。</summary>
+    public bool EbsdUseMasterPatternSymmetry { get; set; } = true;
+
+    /// <summary>261107Cl 追加 (codex2 第 11 回、診断だけ): 単純格子 (P) として与えた結晶の原子の並びが、centering の並進
+    /// (A (0,½,½)・B (½,0,½)・C (½,½,0)・I (½,½,½)) で自分自身に重なるかを調べ、重なる並進の名前を返す (無ければ空)。
+    /// 重なる場合、その並進で消える逆格子点は 000 を含む組から切り離されているのに Find_gVectors の候補に入り、ビーム数 N の枠を取る
+    /// (例: Si ダイヤモンドを P1 の 8 原子で置くと A・B・C の 3 つが重なり、候補の約 3/4 が無駄)。空間群は置き換えない。
+    /// 原子が重なるとみなすのは、元素・占有率・電荷 (SubNumberElectron)・等方の B が同じで、位置が単位胞を法として tol 以内のとき (異方の ADP は比べない)。</summary>
+    public static string[] FindHiddenCenteringTranslations(Crystal crystal, double tol = 1e-6)
+    {
+        if (crystal?.Symmetry == null || crystal.Symmetry.LatticeTypeStr != "P" || crystal.Atoms == null) return [];
+        var sites = new List<(int Z, double occ, int sub, double b, double x, double y, double z)>();
+        foreach (var atoms in crystal.Atoms)
+            foreach (var atom in atoms.Atom)
+                sites.Add((atoms.AtomicNumber, atoms.Occ, atoms.SubNumberElectron, atoms.Dsf?.BisoEffective ?? 0, atom.X, atom.Y, atom.Z));
+        if (sites.Count == 0) return [];
+        static double Wrap(double v) { v -= Math.Floor(v); return v > 1 - 1e-9 ? 0 : v; }
+        static double Diff(double a, double b) { var d = Math.Abs(a - b) % 1; return Math.Min(d, 1 - d); }
+        var found = new List<string>();
+        foreach (var (name, t) in new (string, (double x, double y, double z))[] { ("A", (0, 0.5, 0.5)), ("B", (0.5, 0, 0.5)), ("C", (0.5, 0.5, 0)), ("I", (0.5, 0.5, 0.5)) })
+        {
+            bool all = sites.All(s => sites.Any(u => u.Z == s.Z && Math.Abs(u.occ - s.occ) < tol && u.sub == s.sub && Math.Abs(u.b - s.b) < Math.Max(tol, 1e-9 * Math.Abs(s.b))
+                && Diff(u.x, Wrap(s.x + t.x)) < tol && Diff(u.y, Wrap(s.y + t.y)) < tol && Diff(u.z, Wrap(s.z + t.z)) < tol));
+            if (all) found.Add(name);
+        }
+        return [.. found];
+    }
+
+    /// <summary>261107Cl 追加: 自動の塊の大きさの目安にする、前計算の峰の上限 [byte] (既定 2 GiB)。</summary>
+    public long EbsdRepresentativeChunkBudgetBytes { get; set; } = 2L << 30;
+
+    /// <summary>261107Cl 追加: 塊の大きさを決める。方向あたりの量は「ポテンシャル行列 N² (+ 後方 TDS 行列 N²) + 位相 N·原子数 の Complex と、
+    /// ビームの配列」の見積もりに、実測 (EbsdOccupancy split の N128・非局所源で 1.69 MiB/方向 ≈ 見積もりの約 3 倍) に合わせた係数 3 を掛けたもの。</summary>
+    private int ResolveEbsdRepresentativeChunkSize(int representativeCount, int nAtoms)
+    {
+        if (EbsdRepresentativeChunkSize > 0) return Math.Min(EbsdRepresentativeChunkSize, Math.Max(1, representativeCount));
+        long n = Math.Max(1, MaxNumOfBloch);
+        long bytesPerDirection = 3 * (n * n * 16 * (IncludeTDSBackground ? 2 : 1) + n * nAtoms * 16 + n * 512);
+        // long size = Math.Max(256, EbsdRepresentativeChunkBudgetBytes / bytesPerDirection); // 261107Cl 変更前 (codex2 第 11 回: 下限 256 は N512・非局所で予算を破る)
+        long size = Math.Max(1, EbsdRepresentativeChunkBudgetBytes / bytesPerDirection); // 1 方向分も予算に入らないときは 1 方向ずつ
+        return (int)Math.Min(size, Math.Max(1, representativeCount));
+    }
+
     /// <summary>
     /// true のとき、EBSD 計算の各方向について局所的な表面法線をその方向から決める。
     /// 固定された平面表面に対する EBSD では false のまま使い、
@@ -1555,7 +1603,12 @@ public partial class BetheMethod
         var directionGridSize = (int)Math.Sqrt(hemisphereLength);
         if (directionGridSize * directionGridSize != hemisphereLength)
             throw new InvalidOperationException("MasterPattern directions must be stored as two hemisphere grids."); // (260327Ch)
-        var symmetryRepresentativeMapping = CreateMasterPatternSymmetryRepresentativeDirectionMapping(BeamDirections.Length, hemisphereLength, directionGridSize); // (260327Ch) exact grid symmetry representative
+        // var symmetryRepresentativeMapping = CreateMasterPatternSymmetryRepresentativeDirectionMapping(BeamDirections.Length, hemisphereLength, directionGridSize); // (260327Ch) exact grid symmetry representative // 261107Cl 変更前
+        // 261107Cl 変更 (codex2 第 11 回): 任意方向の直接計算 (格子でない方向の並びを渡す道具) は、真の結晶のまま対称の写像だけ切る (恒等の写像)。
+        //   旧は道具の側で結晶を P1 にして写像を恒等にしていたが、有心格子を P1 にするとビームの枠の一部が 000 と切り離された候補に取られる。
+        var symmetryRepresentativeMapping = EbsdUseMasterPatternSymmetry
+            ? CreateMasterPatternSymmetryRepresentativeDirectionMapping(BeamDirections.Length, hemisphereLength, directionGridSize) // (260327Ch) exact grid symmetry representative
+            : Enumerable.Range(0, BeamDirections.Length).ToArray();
         var symmetryRepresentativeWeights = new int[BeamDirections.Length]; // (260327Ch) 進捗報告と埋め戻しに使う orbit サイズ
         var symmetryRepresentativeIndices = new List<int>();
         for (int i = 0; i < BeamDirections.Length; i++)
@@ -1641,12 +1694,28 @@ public partial class BetheMethod
                 mapping[symmetryRepresentativeIndex] = denseIndex;
             }
 
-            var beamsPreliminary = new (Vector3DBase EquivalentSurface, Vector3DBase EquivalentVecK0, Beam[] Beams, Complex[] PotentialMatrix, Complex[] PhaseNG)[representativeIndices.Count];
+            // 261107Cl 追加: 代表方向を塊に分けて「前計算 → 後方 TDS 行列 → 解く → 返す」を繰り返す (旧は全代表方向の前計算を同時に持ち、峰が G² と 1/対称の数に比例した。
+            //   G512・16×40 の Si で確保 86 GB)。方向ごとの計算は独立なので値は変わらない。塊の大きさは EbsdRepresentativeChunkSize (0 = 自動)。
+            //   解く側は代表方向を前計算の番号 (mapping) の順に並べ、塊ごとにその範囲だけ解く (blockSize > 1 で 1 つの前計算を複数の代表が共有しても塊をまたがない)。
+            var chunkSize = ResolveEbsdRepresentativeChunkSize(representativeIndices.Count, nAtoms);
+            var orderedSymmetryRepresentatives = symmetryRepresentativeIndices.OrderBy(index => mapping[index]).ToArray(); // OrderBy は安定
+            // var beamsPreliminary = new (Vector3DBase EquivalentSurface, Vector3DBase EquivalentVecK0, Beam[] Beams, Complex[] PotentialMatrix, Complex[] PhaseNG)[representativeIndices.Count]; // 261107Cl 変更前
+            var beamsPreliminary = new (Vector3DBase EquivalentSurface, Vector3DBase EquivalentVecK0, Beam[] Beams, Complex[] PotentialMatrix, Complex[] PhaseNG)[Math.Min(chunkSize, representativeIndices.Count)];
             var representativeOptions = directionOptions;
             Complex[][] muBackArrays = null;
+            ebsdIntensity = new double[BeamDirections.Length][]; // 261107Cl 移動 (旧は解くループの直前)
+            int orderedPosition = 0; // 261107Cl 追加: orderedSymmetryRepresentatives の中の、次の塊の先頭
+            for (int chunkStart = 0; chunkStart < representativeIndices.Count; chunkStart += chunkSize) // 261107Cl 追加
+            {
+            int chunkEnd = Math.Min(chunkStart + chunkSize, representativeIndices.Count), chunkLength = chunkEnd - chunkStart; // 261107Cl 追加
+            int orderedStart = orderedPosition; // 261107Cl 追加: この塊の前計算 [chunkStart, chunkEnd) を使う代表方向の範囲 [orderedStart, orderedPosition)
+            while (orderedPosition < orderedSymmetryRepresentatives.Length && mapping[orderedSymmetryRepresentatives[orderedPosition]] < chunkEnd)
+                orderedPosition++;
+            int orderedEnd = orderedPosition;
             try
             {
-                Parallel.For(0, representativeIndices.Count, representativeOptions, (denseIndex, state) =>
+                // Parallel.For(0, representativeIndices.Count, representativeOptions, (denseIndex, state) => // 261107Cl 変更前
+                Parallel.For(0, chunkLength, representativeOptions, (denseIndex, state) => // 261107Cl: denseIndex は塊の中の番号
                 {
                     if (bwEBSDNew.CancellationPending)
                     {
@@ -1654,7 +1723,8 @@ public partial class BetheMethod
                         return;
                     }
 
-                    var representativeIndex = representativeIndices[denseIndex];
+                    // var representativeIndex = representativeIndices[denseIndex]; // 261107Cl 変更前
+                    var representativeIndex = representativeIndices[chunkStart + denseIndex];
                     var direction = BeamDirections[representativeIndex];
                     var (equivalentBeamDirection, equivalentSurface) = GetCrystalFixedMasterEquivalentBeamAndSurface(direction, referenceSurface, referenceBeamDirection, referenceAxisU, referenceAxisV); // (260321Ch)
                     var equivalentVecK0 = getVecK0(kvac, u0, equivalentBeamDirection, equivalentSurface); // (260321Ch)
@@ -1699,8 +1769,9 @@ public partial class BetheMethod
                 var threadLocalEigenVectors = new ThreadLocal<Complex[]>(() => null, true); // (260321Ch)
                 try
                 {
-                    ebsdIntensity = new double[BeamDirections.Length][];
-                    Parallel.For(0, symmetryRepresentativeIndices.Count, directionOptions, (representativeDenseIndex, state) =>
+                    // ebsdIntensity = new double[BeamDirections.Length][]; // 261107Cl 変更前 (塊のループの前へ移動)
+                    // Parallel.For(0, symmetryRepresentativeIndices.Count, directionOptions, (representativeDenseIndex, state) => // 261107Cl 変更前
+                    Parallel.For(0, orderedEnd - orderedStart, directionOptions, (representativeDenseIndex, state) => // 261107Cl: この塊の前計算を使う代表方向だけ
                     {
                         if (bwEBSDNew.CancellationPending)
                         {
@@ -1708,12 +1779,15 @@ public partial class BetheMethod
                             return;
                         }
 
-                        var i = symmetryRepresentativeIndices[representativeDenseIndex]; // (260327Ch) exact symmetry representative だけ動力学計算する
+                        // var i = symmetryRepresentativeIndices[representativeDenseIndex]; // (260327Ch) exact symmetry representative だけ動力学計算する // 261107Cl 変更前
+                        var i = orderedSymmetryRepresentatives[orderedStart + representativeDenseIndex]; // 261107Cl
 
                         // 260321Cl: beamsBase / potentialMatrix / phaseNG は代表方向から共有 (Phase 1 の blockSize 近似)
                         //           equivalentVecK0 / equivalentSurface は各方向で個別計算 (バグ修正: 旧実装は代表の K0 を全方向に流用していた)
-                        var (_, _, beamsBase, potentialMatrix, phaseNG) = beamsPreliminary[mapping[i]];
-                        var muBackBase = IncludeTDSBackground ? muBackArrays?[mapping[i]] : null;
+                        // var (_, _, beamsBase, potentialMatrix, phaseNG) = beamsPreliminary[mapping[i]]; // 261107Cl 変更前
+                        // var muBackBase = IncludeTDSBackground ? muBackArrays?[mapping[i]] : null; // 261107Cl 変更前
+                        var (_, _, beamsBase, potentialMatrix, phaseNG) = beamsPreliminary[mapping[i] - chunkStart]; // 261107Cl: 塊の中の番号
+                        var muBackBase = IncludeTDSBackground ? muBackArrays?[mapping[i] - chunkStart] : null;
                         var baseLen = beamsBase?.Length ?? 0;
                         if (baseLen == 0)
                             return;
@@ -1913,16 +1987,17 @@ public partial class BetheMethod
                             bwEBSDNew.ReportProgress(completedDirectionCount, reportString);
                     });
 
-                    for (int i = 0; i < BeamDirections.Length; i++)
-                    {
-                        var representativeIndex = symmetryRepresentativeMapping[i];
-                        if (representativeIndex < 0 || representativeIndex == i) // 260331Cl 無効セル (-1) もスキップ
-                            continue;
-
-                        ebsdIntensity[i] = ebsdIntensity[representativeIndex]; // (260327Ch) 未計算方向は exact representative から埋め戻す
-                        if (ebsdBackground != null)
-                            ebsdBackground[i] = ebsdBackground[representativeIndex]; // (260327Ch)
-                    }
+                    // 261107Cl 変更前 (埋め戻しは全部の塊が終わってから。塊のループの後へ移動):
+                    // for (int i = 0; i < BeamDirections.Length; i++)
+                    // {
+                    //     var representativeIndex = symmetryRepresentativeMapping[i];
+                    //     if (representativeIndex < 0 || representativeIndex == i) // 260331Cl 無効セル (-1) もスキップ
+                    //         continue;
+                    //
+                    //     ebsdIntensity[i] = ebsdIntensity[representativeIndex]; // (260327Ch) 未計算方向は exact representative から埋め戻す
+                    //     if (ebsdBackground != null)
+                    //         ebsdBackground[i] = ebsdBackground[representativeIndex]; // (260327Ch)
+                    // }
                 }
                 finally
                 {
@@ -1968,6 +2043,22 @@ public partial class BetheMethod
                 if (muBackArrays != null)
                     foreach (var muBack in muBackArrays)
                         ReturnMasterPatternBuffer(muBack); // (260321Ch)
+                Array.Clear(beamsPreliminary); // 261107Cl 追加: 次の塊 (最後の塊は短い) に前の塊の参照を残さない
+                muBackArrays = null; // 261107Cl 追加
+            }
+            if (bwEBSDNew.CancellationPending) break; // 261107Cl 追加
+            } // 261107Cl 追加: 塊のループの終わり
+            if (bwEBSDNew.CancellationPending) { e.Cancel = true; return; } // 261107Cl 追加 (codex2 第 11 回): 中断したら残りのエネルギーへ進まない (途中の Disks は完成として渡さない)
+
+            for (int i = 0; i < BeamDirections.Length; i++) // 261107Cl 移動 (旧は解くループの直後): 未計算方向は exact representative から埋め戻す
+            {
+                var representativeIndex = symmetryRepresentativeMapping[i];
+                if (representativeIndex < 0 || representativeIndex == i) // 260331Cl 無効セル (-1) もスキップ
+                    continue;
+
+                ebsdIntensity[i] = ebsdIntensity[representativeIndex]; // (260327Ch)
+                if (ebsdBackground != null)
+                    ebsdBackground[i] = ebsdBackground[representativeIndex]; // (260327Ch)
             }
 
             #region Disk への格納
@@ -1991,8 +2082,9 @@ public partial class BetheMethod
             });
             #endregion
 
-            if (bwEBSDNew.CancellationPending)
-                e.Cancel = true;
+            // if (bwEBSDNew.CancellationPending) // 261107Cl 変更前: 印を付けるだけでエネルギーのループを続けていた
+            //     e.Cancel = true;
+            if (bwEBSDNew.CancellationPending) { e.Cancel = true; return; } // 261107Cl
         }
     }
 
