@@ -317,6 +317,13 @@ public partial class BetheMethod
     /// (任意方向の直接計算で、渡す方向の並びが MasterPattern の格子でないとき。真の結晶のまま使える)。</summary>
     public bool EbsdUseMasterPatternSymmetry { get; set; } = true;
 
+    /// <summary>261107Cl 追加 (研究用の口。既定 null = 従来どおり native の Eigen): EBSD の MasterPattern 経路 (RunEBSDNew の native 側) の
+    /// 一般複素行列の固有値分解だけを差し替える。引数 = (次元 n、行列 (列優先、先頭 n² 個が有効。読むだけで書き換えない)、
+    /// 固有値の出力 (先頭 n 個)、固有ベクトルの出力 (列優先、先頭 n² 個))。複数のスレッドから同時に呼ばれる。
+    /// 固有ベクトルの規格化・位相・並びは Eigen と違ってよい (強度は α = V⁻¹ψ₀ を通して組むので変わらない)。
+    /// プロセス全体に効く静的な値なので、研究用の道具 (例: EbsdProfileFit の --evd-research) だけが設定する。本体の GUI は使わない。</summary>
+    public static Action<int, Complex[], Complex[], Complex[]> EbsdEigenSolverResearchHook { get; set; } = null;
+
     /// <summary>261107Cl 追加 (codex2 第 11 回、診断だけ): 単純格子 (P) として与えた結晶の原子の並びが、centering の並進
     /// (A (0,½,½)・B (½,0,½)・C (½,½,0)・I (½,½,½)) で自分自身に重なるかを調べ、重なる並進の名前を返す (無ければ空)。
     /// 重なる場合、その並進で消える逆格子点は 000 を含む組から切り離されているのに Find_gVectors の候補に入り、ビーム数 N の枠を取る
@@ -1908,7 +1915,11 @@ public partial class BetheMethod
                                 threadLocalEigenVectors.Value = eigenVectors; // (260321Ch)
                             }
 
-                            NativeWrapper.EigenSolver(bLen, eigenMatrix, ref eigenValues, ref eigenVectors); // (260321Ch) 固有値・固有ベクトルもスレッドごとに再利用する
+                            // NativeWrapper.EigenSolver(bLen, eigenMatrix, ref eigenValues, ref eigenVectors); // (260321Ch) 固有値・固有ベクトルもスレッドごとに再利用する // 261107Cl 変更前
+                            if (EbsdEigenSolverResearchHook is { } evdHook) // 261107Cl 追加: 研究用の口 (既定 null で従来の経路)
+                                evdHook(bLen, eigenMatrix, eigenValues, eigenVectors);
+                            else
+                                NativeWrapper.EigenSolver(bLen, eigenMatrix, ref eigenValues, ref eigenVectors); // (260321Ch) 固有値・固有ベクトルもスレッドごとに再利用する
 
                             // var psi0Native2 = new Complex[bLen]; // (260321Ch) 旧実装: 方向ごとに毎回 new していた
                             var psi0Native2 = threadLocalPsi0.Value;
