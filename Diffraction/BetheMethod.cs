@@ -1735,7 +1735,10 @@ public partial class BetheMethod
                     var direction = BeamDirections[representativeIndex];
                     var (equivalentBeamDirection, equivalentSurface) = GetCrystalFixedMasterEquivalentBeamAndSurface(direction, referenceSurface, referenceBeamDirection, referenceAxisU, referenceAxisV); // (260321Ch)
                     var equivalentVecK0 = getVecK0(kvac, u0, equivalentBeamDirection, equivalentSurface); // (260321Ch)
-                    var beams = Find_gVectors(BaseRotation, equivalentVecK0, equivalentSurface, MaxNumOfBloch); // (260321Ch) BaseRotation を固定して gCache を再利用する
+                    // var beams = Find_gVectors(BaseRotation, equivalentVecK0, equivalentSurface, MaxNumOfBloch); // (260321Ch) BaseRotation を固定して gCache を再利用する // 261108Cl 変更前
+                    var beams = EbsdBeamSelectionResearchHook is { } beamHook // 261108Cl 追加: ビーム選択の研究用の口 (既定 null で従来の Find_gVectors)
+                        ? beamHook(this, equivalentVecK0, equivalentSurface, MaxNumOfBloch)
+                        : Find_gVectors(BaseRotation, equivalentVecK0, equivalentSurface, MaxNumOfBloch); // (260321Ch) BaseRotation を固定して gCache を再利用する
                     // var potentialMatrix = UseNonLocalAbsorption ? getPotentialMatrix(beams, 0, Math.PI) : getPotentialMatrix(beams); // (260321Ch) 旧実装
                     var potentialMatrix = RentMasterPatternPotentialMatrix(beams); // (260321Ch)
                     var phaseNG = CreatePhaseFactors(atomArray, nAtoms, beams); // (260321Ch)
@@ -4158,7 +4161,9 @@ public partial class BetheMethod
     // 260316Cl nTheta, nPhi 引数を追加 (後方散乱用に求積点数を削減するため)
     // 260316Cl以前のシグネチャ:
     // public (Complex Real, Complex Imag) getU(in double kV, in Beam g, in Beam h = null, double inner = double.NaN, double outer = double.NaN)
-    public (Complex Real, Complex Imag) getU(in double kV, in Beam g, in Beam h = null, double inner = double.NaN, double outer = double.NaN, int nTheta = 60, int nPhi = 20)
+    // 261108Cl cache 引数を追加 (ビーム選択の研究用の差の表 = 数百万件を uDictionary に入れないため。既定 true = 従来と同じ)。旧シグネチャ:
+    // public (Complex Real, Complex Imag) getU(in double kV, in Beam g, in Beam h = null, double inner = double.NaN, double outer = double.NaN, int nTheta = 60, int nPhi = 20)
+    public (Complex Real, Complex Imag) getU(in double kV, in Beam g, in Beam h = null, double inner = double.NaN, double outer = double.NaN, int nTheta = 60, int nPhi = 20, bool cache = true)
     {
         var key1 = compose(g.Index);
         var key2 = h is null ? int.MaxValue : compose(h.Index);
@@ -4228,7 +4233,8 @@ public partial class BetheMethod
             var gamma = 1 + UniversalConstants.e0 * kV * 1E3 / UniversalConstants.m0 / UniversalConstants.c2;
 
             U = (fReal * gamma / Math.PI / Crystal.Volume, fImag * gamma / Math.PI / Crystal.Volume);
-            if (kV > 0)
+            // if (kV > 0) // 261108Cl 変更前
+            if (kV > 0 && cache)
                 uDictionary.TryAdd((key1, key2), U);
         }
         return U;
