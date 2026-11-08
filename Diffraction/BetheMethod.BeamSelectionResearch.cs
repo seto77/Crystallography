@@ -387,4 +387,90 @@ public partial class BetheMethod
         }
         return beams;
     }
+
+    /// <summary>261108Cl 追加 (研究用、対照): 10 月の凍結仕様の K2sum (tools/BeamSelStudy/py/ebsd_selection_study.py の scores・selection と同じ式) でビームを選ぶ。
+    /// 候補 = プールのうち |g| ≤ gMaxNm・表面の前方 (P &gt; 0)・|s| = |Q/P| ≤ sWindowNm。V_d = getU の Real + i·Imag (吸収込み) を標準規約 (V_d = U_{−d}) で使い、
+    /// den_g = max(|Q_g|, P_g/(πT))、e1_g = |V_g|/den_g (000 は ∞)、ハブ = e1 の上位 hubCount (000 を含む、境界の同点 (相対 1e-6) は丸ごと)、
+    /// 重み w_h = min(1, e1_h)、K2sum_g = Σ_{h ≠ g} |V_{g−h}|·w_h / den_g。K2sum の大きい n 本 (000 を含む) を採り、境界が同点の組 (相対 1e-6) を割るなら組を丸ごと落とす。
+    /// 返り値の先頭は 000、以下は K2sum の降順 (同点は hkl の辞書順)。候補の窓まで変えたものは「共通候補版 K2sum」と別名にすること (計画 §4.1)。</summary>
+    public Beam[] SelectBeamsK2sumResearch(BeamSelectionPool pool, Vector3DBase vecK0, Vector3DBase surface, int n, double depthNm = 45, int hubCount = 50,
+        double gMaxNm = 40, double sWindowNm = 6, BeamSelectionTrace trace = null)
+    {
+        if (pool.Owner != this)
+            throw new ArgumentException("The pool was built for another BetheMethod", nameof(pool));
+        if (gMaxNm > pool.RadiusNm * (1 + 1e-9))
+            throw new ArgumentException($"gMaxNm {gMaxNm} exceeds the pool radius {pool.RadiusNm}", nameof(gMaxNm));
+        var (kX, kY, kZ) = vecK0.Tuple;
+        var (sX, sY, sZ) = surface.Tuple;
+        double k02 = vecK0.Length2, eps = 1 / (Math.PI * depthNm), g2max = gMaxNm * gMaxNm * (1 + 1e-9);
+        // 候補 (000 を含む)
+        var cand = new List<(int i, double q, double p, double den)>();
+        for (int i = 0; i < pool.Count; i++)
+        {
+            double gX = pool.GX[i], gY = pool.GY[i], gZ = pool.GZ[i];
+            if (Dot3(gX, gX, gY, gY, gZ, gZ) > g2max) continue;
+            double vX = gX + kX, vY = gY + kY, vZ = gZ + kZ;
+            double q = k02 - Dot3(vX, vX, vY, vY, vZ, vZ), p = 2 * Dot3(sX, vX, sY, vY, sZ, vZ);
+            if (p <= 0 || Math.Abs(q / p) > sWindowNm) continue;
+            cand.Add((i, q, p, p * Math.Max(Math.Abs(q / p), eps)));
+        }
+        double AbsV((int h, int k, int l) d) // 標準規約 V_d = U_{−d} (getU は e^{+2πi g·r})、吸収込み
+        {
+            var m = (-d.h, -d.k, -d.l);
+            var g = new Vector3DBase(-d.h, -d.k, -d.l);
+            var (re, im) = getU(AccVoltage, new Beam(m, (BaseRotation ?? new Matrix3D()) * Crystal.MatrixInverseTransposed * g));
+            return (re + Complex.ImaginaryOne * im).Magnitude;
+        }
+        var e1 = new double[cand.Count];
+        for (int c = 0; c < cand.Count; c++)
+            e1[c] = pool.Hkl[cand[c].i] == (0, 0, 0) ? double.PositiveInfinity : AbsV(pool.Hkl[cand[c].i]) / cand[c].den;
+        var order = Enumerable.Range(0, cand.Count).OrderByDescending(c => e1[c]).ThenBy(c => pool.Hkl[cand[c].i]).ToArray();
+        var hubs = order;
+        if (hubCount < order.Length)
+        {
+            double thr = e1[order[hubCount - 1]];
+            hubs = double.IsFinite(thr) ? [.. order.Where(c => e1[c] >= thr * (1 - 1e-6))] : order[..hubCount];
+        }
+        var k2 = new double[cand.Count];
+        Parallel.For(0, cand.Count, c =>
+        {
+            var (h1, k1, l1) = pool.Hkl[cand[c].i];
+            if ((h1, k1, l1) == (0, 0, 0)) { k2[c] = double.PositiveInfinity; return; }
+            double sum = 0;
+            foreach (var hc in hubs)
+            {
+                if (hc == c) continue;
+                var (h2, k2_, l2) = pool.Hkl[cand[hc].i];
+                sum += AbsV((h1 - h2, k1 - k2_, l1 - l2)) * Math.Min(1.0, e1[hc]);
+            }
+            k2[c] = sum / cand[c].den;
+        });
+        var sorted = Enumerable.Range(0, cand.Count).Where(c => double.IsFinite(k2[c]) || pool.Hkl[cand[c].i] == (0, 0, 0))
+            .OrderByDescending(c => k2[c]).ThenBy(c => pool.Hkl[cand[c].i]).ToArray();
+        int cut = Math.Min(n, sorted.Length);
+        if (cut < sorted.Length) // 凍結仕様の _trim_ties: 境界が同点の組を割るなら組を丸ごと落とす
+        {
+            double sLast = k2[sorted[cut - 1]], sNext = k2[sorted[cut]];
+            if (Math.Abs(sLast - sNext) <= 1e-6 * Math.Max(Math.Abs(sLast), 1e-300))
+                while (cut > 1 && Math.Abs(k2[sorted[cut - 1]] - sNext) <= 1e-6 * Math.Max(Math.Abs(sNext), 1e-300))
+                    cut--;
+        }
+        var beams = new Beam[cut];
+        double maxG = 0;
+        int nearBoundary = 0;
+        for (int j = 0; j < cut; j++)
+        {
+            var (i, q, p, _) = cand[sorted[j]];
+            var g = new Vector3DBase(pool.GX[i], pool.GY[i], pool.GZ[i]);
+            beams[j] = new Beam(pool.Hkl[i], g, getU(AccVoltage, pool.Hkl[i], g), (q, p));
+            maxG = Math.Max(maxG, g.Length);
+            if (g.Length > 0.9 * gMaxNm) nearBoundary++;
+        }
+        if (trace != null)
+        {
+            trace.RequestedN = n; trace.SelectedCount = cut; trace.ScoredCandidates = cand.Count;
+            trace.ThresholdScore = cut > 0 ? k2[sorted[cut - 1]] : double.NaN; trace.MaxG = maxG; trace.NearBoundary = nearBoundary;
+        }
+        return beams;
+    }
 }
