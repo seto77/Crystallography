@@ -300,6 +300,7 @@ public partial class BetheMethod
         public int[] SArr, QArr; public double[] P, D; public int NSelected;
         public Matrix<Complex> X, HSS, HQS, HSQ, EX; public Complex[] LamQ;
         public Complex[] Gb; // 261109Cl 追加: 着衣のモードの固有値 γ_j (modeBasis のとき)
+        public int[] Map; // 261109Cl 追加: 候補の番号 → 裾の行 (blocksOnly のとき)
         public Matrix<Complex> Xt, Vb, R, EXt; // 261109Cl 追加: モードの基底 (modeBasis) のとき = X̃ (X = X̃V_b⁻¹)、V_b、R = (H_QS + E X₀)V_b (着衣の倍率の前)、E·X̃ (疎な積 2 回のときだけ)
     }
 
@@ -308,7 +309,8 @@ public partial class BetheMethod
     private DressCoreResult DressCore(DressedTailTable table, Vector3DBase vecK0, Vector3DBase surface, int n, double ps, double regDepthNm, bool oneProduct, bool parallel, DressedTailTiming timing,
         (Vector3DBase k0, Vector3DBase n)[] promoteAlso = null, // 261109Cl promoteAlso 追加: これらの方向のどれかで遅い (|Q/P| < ps) 裾の反射も明示へ繰り上げる (ブロックの共有用)
         int[] explicitSet = null, // 261109Cl explicitSet 追加 (研究用、照合用): 明示の集合をこの候補の番号に固定する (000 が先頭。選択と繰り上げをしない)
-        bool modeBasis = false) // 261109Cl modeBasis 追加: X = X̃V_b⁻¹ を作らず、モードの基底 (V_b, X̃) と R を返す (span([I; X]) = span([V_b; X̃]) なので Galerkin は同じ)
+        bool modeBasis = false, // 261109Cl modeBasis 追加: X = X̃V_b⁻¹ を作らず、モードの基底 (V_b, X̃) と R を返す (span([I; X]) = span([V_b; X̃]) なので Galerkin は同じ)
+        bool blocksOnly = false) // 261109Cl blocksOnly 追加 (研究用、native の試作): 選択と密なブロックまでで返す
     {
         if (table.Owner != this) throw new ArgumentException("The table was built for another BetheMethod", nameof(table));
         if (table.KV != (AccVoltage > 0 ? AccVoltage : 20)) // 261109Cl 追加 (codex2 第18回): 表の電圧と今の電圧の混在を禁じる
@@ -410,6 +412,8 @@ public partial class BetheMethod
         var lamQ = new Complex[nQ];
         for (int r = 0; r < nQ; r++) lamQ[r] = Lam(qArr[r]);
         if (timing != null) timing.Blocks = sw.Elapsed.TotalSeconds;
+        if (blocksOnly) // 261109Cl 追加
+            return new DressCoreResult { SArr = sArr, QArr = qArr, P = P, D = D, NSelected = nSelected, HSS = HSS, HQS = HQS, HSQ = HSQ, LamQ = lamQ, Map = map };
 
         // (3) 着衣 (Sylvester の 1 段)
         sw.Restart();
@@ -1476,6 +1480,71 @@ public partial class BetheMethod
 
     /// <summary>261109Cl 追加 (研究用): ブロックの全方向で繰り上げるとき、各方向の E1 の和集合も明示にする (既定 false、試験用)</summary>
     public static bool DressedBlockUnionE1 { get; set; } = false;
+    /// <summary>261109Cl 追加 (研究用、native の試作): 1 方向の選択と密なブロック (流束座標、H_SS の対角 = λ)。速い形の部品を外 (研究用の native) で組むために返す。</summary>
+    public sealed class DressedTailBlocks
+    {
+        public int[] SArr, QArr, Map; public double[] P, D; public int NSelected;
+        public CDense HSS, HQS, HSQ; public Complex[] LamQ;
+    }
+
+    /// <summary>261109Cl 追加 (研究用、native の試作): 選択と密なブロックだけを作る</summary>
+    public DressedTailBlocks BuildDressedTailBlocksResearch(DressedTailTable table, Vector3DBase vecK0, Vector3DBase surface, int n, double ps)
+    {
+        var cr = DressCore(table, vecK0, surface, n, ps, 45, true, false, null, null, null, false, true);
+        return new DressedTailBlocks { SArr = cr.SArr, QArr = cr.QArr, Map = cr.Map, P = cr.P, D = cr.D, NSelected = cr.NSelected,
+            HSS = (CDense)cr.HSS, HQS = (CDense)cr.HQS, HSQ = (CDense)cr.HSQ, LamQ = cr.LamQ };
+    }
+
+    /// <summary>261109Cl 追加 (研究用、native の試作): 裾どうしの疎な積 E·X (流束座標、DressedSpMMSingle などの静的な選択に従う)</summary>
+    public static CDense DressedTailSpMMResearch(DressedTailTable table, DressedTailBlocks b, CDense X)
+        => (CDense)SpMMTail(table, b.QArr, b.Map, b.D, X, false);
+
+    /// <summary>261109Cl 追加 (研究用、native の試作): 裾どうしの結合の表 (CSR、単精度の値)。行・列は候補の番号、要素 (i, j) = U(g_j − g_i)</summary>
+    public static (int[] rowPtr, int[] col, float[] re, float[] im) DressedTailCsrResearch(DressedTailTable table)
+    {
+        lock (table)
+            if (table.vReF == null)
+            {
+                table.vReF = table.vRe.Select(v => (float)v).ToArray();
+                table.vImF = table.vIm.Select(v => (float)v).ToArray();
+            }
+        return (table.rowPtr, table.colIdx, table.vReF, table.vImF);
+    }
+
+    /// <summary>261109Cl 追加 (研究用、native の試作): 後方 TDS の源の密なブロック F'_SS (明示 × 明示) と F'_SQ (明示 × 裾) (流束座標)</summary>
+    public static (CDense fss, CDense fsq) DressedTailSourceBlocksResearch(DressedTailTable table, DressedTailBlocks b)
+    {
+        var pool = table.Pool; var sArr = b.SArr; var qArr = b.QArr; var D = b.D; int nS = sArr.Length, nQ = qArr.Length;
+        var fss = new CDense(nS, nS); var fsq = new CDense(nS, nQ); var fssv = fss.Values; var fsqv = fsq.Values; var dF = table.diffF;
+        var sh = new (int h, int k, int l)[nS];
+        for (int i = 0; i < nS; i++) sh[i] = pool.Hkl[sArr[i]];
+        for (int c = 0; c < nS; c++)
+        {
+            var (h2, k2, l2) = sh[c]; double dc = D[sArr[c]];
+            for (int r = 0; r < nS; r++) { var (h1, k1, l1) = sh[r]; fssv[r + c * nS] = dF[pool.DiffIndex(h1 - h2, k1 - k2, l1 - l2)] * (D[sArr[r]] * dc); }
+        }
+        for (int r = 0; r < nQ; r++)
+        {
+            int qr = qArr[r]; var (h2, k2, l2) = pool.Hkl[qr]; double dq = D[qr];
+            for (int c = 0; c < nS; c++) { var (h1, k1, l1) = sh[c]; fsqv[c + r * nS] = dF[pool.DiffIndex(h1 - h2, k1 - k2, l1 - l2)] * (D[sArr[c]] * dq); }
+        }
+        return (fss, fsq);
+    }
+
+    /// <summary>261109Cl 追加 (研究用、native の試作): 源の求積の位相 (点 × 裾、D_q を掛けたもの) と点の重み</summary>
+    public static (Complex[] ph, double[] w, int nSites) DressedTailCubatureResearch(DressedTailTable table, DressedTailBlocks b, (double x, double y, double z)[] atomSites, (double weight, double sigmaNm)[] quadAtoms, int order)
+    {
+        var qc = GetQuadCache(table, atomSites, quadAtoms, order);
+        int nSites = qc.NSites, nQ = b.QArr.Length;
+        var ph = new Complex[(long)nSites * nQ];
+        for (int r = 0; r < nQ; r++)
+        {
+            int q = b.QArr[r]; long src = (long)qc.PoolCol[q] * nSites, dst = (long)r * nSites; double dq = b.D[q];
+            for (int i = 0; i < nSites; i++) ph[dst + i] = qc.Phase[src + i] * dq;
+        }
+        return (ph, qc.Weights, nSites);
+    }
+
     /// <summary>261109Cl 追加 (研究用、速さ、codex2 第 21 回): 速い形で疎な積 1 回のとき、X̃†(R + ΛX̃) = (X̃†X̃)Γ + X̃†E_δ を使う閾値 (E_δ の倍率 δ²/(|λ − γ|² + δ²) がこれを超える要素だけ。NaN = 使わない、0 = 全部)</summary>
     public static double DressedEdeltaThreshold { get; set; } = double.NaN;
     /// <summary>261109Cl 追加 (研究用、速さ): 着衣の疎な積 E·X₀ を |λ_q| がこれより小さい裾の行だけで積む (+∞ = 全部)</summary>
