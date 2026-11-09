@@ -379,7 +379,16 @@ public partial class BetheMethod
             // 261109Cl: 近傍の中心 = 明示 (DressedTailNeighborPs が NaN) か、候補のうち |Q/P| < DressedTailNeighborPs の反射 (繰り上げより広い閾値で、繰り上げの前から近傍を裾に入れて方向の段差を和らげる)
             IEnumerable<int> centers = double.IsNaN(DressedTailNeighborPs) ? S
                 : S.Concat(Enumerable.Range(1, cnt - 1).Where(i => P[i] > 0 && Math.Abs(Q[i] / P[i]) < DressedTailNeighborPs));
-            var outerS = centers.Distinct().Where(s => Dot3(pool.GX[s], pool.GX[s], pool.GY[s], pool.GY[s], pool.GZ[s], pool.GZ[s]) > rcore2 * 0.25).ToArray(); // 芯の半分より外だけ調べる (中の中心の近傍は芯に入る)
+            double rSkip = Math.Max(0, DressedTailCoreRadiusNm - DressedTailNeighborRadiusNm); // codex2 第 24 回: |g_s| + r_n ≤ R_c の中心は近傍が芯に入るので調べない
+            var outerS = centers.Distinct().Where(s => Dot3(pool.GX[s], pool.GX[s], pool.GY[s], pool.GY[s], pool.GZ[s], pool.GZ[s]) > rSkip * rSkip).ToArray();
+            if (DressedTailNeighborUseCsr) // 261110Cl 追加 (codex2 第 24 回の比較の候補): 近傍 = 中心から強い結合 (|U(d)| ≥ η max、表の CSR の列) で一段つながる裾。距離の球の代わり
+            {
+                var nearC = new bool[cnt];
+                foreach (var c in centers.Distinct()) { nearC[c] = true; for (int pp = table.rowPtr[c]; pp < table.rowPtr[c + 1]; pp++) nearC[table.colIdx[pp]] = true; }
+                for (int i = 1; i < cnt; i++)
+                    if (inTail[i] && Dot3(pool.GX[i], pool.GX[i], pool.GY[i], pool.GY[i], pool.GZ[i], pool.GZ[i]) > rcore2) inTail[i] = nearC[i];
+            }
+            else
             for (int i = 1; i < cnt; i++)
             {
                 if (!inTail[i]) continue;
@@ -397,6 +406,12 @@ public partial class BetheMethod
         var Qi = new List<int>(cnt);
         for (int i = 1; i < cnt; i++)
             if (inTail[i] && !inS[i]) Qi.Add(i);
+        if (DressedTailMortonOrder) // 261110Cl 追加 (研究用、速さ): 裾の行を (h, k, l) の Morton 順に並べ替える (疎な積で隣の行の近傍が近くに並び、X の行のキャッシュの再利用が増える見込み。値は丸めの範囲で同じ)
+        {
+            static ulong Spread(uint v) { ulong x = v & 0x1FFFFF; x = (x | x << 32) & 0x1F00000000FFFF; x = (x | x << 16) & 0x1F0000FF0000FF; x = (x | x << 8) & 0x100F00F00F00F00F; x = (x | x << 4) & 0x10C30C30C30C30C3; x = (x | x << 2) & 0x1249249249249249; return x; }
+            ulong Key(int i) { var (h, k, l) = pool.Hkl[i]; return Spread((uint)(h + 1024)) | Spread((uint)(k + 1024)) << 1 | Spread((uint)(l + 1024)) << 2; }
+            Qi.Sort((a, c) => Key(a).CompareTo(Key(c)));
+        }
         int nS = S.Count, nQ = Qi.Count;
         var sArr = S.ToArray(); var qArr = Qi.ToArray();
         var map = new int[cnt]; Array.Fill(map, -1);
@@ -1680,6 +1695,10 @@ public partial class BetheMethod
     public static double DressedTailNeighborRadiusNm { get; set; } = double.NaN;
     /// <summary>261109Cl 追加 (研究用): 上の近傍の中心に、明示に加えて候補のうち |Q/P| がこれより小さい反射も含める (NaN = 明示だけ)</summary>
     public static double DressedTailNeighborPs { get; set; } = double.NaN;
+    /// <summary>261110Cl 追加 (研究用、速さ): 裾の行を (h, k, l) の Morton 順に並べる (false = 候補の番号の順)</summary>
+    public static bool DressedTailMortonOrder { get; set; } = false;
+    /// <summary>261110Cl 追加 (研究用): 近傍を距離の球でなく、中心から表の CSR の列 (|U(d)| ≥ η max) で一段つながる裾にする (DressedTailNeighborRadiusNm は NaN 以外で有効化だけに使う)</summary>
+    public static bool DressedTailNeighborUseCsr { get; set; } = false;
     /// <summary>261109Cl 追加 (研究用): 上の近縮退の判定の幅 (0 = 組にしない)</summary>
     public static double DressedModeDegTol { get; set; } = 1e-4;
     /// <summary>261109Cl 追加 (研究用、診断): 速い形の後方 TDS の源を裾の半径で分けるときの境界 [nm⁻¹] (NaN = 分けない)</summary>
