@@ -1867,6 +1867,9 @@ public partial class BetheMethod
         /// <summary>ブロックのどれかの方向で遅い (|Q/P| &lt; Ps) 裾の反射も明示へ繰り上げる (G512 の 2×2 は中心から最大 4.45 mrad あり、中心だけで判定すると共有の上乗せが 1 % 級。
         /// 繰り上げると 0.4 %、各方向の E1 の和集合 (<see cref="DressedBlockUnionE1"/>) も足すと 0.3 %、day5p)</summary>
         public bool PromoteOverBlock { get; set; } = true;
+        /// <summary>261109Cl 追加 (研究用): 1 方向を解く外の解き手 (null = SolveDressedTailSingleResearch)。引数 = (BetheMethod、表、k0、表面の法線、原子位置、源の求積の原子、後方 TDS か)。
+        /// 返す解は Gamma と、後方 TDS なら SourceMatrix、局所源なら AtomAmp を持つこと。並列で呼ばれる</summary>
+        public Func<BetheMethod, DressedTailTable, Vector3DBase, Vector3DBase, (double x, double y, double z)[], (double weight, double sigmaNm)[], bool, DressedTailSolution> SingleSolver { get; set; }
         /// <summary>同時に解くブロックの数の上限 (1 ブロックの作業領域は裾 1 万本・明示 300 本で約 0.5 GB)</summary>
         public int MaxParallelBlocks { get; set; } = 4;
         /// <summary>走行の記録 (エネルギーごとに 1 行追加)</summary>
@@ -1956,7 +1959,9 @@ public partial class BetheMethod
             DressedTailSolution[] sols;
             // 261109Cl 追加 (codex2 第 20 回の案 3): 自分を中心にする 1 方向は軽い形 (共有の G 群を作らない。同じ値で約 2 割速い)
             DressedTailSolution Single((Vector3DBase k0, Vector3DBase n) d)
-                => SolveDressedTailSingleResearch(table, d.k0, d.n, opt.N, opt.Ps, opt.RegDepthNm, opt.OneProduct, atomArray, tds, quadAtoms, opt.SourceTailQuadrature);
+                // => SolveDressedTailSingleResearch(table, d.k0, d.n, opt.N, opt.Ps, opt.RegDepthNm, opt.OneProduct, atomArray, tds, quadAtoms, opt.SourceTailQuadrature); // 261109Cl 変更前
+                => opt.SingleSolver != null ? opt.SingleSolver(this, table, d.k0, d.n, atomArray, quadAtoms, tds) // 261109Cl 追加 (研究用): 外の解き手 (native の試作など)
+                : SolveDressedTailSingleResearch(table, d.k0, d.n, opt.N, opt.Ps, opt.RegDepthNm, opt.OneProduct, atomArray, tds, quadAtoms, opt.SourceTailQuadrature);
             if (members.Count == 1 && valid == 1)
                 sols = [Single(dirs[0])];
             else
