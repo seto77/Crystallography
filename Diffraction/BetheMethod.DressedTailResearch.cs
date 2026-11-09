@@ -526,7 +526,39 @@ public partial class BetheMethod
             //   F の包絡は DW の Gauss exp(−B|d|²/4) とほぼ同じ (Si 20 kV で比 0.98〜1.00、day5e) → F(g − h) ≈ Σ_n A_n e^{−2πi(g−h)·r_n} ∫G_σn(x) e^{−2πi(g−h)·x} d³x
             //   (σ_n² = B_n/8π²、A_n = 原子 n の F(0) の分)。よって X†F'_QQ X ≈ Σ_n A_n Σ_q w_q χ_n,q† χ_n,q (χ = 裾の場 Σ_g D_g X_g e^{2πi g·(r_n + σ_n t_q)}、t_q = Gauss–Hermite の積の点)
             Matrix<Complex> qq;
-            if (tailQuadratureOrder > 0)
+            if (tailQuadratureOrder == 52 || tailQuadratureOrder == 77) // 261109Cl 追加 (codex2 第 19 回): 球面 (Lebedev) × 半径の求積 (次数 7 = 52 点、次数 9 = 77 点)
+            {
+                if (atomSites == null || tailQuadratureAtoms == null || tailQuadratureAtoms.Length != atomSites.Length)
+                    throw new ArgumentException("The tail quadrature needs atomSites and one (weight, sigma) per site", nameof(tailQuadratureAtoms));
+                var (pts, wpt) = GaussianCubatureSpherical(tailQuadratureOrder);
+                int np = pts.Length, na = atomSites.Length, nSites = na * np;
+                var ph = new CDense(nSites, nQ); var phv = ph.Values;
+                Parallel.For(0, nQ, new ParallelOptions { MaxDegreeOfParallelism = parallel ? -1 : 1 }, r =>
+                {
+                    int q = qArr[r]; var (h, k, l) = pool.Hkl[q];
+                    double gx = pool.GX[q], gy = pool.GY[q], gz = pool.GZ[q];
+                    for (int a = 0; a < na; a++)
+                    {
+                        var (ax, ay, az) = atomSites[a]; double s2 = 2 * Math.PI * tailQuadratureAtoms[a].sigmaNm;
+                        var b0 = Complex.FromPolarCoordinates(Dc[q], 2 * Math.PI * (h * ax + k * ay + l * az));
+                        for (int t = 0; t < np; t++)
+                        {
+                            var (tx, ty, tz) = pts[t];
+                            phv[a * np + t + (long)r * nSites] = b0 * Complex.FromPolarCoordinates(1, s2 * (gx * tx + gy * ty + gz * tz));
+                        }
+                    }
+                });
+                var chi = ph * X;
+                var chiW = chi.Clone();
+                for (int a = 0; a < na; a++)
+                    for (int t = 0; t < np; t++)
+                    {
+                        double w = tailQuadratureAtoms[a].weight * wpt[t];
+                        for (int c = 0; c < nS; c++) chiW[a * np + t, c] *= w;
+                    }
+                qq = chi.ConjugateTransposeThisAndMultiply(chiW);
+            }
+            else if (tailQuadratureOrder > 0)
             {
                 if (atomSites == null || tailQuadratureAtoms == null || tailQuadratureAtoms.Length != atomSites.Length)
                     throw new ArgumentException("The tail quadrature needs atomSites and one (weight, sigma) per site", nameof(tailQuadratureAtoms));
@@ -930,6 +962,49 @@ public partial class BetheMethod
         return quadAtoms;
     }
 
+    /// <summary>261109Cl 追加 (codex2 第 19 回): 3 次元の標準正規分布の正の重みの求積 (球面の Lebedev × 半径の Gauss)。
+    /// 52 点 = 次数 7 (Lebedev 26 方向 × r² = 5 ∓ √10)、77 点 = 次数 9 (Lebedev 38 方向 × r² = 7 ∓ √14 + 原点)。重みの和 = 1。作るときに 2 次・4 次のモーメントを確かめる。</summary>
+    private static ((double x, double y, double z)[] pts, double[] w) GaussianCubatureSpherical(int points)
+    {
+        var dirs = new List<((double, double, double) d, double w)>();
+        void AddPerm(double a, double b, double c, double w) // 符号と並べ替えの全部 (重複は除く)
+        {
+            var set = new HashSet<(double, double, double)>();
+            foreach (var (x, y, z) in new[] { (a, b, c), (a, c, b), (b, a, c), (b, c, a), (c, a, b), (c, b, a) })
+                foreach (var sx in new[] { 1, -1 }) foreach (var sy in new[] { 1, -1 }) foreach (var sz in new[] { 1, -1 })
+                            set.Add((sx * x + 0.0, sy * y + 0.0, sz * z + 0.0));
+            foreach (var d in set) dirs.Add((d, w));
+        }
+        double r3 = 1 / Math.Sqrt(3), r2 = 1 / Math.Sqrt(2);
+        double w0 = 0; double[] u, wu;
+        if (points == 52)
+        {
+            AddPerm(1, 0, 0, 1.0 / 21); AddPerm(0, r2, r2, 4.0 / 105); AddPerm(r3, r3, r3, 9.0 / 280);
+            double u1 = 5 - Math.Sqrt(10), u2 = 5 + Math.Sqrt(10);
+            u = [u1, u2]; wu = [(u2 - 3) / (u2 - u1), (3 - u1) / (u2 - u1)];
+        }
+        else if (points == 77)
+        {
+            AddPerm(1, 0, 0, 1.0 / 105); AddPerm(r3, r3, r3, 9.0 / 280); AddPerm(0.4597008433809831, 0.8880738339771153, 0, 1.0 / 35);
+            u = [7 - Math.Sqrt(14), 7 + Math.Sqrt(14)]; wu = [0.706427776009195, 0.065000795419376]; w0 = 0.228571428571429;
+        }
+        else throw new ArgumentException("Only 52 or 77 points", nameof(points));
+        var pts = new List<(double, double, double)>(); var w = new List<double>();
+        if (w0 > 0) { pts.Add((0, 0, 0)); w.Add(w0); }
+        for (int i = 0; i < u.Length; i++)
+        {
+            double r = Math.Sqrt(u[i]);
+            foreach (var ((dx, dy, dz), wd) in dirs) { pts.Add((r * dx, r * dy, r * dz)); w.Add(wu[i] * wd); }
+        }
+        double sw = w.Sum();
+        for (int i = 0; i < w.Count; i++) w[i] /= sw;
+        double m2 = 0, m4 = 0, m22 = 0; // E[x²] = 1、E[x⁴] = 3、E[x²y²] = 1
+        for (int i = 0; i < w.Count; i++) { var (x, y, _) = pts[i]; m2 += w[i] * x * x; m4 += w[i] * x * x * x * x; m22 += w[i] * x * x * y * y; }
+        if (pts.Count != points || Math.Abs(sw - 1) > 1e-12 || Math.Abs(m2 - 1) > 1e-12 || Math.Abs(m4 - 3) > 1e-11 || Math.Abs(m22 - 1) > 1e-11)
+            throw new InvalidOperationException($"Cubature check failed: {pts.Count} points, Σw {sw}, E[x²] {m2}, E[x⁴] {m4}, E[x²y²] {m22}");
+        return ([.. pts], [.. w]);
+    }
+
     /// <summary>261109Cl 追加: 標準正規分布 N(0, 1) の Gauss–Hermite 求積の点と重み (Golub–Welsch、重みの和 = 1)。</summary>
     private static (double[] t, double[] w) GaussHermiteProbabilists(int n)
     {
@@ -1022,8 +1097,10 @@ public partial class BetheMethod
         /// <summary>後方 TDS 行列 (IncludeTDSBackground) の源の表の疎化の閾値 (|F(d)| ≥ SourceEta·|F(0)|、0 = 差の箱の全部)</summary>
         public double SourceEta { get; set; } = 1e-3;
         /// <summary>源の裾どうしの項を Gauss–Hermite の求積で積むときの 1 軸の点の数 (0 = 源の表の疎な積。求積なら源の表は作らない)。
-        /// Si 20 kV・G16・36 方向で、全部の F に対する差の最大: 1 点 0.96 %、3 点 0.18 %、5 点 0.022 % (η_F 0.1 の疎な積 0.037 %・1 方向 +15 s に対し +1 s)。既定 5</summary>
-        public int SourceTailQuadrature { get; set; } = 5;
+        /// Si 20 kV・G16・36 方向で、全部の F に対する差の最大: 1 点 0.96 %、3 点 0.18 %、5 点 0.022 % (η_F 0.1 の疎な積 0.037 %・1 方向 +15 s に対し +1 s)。
+        /// 52 / 77 は球面 (Lebedev) × 半径の規則 (次数 7 / 9): 0.077 % / 0.020 %。7 点 (343) は 0.013 % (残りは Gauss の包絡と正確な F の差)。既定 77 (125 点と同じ精度で点は 62 %)</summary>
+        // public int SourceTailQuadrature { get; set; } = 5; // 261109Cl 変更前
+        public int SourceTailQuadrature { get; set; } = 77;
         /// <summary>ブロックのどれかの方向で遅い (|Q/P| &lt; Ps) 裾の反射も明示へ繰り上げる (G512 の 2×2 は中心から最大 4.45 mrad あり、中心だけで判定すると共有の上乗せが 1 % 級。
         /// 繰り上げると 0.4 %、各方向の E1 の和集合 (<see cref="DressedBlockUnionE1"/>) も足すと 0.3 %、day5p)</summary>
         public bool PromoteOverBlock { get; set; } = true;
