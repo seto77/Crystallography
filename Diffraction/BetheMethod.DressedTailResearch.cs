@@ -284,7 +284,9 @@ public partial class BetheMethod
     }
 
     /// <summary>261109Cl 追加 (SolveDressedTailResearch から切り出し): 選択・繰り上げ・密なブロック・着衣 (Sylvester の 1 段) と、射影に使う E·X。</summary>
-    private DressCoreResult DressCore(DressedTailTable table, Vector3DBase vecK0, Vector3DBase surface, int n, double ps, double regDepthNm, bool oneProduct, bool parallel, DressedTailTiming timing)
+    // private DressCoreResult DressCore(DressedTailTable table, Vector3DBase vecK0, Vector3DBase surface, int n, double ps, double regDepthNm, bool oneProduct, bool parallel, DressedTailTiming timing) // 261109Cl 旧シグネチャ
+    private DressCoreResult DressCore(DressedTailTable table, Vector3DBase vecK0, Vector3DBase surface, int n, double ps, double regDepthNm, bool oneProduct, bool parallel, DressedTailTiming timing,
+        (Vector3DBase k0, Vector3DBase n)[] promoteAlso = null) // 261109Cl promoteAlso 追加: これらの方向のどれかで遅い (|Q/P| < ps) 裾の反射も明示へ繰り上げる (ブロックの共有用)
     {
         if (table.Owner != this) throw new ArgumentException("The table was built for another BetheMethod", nameof(table));
         if (table.KV != (AccVoltage > 0 ? AccVoltage : 20)) // 261109Cl 追加 (codex2 第18回): 表の電圧と今の電圧の混在を禁じる
@@ -307,13 +309,29 @@ public partial class BetheMethod
             P[i] = 2 * Dot3(sX, vX, sY, vY, sZ, vZ);
             inTail[i] = P[i] > 0 && Dot3(pool.GX[i], pool.GX[i], pool.GY[i], pool.GY[i], pool.GZ[i], pool.GZ[i]) <= rt2;
         }
+        bool SlowInAny(int i) // 261109Cl 追加: ブロックの方向のどれかで遅い反射か
+        {
+            foreach (var (mk, mn) in promoteAlso)
+            {
+                var (ax, ay, az) = mk.Tuple; var (bx, by, bz) = mn.Tuple;
+                double vX = pool.GX[i] + ax, vY = pool.GY[i] + ay, vZ = pool.GZ[i] + az;
+                double q = mk.Length2 - Dot3(vX, vX, vY, vY, vZ, vZ), p = 2 * Dot3(bx, vX, by, vY, bz, vZ);
+                if (p > 0 && Math.Abs(q / p) < ps) return true;
+            }
+            return false;
+        }
         var inS = new bool[cnt];
         var S = new List<int>(e1.Length + 256) { 0 };
         inS[0] = true;
         foreach (var i in e1) { S.Add(i); inS[i] = true; }
+        if (promoteAlso != null && DressedBlockUnionE1) // 261109Cl 追加 (研究用): ブロックの各方向の E1 の和集合
+            foreach (var (mk, mn) in promoteAlso)
+                foreach (var i in SelectIndicesResearch(pool, mk, mn, n, BeamPartnerSet.E1StrongSet, 170, out _, out _))
+                    if (!inS[i] && inTail[i]) { S.Add(i); inS[i] = true; }
         int nSelected = S.Count;
         for (int i = 1; i < cnt; i++)
-            if (inTail[i] && !inS[i] && Math.Abs(Q[i] / P[i]) < ps) { S.Add(i); inS[i] = true; }
+            // if (inTail[i] && !inS[i] && Math.Abs(Q[i] / P[i]) < ps) { S.Add(i); inS[i] = true; } // 261109Cl 変更前
+            if (inTail[i] && !inS[i] && (Math.Abs(Q[i] / P[i]) < ps || (promoteAlso != null && SlowInAny(i)))) { S.Add(i); inS[i] = true; } // 261109Cl
         var Qi = new List<int>(cnt);
         for (int i = 1; i < cnt; i++)
             if (inTail[i] && !inS[i]) Qi.Add(i);
@@ -402,9 +420,11 @@ public partial class BetheMethod
         (double x, double y, double z)[] atomSites = null,   // 261109Cl atomSites 追加: 渡すと全振幅の代わりに原子位置の振幅だけを求める (方向ごとの X·Z を中心の 1 回の積に回す)
         bool backscatterSource = false,   // 261109Cl backscatterSource 追加: 後方散乱の源の行列をモードの基底へ射影する (表に源が要る)。旧シグネチャは atomSites までで、これを除いた形
         (double weight, double sigmaNm)[] tailQuadratureAtoms = null, // 261109Cl 追加: 源の裾どうしの項を求積で積むときの原子ごとの (F(0) の分 A_n、Gauss の幅 σ_n = √(B/8π²) [nm])。atomSites と同じ並び
-        int tailQuadratureOrder = 0)      // 261109Cl 追加: その Gauss–Hermite の 1 軸の点の数 (0 = 求積せず源の表の疎な積)
+        int tailQuadratureOrder = 0,      // 261109Cl 追加: その Gauss–Hermite の 1 軸の点の数 (0 = 求積せず源の表の疎な積)
+        bool promoteOverBlock = false)    // 261109Cl 追加: ブロックのどれかの方向で遅い裾の反射も明示へ繰り上げる
     {
-        var cr = DressCore(table, centerK0, centerSurface, n, ps, regDepthNm, oneProduct, parallel, timing);
+        // var cr = DressCore(table, centerK0, centerSurface, n, ps, regDepthNm, oneProduct, parallel, timing); // 261109Cl 変更前
+        var cr = DressCore(table, centerK0, centerSurface, n, ps, regDepthNm, oneProduct, parallel, timing, promoteOverBlock ? dirs : null);
         var pool = table.Pool;
         var (sArr, qArr, X, HSS, HQS, HSQ, EX) = (cr.SArr, cr.QArr, cr.X, cr.HSS, cr.HQS, cr.HSQ, cr.EX);
         double[] Dc = cr.D;
@@ -810,6 +830,8 @@ public partial class BetheMethod
         return res;
     }
 
+    /// <summary>261109Cl 追加 (研究用): ブロックの全方向で繰り上げるとき、各方向の E1 の和集合も明示にする (既定 false、試験用)</summary>
+    public static bool DressedBlockUnionE1 { get; set; } = false;
     /// <summary>261109Cl 追加 (研究用): 疎な積を単精度にする (既定 false)</summary>
     public static bool DressedSpMMSingle { get; set; } = false;
     /// <summary>261109Cl 追加 (研究用): 疎な積の核の選択 (0 = 列の塊をレジスタに置く、1 = 非零ごとに行を流す)</summary>
@@ -980,6 +1002,9 @@ public partial class BetheMethod
         /// <summary>源の裾どうしの項を Gauss–Hermite の求積で積むときの 1 軸の点の数 (0 = 源の表の疎な積。求積なら源の表は作らない)。
         /// Si 20 kV・G16・36 方向で、全部の F に対する差の最大: 1 点 0.96 %、3 点 0.18 %、5 点 0.022 % (η_F 0.1 の疎な積 0.037 %・1 方向 +15 s に対し +1 s)。既定 5</summary>
         public int SourceTailQuadrature { get; set; } = 5;
+        /// <summary>ブロックのどれかの方向で遅い (|Q/P| &lt; Ps) 裾の反射も明示へ繰り上げる (G512 の 2×2 は中心から最大 4.45 mrad あり、中心だけで判定すると共有の上乗せが 1 % 級。
+        /// 繰り上げると 0.4 %、各方向の E1 の和集合 (<see cref="DressedBlockUnionE1"/>) も足すと 0.3 %、day5p)</summary>
+        public bool PromoteOverBlock { get; set; } = true;
         /// <summary>同時に解くブロックの数の上限 (1 ブロックの作業領域は裾 1 万本・明示 300 本で約 0.5 GB)</summary>
         public int MaxParallelBlocks { get; set; } = 4;
         /// <summary>走行の記録 (エネルギーごとに 1 行追加)</summary>
@@ -1065,7 +1090,7 @@ public partial class BetheMethod
             DressedTailSolution[] sols;
             try
             {
-                sols = SolveDressedTailBlockResearch(table, ck0, cn, dirs, opt.N, opt.Ps, opt.RegDepthNm, opt.OneProduct, false, null, null, atomArray, tds, quadAtoms, opt.SourceTailQuadrature);
+                sols = SolveDressedTailBlockResearch(table, ck0, cn, dirs, opt.N, opt.Ps, opt.RegDepthNm, opt.OneProduct, false, null, null, atomArray, tds, quadAtoms, opt.SourceTailQuadrature, opt.PromoteOverBlock);
             }
             catch (DressedTailBackwardBeamException) when (members.Count > 1)
             {
