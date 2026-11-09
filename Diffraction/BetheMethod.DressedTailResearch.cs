@@ -431,6 +431,8 @@ public partial class BetheMethod
         var u0i = Complex.ImaginaryOne * table.U000Imag;
         Complex Lam(int i) => (Q[i] + u0i) / P[i];
         if (timing != null) timing.Select = sw.Elapsed.TotalSeconds;
+        if (DressedCountOnly) // 261110Cl 追加 (研究用、規模の数えだけ): 選択と裾の集合までで返す (密なブロックを作らない。大きな単位胞の見積もり用)
+            return new DressCoreResult { SArr = sArr, QArr = qArr, P = P, D = D, NSelected = nSelected, Map = map };
 
         // (2) 密なブロック (流束座標): H(g, h) = U(h − g) D_g D_h、H_SS の対角 = λ
         sw.Restart();
@@ -1633,7 +1635,7 @@ public partial class BetheMethod
     {
         var cr = DressCore(table, vecK0, surface, n, ps, 45, true, false, null, null, null, false, true);
         return new DressedTailBlocks { SArr = cr.SArr, QArr = cr.QArr, Map = cr.Map, P = cr.P, D = cr.D, NSelected = cr.NSelected,
-            HSS = (CDense)cr.HSS, HQS = (CDense)cr.HQS, HSQ = (CDense)cr.HSQ, LamQ = cr.LamQ };
+            HSS = (CDense)cr.HSS, HQS = (CDense)cr.HQS, HSQ = (CDense)cr.HSQ, LamQ = cr.LamQ }; // 261110Cl: DressedCountOnly なら H は null
     }
 
     /// <summary>261109Cl 追加 (研究用、native の試作): 裾どうしの疎な積 E·X (流束座標、DressedSpMMSingle などの静的な選択に従う)</summary>
@@ -1747,6 +1749,8 @@ public partial class BetheMethod
     public static readonly List<double> DressedE1Thresholds = [];
     /// <summary>261110Cl 追加 (研究用): E1 の明示を「順位の値 (励起誤差 / 結合) がこれ以下」で選ぶ (NaN = 固定の本数 N。N は上限になる)</summary>
     public static double DressedE1ScoreCut { get; set; } = double.NaN;
+    /// <summary>261110Cl 追加 (研究用): DressCore を選択と裾の集合までで止める (ブロックの部品は H を null で返す。規模の数えだけ)</summary>
+    public static bool DressedCountOnly { get; set; } = false;
     /// <summary>261110Cl 追加 (研究用): 疎な表 (CSR) を作るか (false = stencil の疎な積だけ使う研究の経路。C# の疎な積・CSR の近傍は使えない)</summary>
     public static bool DressedTailBuildCsr { get; set; } = true;
     /// <summary>261110Cl 追加 (研究用): 近傍を距離の球でなく、中心から表の CSR の列 (|U(d)| ≥ η max) で一段つながる裾にする (DressedTailNeighborRadiusNm は NaN 以外で有効化だけに使う)</summary>
