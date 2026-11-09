@@ -98,7 +98,9 @@ public partial class BetheMethod
     /// <param name="eta">裾どうしの結合の閾値 (研究の既定 0.02、通常用の候補 0.05)</param>
     /// <param name="sourceEta">261109Cl 追加: 後方散乱の源の行列の表も作るときの閾値 (|F(d)| ≥ sourceEta·|F(0)|、0 = 差の箱の全部。NaN = 作らない)</param>
     // public DressedTailTable CreateDressedTailTable(BeamSelectionPool pool, double eta) // 261109Cl 旧シグネチャ
-    public DressedTailTable CreateDressedTailTable(BeamSelectionPool pool, double eta, double sourceEta = double.NaN)
+    // public DressedTailTable CreateDressedTailTable(BeamSelectionPool pool, double eta, double sourceEta = double.NaN) // 261109Cl 旧シグネチャ
+    public DressedTailTable CreateDressedTailTable(BeamSelectionPool pool, double eta, double sourceEta = double.NaN,
+        double tailRadiusNm = double.NaN) // 261109Cl tailRadiusNm 追加: 裾の半径 (プールの半径以下、NaN = プールの半径)。遅い反射の繰り上げと E1 はプールの半径の全部から
     {
         if (pool.Owner != this) throw new ArgumentException("The pool was built for another BetheMethod", nameof(pool));
         var sw = Stopwatch.StartNew();
@@ -125,7 +127,8 @@ public partial class BetheMethod
         for (int i = 0; i < full.Length; i++) maxAbs = Math.Max(maxAbs, full[i].Magnitude);
         var table = new DressedTailTable
         {
-            Owner = this, Pool = pool, KV = kV, Eta = eta, TailRadiusNm = pool.RadiusNm, diffUfull = full, MaxAbsU = maxAbs,
+            // Owner = this, Pool = pool, KV = kV, Eta = eta, TailRadiusNm = pool.RadiusNm, diffUfull = full, MaxAbsU = maxAbs, // 261109Cl 変更前
+            Owner = this, Pool = pool, KV = kV, Eta = eta, TailRadiusNm = double.IsNaN(tailRadiusNm) ? pool.RadiusNm : Math.Min(tailRadiusNm, pool.RadiusNm), diffUfull = full, MaxAbsU = maxAbs, // 261109Cl
             U000Imag = getU(kV, new Beam((0, 0, 0), new Vector3DBase(0, 0, 0)), cache: false).Imag,
         };
         table.SecondsUfull = sw.Elapsed.TotalSeconds;
@@ -339,18 +342,21 @@ public partial class BetheMethod
             if (explicitSet.Length == 0 || explicitSet[0] != 0) throw new ArgumentException("explicitSet must start with 000", nameof(explicitSet));
             foreach (var i in explicitSet.Skip(1))
             {
-                if (!inTail[i]) throw new DressedTailBackwardBeamException();
+                // if (!inTail[i]) throw new DressedTailBackwardBeamException(); // 261109Cl 変更前
+                if (!(P[i] > 0)) throw new DressedTailBackwardBeamException(); // 261109Cl: 明示はプールの半径の全部から (裾の半径の外でもよい)
                 if (!inS[i]) { S.Add(i); inS[i] = true; }
             }
         }
         if (explicitSet == null && promoteAlso != null && DressedBlockUnionE1) // 261109Cl 追加 (研究用): ブロックの各方向の E1 の和集合
             foreach (var (mk, mn) in promoteAlso)
                 foreach (var i in SelectIndicesResearch(pool, mk, mn, n, BeamPartnerSet.E1StrongSet, 170, out _, out _))
-                    if (!inS[i] && inTail[i]) { S.Add(i); inS[i] = true; }
+                    // if (!inS[i] && inTail[i]) { S.Add(i); inS[i] = true; } // 261109Cl 変更前
+                    if (!inS[i] && P[i] > 0) { S.Add(i); inS[i] = true; } // 261109Cl
         int nSelected = S.Count;
         for (int i = 1; i < cnt && explicitSet == null; i++) // 261109Cl: 固定の集合なら繰り上げない
             // if (inTail[i] && !inS[i] && Math.Abs(Q[i] / P[i]) < ps) { S.Add(i); inS[i] = true; } // 261109Cl 変更前
-            if (inTail[i] && !inS[i] && (Math.Abs(Q[i] / P[i]) < ps || (promoteAlso != null && SlowInAny(i)))) { S.Add(i); inS[i] = true; } // 261109Cl
+            // if (inTail[i] && !inS[i] && (Math.Abs(Q[i] / P[i]) < ps || (promoteAlso != null && SlowInAny(i)))) { S.Add(i); inS[i] = true; } // 261109Cl 変更前
+            if (P[i] > 0 && !inS[i] && (Math.Abs(Q[i] / P[i]) < ps || (promoteAlso != null && SlowInAny(i)))) { S.Add(i); inS[i] = true; } // 261109Cl: 繰り上げはプールの半径の全部から (裾の半径を小さくしても高次の遅い反射を明示に残す)
         var Qi = new List<int>(cnt);
         for (int i = 1; i < cnt; i++)
             if (inTail[i] && !inS[i]) Qi.Add(i);
@@ -1360,6 +1366,9 @@ public partial class BetheMethod
     {
         /// <summary>裾の半径 R [nm⁻¹] (研究の既定 40)</summary>
         public double TailRadiusNm { get; set; } = 40;
+        /// <summary>261109Cl 追加: 候補のプールの半径 [nm⁻¹] (E1 の選択と遅い反射の繰り上げはこの半径の全部から、裾は TailRadiusNm まで)。
+        /// Si 20 kV の 2 方向で、80:80 (候補:裾) に対し 40:40 は晶帯軸で −2.15 %、64:40 は −0.31 % / −0.17 % (1 方向 2.2 s)、64:64 は +0.03 % (15 s)。既定 64</summary>
+        public double PoolRadiusNm { get; set; } = 64;
         /// <summary>裾どうしの結合の閾値 η (通常用の候補 0.05、研究 0.02)</summary>
         public double Eta { get; set; } = 0.05;
         /// <summary>E1 で選ぶ本数 (000 を含む)</summary>
@@ -1416,11 +1425,15 @@ public partial class BetheMethod
         var rec = new EbsdDressedTailRecord { KV = AccVoltage };
         var sw = Stopwatch.StartNew();
         var mat = ((BaseRotation ?? new Matrix3D()) * Crystal.MatrixInverseTransposed).Tuple;
-        if (pool == null || pool.RadiusNm != opt.TailRadiusNm || pool.Mat != mat)
-            pool = CreateBeamSelectionPool(opt.TailRadiusNm, buildE0: false); // E1 の尺度は U/γ (電圧に依らない) なので、エネルギーの間で共有する
+        // if (pool == null || pool.RadiusNm != opt.TailRadiusNm || pool.Mat != mat) // 261109Cl 変更前
+        //     pool = CreateBeamSelectionPool(opt.TailRadiusNm, buildE0: false);
+        double poolRadius = Math.Max(opt.PoolRadiusNm, opt.TailRadiusNm); // 261109Cl: 候補の半径と裾の半径を分ける
+        if (pool == null || pool.RadiusNm != poolRadius || pool.Mat != mat)
+            pool = CreateBeamSelectionPool(poolRadius, buildE0: false); // E1 の尺度は U/γ (電圧に依らない) なので、エネルギーの間で共有する
         rec.SecondsPool = sw.Elapsed.TotalSeconds; sw.Restart();
         bool tds = background != null;
-        var table = CreateDressedTailTable(pool, opt.Eta, !tds ? double.NaN : opt.SourceTailQuadrature > 0 ? double.PositiveInfinity : opt.SourceEta); // 吸収は電圧で変わるので、表はエネルギーごとに作り直す
+        // var table = CreateDressedTailTable(pool, opt.Eta, !tds ? double.NaN : opt.SourceTailQuadrature > 0 ? double.PositiveInfinity : opt.SourceEta); // 261109Cl 変更前
+        var table = CreateDressedTailTable(pool, opt.Eta, !tds ? double.NaN : opt.SourceTailQuadrature > 0 ? double.PositiveInfinity : opt.SourceEta, opt.TailRadiusNm); // 吸収は電圧で変わるので、表はエネルギーごとに作り直す
         (double weight, double sigmaNm)[] quadAtoms = tds && opt.SourceTailQuadrature > 0 ? DressedTailSourceAtomsResearch(table) : null;
         rec.SecondsTable = sw.Elapsed.TotalSeconds - table.SecondsSource; rec.SecondsSource = table.SecondsSource;
         rec.TableNonzeros = table.Nonzeros; rec.SourceNonzeros = table.SourceNonzeros;
