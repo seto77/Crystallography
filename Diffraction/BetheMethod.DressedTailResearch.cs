@@ -58,6 +58,8 @@ public partial class BetheMethod
         /// <summary>261109Cl 追加: 源の行列の非零の数 (表なしなら 0)</summary>
         public long SourceNonzeros => fRowPtr?[^1] ?? 0;
         public double SecondsSource;
+        /// <summary>261109Cl 追加: F(−d) = conj F(d) が差の箱の全部で成り立つ (相対 1e−12)。成り立てば交差項を T + T† (T = F'_SQ X) で 1 回の積にする</summary>
+        public bool SourceIsHermitian { get; internal set; }
     }
 
     /// <summary>261109Cl 追加 (研究用): 着衣つきの解 1 方向分。</summary>
@@ -214,6 +216,12 @@ public partial class BetheMethod
                 foreach (var (j, f) in fRows[i]) { fCol[p] = j; fr[p] = f.Real; fi[p] = f.Imaginary; p++; }
             });
             table.diffF = fFull; table.fRowPtr = fPtr; table.fColIdx = fCol; table.fRe = fr; table.fIm = fi; table.SourceEta = sourceEta;
+            double herm = 0, f0abs = fFull[Box(0, 0, 0)].Magnitude; // 261109Cl 追加: エルミート性の確認
+            for (int h = -dh; h <= dh; h++)
+                for (int k = -dk; k <= dk; k++)
+                    for (int l = -dl; l <= dl; l++)
+                        herm = Math.Max(herm, (fFull[Box(h, k, l)] - Complex.Conjugate(fFull[Box(-h, -k, -l)])).Magnitude);
+            table.SourceIsHermitian = herm <= 1e-12 * f0abs;
             table.SecondsSource = sw.Elapsed.TotalSeconds;
         }
         return table;
@@ -286,7 +294,8 @@ public partial class BetheMethod
     /// <summary>261109Cl 追加 (SolveDressedTailResearch から切り出し): 選択・繰り上げ・密なブロック・着衣 (Sylvester の 1 段) と、射影に使う E·X。</summary>
     // private DressCoreResult DressCore(DressedTailTable table, Vector3DBase vecK0, Vector3DBase surface, int n, double ps, double regDepthNm, bool oneProduct, bool parallel, DressedTailTiming timing) // 261109Cl 旧シグネチャ
     private DressCoreResult DressCore(DressedTailTable table, Vector3DBase vecK0, Vector3DBase surface, int n, double ps, double regDepthNm, bool oneProduct, bool parallel, DressedTailTiming timing,
-        (Vector3DBase k0, Vector3DBase n)[] promoteAlso = null) // 261109Cl promoteAlso 追加: これらの方向のどれかで遅い (|Q/P| < ps) 裾の反射も明示へ繰り上げる (ブロックの共有用)
+        (Vector3DBase k0, Vector3DBase n)[] promoteAlso = null, // 261109Cl promoteAlso 追加: これらの方向のどれかで遅い (|Q/P| < ps) 裾の反射も明示へ繰り上げる (ブロックの共有用)
+        int[] explicitSet = null) // 261109Cl explicitSet 追加 (研究用、照合用): 明示の集合をこの候補の番号に固定する (000 が先頭。選択と繰り上げをしない)
     {
         if (table.Owner != this) throw new ArgumentException("The table was built for another BetheMethod", nameof(table));
         if (table.KV != (AccVoltage > 0 ? AccVoltage : 20)) // 261109Cl 追加 (codex2 第18回): 表の電圧と今の電圧の混在を禁じる
@@ -294,7 +303,8 @@ public partial class BetheMethod
         var pool = table.Pool;
         var sw = Stopwatch.StartNew();
         // (1) 選択と繰り上げ
-        var e1 = SelectIndicesResearch(pool, vecK0, surface, n, BeamPartnerSet.E1StrongSet, 170, out _, out _);
+        // var e1 = SelectIndicesResearch(pool, vecK0, surface, n, BeamPartnerSet.E1StrongSet, 170, out _, out _); // 261109Cl 変更前
+        var e1 = explicitSet != null ? [] : SelectIndicesResearch(pool, vecK0, surface, n, BeamPartnerSet.E1StrongSet, 170, out _, out _); // 261109Cl
         var (kX, kY, kZ) = vecK0.Tuple;
         var (sX, sY, sZ) = surface.Tuple;
         double k02 = vecK0.Length2;
@@ -324,12 +334,21 @@ public partial class BetheMethod
         var S = new List<int>(e1.Length + 256) { 0 };
         inS[0] = true;
         foreach (var i in e1) { S.Add(i); inS[i] = true; }
-        if (promoteAlso != null && DressedBlockUnionE1) // 261109Cl 追加 (研究用): ブロックの各方向の E1 の和集合
+        if (explicitSet != null) // 261109Cl 追加: 固定の明示の集合
+        {
+            if (explicitSet.Length == 0 || explicitSet[0] != 0) throw new ArgumentException("explicitSet must start with 000", nameof(explicitSet));
+            foreach (var i in explicitSet.Skip(1))
+            {
+                if (!inTail[i]) throw new DressedTailBackwardBeamException();
+                if (!inS[i]) { S.Add(i); inS[i] = true; }
+            }
+        }
+        if (explicitSet == null && promoteAlso != null && DressedBlockUnionE1) // 261109Cl 追加 (研究用): ブロックの各方向の E1 の和集合
             foreach (var (mk, mn) in promoteAlso)
                 foreach (var i in SelectIndicesResearch(pool, mk, mn, n, BeamPartnerSet.E1StrongSet, 170, out _, out _))
                     if (!inS[i] && inTail[i]) { S.Add(i); inS[i] = true; }
         int nSelected = S.Count;
-        for (int i = 1; i < cnt; i++)
+        for (int i = 1; i < cnt && explicitSet == null; i++) // 261109Cl: 固定の集合なら繰り上げない
             // if (inTail[i] && !inS[i] && Math.Abs(Q[i] / P[i]) < ps) { S.Add(i); inS[i] = true; } // 261109Cl 変更前
             if (inTail[i] && !inS[i] && (Math.Abs(Q[i] / P[i]) < ps || (promoteAlso != null && SlowInAny(i)))) { S.Add(i); inS[i] = true; } // 261109Cl
         var Qi = new List<int>(cnt);
@@ -421,10 +440,11 @@ public partial class BetheMethod
         bool backscatterSource = false,   // 261109Cl backscatterSource 追加: 後方散乱の源の行列をモードの基底へ射影する (表に源が要る)。旧シグネチャは atomSites までで、これを除いた形
         (double weight, double sigmaNm)[] tailQuadratureAtoms = null, // 261109Cl 追加: 源の裾どうしの項を求積で積むときの原子ごとの (F(0) の分 A_n、Gauss の幅 σ_n = √(B/8π²) [nm])。atomSites と同じ並び
         int tailQuadratureOrder = 0,      // 261109Cl 追加: その Gauss–Hermite の 1 軸の点の数 (0 = 求積せず源の表の疎な積)
-        bool promoteOverBlock = false)    // 261109Cl 追加: ブロックのどれかの方向で遅い裾の反射も明示へ繰り上げる
+        bool promoteOverBlock = false,    // 261109Cl 追加: ブロックのどれかの方向で遅い裾の反射も明示へ繰り上げる
+        int[] explicitSet = null)         // 261109Cl 追加 (研究用、照合用): 明示の集合を固定する (候補の番号、000 が先頭)
     {
         // var cr = DressCore(table, centerK0, centerSurface, n, ps, regDepthNm, oneProduct, parallel, timing); // 261109Cl 変更前
-        var cr = DressCore(table, centerK0, centerSurface, n, ps, regDepthNm, oneProduct, parallel, timing, promoteOverBlock ? dirs : null);
+        var cr = DressCore(table, centerK0, centerSurface, n, ps, regDepthNm, oneProduct, parallel, timing, promoteOverBlock ? dirs : null, explicitSet);
         var pool = table.Pool;
         var (sArr, qArr, X, HSS, HQS, HSQ, EX) = (cr.SArr, cr.QArr, cr.X, cr.HSS, cr.HQS, cr.HSQ, cr.EX);
         double[] Dc = cr.D;
@@ -486,7 +506,8 @@ public partial class BetheMethod
                 var (h1, k1, l1) = pool.Hkl[ig]; var (h2, k2, l2) = pool.Hkl[ih];
                 return table.diffF[pool.DiffIndex(h1 - h2, k1 - k2, l1 - l2)];
             }
-            var fss = new CDense(nS, nS); var fsq = new CDense(nS, nQ); var fqs = new CDense(nQ, nS);
+            bool herm = table.SourceIsHermitian; // 261109Cl: エルミートなら F'_QS = F'_SQ† なので作らない
+            var fss = new CDense(nS, nS); var fsq = new CDense(nS, nQ); var fqs = new CDense(herm ? 0 : nQ, nS);
             for (int c = 0; c < nS; c++)
                 for (int r = 0; r < nS; r++)
                     fss[r, c] = Ff(sArr[r], sArr[c]) * (Dc[sArr[r]] * Dc[sArr[c]]);
@@ -497,7 +518,7 @@ public partial class BetheMethod
                 for (int r = 0; r < nQ; r++)
                 {
                     int qr = qArr[r]; double dd = Dc[qr] * dc;
-                    fqsv[r + c * nQ] = Ff(qr, sc) * dd;   // (行 Q_r, 列 S_c)
+                    if (!herm) fqsv[r + c * nQ] = Ff(qr, sc) * dd;   // (行 Q_r, 列 S_c)
                     fsqv[c + r * nS] = Ff(sc, qr) * dd;   // (行 S_c, 列 Q_r)
                 }
             });
@@ -556,7 +577,8 @@ public partial class BetheMethod
                 var FQX = SpMMTail(table, qArr, mapQ, Dc, X, parallel, source: true);
                 qq = X.ConjugateTransposeThisAndMultiply(FQX);
             }
-            FW = fss + fsq * X + X.ConjugateTransposeThisAndMultiply(fqs) + qq;
+            if (herm) { var cross = fsq * X; FW = fss + cross + cross.ConjugateTranspose() + qq; } // 261109Cl 追加 (codex2 第 19 回): 交差項を 1 回の積で
+            else FW = fss + fsq * X + X.ConjugateTransposeThisAndMultiply(fqs) + qq;
         }
         if (blockSeconds != null) blockSeconds[0] += sw.Elapsed.TotalSeconds;
         var result = new DressedTailSolution[dirs.Length];
