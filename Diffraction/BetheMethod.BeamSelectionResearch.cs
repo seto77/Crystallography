@@ -312,6 +312,39 @@ public partial class BetheMethod
     /// <param name="trace">記録 (null なら書かない)</param>
     public Beam[] SelectBeamsResearch(BeamSelectionPool pool, Vector3DBase vecK0, Vector3DBase surface, int n, BeamPartnerSet partners = BeamPartnerSet.E1StrongSet, double depthNm = 170, BeamSelectionTrace trace = null)
     {
+        // 261109Cl: 選択の本体 (点数と境界の同点の組) を SelectIndicesResearch へ移した (処理は同じ。着衣つきの解 (DressedTailResearch) と共有する)
+        var chosenIdx = SelectIndicesResearch(pool, vecK0, surface, n, partners, depthNm, out var threshold, out var m);
+        int selected = chosenIdx.Length;
+        var (kX, kY, kZ) = vecK0.Tuple;
+        var (sX, sY, sZ) = surface.Tuple;
+        double k02 = vecK0.Length2;
+        var beams = new Beam[selected + 1];
+        double p0 = 2 * Dot3(sX, kX, sY, kY, sZ, kZ);
+        beams[0] = new Beam((0, 0, 0), new Vector3DBase(0, 0, 0), getU(AccVoltage, (0, 0, 0), new Vector3DBase(0, 0, 0)), (k02 - Dot3(kX, kX, kY, kY, kZ, kZ), p0)); // 000 の Q も Find_gVectors と同じ式 (丸めで 0 とは限らない)
+        double maxG = 0;
+        int nearBoundary = 0;
+        for (int j = 0; j < selected; j++)
+        {
+            int i = chosenIdx[j];
+            var g = new Vector3DBase(pool.GX[i], pool.GY[i], pool.GZ[i]);
+            double vX = g.X + kX, vY = g.Y + kY, vZ = g.Z + kZ;
+            double q = k02 - Dot3(vX, vX, vY, vY, vZ, vZ), p = 2 * Dot3(sX, vX, sY, vY, sZ, vZ);
+            beams[j + 1] = new Beam(pool.Hkl[i], g, getU(AccVoltage, pool.Hkl[i], g), (q, p));
+            var len = g.Length;
+            maxG = Math.Max(maxG, len);
+            if (len > 0.9 * pool.RadiusNm) nearBoundary++;
+        }
+        if (trace != null)
+        {
+            trace.RequestedN = n; trace.SelectedCount = beams.Length; trace.ScoredCandidates = m;
+            trace.ThresholdScore = threshold; trace.MaxG = maxG; trace.NearBoundary = nearBoundary;
+        }
+        return beams;
+    }
+
+    /// <summary>261109Cl 追加 (SelectBeamsResearch から移した選択の本体): 採る候補の番号 (000 を含まない、点数の昇順・同点は hkl の辞書順) を返す。</summary>
+    internal int[] SelectIndicesResearch(BeamSelectionPool pool, Vector3DBase vecK0, Vector3DBase surface, int n, BeamPartnerSet partners, double depthNm, out double threshold, out int m)
+    {
         if (pool.Owner != this)
             throw new ArgumentException("The pool was built for another BetheMethod", nameof(pool));
         if (pool.Mat != ((BaseRotation ?? new Matrix3D()) * Crystal.MatrixInverseTransposed).Tuple)
@@ -325,7 +358,7 @@ public partial class BetheMethod
         double k02 = vecK0.Length2; // 以下 Q・P も Find_gVectors と同じ式 (Dot3) = 同じ hkl なら Q・P がビット単位で同じ
         int count = pool.Count;
         var scored = new (double r, int i)[count];
-        int m = 0;
+        m = 0;
         for (int i = 1; i < count; i++)
         {
             double vX = pool.GX[i] + kX, vY = pool.GY[i] + kY, vZ = pool.GZ[i] + kZ;
@@ -338,7 +371,6 @@ public partial class BetheMethod
         }
         var span = scored.AsSpan(0, m);
         int need = Math.Max(0, n - 1);
-        double threshold;
         int selected;
         if (need >= m)
         {
@@ -363,29 +395,10 @@ public partial class BetheMethod
         }
         var chosen = span[..selected].ToArray();
         Array.Sort(chosen, (a, b) => a.r != b.r ? a.r.CompareTo(b.r) : pool.Hkl[a.i].CompareTo(pool.Hkl[b.i]));
-
-        var beams = new Beam[selected + 1];
-        double p0 = 2 * Dot3(sX, kX, sY, kY, sZ, kZ);
-        beams[0] = new Beam((0, 0, 0), new Vector3DBase(0, 0, 0), getU(AccVoltage, (0, 0, 0), new Vector3DBase(0, 0, 0)), (k02 - Dot3(kX, kX, kY, kY, kZ, kZ), p0)); // 000 の Q も Find_gVectors と同じ式 (丸めで 0 とは限らない)
-        double maxG = 0;
-        int nearBoundary = 0;
-        for (int j = 0; j < selected; j++)
-        {
-            int i = chosen[j].i;
-            var g = new Vector3DBase(pool.GX[i], pool.GY[i], pool.GZ[i]);
-            double vX = g.X + kX, vY = g.Y + kY, vZ = g.Z + kZ;
-            double q = k02 - Dot3(vX, vX, vY, vY, vZ, vZ), p = 2 * Dot3(sX, vX, sY, vY, sZ, vZ);
-            beams[j + 1] = new Beam(pool.Hkl[i], g, getU(AccVoltage, pool.Hkl[i], g), (q, p));
-            var len = g.Length;
-            maxG = Math.Max(maxG, len);
-            if (len > 0.9 * pool.RadiusNm) nearBoundary++;
-        }
-        if (trace != null)
-        {
-            trace.RequestedN = n; trace.SelectedCount = beams.Length; trace.ScoredCandidates = m;
-            trace.ThresholdScore = threshold; trace.MaxG = maxG; trace.NearBoundary = nearBoundary;
-        }
-        return beams;
+        var idx = new int[selected];
+        for (int j = 0; j < selected; j++) idx[j] = chosen[j].i;
+        return idx;
+        // 261109Cl: 以下の Beam の組み立ては SelectBeamsResearch へ移した (処理は同じ)
     }
 
     /// <summary>261108Cl 追加 (研究用、対照): 10 月の凍結仕様の K2sum (tools/BeamSelStudy/py/ebsd_selection_study.py の scores・selection と同じ式) でビームを選ぶ。
