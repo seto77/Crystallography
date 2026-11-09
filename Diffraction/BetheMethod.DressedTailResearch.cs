@@ -373,6 +373,27 @@ public partial class BetheMethod
             // if (inTail[i] && !inS[i] && Math.Abs(Q[i] / P[i]) < ps) { S.Add(i); inS[i] = true; } // 261109Cl 変更前
             // if (inTail[i] && !inS[i] && (Math.Abs(Q[i] / P[i]) < ps || (promoteAlso != null && SlowInAny(i)))) { S.Add(i); inS[i] = true; } // 261109Cl 変更前
             if (P[i] > 0 && !inS[i] && (Math.Abs(Q[i] / P[i]) < ps || (promoteAlso != null && SlowInAny(i)))) { S.Add(i); inS[i] = true; } // 261109Cl: 繰り上げはプールの半径の全部から (裾の半径を小さくしても高次の遅い反射を明示に残す)
+        if (!double.IsNaN(DressedTailNeighborRadiusNm)) // 261109Cl 追加 (研究用): 裾 = 芯の半径の中の全部 + 明示のビームから DressedTailNeighborRadiusNm 以内 (表の裾の半径まで)。繰り上げた高次の明示の近傍を着衣に入れる
+        {
+            double rn2 = DressedTailNeighborRadiusNm * DressedTailNeighborRadiusNm * (1 + 1e-9);
+            // 261109Cl: 近傍の中心 = 明示 (DressedTailNeighborPs が NaN) か、候補のうち |Q/P| < DressedTailNeighborPs の反射 (繰り上げより広い閾値で、繰り上げの前から近傍を裾に入れて方向の段差を和らげる)
+            IEnumerable<int> centers = double.IsNaN(DressedTailNeighborPs) ? S
+                : S.Concat(Enumerable.Range(1, cnt - 1).Where(i => P[i] > 0 && Math.Abs(Q[i] / P[i]) < DressedTailNeighborPs));
+            var outerS = centers.Distinct().Where(s => Dot3(pool.GX[s], pool.GX[s], pool.GY[s], pool.GY[s], pool.GZ[s], pool.GZ[s]) > rcore2 * 0.25).ToArray(); // 芯の半分より外だけ調べる (中の中心の近傍は芯に入る)
+            for (int i = 1; i < cnt; i++)
+            {
+                if (!inTail[i]) continue;
+                double gx = pool.GX[i], gy = pool.GY[i], gz = pool.GZ[i];
+                if (Dot3(gx, gx, gy, gy, gz, gz) <= rcore2) continue;
+                bool near = false;
+                foreach (var s in outerS)
+                {
+                    double dx = gx - pool.GX[s], dy = gy - pool.GY[s], dz = gz - pool.GZ[s];
+                    if (Dot3(dx, dx, dy, dy, dz, dz) <= rn2) { near = true; break; }
+                }
+                inTail[i] = near;
+            }
+        }
         var Qi = new List<int>(cnt);
         for (int i = 1; i < cnt; i++)
             if (inTail[i] && !inS[i]) Qi.Add(i);
@@ -437,14 +458,56 @@ public partial class BetheMethod
         // var EX0 = SpMMTail(table, qArr, map, D, X0, parallel); // 261109Cl 変更前
         bool[] rowKeep = null; // 261109Cl 追加 (研究用、速さ): |λ_q| が DressedSpMMLambdaCut 以上の裾の行は E·X₀ を積まない (着衣で 1/λ_q 倍になる寄与)
         if (double.IsFinite(DressedSpMMLambdaCut)) { rowKeep = new bool[nQ]; for (int r = 0; r < nQ; r++) rowKeep[r] = lamQ[r].Magnitude < DressedSpMMLambdaCut; }
-        var EX0 = SpMMTail(table, qArr, map, D, X0, parallel, false, rowKeep);
-        if (timing != null) timing.SpMM1 = sw.Elapsed.TotalSeconds;
-        sw.Restart();
-        // var rhs = (HQS + EX0) * Vb; // 261109Cl 変更前
-        var rhs = MulMaybeSingle(HQS + EX0, Vb); // 261109Cl
+        Matrix<Complex> rhs, EX0 = null; // 261109Cl: EX0 は打ち切りでないときだけ (着衣前の E·X₀)
+        int nM = nS; // 261109Cl 追加: 着衣のモードの数 (打ち切りなら nS より少ない)
+        if (modeBasis && DressedModeTau > 0) // 261109Cl 追加 (研究用、native の試作と同じ規則): モードの組ごとの打ち切り。T = H_QS V_k、X₀V_k = −diag(f)T、R = T + E(X₀V_k)
+        {
+            var aIn = Vb.Solve(MathNet.Numerics.LinearAlgebra.Vector<Complex>.Build.Dense(nS, i => i == 0 ? Complex.One : Complex.Zero));
+            var par = Enumerable.Range(0, nS).ToArray();
+            int Find(int x) { while (par[x] != x) x = par[x] = par[par[x]]; return x; }
+            if (DressedModeDegTol > 0)
+                for (int i = 0; i < nS; i++)
+                    for (int j = i + 1; j < nS; j++)
+                        if ((gb[i] - gb[j]).Magnitude < DressedModeDegTol) { int ri = Find(i), rj = Find(j); if (ri != rj) par[ri] = rj; }
+            var gsum = new Complex[nS * nS]; var used = new bool[nS]; var vbv = ((CDense)Vb).Values;
+            for (int j = 0; j < nS; j++)
+            {
+                int r = Find(j); used[r] = true; var aj = aIn[j];
+                for (int i = 0; i < nS; i++) gsum[i + r * nS] += vbv[i + j * nS] * aj;
+            }
+            var gw = new double[nS]; double wmax = 0;
+            for (int r = 0; r < nS; r++)
+                if (used[r]) { double s = 0; for (int i = 0; i < nS; i++) { var z = gsum[i + r * nS]; s += z.Real * z.Real + z.Imaginary * z.Imaginary; } gw[r] = Math.Sqrt(s); wmax = Math.Max(wmax, gw[r]); }
+            var keep = Enumerable.Range(0, nS).Where(j => gw[Find(j)] >= DressedModeTau * wmax).ToArray();
+            nM = keep.Length;
+            var vk = new Complex[nS * nM];
+            for (int t = 0; t < nM; t++) Array.Copy(vbv, keep[t] * nS, vk, t * nS, nS);
+            Vb = new CDense(nS, nM, vk);
+            gb = MathNet.Numerics.LinearAlgebra.Vector<Complex>.Build.Dense(nM, t => gb[keep[t]]);
+            var T = MulMaybeSingle(HQS, Vb);
+            var x0v = new CDense(nQ, nM); var x0vv = x0v.Values; var tv = ((CDense)T).Values;
+            for (int r = 0; r < nQ; r++)
+            {
+                var l = lamQ[r]; var f = Complex.Conjugate(l) / (l.Real * l.Real + l.Imaginary * l.Imaginary + d2);
+                for (int c = 0; c < nM; c++) x0vv[r + c * nQ] = -f * tv[r + c * nQ];
+            }
+            var EX0V = SpMMTail(table, qArr, map, D, x0v, parallel, false, rowKeep);
+            if (timing != null) timing.SpMM1 = sw.Elapsed.TotalSeconds;
+            sw.Restart();
+            rhs = T + EX0V;
+        }
+        else
+        {
+            EX0 = SpMMTail(table, qArr, map, D, X0, parallel, false, rowKeep);
+            if (timing != null) timing.SpMM1 = sw.Elapsed.TotalSeconds;
+            sw.Restart();
+            // var rhs = (HQS + EX0) * Vb; // 261109Cl 変更前
+            rhs = MulMaybeSingle(HQS + EX0, Vb); // 261109Cl
+        }
         var Rkeep = modeBasis ? rhs.Clone() : null; // 261109Cl 追加: 倍率の前の R
         var xt = ((CDense)rhs).Values;
-        for (int c = 0; c < nS; c++)
+        // for (int c = 0; c < nS; c++) // 261109Cl 変更前
+        for (int c = 0; c < nM; c++) // 261109Cl: 打ち切りならモードの数
         {
             var g = gb[c];
             for (int r = 0; r < nQ; r++)
@@ -981,7 +1044,7 @@ public partial class BetheMethod
         if (tmc != null) { seconds[7] += tmc.Select; seconds[8] += tmc.Blocks; seconds[9] += tmc.Dress; seconds[10] += tmc.SpMM1; seconds[11] += tmc.SpMM2; if (seconds.Length >= 15) { seconds[13] += tmc.Project; seconds[14] += tmc.Eig; } }
         var pool = table.Pool;
         var (sArr, qArr, P, D, HSS, HQS, HSQ, lamQ, Xt, Vb) = (cr.SArr, cr.QArr, cr.P, cr.D, cr.HSS, cr.HQS, cr.HSQ, cr.LamQ, cr.Xt, cr.Vb);
-        int nS = sArr.Length, nQ = qArr.Length;
+        int nS = sArr.Length, nQ = qArr.Length, nM = Vb.ColumnCount; // 261109Cl nM 追加: 着衣のモードの数 (打ち切りなら nS より少ない)
         void Lap(int slot) { if (seconds != null) seconds[slot] += sw.Elapsed.TotalSeconds; sw.Restart(); }
         Lap(0);
         // (1) Galerkin (モードの基底)
@@ -994,9 +1057,9 @@ public partial class BetheMethod
             var gb = cr.Gb;
             double delta = 1 / (Math.PI * regDepthNm), d2 = delta * delta, thr = DressedEdeltaThreshold;
             var Rv = ((CDense)cr.R).Values; var xv = ((CDense)Xt).Values;
-            var YE = new Complex[nS * nS];
+            var YE = new Complex[nM * nM];
             long nnz = 0;
-            for (int j = 0; j < nS; j++)
+            for (int j = 0; j < nM; j++)
             {
                 var g = gb[j];
                 for (int q = 0; q < nQ; q++)
@@ -1006,20 +1069,20 @@ public partial class BetheMethod
                     if (f <= thr) continue;
                     var e = Rv[q + j * nQ] * f;
                     nnz++;
-                    for (int i = 0; i < nS; i++) YE[i + j * nS] += Complex.Conjugate(xv[q + i * nQ]) * e; // (X̃†E_δ)_ij
+                    for (int i = 0; i < nM; i++) YE[i + j * nM] += Complex.Conjugate(xv[q + i * nQ]) * e; // (X̃†E_δ)_ij
                 }
             }
             Interlocked.Add(ref DressedEdeltaNonzeros, nnz);
             var YYG = YY.Clone();
-            for (int j = 0; j < nS; j++) for (int i = 0; i < nS; i++) YYG[i, j] *= gb[j];
-            K = Vb.ConjugateTransposeThisAndMultiply(HSS * Vb + HSQ * Xt) + YYG + new CDense(nS, nS, YE);
+            for (int j = 0; j < nM; j++) for (int i = 0; i < nM; i++) YYG[i, j] *= gb[j];
+            K = Vb.ConjugateTransposeThisAndMultiply(HSS * Vb + HSQ * Xt) + YYG + new CDense(nM, nM, YE);
             G = Vb.ConjugateTransposeThisAndMultiply(Vb) + YY;
         }
         else
         {
             var right = oneProduct ? cr.R : HQS * Vb + cr.EXt; // H_QS V_b + E X̃
             var rv = ((CDense)right).Values; var xv = ((CDense)Xt).Values;
-            for (int c = 0; c < nS; c++)
+            for (int c = 0; c < nM; c++)
                 for (int r = 0; r < nQ; r++) rv[r + c * nQ] += lamQ[r] * xv[r + c * nQ];
             K = Vb.ConjugateTransposeThisAndMultiply(HSS * Vb + HSQ * Xt) + Xt.ConjugateTransposeThisAndMultiply(right);
             G = Vb.ConjugateTransposeThisAndMultiply(Vb) + Xt.ConjugateTransposeThisAndMultiply(Xt);
@@ -1030,7 +1093,7 @@ public partial class BetheMethod
         if (seconds != null && seconds.Length >= 13) { seconds[12] += sw.Elapsed.TotalSeconds; }
         var Cv = evd.EigenVectors;
         double sp0 = Math.Sqrt(P[0]);
-        var e0 = MathNet.Numerics.LinearAlgebra.Vector<Complex>.Build.Dense(nS, j => Complex.Conjugate(Vb[0, j]) * sp0);
+        var e0 = MathNet.Numerics.LinearAlgebra.Vector<Complex>.Build.Dense(nM, j => Complex.Conjugate(Vb[0, j]) * sp0);
         var a = Cv.Solve(ch.Solve(e0));
         var Z = Cv * Matrix<Complex>.Build.DiagonalOfDiagonalVector(a);
         Lap(1);
@@ -1060,7 +1123,40 @@ public partial class BetheMethod
             if (!table.SourceIsHermitian) throw new NotSupportedException("The fast path assumes a Hermitian source");
             if (atomSites == null || quadAtoms == null || quadAtoms.Length != atomSites.Length || quadOrder <= 0)
                 throw new ArgumentException("The fast path needs atomSites and the tail quadrature", nameof(quadAtoms));
-            var fss = new CDense(nS, nS); var fsq = new CDense(nS, nQ); var fssv = fss.Values; var fsqv = fsq.Values;
+            // 261109Cl 追加 (研究用): 源だけの外殻。S ∪ Q の外で半径 DressedSourceShellRadiusNm 以内のビーム A の振幅を、明示との結合の一次 X_A = −f_A(γ_j) (H_AS V_k)_j で作り、
+            //   源の行列にだけ足す (Galerkin には入れない)。多数の弱い高次の振幅が原子の位置で揃って効く分 (源の交差項) を安く取り込む試し
+            var qArrSrc = qArr; int nQs = nQ; var XtAll = Xt;
+            var qcEarly = !double.IsNaN(DressedSourceShellRadiusNm) ? GetQuadCache(table, atomSites, quadAtoms, quadOrder) : null;
+            if (qcEarly != null)
+            {
+                double ro2 = DressedSourceShellRadiusNm * DressedSourceShellRadiusNm * (1 + 1e-9);
+                var used = new bool[pool.Count]; foreach (var i in sArr) used[i] = true; foreach (var i in qArr) used[i] = true;
+                var (kX, kY, kZ) = vecK0.Tuple; double k02 = vecK0.Length2;
+                var aList = new List<int>();
+                for (int i = 1; i < pool.Count; i++)
+                    if (!used[i] && P[i] > 0 && qcEarly.PoolCol[i] >= 0 && Dot3(pool.GX[i], pool.GX[i], pool.GY[i], pool.GY[i], pool.GZ[i], pool.GZ[i]) <= ro2) aList.Add(i);
+                int nA = aList.Count;
+                var has = new CDense(nA, nS); var hasv = has.Values;
+                for (int c = 0; c < nS; c++)
+                {
+                    var (h2, k2, l2) = pool.Hkl[sArr[c]]; double dc = D[sArr[c]];
+                    for (int r = 0; r < nA; r++) { var (h1, k1, l1) = pool.Hkl[aList[r]]; hasv[r + c * nA] = table.diffUfull[pool.DiffIndex(h2 - h1, k2 - k1, l2 - l1)] * (D[aList[r]] * dc); }
+                }
+                var TA = MulMaybeSingle(has, Vb); var tav = ((CDense)TA).Values;
+                double dl = 1 / (Math.PI * regDepthNm), dl2 = dl * dl; var gbA = cr.Gb;
+                for (int r = 0; r < nA; r++)
+                {
+                    int i = aList[r];
+                    double vX = pool.GX[i] + kX, vY = pool.GY[i] + kY, vZ = pool.GZ[i] + kZ;
+                    var lam = (k02 - Dot3(vX, vX, vY, vY, vZ, vZ) + Complex.ImaginaryOne * table.U000Imag) / P[i]; // DressCore の Lam と同じ
+                    for (int j = 0; j < nM; j++) { var dd = lam - gbA[j]; tav[r + j * nA] = -tav[r + j * nA] * Complex.Conjugate(dd) / (dd.Real * dd.Real + dd.Imaginary * dd.Imaginary + dl2); }
+                }
+                qArrSrc = [.. qArr, .. aList]; nQs = nQ + nA;
+                XtAll = Xt.Stack(TA);
+                Interlocked.Add(ref DressedSourceShellCount, nA);
+            }
+            // var fss = new CDense(nS, nS); var fsq = new CDense(nS, nQ); var fssv = fss.Values; var fsqv = fsq.Values; // 261109Cl 変更前
+            var fss = new CDense(nS, nS); var fsq = new CDense(nS, nQs); var fssv = fss.Values; var fsqv = fsq.Values;
             var dF = table.diffF;
             int dkn = 2 * pool.DiffBoundK + 1, dln = 2 * pool.DiffBoundL + 1;
             var sh = new (int h, int k, int l)[nS];
@@ -1070,30 +1166,50 @@ public partial class BetheMethod
                 var (h2, k2, l2) = sh[c]; double dc = D[sArr[c]];
                 for (int r = 0; r < nS; r++) { var (h1, k1, l1) = sh[r]; fssv[r + c * nS] = dF[pool.DiffIndex(h1 - h2, k1 - k2, l1 - l2)] * (D[sArr[r]] * dc); }
             }
-            for (int r = 0; r < nQ; r++)
+            // for (int r = 0; r < nQ; r++) // 261109Cl 変更前
+            for (int r = 0; r < nQs; r++) // 261109Cl: 源だけの外殻も
             {
-                int qr = qArr[r]; var (h2, k2, l2) = pool.Hkl[qr]; double dq = D[qr];
+                // int qr = qArr[r]; var (h2, k2, l2) = pool.Hkl[qr]; double dq = D[qr]; // 261109Cl 変更前
+                int qr = qArrSrc[r]; var (h2, k2, l2) = pool.Hkl[qr]; double dq = D[qr];
                 for (int c = 0; c < nS; c++) { var (h1, k1, l1) = sh[c]; fsqv[c + r * nS] = dF[pool.DiffIndex(h1 - h2, k1 - k2, l1 - l2)] * (D[sArr[c]] * dq); }
             }
-            var xt32 = DressedDenseSingle ? ToC32(Xt) : null; // 単精度なら X̃ の変換は 1 回
-            var cross = Vb.ConjugateTransposeThisAndMultiply(MulMaybeSingle(fsq, Xt, xt32));
-            var FW = Vb.ConjugateTransposeThisAndMultiply(fss * Vb) + cross + cross.ConjugateTranspose();
+            // 261109Cl 追加 (研究用、codex2 第 23 回の診断): 裾を半径 DressedSourceSplitRadiusNm で B (内、明示を含む) と A (外) に分け、源の B–B (part 1) か A–A (part 2) だけを積む
+            var XtSrc = XtAll; // 261109Cl: 源だけの外殻があればその行も
+            int splitPart = double.IsNaN(DressedSourceSplitRadiusNm) || qcEarly != null ? 0 : DressedSourceSplitPart;
+            if (splitPart != 0)
+            {
+                double rs2 = DressedSourceSplitRadiusNm * DressedSourceSplitRadiusNm * (1 + 1e-9);
+                XtSrc = Xt.Clone(); var xsv = ((CDense)XtSrc).Values;
+                for (int r = 0; r < nQ; r++)
+                {
+                    int q = qArr[r]; bool outer = Dot3(pool.GX[q], pool.GX[q], pool.GY[q], pool.GY[q], pool.GZ[q], pool.GZ[q]) > rs2;
+                    if (outer == (splitPart == 1)) for (int c = 0; c < nM; c++) xsv[r + c * nQ] = 0;
+                }
+            }
+            // var xt32 = DressedDenseSingle ? ToC32(Xt) : null; // 261109Cl 変更前
+            // var cross = Vb.ConjugateTransposeThisAndMultiply(MulMaybeSingle(fsq, Xt, xt32)); // 261109Cl 変更前
+            // var FW = Vb.ConjugateTransposeThisAndMultiply(fss * Vb) + cross + cross.ConjugateTranspose(); // 261109Cl 変更前
+            var xt32 = DressedDenseSingle ? ToC32(XtSrc) : null; // 単精度なら X̃ の変換は 1 回
+            var cross = Vb.ConjugateTransposeThisAndMultiply(MulMaybeSingle(fsq, XtSrc, xt32));
+            var FW = splitPart == 2 ? new CDense(nM, nM) : Vb.ConjugateTransposeThisAndMultiply(fss * Vb) + cross + cross.ConjugateTranspose(); // 261109Cl: A–A だけなら明示の項と交差を除く
             Lap(3);
             // 求積の位相 (261109Cl 変更、codex2 第 21 回): 方向・電圧に依らない幾何の位相 e^{2πi(hkl·r_a + σ_a g·t_p)} を表に保存して使い回し、
             //   心格子の並進で重なる原子 (Si は 8 → 2 組) をまとめる。方向ごとは列を集めて D_q を掛けるだけ
             var qc = GetQuadCache(table, atomSites, quadAtoms, quadOrder);
             int nSites = qc.NSites;
-            var ph = new CDense(nSites, nQ); var phv = ph.Values;
-            for (int r = 0; r < nQ; r++)
+            // var ph = new CDense(nSites, nQ); var phv = ph.Values; // 261109Cl 変更前
+            var ph = new CDense(nSites, nQs); var phv = ph.Values; // 261109Cl: 源だけの外殻も
+            for (int r = 0; r < nQs; r++)
             {
-                int q = qArr[r]; long src = (long)qc.PoolCol[q] * nSites, dst = (long)r * nSites; double dq = D[q];
+                int q = qArrSrc[r]; long src = (long)qc.PoolCol[q] * nSites, dst = (long)r * nSites; double dq = D[q];
                 for (int i = 0; i < nSites; i++) phv[dst + i] = qc.Phase[src + i] * dq;
             }
             Lap(4);
-            var chi = MulMaybeSingle(ph, Xt, xt32);
+            // var chi = MulMaybeSingle(ph, Xt, xt32); // 261109Cl 変更前
+            var chi = MulMaybeSingle(ph, XtSrc, xt32);
             var chiW = Matrix<Complex>.Build.DenseOfMatrix(chi);
             var cwv = ((CDense)chiW).Values;
-            for (int c = 0; c < nS; c++)
+            for (int c = 0; c < nM; c++)
                 for (int i = 0; i < nSites; i++) cwv[i + c * nSites] *= qc.Weights[i];
             FW += chi.ConjugateTransposeThisAndMultiply(chiW);
             Lap(5);
@@ -1553,6 +1669,23 @@ public partial class BetheMethod
     public static double DressedTailShellLambdaCut { get; set; } = double.NaN;
     /// <summary>261109Cl 追加 (研究用): 上の芯の半径 [nm⁻¹]</summary>
     public static double DressedTailCoreRadiusNm { get; set; } = 40;
+    /// <summary>261109Cl 追加 (研究用、速さ、native の試作と同じ規則): 速い形の着衣のモードの打ち切り。近縮退 (|γ_i − γ_j| &lt; DressedModeDegTol、推移的に) の組 C の
+    /// 重み ‖V_C a_C‖ (a = V_b⁻¹e₀) が最大のこの割合より小さい組を丸ごと捨てる (0 = 打ち切らない)</summary>
+    public static double DressedModeTau { get; set; } = 0;
+    /// <summary>261109Cl 追加 (研究用): 速い形の後方 TDS の源に、S ∪ Q の外でこの半径以内 (表の裾の半径まで) のビームの一次の振幅を足す [nm⁻¹] (NaN = 使わない)</summary>
+    public static double DressedSourceShellRadiusNm { get; set; } = double.NaN;
+    /// <summary>261109Cl 追加 (研究用): 上の外殻のビームの数の積算</summary>
+    public static long DressedSourceShellCount;
+    /// <summary>261109Cl 追加 (研究用): 裾を「芯の半径 DressedTailCoreRadiusNm の中の全部」+「明示のビームからこの距離以内 (表の裾の半径まで)」にする [nm⁻¹] (NaN = 使わない)</summary>
+    public static double DressedTailNeighborRadiusNm { get; set; } = double.NaN;
+    /// <summary>261109Cl 追加 (研究用): 上の近傍の中心に、明示に加えて候補のうち |Q/P| がこれより小さい反射も含める (NaN = 明示だけ)</summary>
+    public static double DressedTailNeighborPs { get; set; } = double.NaN;
+    /// <summary>261109Cl 追加 (研究用): 上の近縮退の判定の幅 (0 = 組にしない)</summary>
+    public static double DressedModeDegTol { get; set; } = 1e-4;
+    /// <summary>261109Cl 追加 (研究用、診断): 速い形の後方 TDS の源を裾の半径で分けるときの境界 [nm⁻¹] (NaN = 分けない)</summary>
+    public static double DressedSourceSplitRadiusNm { get; set; } = double.NaN;
+    /// <summary>261109Cl 追加 (研究用、診断): 0 = 全部、1 = 内側 (明示と境界の内の裾) どうし、2 = 外側の裾どうしだけ。交差 = 全部 − 1 − 2</summary>
+    public static int DressedSourceSplitPart { get; set; } = 0;
     /// <summary>261109Cl 追加 (研究用、速さ): 単精度の疎な積の列の塊の大きさ (複素の個数、0 = 塊にしない)</summary>
     public static int DressedSpMMColumnBlock { get; set; } = 0;
     /// <summary>261109Cl 追加 (研究用): E_δ の疎な積で使った要素の数の積算</summary>
