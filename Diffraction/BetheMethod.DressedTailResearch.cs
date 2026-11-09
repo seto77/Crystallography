@@ -1643,9 +1643,11 @@ public partial class BetheMethod
     /// <summary>261109Cl 追加 (研究用、native の試作): 裾どうしの結合の表 (CSR、単精度の値)。行・列は候補の番号、要素 (i, j) = U(g_j − g_i)</summary>
     /// <summary>261110Cl 追加 (研究用、配布の設計の試作): 裾どうしの結合は差 d = g_v − g_w だけの関数 U(d) (流束座標の D は前後で掛ける) なので、E·X は逆格子の上の畳み込み (stencil)。
     /// |U(d)| ≥ η max|U| (d ≠ 0、表の CSR と同じ条件) の差の一覧 (h, k, l の 3 つ組) と U(d) (単精度) を返す。CSR を持たずに疎な積ができる (表のメモリがほぼ要らない)</summary>
-    public static (int[] dHkl, float[] re, float[] im) DressedTailStencilResearch(DressedTailTable table)
+    // public static (int[] dHkl, float[] re, float[] im) DressedTailStencilResearch(DressedTailTable table) // 261110Cl 旧シグネチャ
+    public static (int[] dHkl, float[] re, float[] im) DressedTailStencilResearch(DressedTailTable table,
+        double eta = double.NaN) // 261110Cl eta 追加: NaN = 表の η、それ以外ならこの η で選ぶ (FFT の畳み込みの試作で、η を下げた全部の結合を使うため)
     {
-        var pool = table.Pool; double thr = table.Eta * table.MaxAbsU;
+        var pool = table.Pool; double thr = (double.IsNaN(eta) ? table.Eta : eta) * table.MaxAbsU;
         var dh = new List<int>(); var re = new List<float>(); var im = new List<float>();
         for (int h = -pool.DiffBoundH; h <= pool.DiffBoundH; h++)
             for (int k = -pool.DiffBoundK; k <= pool.DiffBoundK; k++)
