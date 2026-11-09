@@ -648,6 +648,284 @@ public partial class BetheMethod
         return result;
     }
 
+    /// <summary>261109Cl 追加 (研究用、codex2 第 20 回): 一般の基底 W = D_c [A_S; A_Q] (D_c = 中心の P^{−1/2}、列 nB 本) での Galerkin と後方 TDS の源。
+    /// 各方向で K = A†V'A − G_|g|² + iU'₀G₀ − 2Σ k0_a G_a、M = 2(n·k0)G₀ + 2Σ n_a G_a (G_w = A_S† diag(D_S² w) A_S + A_Q† diag(D_Q² w) A_Q、V' = 流束座標の非対角の結合)、
+    /// 初期値 M a(0) = W†P e₀ = conj(A_S[0, :])·2(n·k0)·D_c,000、源 B = Z†F_W Z (裾どうしは球面の求積)。EAQ = E·A_Q (中心の流束座標の疎な積)。返り値は方向ごとの (γ, B)。</summary>
+    private (Complex[] gamma, Complex[] source)[] GalerkinBasisResearch(DressedTailTable table, DressCoreResult cr, Matrix<Complex> AS, Matrix<Complex> AQ, Matrix<Complex> EAQ,
+        (Vector3DBase k0, Vector3DBase n)[] dirs, (double x, double y, double z)[] atomSites, (double weight, double sigmaNm)[] quadAtoms, int quadOrder)
+    {
+        if (!table.SourceIsHermitian) throw new NotSupportedException("The general-basis research path assumes a Hermitian source");
+        var pool = table.Pool;
+        var (sArr, qArr, Dc) = (cr.SArr, cr.QArr, cr.D);
+        int nS = sArr.Length, nQ = qArr.Length, nB = AS.ColumnCount;
+        var hssOff = cr.HSS.Clone();
+        for (int i = 0; i < nS; i++) hssOff[i, i] = 0;
+        var Koff = AS.ConjugateTransposeThisAndMultiply(hssOff * AS + cr.HSQ * AQ) + AQ.ConjugateTransposeThisAndMultiply(cr.HQS * AS + EAQ);
+        Matrix<Complex> Gram(Func<int, double> w)
+        {
+            var aS = Matrix<Complex>.Build.DenseOfMatrix(AS); var aQ = Matrix<Complex>.Build.DenseOfMatrix(AQ);
+            var vs = ((CDense)aS).Values; var vq = ((CDense)aQ).Values;
+            for (int c = 0; c < nB; c++)
+            {
+                for (int r = 0; r < nS; r++) { int s = sArr[r]; vs[r + c * nS] *= Dc[s] * Dc[s] * w(s); }
+                for (int r = 0; r < nQ; r++) { int q = qArr[r]; vq[r + c * nQ] *= Dc[q] * Dc[q] * w(q); }
+            }
+            return AS.ConjugateTransposeThisAndMultiply(aS) + AQ.ConjugateTransposeThisAndMultiply(aQ);
+        }
+        var G0 = Gram(_ => 1); var Gx = Gram(i => pool.GX[i]); var Gy = Gram(i => pool.GY[i]); var Gz = Gram(i => pool.GZ[i]);
+        var Gg2 = Gram(i => Dot3(pool.GX[i], pool.GX[i], pool.GY[i], pool.GY[i], pool.GZ[i], pool.GZ[i]));
+        var Cm = Koff - Gg2;
+        var iu0 = Complex.ImaginaryOne * table.U000Imag;
+        // 源 F_W = A_S†F'_SS A_S + (A_S†F'_SQ A_Q) + (…)† + 裾どうし (求積)
+        Complex Ff(int ig, int ih)
+        {
+            var (h1, k1, l1) = pool.Hkl[ig]; var (h2, k2, l2) = pool.Hkl[ih];
+            return table.diffF[pool.DiffIndex(h1 - h2, k1 - k2, l1 - l2)];
+        }
+        var fss = new CDense(nS, nS);
+        for (int c = 0; c < nS; c++)
+            for (int r = 0; r < nS; r++) fss[r, c] = Ff(sArr[r], sArr[c]) * (Dc[sArr[r]] * Dc[sArr[c]]);
+        var fsq = new CDense(nS, nQ); var fsqv = fsq.Values;
+        Parallel.For(0, nQ, r =>
+        {
+            int qr = qArr[r];
+            for (int c = 0; c < nS; c++) fsqv[c + r * nS] = Ff(sArr[c], qr) * (Dc[sArr[c]] * Dc[qr]);
+        });
+        var cross = AS.ConjugateTransposeThisAndMultiply(fsq * AQ);
+        var (pts, wpt) = GaussianCubatureSpherical(quadOrder);
+        int np = pts.Length, na = atomSites.Length, nSites = na * np;
+        var ph = new CDense(nSites, nQ); var phv = ph.Values;
+        Parallel.For(0, nQ, r =>
+        {
+            int q = qArr[r]; var (h, k, l) = pool.Hkl[q];
+            double gx = pool.GX[q], gy = pool.GY[q], gz = pool.GZ[q];
+            for (int a = 0; a < na; a++)
+            {
+                var (ax, ay, az) = atomSites[a]; double s2 = 2 * Math.PI * quadAtoms[a].sigmaNm;
+                var b0 = Complex.FromPolarCoordinates(Dc[q], 2 * Math.PI * (h * ax + k * ay + l * az));
+                for (int t = 0; t < np; t++)
+                {
+                    var (tx, ty, tz) = pts[t];
+                    phv[a * np + t + (long)r * nSites] = b0 * Complex.FromPolarCoordinates(1, s2 * (gx * tx + gy * ty + gz * tz));
+                }
+            }
+        });
+        var chi = ph * AQ;
+        var chiW = Matrix<Complex>.Build.DenseOfMatrix(chi);
+        for (int a = 0; a < na; a++)
+            for (int t = 0; t < np; t++)
+            {
+                double w = quadAtoms[a].weight * wpt[t];
+                for (int c = 0; c < nB; c++) chiW[a * np + t, c] *= w;
+            }
+        var FW = AS.ConjugateTransposeThisAndMultiply(fss * AS) + cross + cross.ConjugateTranspose() + chi.ConjugateTransposeThisAndMultiply(chiW);
+        var result = new (Complex[] gamma, Complex[] source)[dirs.Length];
+        for (int t = 0; t < dirs.Length; t++)
+        {
+            var (k0, nv) = dirs[t];
+            var (kx, ky, kz) = k0.Tuple; var (nx, ny, nz) = nv.Tuple;
+            double nk = Dot3(nx, kx, ny, ky, nz, kz);
+            var K = Cm + iu0 * G0 - 2 * (kx * Gx + ky * Gy + kz * Gz);
+            var M = 2 * nk * G0 + 2 * (nx * Gx + ny * Gy + nz * Gz);
+            var ch = M.Cholesky();
+            var evd = ch.Solve(K).Evd(Symmetricity.Asymmetric);
+            var Cv = evd.EigenVectors;
+            var rhs = MathNet.Numerics.LinearAlgebra.Vector<Complex>.Build.Dense(nB, j => Complex.Conjugate(AS[0, j]) * (2 * nk * Dc[0]));
+            var a = Cv.Solve(ch.Solve(rhs));
+            var Z = Cv * Matrix<Complex>.Build.DiagonalOfDiagonalVector(a);
+            result[t] = (evd.EigenValues.ToArray(), Z.ConjugateTransposeThisAndMultiply(FW * Z).ToColumnMajorArray());
+        }
+        return result;
+    }
+
+    /// <summary>261109Cl 追加 (研究用、codex2 第 20 回): 基底を足した共有の可能性の検査の結果。Variants の鍵 = "sharedPlain"・"localPlain"・"sharedAug{r}"・"localAug{r}"。
+    /// 値はメンバーごとの (γ, B) (local は各メンバーを自分の方向で解いたもの)。</summary>
+    public sealed class DressedTailAugmentedResult
+    {
+        public int NExplicit, NTail;
+        public double[] SingularValues;
+        public Dictionary<string, (Complex[] gamma, Complex[] source)[]> Variants = [];
+    }
+
+    /// <summary>261109Cl 追加 (研究用、codex2 第 20 回の可能性の検査): 中心の着衣 X_c (ブロック全体の繰り上げ + E1 の和集合で決めた S) に、
+    /// メンバーの実際の着衣 (同じ S) との差 Δ_m = A_m X_m B_m − X_c (A_m = D_Q,c⁻¹D_Q,m、B_m = D_S,m⁻¹D_S,c) を、span([I; X_c]) に直交化してから
+    /// 特異値分解で r 本に圧縮した追加の基底 T を足して共有する。比べる組: 共有 [W_c] / 方向ごと [W_m B_m] (= 方向ごとの解と同じ部分空間)、
+    /// 共有 [W_c, T] / 方向ごと [W_m B_m, T]。源は後方 TDS (求積 quadOrder = 52 / 77)。</summary>
+    public DressedTailAugmentedResult SolveDressedTailAugmentedResearch(DressedTailTable table, Vector3DBase centerK0, Vector3DBase centerSurface, (Vector3DBase k0, Vector3DBase n)[] dirs,
+        int n, double ps, double regDepthNm, (double x, double y, double z)[] atomSites, (double weight, double sigmaNm)[] quadAtoms, int quadOrder, int[] ranks)
+    {
+        bool keep = DressedBlockUnionE1;
+        DressedBlockUnionE1 = true;
+        var crc = DressCore(table, centerK0, centerSurface, n, ps, regDepthNm, false, false, null, dirs);
+        DressedBlockUnionE1 = keep;
+        var (sArr, qArr) = (crc.SArr, crc.QArr);
+        int nS = sArr.Length, nQ = qArr.Length, nm = dirs.Length;
+        var Xc = Matrix<Complex>.Build.DenseOfMatrix(crc.X);
+        var map = new int[table.Pool.Count]; Array.Fill(map, -1);
+        for (int r = 0; r < nQ; r++) map[qArr[r]] = r;
+        var deltas = new Matrix<Complex>[nm];
+        for (int m = 0; m < nm; m++)
+        {
+            var crm = DressCore(table, dirs[m].k0, dirs[m].n, n, ps, regDepthNm, false, false, null, null, sArr);
+            if (!crm.QArr.SequenceEqual(qArr) || !crm.SArr.SequenceEqual(sArr)) throw new InvalidOperationException("The member's tail differs from the centre's");
+            var xm = Matrix<Complex>.Build.DenseOfMatrix(crm.X); var v = ((CDense)xm).Values;
+            for (int c = 0; c < nS; c++)
+            {
+                double bc = crc.D[sArr[c]] / crm.D[sArr[c]];
+                for (int r = 0; r < nQ; r++) v[r + c * nQ] *= crm.D[qArr[r]] / crc.D[qArr[r]] * bc;
+            }
+            deltas[m] = xm - Xc;
+        }
+        // 候補 [0; Δ_m] を span([I; X_c]) (流束の計量 = 係数のユークリッド) に直交化: R = C − Y (Y†Y)⁻¹ Y†C、Y†C = X_c†Δ
+        var Ginv = (Xc.ConjugateTransposeThisAndMultiply(Xc) + Matrix<Complex>.Build.DenseIdentity(nS)).Inverse();
+        var Rs = new CDense(nS, nm * nS); var Rq = new CDense(nQ, nm * nS);
+        for (int m = 0; m < nm; m++)
+        {
+            var coef = Ginv * Xc.ConjugateTransposeThisAndMultiply(deltas[m]); // (nS × nS)
+            Rs.SetSubMatrix(0, m * nS, -coef);
+            Rq.SetSubMatrix(0, m * nS, deltas[m] - Xc * coef);
+        }
+        var gram = Rs.ConjugateTransposeThisAndMultiply(Rs) + Rq.ConjugateTransposeThisAndMultiply(Rq);
+        var eg = gram.Evd(Symmetricity.Hermitian);
+        var order = Enumerable.Range(0, gram.RowCount).OrderByDescending(i => eg.EigenValues[i].Real).ToArray();
+        var res = new DressedTailAugmentedResult { NExplicit = nS, NTail = nQ, SingularValues = order.Take(80).Select(i => Math.Sqrt(Math.Max(0, eg.EigenValues[i].Real))).ToArray() };
+        int rMax = ranks.Length == 0 ? 0 : ranks.Max();
+        CDense TS = null, TQ = null;
+        if (rMax > 0)
+        {
+            var Vr = new CDense(gram.RowCount, rMax);
+            for (int j = 0; j < rMax; j++)
+            {
+                double sv = Math.Sqrt(Math.Max(eg.EigenValues[order[j]].Real, 1e-300));
+                for (int i = 0; i < gram.RowCount; i++) Vr[i, j] = eg.EigenVectors[i, order[j]] / sv;
+            }
+            TS = (CDense)(Rs * Vr); TQ = (CDense)(Rq * Vr); // 正規直交 (流束の計量)
+        }
+        var ETQ = rMax > 0 ? SpMMTail(table, qArr, map, crc.D, TQ, false) : null;
+        var EDel = deltas.Select(d => SpMMTail(table, qArr, map, crc.D, d, false)).ToArray();
+        var I = Matrix<Complex>.Build.DenseIdentity(nS);
+        Matrix<Complex> H(Matrix<Complex> a, Matrix<Complex> b) => a.Append(b);
+        res.Variants["sharedPlain"] = GalerkinBasisResearch(table, crc, I, Xc, crc.EX, dirs, atomSites, quadAtoms, quadOrder);
+        res.Variants["localPlain"] = Enumerable.Range(0, nm).Select(m => GalerkinBasisResearch(table, crc, I, Xc + deltas[m], crc.EX + EDel[m], [dirs[m]], atomSites, quadAtoms, quadOrder)[0]).ToArray();
+        foreach (var r in ranks.Where(r => r > 0))
+        {
+            var ts = TS.SubMatrix(0, nS, 0, r); var tq = TQ.SubMatrix(0, nQ, 0, r); var etq = ETQ.SubMatrix(0, nQ, 0, r);
+            res.Variants[$"sharedAug{r}"] = GalerkinBasisResearch(table, crc, H(I, ts), H(Xc, tq), H(crc.EX, etq), dirs, atomSites, quadAtoms, quadOrder);
+            res.Variants[$"localAug{r}"] = Enumerable.Range(0, nm).Select(m => GalerkinBasisResearch(table, crc, H(I, ts), H(Xc + deltas[m], tq), H(crc.EX + EDel[m], etq), [dirs[m]], atomSites, quadAtoms, quadOrder)[0]).ToArray();
+        }
+        return res;
+    }
+
+    /// <summary>261109Cl 追加: 3 次元の標準正規分布の求積の点と重み。order = 52 / 77 は球面 (Lebedev) × 半径、それ以外は Gauss–Hermite の積 (order³ 点)。</summary>
+    private static ((double x, double y, double z)[] pts, double[] w) GaussianCubature3D(int order)
+    {
+        if (order == 52 || order == 77) return GaussianCubatureSpherical(order);
+        var (t, w1) = GaussHermiteProbabilists(order);
+        int nq = t.Length;
+        var pts = new (double, double, double)[nq * nq * nq]; var w = new double[nq * nq * nq];
+        for (int i = 0; i < nq; i++)
+            for (int j = 0; j < nq; j++)
+                for (int m = 0; m < nq; m++) { int p = (i * nq + j) * nq + m; pts[p] = (t[i], t[j], t[m]); w[p] = w1[i] * w1[j] * w1[m]; }
+        return (pts, w);
+    }
+
+    /// <summary>261109Cl 追加 (研究用、codex2 第 20 回の案 3): 1 方向を自分の着衣で解く軽い形 (共有の G 群を作らない)。
+    /// 流束座標 (自分の D) で K = H_SS + H_SQ X + X†(H_QS + Λ X + E X)、G = I + X†X、G⁻¹K の固有分解、初期値 G c = √P₀ e₀。
+    /// 原子位置の振幅 Φ = (Ph_S D_S + Ph_Q D_Q X) Z と、後方 TDS の源 B = Z†F_W Z (F_W の裾どうしは求積) を返す。
+    /// 中心 = 自分の方向の共有の解 (SolveDressedTailBlockResearch の 1 方向) と同じ値になる。</summary>
+    public DressedTailSolution SolveDressedTailSingleResearch(DressedTailTable table, Vector3DBase vecK0, Vector3DBase surface, int n, double ps, double regDepthNm, bool oneProduct,
+        (double x, double y, double z)[] atomSites, bool backscatterSource, (double weight, double sigmaNm)[] quadAtoms, int quadOrder, int[] explicitSet = null,
+        DressedTailTiming timing = null, double[] seconds = null)
+    {
+        var cr = DressCore(table, vecK0, surface, n, ps, regDepthNm, oneProduct, false, timing, null, explicitSet);
+        var pool = table.Pool;
+        var (sArr, qArr, P, D, X, HSS, HQS, HSQ, EX, lamQ) = (cr.SArr, cr.QArr, cr.P, cr.D, cr.X, cr.HSS, cr.HQS, cr.HSQ, cr.EX, cr.LamQ);
+        int nS = sArr.Length, nQ = qArr.Length;
+        var sw = Stopwatch.StartNew();
+        var hrq = (HQS + EX).ToColumnMajorArray();
+        var xv = ((CDense)X).Values;
+        for (int c = 0; c < nS; c++)
+            for (int r = 0; r < nQ; r++) hrq[r + c * nQ] += lamQ[r] * xv[r + c * nQ];
+        var K = HSS + HSQ * X + X.ConjugateTransposeThisAndMultiply(new CDense(nQ, nS, hrq));
+        var G = X.ConjugateTransposeThisAndMultiply(X);
+        for (int i = 0; i < nS; i++) G[i, i] += 1;
+        var ch = G.Cholesky();
+        var evd = ch.Solve(K).Evd(Symmetricity.Asymmetric);
+        var Cv = evd.EigenVectors;
+        var e0 = MathNet.Numerics.LinearAlgebra.Vector<Complex>.Build.Dense(nS); e0[0] = Math.Sqrt(P[0]);
+        var a = Cv.Solve(ch.Solve(e0));
+        var Z = Cv * Matrix<Complex>.Build.DiagonalOfDiagonalVector(a);
+        if (seconds != null) seconds[0] += sw.Elapsed.TotalSeconds;
+        sw.Restart();
+        var sol = new DressedTailSolution { Pool = pool, NExplicit = nS, NSelected = cr.NSelected, Gamma = evd.EigenValues.ToArray() };
+        var idxAll = new int[nS + nQ];
+        Array.Copy(sArr, idxAll, nS); Array.Copy(qArr, 0, idxAll, nS, nQ);
+        sol.PoolIndices = idxAll;
+        if (atomSites != null)
+        {
+            int na = atomSites.Length;
+            var phS = new CDense(na, nS); var phQ = new CDense(na, nQ);
+            for (int at = 0; at < na; at++)
+            {
+                var (ax, ay, az) = atomSites[at];
+                for (int i = 0; i < nS; i++) { var (h, k, l) = pool.Hkl[sArr[i]]; phS[at, i] = Complex.FromPolarCoordinates(D[sArr[i]], 2 * Math.PI * (h * ax + k * ay + l * az)); }
+                for (int i = 0; i < nQ; i++) { var (h, k, l) = pool.Hkl[qArr[i]]; phQ[at, i] = Complex.FromPolarCoordinates(D[qArr[i]], 2 * Math.PI * (h * ax + k * ay + l * az)); }
+            }
+            sol.AtomAmp = ((phS + phQ * X) * Z).ToColumnMajorArray();
+            sol.AtomCount = na;
+        }
+        if (backscatterSource)
+        {
+            if (table.diffF == null) throw new ArgumentException("The table has no backscatter source; create it with sourceEta", nameof(table));
+            if (!table.SourceIsHermitian) throw new NotSupportedException("The single-direction path assumes a Hermitian source");
+            if (atomSites == null || quadAtoms == null || quadAtoms.Length != atomSites.Length || quadOrder <= 0)
+                throw new ArgumentException("The single-direction path needs atomSites and the tail quadrature", nameof(quadAtoms));
+            Complex Ff(int ig, int ih)
+            {
+                var (h1, k1, l1) = pool.Hkl[ig]; var (h2, k2, l2) = pool.Hkl[ih];
+                return table.diffF[pool.DiffIndex(h1 - h2, k1 - k2, l1 - l2)];
+            }
+            var fss = new CDense(nS, nS);
+            for (int c = 0; c < nS; c++)
+                for (int r = 0; r < nS; r++) fss[r, c] = Ff(sArr[r], sArr[c]) * (D[sArr[r]] * D[sArr[c]]);
+            var fsq = new CDense(nS, nQ); var fsqv = fsq.Values;
+            for (int r = 0; r < nQ; r++)
+            {
+                int qr = qArr[r];
+                for (int c = 0; c < nS; c++) fsqv[c + r * nS] = Ff(sArr[c], qr) * (D[sArr[c]] * D[qr]);
+            }
+            var cross = fsq * X;
+            var (pts, wpt) = GaussianCubature3D(quadOrder);
+            int np = pts.Length, na = atomSites.Length, nSites = na * np;
+            var ph = new CDense(nSites, nQ); var phv = ph.Values;
+            for (int r = 0; r < nQ; r++)
+            {
+                int q = qArr[r]; var (h, k, l) = pool.Hkl[q];
+                double gx = pool.GX[q], gy = pool.GY[q], gz = pool.GZ[q];
+                for (int at = 0; at < na; at++)
+                {
+                    var (ax, ay, az) = atomSites[at]; double s2 = 2 * Math.PI * quadAtoms[at].sigmaNm;
+                    var b0 = Complex.FromPolarCoordinates(D[q], 2 * Math.PI * (h * ax + k * ay + l * az));
+                    for (int t = 0; t < np; t++)
+                    {
+                        var (tx, ty, tz) = pts[t];
+                        phv[at * np + t + (long)r * nSites] = b0 * Complex.FromPolarCoordinates(1, s2 * (gx * tx + gy * ty + gz * tz));
+                    }
+                }
+            }
+            var chi = ph * X;
+            var chiW = Matrix<Complex>.Build.DenseOfMatrix(chi);
+            var cwv = ((CDense)chiW).Values;
+            for (int c = 0; c < nS; c++)
+                for (int at = 0; at < na; at++)
+                    for (int t = 0; t < np; t++) cwv[at * np + t + c * nSites] *= quadAtoms[at].weight * wpt[t];
+            var FW = fss + cross + cross.ConjugateTranspose() + chi.ConjugateTransposeThisAndMultiply(chiW);
+            sol.SourceMatrix = Z.ConjugateTransposeThisAndMultiply(FW * Z).ToColumnMajorArray();
+        }
+        if (seconds != null) seconds[1] += sw.Elapsed.TotalSeconds;
+        return sol;
+    }
+
     /// <summary>261109Cl 追加 (研究用): 裾どうしの疎な結合と密な行列の積 E·X (流束座標: E_wv = U(g_v − g_w) D_w D_v、w, v ∈ Q、w ≠ v)。
     /// X を行優先へ並べ替え、行ごとに CSR の非零 × X の行を AVX の複素の積和で足す。S の列 (map &lt; 0) は飛ばす。</summary>
     // private static Matrix<Complex> SpMMTail(DressedTailTable table, int[] qArr, int[] map, double[] D, Matrix<Complex> X, bool parallel) // 261109Cl 旧シグネチャ
@@ -1092,8 +1370,11 @@ public partial class BetheMethod
         public double RegDepthNm { get; set; } = 45;
         /// <summary>射影の E·X を着衣前の E·X₀ で近似する (疎な積 1 回。Galerkin の行列そのものを変える近似なので、既定は false = 2 回)</summary>
         public bool OneProduct { get; set; } = false;
-        /// <summary>方向のブロックの一辺 (格子の画素の数。1 = 方向ごとに着衣、2 = 2×2 で共有し中心は画素の境目)</summary>
-        public int BlockSize { get; set; } = 2;
+        /// <summary>方向のブロックの一辺 (格子の画素の数。1 = 方向ごとに着衣、2 = 2×2 で共有し中心は画素の境目)。
+        /// 261109Cl: 既定を 1 に (G512 の 2×2 は中心から最大 4.5 mrad で、集合を固定した純粋な共有の上乗せが 32 升すべてで 0.1 % 超 (0.12〜0.31 %)。
+        /// 追加の基底 (着衣の差 Δ の圧縮、r ≤ 40) も特異値がほとんど減らず効かない。codex2 第 20 回の案 3 = 着衣は方向ごと)。2 は速さ優先の選択肢</summary>
+        // public int BlockSize { get; set; } = 2; // 261109Cl 変更前
+        public int BlockSize { get; set; } = 1;
         /// <summary>後方 TDS 行列 (IncludeTDSBackground) の源の表の疎化の閾値 (|F(d)| ≥ SourceEta·|F(0)|、0 = 差の箱の全部)</summary>
         public double SourceEta { get; set; } = 1e-3;
         /// <summary>源の裾どうしの項を Gauss–Hermite の求積で積むときの 1 軸の点の数 (0 = 源の表の疎な積。求積なら源の表は作らない)。
@@ -1187,6 +1468,12 @@ public partial class BetheMethod
                 maxAngle = Math.Max(maxAngle, Math.Acos(Math.Clamp(Vector3DBase.Normarize(BeamDirections[i]) * center, -1, 1)) * 1e3);
             var swc = Stopwatch.StartNew();
             DressedTailSolution[] sols;
+            // 261109Cl 追加 (codex2 第 20 回の案 3): 自分を中心にする 1 方向は軽い形 (共有の G 群を作らない。同じ値で約 2 割速い)
+            DressedTailSolution Single((Vector3DBase k0, Vector3DBase n) d)
+                => SolveDressedTailSingleResearch(table, d.k0, d.n, opt.N, opt.Ps, opt.RegDepthNm, opt.OneProduct, atomArray, tds, quadAtoms, opt.SourceTailQuadrature);
+            if (members.Count == 1 && valid == 1)
+                sols = [Single(dirs[0])];
+            else
             try
             {
                 sols = SolveDressedTailBlockResearch(table, ck0, cn, dirs, opt.N, opt.Ps, opt.RegDepthNm, opt.OneProduct, false, null, null, atomArray, tds, quadAtoms, opt.SourceTailQuadrature, opt.PromoteOverBlock);
@@ -1197,7 +1484,8 @@ public partial class BetheMethod
                 Interlocked.Increment(ref split);
                 sols = new DressedTailSolution[members.Count];
                 for (int m = 0; m < members.Count; m++)
-                    sols[m] = SolveDressedTailBlockResearch(table, dirs[m].k0, dirs[m].n, [dirs[m]], opt.N, opt.Ps, opt.RegDepthNm, opt.OneProduct, false, null, null, atomArray, tds, quadAtoms, opt.SourceTailQuadrature)[0];
+                    // sols[m] = SolveDressedTailBlockResearch(table, dirs[m].k0, dirs[m].n, [dirs[m]], opt.N, opt.Ps, opt.RegDepthNm, opt.OneProduct, false, null, null, atomArray, tds, quadAtoms, opt.SourceTailQuadrature)[0]; // 261109Cl 変更前
+                    sols[m] = Single(dirs[m]); // 261109Cl
             }
             Interlocked.Add(ref solveTicks, swc.Elapsed.Ticks);
             swc.Restart();
