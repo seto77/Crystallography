@@ -862,6 +862,30 @@ public partial class BetheMethod
         return total;
     }
 
+    /// <summary>261109Cl 追加 (研究用): 源の裾どうしの項の求積に使う、原子ごとの F(0) の分 A_n (getU の後方半球の積分と同じ式) と Gauss の幅 σ_n = √(B/8π²) [nm]
+    /// (等方の B_eq で近似)。並びは RunEBSDNew の atomArray と同じ (Crystal.Atoms → 各 Atom)。電圧は今の AccVoltage。表の F(0) と和が合うことを確かめる。</summary>
+    public (double weight, double sigmaNm)[] DressedTailSourceAtomsResearch(DressedTailTable table)
+    {
+        if (table.diffF == null) throw new ArgumentException("The table has no backscatter source", nameof(table));
+        var gammaRel = 1 + UniversalConstants.e0 * AccVoltage * 1E3 / UniversalConstants.m0 / UniversalConstants.c2;
+        var list = new List<(double, double)>();
+        foreach (var atoms in Crystal.Atoms)
+        {
+            double m = atoms.Dsf?.BisoEffective ?? 0;
+            if (!(m > 0)) m = 0;
+            int sub = _elasticIonModel == ElasticIonModel.Neutral ? 0 : atoms.SubNumberElectron;
+            double f = m == 0 ? 0 : AtomStatic.ElectronScatteringPeng[atoms.AtomicNumber][sub].FactorImaginaryAnnular(AccVoltage, new Vector3DBase(0, 0, 0), m, Math.PI / 2, Math.PI, 30, 12);
+            if (BackscatterSourceScaleForResearch != null) f *= BackscatterSourceScaleForResearch(atoms.AtomicNumber, AccVoltage);
+            double a = f * atoms.Occ * gammaRel / Math.PI / Crystal.Volume, sigma = Math.Sqrt(m / (8 * Math.PI * Math.PI));
+            foreach (var _ in atoms.Atom) list.Add((a, sigma));
+        }
+        var quadAtoms = list.ToArray();
+        double sumA = quadAtoms.Sum(x => x.Item1), f0 = table.diffF[table.Pool.DiffIndex(0, 0, 0)].Real;
+        if (Math.Abs(sumA - f0) > 1e-9 * Math.Max(Math.Abs(f0), 1e-300)) // 原子の分の和 = F(0) (規格化の取り違えを止める)
+            throw new InvalidOperationException($"Tail quadrature weights {sumA} do not add up to F(0) = {f0}");
+        return quadAtoms;
+    }
+
     /// <summary>261109Cl 追加: 標準正規分布 N(0, 1) の Gauss–Hermite 求積の点と重み (Golub–Welsch、重みの和 = 1)。</summary>
     private static (double[] t, double[] w) GaussHermiteProbabilists(int n)
     {
@@ -873,6 +897,38 @@ public partial class BetheMethod
         double sw = w.Sum();
         for (int i = 0; i < n; i++) w[i] /= sw;
         return (t, w);
+    }
+
+    /// <summary>261109Cl 追加 (研究用、参照用): 候補の前方 (P &gt; 0) の全ビームを明示にした本体と同じ規約の行列 A (行 g・列 h、列優先、000 が先頭):
+    /// A_gh = U(h − g)/P_g (g ≠ h)、A_gg = (Q_g + iU'₀)/P_g。固有分解 A C = C diag(γ) の C が物理振幅 (従来の getEigenMatrix と同じ)。</summary>
+    public static Complex[] DressedTailExplicitMatrixForResearch(DressedTailTable table, Vector3DBase vecK0, Vector3DBase surface, out int[] poolIndices)
+    {
+        var pool = table.Pool;
+        var (kX, kY, kZ) = vecK0.Tuple; var (sX, sY, sZ) = surface.Tuple;
+        double k02 = vecK0.Length2;
+        var idx = new List<int>();
+        var Q = new List<double>(); var P = new List<double>();
+        for (int i = 0; i < pool.Count; i++)
+        {
+            double vX = pool.GX[i] + kX, vY = pool.GY[i] + kY, vZ = pool.GZ[i] + kZ;
+            double p = 2 * Dot3(sX, vX, sY, vY, sZ, vZ);
+            if (i != 0 && p <= 0) continue;
+            idx.Add(i); Q.Add(k02 - Dot3(vX, vX, vY, vY, vZ, vZ)); P.Add(p);
+        }
+        int n = idx.Count;
+        var a = new Complex[(long)n * n];
+        var u0i = Complex.ImaginaryOne * table.U000Imag;
+        Parallel.For(0, n, c =>
+        {
+            var (h2, k2, l2) = pool.Hkl[idx[c]];
+            for (int r = 0; r < n; r++)
+            {
+                var (h1, k1, l1) = pool.Hkl[idx[r]];
+                a[r + (long)c * n] = (r == c ? Q[r] + u0i : table.diffUfull[pool.DiffIndex(h2 - h1, k2 - k1, l2 - l1)]) / P[r];
+            }
+        });
+        poolIndices = [.. idx];
+        return a;
     }
 
     /// <summary>261109Cl 追加 (研究用、照合用): 源の行列の密な形 F(行 r, 列 c) = F(g_r − g_c) (候補の番号の並び、列優先、差の箱の全部 = 疎化なし)。</summary>
@@ -960,27 +1016,7 @@ public partial class BetheMethod
         rec.SecondsPool = sw.Elapsed.TotalSeconds; sw.Restart();
         bool tds = background != null;
         var table = CreateDressedTailTable(pool, opt.Eta, !tds ? double.NaN : opt.SourceTailQuadrature > 0 ? double.PositiveInfinity : opt.SourceEta); // 吸収は電圧で変わるので、表はエネルギーごとに作り直す
-        // 源の裾どうしの項の求積: 原子ごとの F(0) の分 A_n (getU の後方半球の積分と同じ式) と Gauss の幅 σ_n = √(B/8π²) (等方の B_eq で近似)
-        (double weight, double sigmaNm)[] quadAtoms = null;
-        if (tds && opt.SourceTailQuadrature > 0)
-        {
-            var gammaRel = 1 + UniversalConstants.e0 * AccVoltage * 1E3 / UniversalConstants.m0 / UniversalConstants.c2;
-            var list = new List<(double, double)>();
-            foreach (var atoms in Crystal.Atoms)
-            {
-                double m = atoms.Dsf?.BisoEffective ?? 0;
-                if (!(m > 0)) m = 0;
-                int sub = _elasticIonModel == ElasticIonModel.Neutral ? 0 : atoms.SubNumberElectron;
-                double f = m == 0 ? 0 : AtomStatic.ElectronScatteringPeng[atoms.AtomicNumber][sub].FactorImaginaryAnnular(AccVoltage, new Vector3DBase(0, 0, 0), m, Math.PI / 2, Math.PI, 30, 12);
-                if (BackscatterSourceScaleForResearch != null) f *= BackscatterSourceScaleForResearch(atoms.AtomicNumber, AccVoltage);
-                double a = f * atoms.Occ * gammaRel / Math.PI / Crystal.Volume, sigma = Math.Sqrt(m / (8 * Math.PI * Math.PI));
-                foreach (var _ in atoms.Atom) list.Add((a, sigma));
-            }
-            quadAtoms = [.. list];
-            double sumA = quadAtoms.Sum(x => x.weight), f0 = table.diffF[pool.DiffIndex(0, 0, 0)].Real;
-            if (Math.Abs(sumA - f0) > 1e-9 * Math.Max(Math.Abs(f0), 1e-300)) // 原子の分の和 = F(0) (規格化の取り違えを止める)
-                throw new InvalidOperationException($"Tail quadrature weights {sumA} do not add up to F(0) = {f0}");
-        }
+        (double weight, double sigmaNm)[] quadAtoms = tds && opt.SourceTailQuadrature > 0 ? DressedTailSourceAtomsResearch(table) : null;
         rec.SecondsTable = sw.Elapsed.TotalSeconds - table.SecondsSource; rec.SecondsSource = table.SecondsSource;
         rec.TableNonzeros = table.Nonzeros; rec.SourceNonzeros = table.SourceNonzeros;
 
