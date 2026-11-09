@@ -60,6 +60,7 @@ public partial class BetheMethod
         public double SecondsSource;
         /// <summary>261109Cl 追加: F(−d) = conj F(d) が差の箱の全部で成り立つ (相対 1e−12)。成り立てば交差項を T + T† (T = F'_SQ X) で 1 回の積にする</summary>
         public bool SourceIsHermitian { get; internal set; }
+        internal DressedQuadCache quadCache; // 261109Cl 追加: 源の求積の幾何の位相の表 (速い形が初めて使うときに作る)
     }
 
     /// <summary>261109Cl 追加 (研究用): 着衣つきの解 1 方向分。</summary>
@@ -144,15 +145,21 @@ public partial class BetheMethod
                     if ((h, k, l) != (0, 0, 0) && u.Magnitude >= thr) ds.Add((h, k, l, u));
                 }
         int n = pool.Count;
+        // 261109Cl 追加 (codex2 第 21 回): 疎な表は裾の半径の中だけ (行・列とも)。積で使うのは裾どうしの結合だけなので値は変わらず、表と積の走査が軽くなる
+        double rtt = table.TailRadiusNm * table.TailRadiusNm * (1 + 1e-9);
+        var inT = new bool[n];
+        for (int i = 0; i < n; i++) inT[i] = Dot3(pool.GX[i], pool.GX[i], pool.GY[i], pool.GY[i], pool.GZ[i], pool.GZ[i]) <= rtt;
         var rows = new (int j, Complex u)[n][];
         Parallel.For(0, n, i =>
         {
+            if (!inT[i]) { rows[i] = []; return; } // 261109Cl
             var (h0, k0, l0) = pool.Hkl[i];
             var list = new List<(int, Complex)>();
             foreach (var d in ds)
             {
                 int j = pool.IndexOf((h0 + d.h, k0 + d.k, l0 + d.l));
-                if (j >= 0) list.Add((j, d.u)); // 要素 (i, j) = U(g_j − g_i) = U_d
+                // if (j >= 0) list.Add((j, d.u)); // 要素 (i, j) = U(g_j − g_i) = U_d // 261109Cl 変更前
+                if (j >= 0 && inT[j]) list.Add((j, d.u)); // 要素 (i, j) = U(g_j − g_i) = U_d (261109Cl: 列も裾の半径の中だけ)
             }
             list.Sort((a, b) => a.Item1.CompareTo(b.Item1));
             rows[i] = [.. list];
@@ -292,13 +299,16 @@ public partial class BetheMethod
     {
         public int[] SArr, QArr; public double[] P, D; public int NSelected;
         public Matrix<Complex> X, HSS, HQS, HSQ, EX; public Complex[] LamQ;
+        public Complex[] Gb; // 261109Cl 追加: 着衣のモードの固有値 γ_j (modeBasis のとき)
+        public Matrix<Complex> Xt, Vb, R, EXt; // 261109Cl 追加: モードの基底 (modeBasis) のとき = X̃ (X = X̃V_b⁻¹)、V_b、R = (H_QS + E X₀)V_b (着衣の倍率の前)、E·X̃ (疎な積 2 回のときだけ)
     }
 
     /// <summary>261109Cl 追加 (SolveDressedTailResearch から切り出し): 選択・繰り上げ・密なブロック・着衣 (Sylvester の 1 段) と、射影に使う E·X。</summary>
     // private DressCoreResult DressCore(DressedTailTable table, Vector3DBase vecK0, Vector3DBase surface, int n, double ps, double regDepthNm, bool oneProduct, bool parallel, DressedTailTiming timing) // 261109Cl 旧シグネチャ
     private DressCoreResult DressCore(DressedTailTable table, Vector3DBase vecK0, Vector3DBase surface, int n, double ps, double regDepthNm, bool oneProduct, bool parallel, DressedTailTiming timing,
         (Vector3DBase k0, Vector3DBase n)[] promoteAlso = null, // 261109Cl promoteAlso 追加: これらの方向のどれかで遅い (|Q/P| < ps) 裾の反射も明示へ繰り上げる (ブロックの共有用)
-        int[] explicitSet = null) // 261109Cl explicitSet 追加 (研究用、照合用): 明示の集合をこの候補の番号に固定する (000 が先頭。選択と繰り上げをしない)
+        int[] explicitSet = null, // 261109Cl explicitSet 追加 (研究用、照合用): 明示の集合をこの候補の番号に固定する (000 が先頭。選択と繰り上げをしない)
+        bool modeBasis = false) // 261109Cl modeBasis 追加: X = X̃V_b⁻¹ を作らず、モードの基底 (V_b, X̃) と R を返す (span([I; X]) = span([V_b; X̃]) なので Galerkin は同じ)
     {
         if (table.Owner != this) throw new ArgumentException("The table was built for another BetheMethod", nameof(table));
         if (table.KV != (AccVoltage > 0 ? AccVoltage : 20)) // 261109Cl 追加 (codex2 第18回): 表の電圧と今の電圧の混在を禁じる
@@ -315,12 +325,16 @@ public partial class BetheMethod
         var Q = new double[cnt]; var P = new double[cnt];
         double rt2 = table.TailRadiusNm * table.TailRadiusNm * (1 + 1e-9);
         var inTail = new bool[cnt];
+        double rcore2 = DressedTailCoreRadiusNm * DressedTailCoreRadiusNm * (1 + 1e-9); // 261109Cl 追加 (研究用)
         for (int i = 0; i < cnt; i++)
         {
             double vX = pool.GX[i] + kX, vY = pool.GY[i] + kY, vZ = pool.GZ[i] + kZ;
             Q[i] = k02 - Dot3(vX, vX, vY, vY, vZ, vZ);
             P[i] = 2 * Dot3(sX, vX, sY, vY, sZ, vZ);
-            inTail[i] = P[i] > 0 && Dot3(pool.GX[i], pool.GX[i], pool.GY[i], pool.GY[i], pool.GZ[i], pool.GZ[i]) <= rt2;
+            // inTail[i] = P[i] > 0 && Dot3(pool.GX[i], pool.GX[i], pool.GY[i], pool.GY[i], pool.GZ[i], pool.GZ[i]) <= rt2; // 261109Cl 変更前
+            double g2i = Dot3(pool.GX[i], pool.GX[i], pool.GY[i], pool.GY[i], pool.GZ[i], pool.GZ[i]);
+            inTail[i] = P[i] > 0 && (double.IsNaN(DressedTailShellLambdaCut) ? g2i <= rt2
+                : g2i <= rcore2 || (g2i <= rt2 && Math.Abs(Q[i] / P[i]) < DressedTailShellLambdaCut)); // 261109Cl 追加 (研究用): 芯の半径の外は Ewald 球に近い裾だけ
         }
         bool SlowInAny(int i) // 261109Cl 追加: ブロックの方向のどれかで遅い反射か
         {
@@ -408,14 +422,23 @@ public partial class BetheMethod
                 x0[r + c * nQ] = -hqs[r + c * nQ] * Complex.Conjugate(l) / (l.Real * l.Real + l.Imaginary * l.Imaginary + d2);
             }
         var X0 = new CDense(nQ, nS, x0);
-        var evdB = (HSS + HSQ * X0).Evd(Symmetricity.Asymmetric);
+        // var evdB = (HSS + HSQ * X0).Evd(Symmetricity.Asymmetric); // 261109Cl 変更前
+        var hbm = HSS + MulMaybeSingle(HSQ, X0); // 261109Cl: 着衣の積は単精度を選べる (DressedDenseSingle)
+        if (timing != null) timing.Project = sw.Elapsed.TotalSeconds; // 261109Cl 追加: X₀ と H_SQ X₀ まで
+        var evdB = hbm.Evd(Symmetricity.Asymmetric);
+        if (timing != null) timing.Eig = sw.Elapsed.TotalSeconds - timing.Project; // 261109Cl 追加: H_b の固有分解
         var gb = evdB.EigenValues; var Vb = evdB.EigenVectors;
         if (timing != null) timing.Dress = sw.Elapsed.TotalSeconds;
         sw.Restart();
-        var EX0 = SpMMTail(table, qArr, map, D, X0, parallel);
+        // var EX0 = SpMMTail(table, qArr, map, D, X0, parallel); // 261109Cl 変更前
+        bool[] rowKeep = null; // 261109Cl 追加 (研究用、速さ): |λ_q| が DressedSpMMLambdaCut 以上の裾の行は E·X₀ を積まない (着衣で 1/λ_q 倍になる寄与)
+        if (double.IsFinite(DressedSpMMLambdaCut)) { rowKeep = new bool[nQ]; for (int r = 0; r < nQ; r++) rowKeep[r] = lamQ[r].Magnitude < DressedSpMMLambdaCut; }
+        var EX0 = SpMMTail(table, qArr, map, D, X0, parallel, false, rowKeep);
         if (timing != null) timing.SpMM1 = sw.Elapsed.TotalSeconds;
         sw.Restart();
-        var rhs = (HQS + EX0) * Vb;
+        // var rhs = (HQS + EX0) * Vb; // 261109Cl 変更前
+        var rhs = MulMaybeSingle(HQS + EX0, Vb); // 261109Cl
+        var Rkeep = modeBasis ? rhs.Clone() : null; // 261109Cl 追加: 倍率の前の R
         var xt = ((CDense)rhs).Values;
         for (int c = 0; c < nS; c++)
         {
@@ -425,6 +448,14 @@ public partial class BetheMethod
                 var dd = lamQ[r] - g;
                 xt[r + c * nQ] = -xt[r + c * nQ] * Complex.Conjugate(dd) / (dd.Real * dd.Real + dd.Imaginary * dd.Imaginary + d2);
             }
+        }
+        if (modeBasis) // 261109Cl 追加: V_b⁻¹ の逆行列と積を省く
+        {
+            if (timing != null) timing.Dress += sw.Elapsed.TotalSeconds;
+            sw.Restart();
+            var EXt = oneProduct ? null : SpMMTail(table, qArr, map, D, rhs, parallel);
+            if (timing != null) timing.SpMM2 = sw.Elapsed.TotalSeconds;
+            return new DressCoreResult { SArr = sArr, QArr = qArr, P = P, D = D, NSelected = nSelected, HSS = HSS, HQS = HQS, HSQ = HSQ, LamQ = lamQ, Xt = rhs, Vb = Vb, R = Rkeep, EXt = EXt, Gb = gb.ToArray() };
         }
         var X = rhs * Vb.Inverse();
         if (timing != null) timing.Dress += sw.Elapsed.TotalSeconds;
@@ -932,13 +963,153 @@ public partial class BetheMethod
         return sol;
     }
 
+    /// <summary>261109Cl 追加 (研究用、速さ): 1 方向の軽い解の速い形。モードの基底 A = [V_b; X̃] (span = [I; X]) で Galerkin を組み、X = X̃V_b⁻¹ の積と逆行列を省く。
+    /// K' = V_b†H_SS V_b + V_b†(H_SQ X̃) + X̃†(H_QS V_b + ΛX̃ + E X̃) (疎な積 1 回なら H_QS V_b + E X̃ ≈ R = (H_QS + E X₀)V_b、着衣で作った積をそのまま使う)、
+    /// G' = V_b†V_b + X̃†X̃、初期値 G'c = A†(√P₀ e₀) = conj(V_b[0, :])·√P₀。後方 TDS の源の求積は位相を (原子) × (点) に因数分解して作る。
+    /// 後方 TDS のとき原子位置の振幅は作らない (本体の経路は非局所源があれば局所値を使わない)。値は SolveDressedTailSingleResearch と丸めの範囲で同じ。
+    /// seconds (長さ 7 以上) に段ごとの時間を足す: 0 着衣 (選択・ブロック・疎な積を含む)、1 Galerkin、2 原子の振幅、3 源の密なブロック、4 求積の位相、5 求積の積、6 B = Z†F_W Z。</summary>
+    public DressedTailSolution SolveDressedTailFastResearch(DressedTailTable table, Vector3DBase vecK0, Vector3DBase surface, int n, double ps, double regDepthNm, bool oneProduct,
+        (double x, double y, double z)[] atomSites, bool backscatterSource, (double weight, double sigmaNm)[] quadAtoms, int quadOrder, int[] explicitSet = null, double[] seconds = null)
+    {
+        var sw = Stopwatch.StartNew();
+        var tmc = seconds != null && seconds.Length >= 13 ? new DressedTailTiming() : null; // 261109Cl: 着衣の内訳 (seconds[7..12])
+        var cr = DressCore(table, vecK0, surface, n, ps, regDepthNm, oneProduct, false, tmc, null, explicitSet, modeBasis: true);
+        if (tmc != null) { seconds[7] += tmc.Select; seconds[8] += tmc.Blocks; seconds[9] += tmc.Dress; seconds[10] += tmc.SpMM1; seconds[11] += tmc.SpMM2; if (seconds.Length >= 15) { seconds[13] += tmc.Project; seconds[14] += tmc.Eig; } }
+        var pool = table.Pool;
+        var (sArr, qArr, P, D, HSS, HQS, HSQ, lamQ, Xt, Vb) = (cr.SArr, cr.QArr, cr.P, cr.D, cr.HSS, cr.HQS, cr.HSQ, cr.LamQ, cr.Xt, cr.Vb);
+        int nS = sArr.Length, nQ = qArr.Length;
+        void Lap(int slot) { if (seconds != null) seconds[slot] += sw.Elapsed.TotalSeconds; sw.Restart(); }
+        Lap(0);
+        // (1) Galerkin (モードの基底)
+        Matrix<Complex> K, G;
+        if (oneProduct && !double.IsNaN(DressedEdeltaThreshold))
+        {
+            // 261109Cl 追加 (codex2 第 21 回): 疎な積 1 回では ΛX̃ + R = X̃Γ + E_δ、(E_δ)_qj = R_qj δ²/(|λ_q − γ_j|² + δ²) なので
+            //   X̃†(R + ΛX̃) = (X̃†X̃)Γ + X̃†E_δ。X̃†X̃ は G にも要るので使い回し、E_δ は共鳴の近く (倍率 > 閾値) だけの疎な積にする
+            var YY = Xt.ConjugateTransposeThisAndMultiply(Xt);
+            var gb = cr.Gb;
+            double delta = 1 / (Math.PI * regDepthNm), d2 = delta * delta, thr = DressedEdeltaThreshold;
+            var Rv = ((CDense)cr.R).Values; var xv = ((CDense)Xt).Values;
+            var YE = new Complex[nS * nS];
+            long nnz = 0;
+            for (int j = 0; j < nS; j++)
+            {
+                var g = gb[j];
+                for (int q = 0; q < nQ; q++)
+                {
+                    var dd = lamQ[q] - g;
+                    double f = d2 / (dd.Real * dd.Real + dd.Imaginary * dd.Imaginary + d2);
+                    if (f <= thr) continue;
+                    var e = Rv[q + j * nQ] * f;
+                    nnz++;
+                    for (int i = 0; i < nS; i++) YE[i + j * nS] += Complex.Conjugate(xv[q + i * nQ]) * e; // (X̃†E_δ)_ij
+                }
+            }
+            Interlocked.Add(ref DressedEdeltaNonzeros, nnz);
+            var YYG = YY.Clone();
+            for (int j = 0; j < nS; j++) for (int i = 0; i < nS; i++) YYG[i, j] *= gb[j];
+            K = Vb.ConjugateTransposeThisAndMultiply(HSS * Vb + HSQ * Xt) + YYG + new CDense(nS, nS, YE);
+            G = Vb.ConjugateTransposeThisAndMultiply(Vb) + YY;
+        }
+        else
+        {
+            var right = oneProduct ? cr.R : HQS * Vb + cr.EXt; // H_QS V_b + E X̃
+            var rv = ((CDense)right).Values; var xv = ((CDense)Xt).Values;
+            for (int c = 0; c < nS; c++)
+                for (int r = 0; r < nQ; r++) rv[r + c * nQ] += lamQ[r] * xv[r + c * nQ];
+            K = Vb.ConjugateTransposeThisAndMultiply(HSS * Vb + HSQ * Xt) + Xt.ConjugateTransposeThisAndMultiply(right);
+            G = Vb.ConjugateTransposeThisAndMultiply(Vb) + Xt.ConjugateTransposeThisAndMultiply(Xt);
+        }
+        if (seconds != null && seconds.Length >= 13) { seconds[12] -= sw.Elapsed.TotalSeconds; } // 261109Cl: 固有分解だけの時間 (下で足す)
+        var ch = G.Cholesky();
+        var evd = ch.Solve(K).Evd(Symmetricity.Asymmetric);
+        if (seconds != null && seconds.Length >= 13) { seconds[12] += sw.Elapsed.TotalSeconds; }
+        var Cv = evd.EigenVectors;
+        double sp0 = Math.Sqrt(P[0]);
+        var e0 = MathNet.Numerics.LinearAlgebra.Vector<Complex>.Build.Dense(nS, j => Complex.Conjugate(Vb[0, j]) * sp0);
+        var a = Cv.Solve(ch.Solve(e0));
+        var Z = Cv * Matrix<Complex>.Build.DiagonalOfDiagonalVector(a);
+        Lap(1);
+        var sol = new DressedTailSolution { Pool = pool, NExplicit = nS, NSelected = cr.NSelected, Gamma = evd.EigenValues.ToArray() };
+        var idxAll = new int[nS + nQ];
+        Array.Copy(sArr, idxAll, nS); Array.Copy(qArr, 0, idxAll, nS, nQ);
+        sol.PoolIndices = idxAll;
+        // (2) 原子位置の振幅 (局所源のときだけ): Φ = (Ph_S D_S V_b + Ph_Q D_Q X̃) Z
+        if (atomSites != null && !backscatterSource)
+        {
+            int na = atomSites.Length;
+            var phS = new CDense(na, nS); var phQ = new CDense(na, nQ);
+            for (int at = 0; at < na; at++)
+            {
+                var (ax, ay, az) = atomSites[at];
+                for (int i = 0; i < nS; i++) { var (h, k, l) = pool.Hkl[sArr[i]]; phS[at, i] = Complex.FromPolarCoordinates(D[sArr[i]], 2 * Math.PI * (h * ax + k * ay + l * az)); }
+                for (int i = 0; i < nQ; i++) { var (h, k, l) = pool.Hkl[qArr[i]]; phQ[at, i] = Complex.FromPolarCoordinates(D[qArr[i]], 2 * Math.PI * (h * ax + k * ay + l * az)); }
+            }
+            sol.AtomAmp = ((phS * Vb + phQ * Xt) * Z).ToColumnMajorArray();
+            sol.AtomCount = na;
+        }
+        Lap(2);
+        // (3) 後方 TDS の源: F_W = V_b†F'_SS V_b + V_b†(F'_SQ X̃) + (…)† + X̃†F'_QQ X̃ (求積)、B = Z†F_W Z
+        if (backscatterSource)
+        {
+            if (table.diffF == null) throw new ArgumentException("The table has no backscatter source; create it with sourceEta", nameof(table));
+            if (!table.SourceIsHermitian) throw new NotSupportedException("The fast path assumes a Hermitian source");
+            if (atomSites == null || quadAtoms == null || quadAtoms.Length != atomSites.Length || quadOrder <= 0)
+                throw new ArgumentException("The fast path needs atomSites and the tail quadrature", nameof(quadAtoms));
+            var fss = new CDense(nS, nS); var fsq = new CDense(nS, nQ); var fssv = fss.Values; var fsqv = fsq.Values;
+            var dF = table.diffF;
+            int dkn = 2 * pool.DiffBoundK + 1, dln = 2 * pool.DiffBoundL + 1;
+            var sh = new (int h, int k, int l)[nS];
+            for (int i = 0; i < nS; i++) sh[i] = pool.Hkl[sArr[i]];
+            for (int c = 0; c < nS; c++)
+            {
+                var (h2, k2, l2) = sh[c]; double dc = D[sArr[c]];
+                for (int r = 0; r < nS; r++) { var (h1, k1, l1) = sh[r]; fssv[r + c * nS] = dF[pool.DiffIndex(h1 - h2, k1 - k2, l1 - l2)] * (D[sArr[r]] * dc); }
+            }
+            for (int r = 0; r < nQ; r++)
+            {
+                int qr = qArr[r]; var (h2, k2, l2) = pool.Hkl[qr]; double dq = D[qr];
+                for (int c = 0; c < nS; c++) { var (h1, k1, l1) = sh[c]; fsqv[c + r * nS] = dF[pool.DiffIndex(h1 - h2, k1 - k2, l1 - l2)] * (D[sArr[c]] * dq); }
+            }
+            var xt32 = DressedDenseSingle ? ToC32(Xt) : null; // 単精度なら X̃ の変換は 1 回
+            var cross = Vb.ConjugateTransposeThisAndMultiply(MulMaybeSingle(fsq, Xt, xt32));
+            var FW = Vb.ConjugateTransposeThisAndMultiply(fss * Vb) + cross + cross.ConjugateTranspose();
+            Lap(3);
+            // 求積の位相 (261109Cl 変更、codex2 第 21 回): 方向・電圧に依らない幾何の位相 e^{2πi(hkl·r_a + σ_a g·t_p)} を表に保存して使い回し、
+            //   心格子の並進で重なる原子 (Si は 8 → 2 組) をまとめる。方向ごとは列を集めて D_q を掛けるだけ
+            var qc = GetQuadCache(table, atomSites, quadAtoms, quadOrder);
+            int nSites = qc.NSites;
+            var ph = new CDense(nSites, nQ); var phv = ph.Values;
+            for (int r = 0; r < nQ; r++)
+            {
+                int q = qArr[r]; long src = (long)qc.PoolCol[q] * nSites, dst = (long)r * nSites; double dq = D[q];
+                for (int i = 0; i < nSites; i++) phv[dst + i] = qc.Phase[src + i] * dq;
+            }
+            Lap(4);
+            var chi = MulMaybeSingle(ph, Xt, xt32);
+            var chiW = Matrix<Complex>.Build.DenseOfMatrix(chi);
+            var cwv = ((CDense)chiW).Values;
+            for (int c = 0; c < nS; c++)
+                for (int i = 0; i < nSites; i++) cwv[i + c * nSites] *= qc.Weights[i];
+            FW += chi.ConjugateTransposeThisAndMultiply(chiW);
+            Lap(5);
+            sol.SourceMatrix = Z.ConjugateTransposeThisAndMultiply(FW * Z).ToColumnMajorArray();
+            Lap(6);
+        }
+        return sol;
+    }
+
     /// <summary>261109Cl 追加 (研究用): 裾どうしの疎な結合と密な行列の積 E·X (流束座標: E_wv = U(g_v − g_w) D_w D_v、w, v ∈ Q、w ≠ v)。
     /// X を行優先へ並べ替え、行ごとに CSR の非零 × X の行を AVX の複素の積和で足す。S の列 (map &lt; 0) は飛ばす。</summary>
     // private static Matrix<Complex> SpMMTail(DressedTailTable table, int[] qArr, int[] map, double[] D, Matrix<Complex> X, bool parallel) // 261109Cl 旧シグネチャ
-    private static Matrix<Complex> SpMMTail(DressedTailTable table, int[] qArr, int[] map, double[] D, Matrix<Complex> X, bool parallel, bool source = false) // 261109Cl source 追加: 後方散乱の源の表 (F) で積む
+    // private static Matrix<Complex> SpMMTail(DressedTailTable table, int[] qArr, int[] map, double[] D, Matrix<Complex> X, bool parallel, bool source = false) // 261109Cl 旧シグネチャ
+    private static Matrix<Complex> SpMMTail(DressedTailTable table, int[] qArr, int[] map, double[] D, Matrix<Complex> X, bool parallel, bool source = false, // 261109Cl source 追加: 後方散乱の源の表 (F) で積む
+        bool[] rowKeep = null) // 261109Cl rowKeep 追加: false の行は積まない (結果は 0)
     {
         // if (DressedSpMMSingle) return SpMMTailSingle(table, qArr, map, D, X, parallel); // 261109Cl 変更前
-        if (DressedSpMMSingle) return SpMMTailSingle(table, qArr, map, D, X, parallel, source); // 261109Cl
+        // if (DressedSpMMSingle) return SpMMTailSingle(table, qArr, map, D, X, parallel, source); // 261109Cl 変更前
+        if (DressedSpMMSingle && DressedSpMMKernel == 2 && !source && !parallel) return SpMMTailSingleSoA(table, qArr, map, D, X, rowKeep); // 261109Cl 追加: SoA の核
+        if (DressedSpMMSingle) return SpMMTailSingle(table, qArr, map, D, X, parallel, source, rowKeep); // 261109Cl
         var sw = Stopwatch.StartNew();
         int nQ = X.RowCount, k = X.ColumnCount;
         var xcm = ((CDense)X).Values;
@@ -1061,8 +1232,10 @@ public partial class BetheMethod
             }
         }
         Action<int> kernel = DressedSpMMKernel == 1 ? RowStream : Row;
-        if (parallel) Parallel.For(0, nQ, kernel);
-        else for (int r = 0; r < nQ; r++) kernel(r);
+        // if (parallel) Parallel.For(0, nQ, kernel); // 261109Cl 変更前
+        // else for (int r = 0; r < nQ; r++) kernel(r);
+        if (parallel) Parallel.For(0, nQ, r => { if (rowKeep == null || rowKeep[r]) kernel(r); }); // 261109Cl
+        else for (int r = 0; r < nQ; r++) if (rowKeep == null || rowKeep[r]) kernel(r);
         DressedSpMMSeconds[1] += sw.Elapsed.TotalSeconds; sw.Restart();
         var res = new CDense(nQ, k);
         var rv = res.Values;
@@ -1078,7 +1251,85 @@ public partial class BetheMethod
     /// <summary>261109Cl 追加 (研究用): 単精度 (複素 float) の疎な積。X と結合の値を float にし、積和も float (E·X は着衣の補正なので丸め 1e−6 程度は効かない見込み、照合で確かめる)。
     /// 核は RowStream と同じ順 (非零ごとに X の行を流す)、AVX 1 本に複素 4 個。</summary>
     // private static Matrix<Complex> SpMMTailSingle(DressedTailTable table, int[] qArr, int[] map, double[] D, Matrix<Complex> X, bool parallel) // 261109Cl 旧シグネチャ
-    private static Matrix<Complex> SpMMTailSingle(DressedTailTable table, int[] qArr, int[] map, double[] D, Matrix<Complex> X, bool parallel, bool source = false) // 261109Cl source 追加
+    // private static Matrix<Complex> SpMMTailSingle(DressedTailTable table, int[] qArr, int[] map, double[] D, Matrix<Complex> X, bool parallel, bool source = false) // 261109Cl 旧シグネチャ
+    /// <summary>261109Cl 追加 (研究用、速さ): 単精度の疎な積で、実部と虚部を別の並び (SoA) にした形。非零ごとに X の行を流し、複素 8 個を FMA 4 回で積む
+    /// (AoS の並べ替え・AddSubtract が要らない)。DressedSpMMKernel = 2 で選ぶ (源の表には使わない)。値は SpMMTailSingle と丸めの範囲で同じ。</summary>
+    private static Matrix<Complex> SpMMTailSingleSoA(DressedTailTable table, int[] qArr, int[] map, double[] D, Matrix<Complex> X, bool[] rowKeep)
+    {
+        lock (table)
+            if (table.vReF == null)
+            {
+                table.vReF = table.vRe.Select(v => (float)v).ToArray();
+                table.vImF = table.vIm.Select(v => (float)v).ToArray();
+            }
+        int nQ = X.RowCount, k = X.ColumnCount, kp = (k + 15) & ~15;
+        var xcm = ((CDense)X).Values;
+        var xre = new float[(long)nQ * kp]; var xim = new float[(long)nQ * kp];
+        for (int r0 = 0; r0 < nQ; r0 += 32)
+            for (int c0 = 0; c0 < k; c0 += 32)
+                for (int r = r0, rEnd = Math.Min(r0 + 32, nQ); r < rEnd; r++)
+                {
+                    double dv = D[qArr[r]];
+                    for (int c = c0, cEnd = Math.Min(c0 + 32, k); c < cEnd; c++)
+                    {
+                        var x = xcm[r + c * nQ];
+                        xre[(long)r * kp + c] = (float)(x.Real * dv); xim[(long)r * kp + c] = (float)(x.Imaginary * dv);
+                    }
+                }
+        var yre = new float[(long)nQ * kp]; var yim = new float[(long)nQ * kp];
+        var rowPtr = table.rowPtr; var col = table.colIdx; var vr = table.vReF; var vi = table.vImF;
+        unsafe
+        {
+            fixed (float* xr0 = xre, xi0 = xim, yr0 = yre, yi0 = yim, vrp = vr, vip = vi)
+            fixed (int* colp = col, mapp = map)
+            {
+                for (int r = 0; r < nQ; r++)
+                {
+                    if (rowKeep != null && !rowKeep[r]) continue;
+                    int pw = qArr[r], p0 = rowPtr[pw], p1 = rowPtr[pw + 1];
+                    float* Yr = yr0 + (long)r * kp, Yi = yi0 + (long)r * kp;
+                    for (int p = p0; p < p1; p++)
+                    {
+                        int qv = mapp[colp[p]];
+                        if (qv < 0) continue;
+                        float a = vrp[p], b = vip[p];
+                        float* Xr = xr0 + (long)qv * kp, Xi = xi0 + (long)qv * kp;
+                        if (Fma.IsSupported && Avx.IsSupported)
+                        {
+                            var va = Vector256.Create(a); var vb = Vector256.Create(b);
+                            for (int c = 0; c < kp; c += 16)
+                            {
+                                var xr = Avx.LoadVector256(Xr + c); var xi = Avx.LoadVector256(Xi + c);
+                                var xr2 = Avx.LoadVector256(Xr + c + 8); var xi2 = Avx.LoadVector256(Xi + c + 8);
+                                var yr = Avx.LoadVector256(Yr + c); var yi = Avx.LoadVector256(Yi + c);
+                                var yr2 = Avx.LoadVector256(Yr + c + 8); var yi2 = Avx.LoadVector256(Yi + c + 8);
+                                yr = Fma.MultiplyAddNegated(vb, xi, Fma.MultiplyAdd(va, xr, yr));
+                                yi = Fma.MultiplyAdd(vb, xr, Fma.MultiplyAdd(va, xi, yi));
+                                yr2 = Fma.MultiplyAddNegated(vb, xi2, Fma.MultiplyAdd(va, xr2, yr2));
+                                yi2 = Fma.MultiplyAdd(vb, xr2, Fma.MultiplyAdd(va, xi2, yi2));
+                                Avx.Store(Yr + c, yr); Avx.Store(Yi + c, yi); Avx.Store(Yr + c + 8, yr2); Avx.Store(Yi + c + 8, yi2);
+                            }
+                        }
+                        else
+                            for (int c = 0; c < k; c++) { float xr = Xr[c], xi = Xi[c]; Yr[c] += a * xr - b * xi; Yi[c] += a * xi + b * xr; }
+                    }
+                }
+            }
+        }
+        var res = new CDense(nQ, k);
+        var rv = res.Values;
+        for (int c0 = 0; c0 < k; c0 += 32)
+            for (int r0 = 0; r0 < nQ; r0 += 32)
+                for (int c = c0, cEnd = Math.Min(c0 + 32, k); c < cEnd; c++)
+                    for (int r = r0, rEnd = Math.Min(r0 + 32, nQ); r < rEnd; r++)
+                    {
+                        double dw = D[qArr[r]];
+                        rv[r + c * nQ] = new Complex(yre[(long)r * kp + c] * dw, yim[(long)r * kp + c] * dw);
+                    }
+        return res;
+    }
+
+    private static Matrix<Complex> SpMMTailSingle(DressedTailTable table, int[] qArr, int[] map, double[] D, Matrix<Complex> X, bool parallel, bool source = false, bool[] rowKeep = null) // 261109Cl source・rowKeep 追加
     {
         var sw = Stopwatch.StartNew();
         lock (table)
@@ -1151,8 +1402,63 @@ public partial class BetheMethod
                 }
             }
         }
-        if (parallel) Parallel.For(0, nQ, RowF);
-        else for (int r = 0; r < nQ; r++) RowF(r);
+        // 261109Cl 追加 (研究用、速さ): 列の塊ごとに全行を回す (X の列の塊 = 裾 × CB 個の float がキャッシュに載る。非零ごとに X の行の全部を読み直す帯域の律速を避ける)
+        unsafe void RowFB(int r, int c0, int c1)
+        {
+            int pw = qArr[r], p0 = rowPtr[pw], p1 = rowPtr[pw + 1];
+            fixed (float* xp0 = xr, yp0 = outr, vrp = vr, vip = vi)
+            fixed (int* colp = col, mapp = map)
+            {
+                float* Y = yp0 + (long)r * k2;
+                for (int p = p0; p < p1; p++)
+                {
+                    int qv = mapp[colp[p]];
+                    if (qv < 0) continue;
+                    float a = vrp[p], b = vip[p];
+                    float* xs = xp0 + (long)qv * k2;
+                    int c = c0;
+                    if (Fma.IsSupported && Avx.IsSupported)
+                    {
+                        var va = Vector256.Create(a); var vb = Vector256.Create(b);
+                        for (; c + 32 <= c1; c += 32)
+                        {
+                            var x0 = Avx.LoadVector256(xs + c); var x1 = Avx.LoadVector256(xs + c + 8); var x2 = Avx.LoadVector256(xs + c + 16); var x3 = Avx.LoadVector256(xs + c + 24);
+                            Avx.Store(Y + c, Avx.AddSubtract(Fma.MultiplyAdd(va, x0, Avx.LoadVector256(Y + c)), Avx.Multiply(vb, Avx.Permute(x0, 0b10110001))));
+                            Avx.Store(Y + c + 8, Avx.AddSubtract(Fma.MultiplyAdd(va, x1, Avx.LoadVector256(Y + c + 8)), Avx.Multiply(vb, Avx.Permute(x1, 0b10110001))));
+                            Avx.Store(Y + c + 16, Avx.AddSubtract(Fma.MultiplyAdd(va, x2, Avx.LoadVector256(Y + c + 16)), Avx.Multiply(vb, Avx.Permute(x2, 0b10110001))));
+                            Avx.Store(Y + c + 24, Avx.AddSubtract(Fma.MultiplyAdd(va, x3, Avx.LoadVector256(Y + c + 24)), Avx.Multiply(vb, Avx.Permute(x3, 0b10110001))));
+                        }
+                        for (; c + 8 <= c1; c += 8)
+                        {
+                            var x0 = Avx.LoadVector256(xs + c);
+                            Avx.Store(Y + c, Avx.AddSubtract(Fma.MultiplyAdd(va, x0, Avx.LoadVector256(Y + c)), Avx.Multiply(vb, Avx.Permute(x0, 0b10110001))));
+                        }
+                    }
+                    for (; c < c1; c += 2)
+                    {
+                        float xre = xs[c], xim = xs[c + 1];
+                        Y[c] += a * xre - b * xim; Y[c + 1] += a * xim + b * xre;
+                    }
+                }
+            }
+        }
+        int cbF = DressedSpMMColumnBlock * 2; // 複素の個数 → float の個数
+        if (cbF > 0 && cbF < k2)
+        {
+            for (int c0 = 0; c0 < k2; c0 += cbF)
+            {
+                int c1 = Math.Min(c0 + cbF, k2);
+                if (parallel) Parallel.For(0, nQ, r => { if (rowKeep == null || rowKeep[r]) RowFB(r, c0, c1); });
+                else for (int r = 0; r < nQ; r++) if (rowKeep == null || rowKeep[r]) RowFB(r, c0, c1);
+            }
+        }
+        else
+        {
+        // if (parallel) Parallel.For(0, nQ, RowF); // 261109Cl 変更前
+        // else for (int r = 0; r < nQ; r++) RowF(r);
+        if (parallel) Parallel.For(0, nQ, r => { if (rowKeep == null || rowKeep[r]) RowF(r); }); // 261109Cl
+        else for (int r = 0; r < nQ; r++) if (rowKeep == null || rowKeep[r]) RowF(r);
+        }
         DressedSpMMSeconds[1] += sw.Elapsed.TotalSeconds; sw.Restart();
         var res = new CDense(nQ, k);
         var rv = res.Values;
@@ -1170,6 +1476,104 @@ public partial class BetheMethod
 
     /// <summary>261109Cl 追加 (研究用): ブロックの全方向で繰り上げるとき、各方向の E1 の和集合も明示にする (既定 false、試験用)</summary>
     public static bool DressedBlockUnionE1 { get; set; } = false;
+    /// <summary>261109Cl 追加 (研究用、速さ、codex2 第 21 回): 速い形で疎な積 1 回のとき、X̃†(R + ΛX̃) = (X̃†X̃)Γ + X̃†E_δ を使う閾値 (E_δ の倍率 δ²/(|λ − γ|² + δ²) がこれを超える要素だけ。NaN = 使わない、0 = 全部)</summary>
+    public static double DressedEdeltaThreshold { get; set; } = double.NaN;
+    /// <summary>261109Cl 追加 (研究用、速さ): 着衣の疎な積 E·X₀ を |λ_q| がこれより小さい裾の行だけで積む (+∞ = 全部)</summary>
+    public static double DressedSpMMLambdaCut { get; set; } = double.PositiveInfinity;
+    /// <summary>261109Cl 追加 (研究用): 裾を「芯の半径 DressedTailCoreRadiusNm の中の全部」+「その外 (表の裾の半径まで) の |Q/P| がこれより小さいもの」にする (NaN = 使わない)</summary>
+    public static double DressedTailShellLambdaCut { get; set; } = double.NaN;
+    /// <summary>261109Cl 追加 (研究用): 上の芯の半径 [nm⁻¹]</summary>
+    public static double DressedTailCoreRadiusNm { get; set; } = 40;
+    /// <summary>261109Cl 追加 (研究用、速さ): 単精度の疎な積の列の塊の大きさ (複素の個数、0 = 塊にしない)</summary>
+    public static int DressedSpMMColumnBlock { get; set; } = 0;
+    /// <summary>261109Cl 追加 (研究用): E_δ の疎な積で使った要素の数の積算</summary>
+    public static long DressedEdeltaNonzeros;
+
+    /// <summary>261109Cl 追加: 源の求積の幾何の位相の表 (表 1 つにつき 1 つ)</summary>
+    internal sealed class DressedQuadCache
+    {
+        public int Order, NSites; public (double x, double y, double z)[] AtomSites; public (double weight, double sigmaNm)[] QuadAtoms;
+        public int[] PoolCol; public Complex[] Phase; public double[] Weights; public int Groups;
+    }
+
+    /// <summary>261109Cl 追加 (codex2 第 21 回): 源の求積の点と幾何の位相の表を作る (裾の半径の中の候補ごとに e^{2πi(hkl·r_a + σ_a g·t_p)})。
+    /// 同じ σ・同じ重みで、裾の全候補について hkl·(r_a − r_b) が整数になる原子 (心格子の並進で重なる) は 1 組にまとめ重みを足す (厳密)。</summary>
+    private static DressedQuadCache GetQuadCache(DressedTailTable table, (double x, double y, double z)[] atomSites, (double weight, double sigmaNm)[] quadAtoms, int order)
+    {
+        lock (table)
+        {
+            if (table.quadCache is { } c0 && c0.Order == order && c0.AtomSites.SequenceEqual(atomSites) && c0.QuadAtoms.SequenceEqual(quadAtoms)) return c0;
+            var pool = table.Pool; int n = pool.Count;
+            double rtt = table.TailRadiusNm * table.TailRadiusNm * (1 + 1e-9);
+            var col = new int[n]; Array.Fill(col, -1); var tail = new List<int>();
+            for (int i = 0; i < n; i++)
+                if (Dot3(pool.GX[i], pool.GX[i], pool.GY[i], pool.GY[i], pool.GZ[i], pool.GZ[i]) <= rtt) { col[i] = tail.Count; tail.Add(i); }
+            int na = atomSites.Length;
+            var reps = new List<int>(); var gw = new List<double>();
+            for (int a = 0; a < na; a++)
+            {
+                int found = -1;
+                for (int g = 0; g < reps.Count && found < 0; g++)
+                {
+                    int b = reps[g];
+                    if (quadAtoms[b].sigmaNm != quadAtoms[a].sigmaNm || quadAtoms[b].weight != quadAtoms[a].weight) continue;
+                    double dx = atomSites[a].x - atomSites[b].x, dy = atomSites[a].y - atomSites[b].y, dz = atomSites[a].z - atomSites[b].z;
+                    bool same = true;
+                    foreach (var i in tail)
+                    {
+                        var (h, k, l) = pool.Hkl[i]; double v = h * dx + k * dy + l * dz;
+                        if (Math.Abs(v - Math.Round(v)) > 1e-9) { same = false; break; }
+                    }
+                    if (same) found = g;
+                }
+                if (found >= 0) gw[found] += quadAtoms[a].weight;
+                else { reps.Add(a); gw.Add(quadAtoms[a].weight); }
+            }
+            var (pts, wpt) = GaussianCubature3D(order);
+            int np = pts.Length, ng = reps.Count, nSites = ng * np;
+            var w = new double[nSites];
+            for (int g = 0; g < ng; g++) for (int t = 0; t < np; t++) w[g * np + t] = gw[g] * wpt[t];
+            var phase = new Complex[(long)tail.Count * nSites];
+            Parallel.For(0, tail.Count, ci =>
+            {
+                int i = tail[ci]; var (h, k, l) = pool.Hkl[i]; double gx = pool.GX[i], gy = pool.GY[i], gz = pool.GZ[i];
+                long o = (long)ci * nSites;
+                for (int g = 0; g < ng; g++)
+                {
+                    var (ax, ay, az) = atomSites[reps[g]]; double s2 = 2 * Math.PI * quadAtoms[reps[g]].sigmaNm, bph = 2 * Math.PI * (h * ax + k * ay + l * az);
+                    for (int t = 0; t < np; t++) { var (tx, ty, tz) = pts[t]; phase[o + g * np + t] = Complex.FromPolarCoordinates(1, bph + s2 * (gx * tx + gy * ty + gz * tz)); }
+                }
+            });
+            var cache = new DressedQuadCache { Order = order, NSites = nSites, AtomSites = [.. atomSites], QuadAtoms = [.. quadAtoms], PoolCol = col, Phase = phase, Weights = w, Groups = ng };
+            table.quadCache = cache;
+            return cache;
+        }
+    }
+
+    /// <summary>261109Cl 追加 (研究用、速さ): 着衣 (H_SQ X₀、(H_QS + E X₀)V_b) と源 (F'_SQ X̃、求積の積) の密な積を単精度 (complex64) にする (既定 false)。
+    /// Galerkin の K・G の積は倍精度のまま (Im γ の誤差は深さに比例して効くため)。</summary>
+    public static bool DressedDenseSingle { get; set; } = false;
+
+    /// <summary>261109Cl 追加: 複素の密な行列を単精度へ</summary>
+    private static MathNet.Numerics.LinearAlgebra.Complex32.DenseMatrix ToC32(Matrix<Complex> m)
+    {
+        var src = m is CDense d ? d.Values : ((CDense)Matrix<Complex>.Build.DenseOfMatrix(m)).Values;
+        var dst = new MathNet.Numerics.Complex32[src.Length];
+        for (int i = 0; i < src.Length; i++) dst[i] = new MathNet.Numerics.Complex32((float)src[i].Real, (float)src[i].Imaginary);
+        return new MathNet.Numerics.LinearAlgebra.Complex32.DenseMatrix(m.RowCount, m.ColumnCount, dst);
+    }
+
+    /// <summary>261109Cl 追加: a·b を、DressedDenseSingle なら単精度で積んで倍精度へ戻す (b32 = b の単精度を渡すと変換を省く)</summary>
+    private static Matrix<Complex> MulMaybeSingle(Matrix<Complex> a, Matrix<Complex> b, MathNet.Numerics.LinearAlgebra.Complex32.DenseMatrix b32 = null)
+    {
+        if (!DressedDenseSingle) return a * b;
+        var p = ToC32(a) * (b32 ?? ToC32(b));
+        var pv = ((MathNet.Numerics.LinearAlgebra.Complex32.DenseMatrix)p).Values;
+        var r = new Complex[pv.Length];
+        for (int i = 0; i < pv.Length; i++) r[i] = new Complex(pv[i].Real, pv[i].Imaginary);
+        return new CDense(p.RowCount, p.ColumnCount, r);
+    }
+
     /// <summary>261109Cl 追加 (研究用): 疎な積を単精度にする (既定 false)</summary>
     public static bool DressedSpMMSingle { get; set; } = false;
     /// <summary>261109Cl 追加 (研究用): 疎な積の核の選択 (0 = 列の塊をレジスタに置く、1 = 非零ごとに行を流す)</summary>
