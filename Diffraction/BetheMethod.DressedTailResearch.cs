@@ -445,7 +445,10 @@ public partial class BetheMethod
         for (int c = 0; c < nS; c++)
             for (int r = 0; r < nS; r++)
                 hss[r + c * nS] = r == c ? Lam(sArr[r]) : Ufull(sArr[r], sArr[c]) * (D[sArr[r]] * D[sArr[c]]);
-        var hqs = new Complex[nQ * nS]; var hsq = new Complex[nS * nQ];
+        // var hqs = new Complex[nQ * nS]; var hsq = new Complex[nS * nQ]; // 261110Cl 変更前
+        bool skipQ = blocksOnly && DressedSkipQBlocks; // 261110Cl 追加: native の一体化した解は H_QS・H_SQ を自分で単精度に作る
+        var hqs = skipQ ? null : new Complex[nQ * nS]; var hsq = skipQ ? null : new Complex[nS * nQ];
+        if (!skipQ) // 261110Cl 追加
         Parallel.For(0, nS, new ParallelOptions { MaxDegreeOfParallelism = parallel ? -1 : 1 }, c =>
         {
             int sc = sArr[c]; double dc = D[sc];
@@ -456,7 +459,8 @@ public partial class BetheMethod
                 hsq[c + r * nS] = Ufull(sc, qr) * dd;      // (行 S_c, 列 Q_r)
             }
         });
-        var HSS = new CDense(nS, nS, hss); var HQS = new CDense(nQ, nS, hqs); var HSQ = new CDense(nS, nQ, hsq);
+        // var HSS = new CDense(nS, nS, hss); var HQS = new CDense(nQ, nS, hqs); var HSQ = new CDense(nS, nQ, hsq); // 261110Cl 変更前
+        var HSS = new CDense(nS, nS, hss); var HQS = skipQ ? null : new CDense(nQ, nS, hqs); var HSQ = skipQ ? null : new CDense(nS, nQ, hsq); // 261110Cl: skipQ なら null
         var lamQ = new Complex[nQ];
         for (int r = 0; r < nQ; r++) lamQ[r] = Lam(qArr[r]);
         if (timing != null) timing.Blocks = sw.Elapsed.TotalSeconds;
@@ -1751,6 +1755,19 @@ public partial class BetheMethod
     public static double DressedE1ScoreCut { get; set; } = double.NaN;
     /// <summary>261110Cl 追加 (研究用): DressCore を選択と裾の集合までで止める (ブロックの部品は H を null で返す。規模の数えだけ)</summary>
     public static bool DressedCountOnly { get; set; } = false;
+    /// <summary>261110Cl 追加 (研究用、native の一体化した解): BuildDressedTailBlocksResearch で H_QS・H_SQ を作らない (null)。native が差の表から単精度で直接作る</summary>
+    public static bool DressedSkipQBlocks { get; set; } = false;
+
+    /// <summary>261110Cl 追加 (研究用、native の一体化した解): プールの差の箱の U (弾性 + i 吸収) と後方の源 F の表 (倍精度) と箱の半幅。番号 = ((h + dh)(2dk + 1) + k + dk)(2dl + 1) + l + dl</summary>
+    public static (Complex[] diffU, Complex[] diffF, int dh, int dk, int dl) DressedTailDiffTablesResearch(DressedTailTable table)
+        => (table.diffUfull, table.diffF, table.Pool.DiffBoundH, table.Pool.DiffBoundK, table.Pool.DiffBoundL);
+
+    /// <summary>261110Cl 追加 (研究用、native の一体化した解): 源の求積の位相の表 (裾の半径の中の候補の列 × 点、D は掛けない)・候補 → 列の番号 (−1 = 表の外)・点の重み・点の数</summary>
+    public static (Complex[] phase, int[] poolCol, double[] w, int nSites) DressedTailQuadTableResearch(DressedTailTable table, (double x, double y, double z)[] atomSites, (double weight, double sigmaNm)[] quadAtoms, int order)
+    {
+        var qc = GetQuadCache(table, atomSites, quadAtoms, order);
+        return (qc.Phase, qc.PoolCol, qc.Weights, qc.NSites);
+    }
     /// <summary>261110Cl 追加 (研究用): 疎な表 (CSR) を作るか (false = stencil の疎な積だけ使う研究の経路。C# の疎な積・CSR の近傍は使えない)</summary>
     public static bool DressedTailBuildCsr { get; set; } = true;
     /// <summary>261110Cl 追加 (研究用): 近傍を距離の球でなく、中心から表の CSR の列 (|U(d)| ≥ η max) で一段つながる裾にする (DressedTailNeighborRadiusNm は NaN 以外で有効化だけに使う)</summary>
