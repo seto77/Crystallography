@@ -145,6 +145,12 @@ public partial class BetheMethod
                     if ((h, k, l) != (0, 0, 0) && u.Magnitude >= thr) ds.Add((h, k, l, u));
                 }
         int n = pool.Count;
+        if (!DressedTailBuildCsr) // 261110Cl 追加 (研究用、codex2 第 27 回): stencil の疎な積だけ使うなら CSR を作らない (表のメモリと構築の時間を省く)
+        {
+            table.rowPtr = new int[n + 1]; table.colIdx = []; table.vRe = []; table.vIm = [];
+            table.SecondsCsr = sw.Elapsed.TotalSeconds;
+            goto afterCsr;
+        }
         // 261109Cl 追加 (codex2 第 21 回): 疎な表は裾の半径の中だけ (行・列とも)。積で使うのは裾どうしの結合だけなので値は変わらず、表と積の走査が軽くなる
         double rtt = table.TailRadiusNm * table.TailRadiusNm * (1 + 1e-9);
         var inT = new bool[n];
@@ -173,6 +179,7 @@ public partial class BetheMethod
             foreach (var (j, u) in rows[i]) { col[p] = j; vr[p] = u.Real; vi[p] = u.Imaginary; p++; }
         });
         table.rowPtr = rowPtr; table.colIdx = col; table.vRe = vr; table.vIm = vi;
+        afterCsr: // 261110Cl 追加
         table.SecondsCsr = sw.Elapsed.TotalSeconds;
         if (!double.IsNaN(sourceEta)) // 261109Cl 追加: 後方散乱の源の行列 (CreateMasterPatternMuBack と同じ getU の積分、30 × 12 点)
         {
@@ -1731,6 +1738,8 @@ public partial class BetheMethod
     public static double DressedTailNeighborPs { get; set; } = double.NaN;
     /// <summary>261110Cl 追加 (研究用、速さ): 裾の行を (h, k, l) の Morton 順に並べる (false = 候補の番号の順)</summary>
     public static bool DressedTailMortonOrder { get; set; } = false;
+    /// <summary>261110Cl 追加 (研究用): 疎な表 (CSR) を作るか (false = stencil の疎な積だけ使う研究の経路。C# の疎な積・CSR の近傍は使えない)</summary>
+    public static bool DressedTailBuildCsr { get; set; } = true;
     /// <summary>261110Cl 追加 (研究用): 近傍を距離の球でなく、中心から表の CSR の列 (|U(d)| ≥ η max) で一段つながる裾にする (DressedTailNeighborRadiusNm は NaN 以外で有効化だけに使う)</summary>
     public static bool DressedTailNeighborUseCsr { get; set; } = false;
     /// <summary>261109Cl 追加 (研究用): 上の近縮退の判定の幅 (0 = 組にしない)</summary>
