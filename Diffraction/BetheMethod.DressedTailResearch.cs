@@ -1631,6 +1631,40 @@ public partial class BetheMethod
         => (CDense)SpMMTail(table, b.QArr, b.Map, b.D, X, false);
 
     /// <summary>261109Cl 追加 (研究用、native の試作): 裾どうしの結合の表 (CSR、単精度の値)。行・列は候補の番号、要素 (i, j) = U(g_j − g_i)</summary>
+    /// <summary>261110Cl 追加 (研究用、配布の設計の試作): 裾どうしの結合は差 d = g_v − g_w だけの関数 U(d) (流束座標の D は前後で掛ける) なので、E·X は逆格子の上の畳み込み (stencil)。
+    /// |U(d)| ≥ η max|U| (d ≠ 0、表の CSR と同じ条件) の差の一覧 (h, k, l の 3 つ組) と U(d) (単精度) を返す。CSR を持たずに疎な積ができる (表のメモリがほぼ要らない)</summary>
+    public static (int[] dHkl, float[] re, float[] im) DressedTailStencilResearch(DressedTailTable table)
+    {
+        var pool = table.Pool; double thr = table.Eta * table.MaxAbsU;
+        var dh = new List<int>(); var re = new List<float>(); var im = new List<float>();
+        for (int h = -pool.DiffBoundH; h <= pool.DiffBoundH; h++)
+            for (int k = -pool.DiffBoundK; k <= pool.DiffBoundK; k++)
+                for (int l = -pool.DiffBoundL; l <= pool.DiffBoundL; l++)
+                {
+                    if (h == 0 && k == 0 && l == 0) continue;
+                    var u = table.diffUfull[pool.DiffIndex(h, k, l)];
+                    if (!(u.Magnitude >= thr)) continue;
+                    dh.Add(h); dh.Add(k); dh.Add(l); re.Add((float)u.Real); im.Add((float)u.Imaginary);
+                }
+        return ([.. dh], [.. re], [.. im]);
+    }
+
+    /// <summary>261110Cl 追加 (研究用): 上の stencil の疎な積の方向ごとの入力。裾の行の (h, k, l)、(h, k, l) → 裾の行 (無ければ −1) の 3 次元の表 (範囲 ±H, ±K, ±L)、裾の行の D</summary>
+    public static (int[] rowHkl, int[] map3D, int H, int K, int L, double[] Dq) DressedTailStencilMapResearch(DressedTailTable table, DressedTailBlocks b)
+    {
+        var pool = table.Pool; int H = 0, K = 0, L = 0;
+        for (int i = 0; i < pool.Count; i++) { var (h, k, l) = pool.Hkl[i]; H = Math.Max(H, Math.Abs(h)); K = Math.Max(K, Math.Abs(k)); L = Math.Max(L, Math.Abs(l)); }
+        var map3D = new int[(2 * H + 1) * (2 * K + 1) * (2 * L + 1)]; Array.Fill(map3D, -1);
+        int nQ = b.QArr.Length; var rowHkl = new int[3 * nQ]; var Dq = new double[nQ];
+        for (int r = 0; r < nQ; r++)
+        {
+            var (h, k, l) = pool.Hkl[b.QArr[r]];
+            rowHkl[3 * r] = h; rowHkl[3 * r + 1] = k; rowHkl[3 * r + 2] = l; Dq[r] = b.D[b.QArr[r]];
+            map3D[((h + H) * (2 * K + 1) + k + K) * (2 * L + 1) + l + L] = r;
+        }
+        return (rowHkl, map3D, H, K, L, Dq);
+    }
+
     public static (int[] rowPtr, int[] col, float[] re, float[] im) DressedTailCsrResearch(DressedTailTable table)
     {
         lock (table)
