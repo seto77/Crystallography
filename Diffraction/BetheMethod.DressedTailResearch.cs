@@ -18,6 +18,7 @@ using System.Numerics;
 using System.Runtime.InteropServices;
 using System.Runtime.Intrinsics;
 using System.Runtime.Intrinsics.X86;
+using System.Threading; // 261109Cl 追加 (Interlocked)
 using System.Threading.Tasks;
 using MathNet.Numerics.LinearAlgebra;
 using CDense = MathNet.Numerics.LinearAlgebra.Complex.DenseMatrix;
@@ -48,6 +49,15 @@ public partial class BetheMethod
         /// <summary>結合の表の非零の数</summary>
         public long Nonzeros => rowPtr[^1];
         public double SecondsUfull, SecondsCsr;
+        // 261109Cl 追加: 後方散乱の源の行列 F(行 g, 列 h) = conj(U'_back(g − h)) (CreateMasterPatternMuBack と同じ値、後方半球 π/2〜π の吸収の積分)。
+        //   差の箱 diffF (d = 0 を含む) と、候補全体の CSR (要素 (i, j) = F(g_i − g_j)、|F| ≥ SourceEta·|F(0)|、対角を含む)。CreateDressedTailTable に sourceEta を渡したときだけ作る
+        internal Complex[] diffF;
+        internal int[] fRowPtr, fColIdx; internal double[] fRe, fIm; internal float[] fReF, fImF;
+        /// <summary>261109Cl 追加: 源の行列の疎化の閾値 (|F(d)| ≥ SourceEta·|F(0)|。0 = 差の箱の全部、NaN = 源の表なし)</summary>
+        public double SourceEta { get; internal set; } = double.NaN;
+        /// <summary>261109Cl 追加: 源の行列の非零の数 (表なしなら 0)</summary>
+        public long SourceNonzeros => fRowPtr?[^1] ?? 0;
+        public double SecondsSource;
     }
 
     /// <summary>261109Cl 追加 (研究用): 着衣つきの解 1 方向分。</summary>
@@ -69,6 +79,9 @@ public partial class BetheMethod
         public Complex[] AtomAmp;
         /// <summary>261109Cl 追加: AtomAmp の原子の数</summary>
         public int AtomCount;
+        /// <summary>261109Cl 追加: モードの基底の源の行列 B = Z† F_W Z (F_W = W†FW、モード × モード、列優先)。共有の経路で backscatterSource を指定したときだけ。
+        /// native の EBSDSolverWithTDS に固有ベクトル = 単位行列・α = 1 と一緒に、muBack (CreateMasterPatternMuBack と同じ並び) として渡す</summary>
+        public Complex[] SourceMatrix;
     }
 
     /// <summary>261109Cl 追加 (研究用): 段ごとの時間 [s]</summary>
@@ -81,7 +94,9 @@ public partial class BetheMethod
     /// <summary>261109Cl 追加 (研究用): 方向に依らない結合の表を作る (結晶・電圧・半径・η ごとに 1 回)。電圧は今の AccVoltage (0 以下なら 20 kV)。</summary>
     /// <param name="pool"><see cref="CreateBeamSelectionPool"/> のプール (候補と差の箱を共有)</param>
     /// <param name="eta">裾どうしの結合の閾値 (研究の既定 0.02、通常用の候補 0.05)</param>
-    public DressedTailTable CreateDressedTailTable(BeamSelectionPool pool, double eta)
+    /// <param name="sourceEta">261109Cl 追加: 後方散乱の源の行列の表も作るときの閾値 (|F(d)| ≥ sourceEta·|F(0)|、0 = 差の箱の全部。NaN = 作らない)</param>
+    // public DressedTailTable CreateDressedTailTable(BeamSelectionPool pool, double eta) // 261109Cl 旧シグネチャ
+    public DressedTailTable CreateDressedTailTable(BeamSelectionPool pool, double eta, double sourceEta = double.NaN)
     {
         if (pool.Owner != this) throw new ArgumentException("The pool was built for another BetheMethod", nameof(pool));
         var sw = Stopwatch.StartNew();
@@ -147,6 +162,60 @@ public partial class BetheMethod
         });
         table.rowPtr = rowPtr; table.colIdx = col; table.vRe = vr; table.vIm = vi;
         table.SecondsCsr = sw.Elapsed.TotalSeconds;
+        if (!double.IsNaN(sourceEta)) // 261109Cl 追加: 後方散乱の源の行列 (CreateMasterPatternMuBack と同じ getU の積分、30 × 12 点)
+        {
+            sw.Restart();
+            var fFull = new Complex[full.Length];
+            Parallel.For(-dh, dh + 1, h =>
+            {
+                for (int k = -dk; k <= dk; k++)
+                    for (int l = -dl; l <= dl; l++)
+                    {
+                        if (!allowed(h, k, l)) continue;
+                        double x = Dot3(m11, h, m12, k, m13, l), y = Dot3(m21, h, m22, k, m23, l), z = Dot3(m31, h, m32, k, m33, l);
+                        if (Dot3(x, x, y, y, z, z) > d2max) continue;
+                        fFull[((h + dh) * dnk + k + dk) * dnl + l + dl] = Complex.Conjugate(getU(kV, new Beam((h, k, l), new Vector3DBase(x, y, z)), null, Math.PI / 2, Math.PI, 30, 12, cache: false).Imag);
+                    }
+            });
+            int Box(int h, int k, int l) => ((h + dh) * dnk + k + dk) * dnl + l + dl;
+            double fThr = sourceEta * fFull[Box(0, 0, 0)].Magnitude;
+            // 差 d (列 g_j = g_i + d) の値は F(g_i − g_j) = F(−d)。d と −d を対で残す (|F(d)| と |F(−d)| の大きい方で判定)
+            var fds = new List<(int h, int k, int l, Complex f)>();
+            for (int h = -dh; h <= dh; h++)
+                for (int k = -dk; k <= dk; k++)
+                    for (int l = -dl; l <= dl; l++)
+                    {
+                        if (!allowed(h, k, l)) continue;
+                        double x = Dot3(m11, h, m12, k, m13, l), y = Dot3(m21, h, m22, k, m23, l), z = Dot3(m31, h, m32, k, m33, l);
+                        if (Dot3(x, x, y, y, z, z) > d2max) continue;
+                        var fm = fFull[Box(-h, -k, -l)];
+                        if (Math.Max(fm.Magnitude, fFull[Box(h, k, l)].Magnitude) >= fThr) fds.Add((h, k, l, fm));
+                    }
+            var fRows = new (int j, Complex f)[n][];
+            Parallel.For(0, n, i =>
+            {
+                var (h0, k0, l0) = pool.Hkl[i];
+                var list = new List<(int, Complex)>();
+                foreach (var d in fds)
+                {
+                    int j = pool.IndexOf((h0 + d.h, k0 + d.k, l0 + d.l));
+                    if (j >= 0) list.Add((j, d.f));
+                }
+                list.Sort((a, b) => a.Item1.CompareTo(b.Item1));
+                fRows[i] = [.. list];
+            });
+            var fPtr = new int[n + 1];
+            long fTotal = 0;
+            for (int i = 0; i < n; i++) { fTotal += fRows[i].Length; if (fTotal > int.MaxValue) throw new OutOfMemoryException("The backscatter source table exceeds int.MaxValue nonzeros; raise sourceEta"); fPtr[i + 1] = (int)fTotal; }
+            var fCol = new int[fTotal]; var fr = new double[fTotal]; var fi = new double[fTotal];
+            Parallel.For(0, n, i =>
+            {
+                int p = fPtr[i];
+                foreach (var (j, f) in fRows[i]) { fCol[p] = j; fr[p] = f.Real; fi[p] = f.Imaginary; p++; }
+            });
+            table.diffF = fFull; table.fRowPtr = fPtr; table.fColIdx = fCol; table.fRe = fr; table.fIm = fi; table.SourceEta = sourceEta;
+            table.SecondsSource = sw.Elapsed.TotalSeconds;
+        }
         return table;
     }
 
@@ -218,6 +287,8 @@ public partial class BetheMethod
     private DressCoreResult DressCore(DressedTailTable table, Vector3DBase vecK0, Vector3DBase surface, int n, double ps, double regDepthNm, bool oneProduct, bool parallel, DressedTailTiming timing)
     {
         if (table.Owner != this) throw new ArgumentException("The table was built for another BetheMethod", nameof(table));
+        if (table.KV != (AccVoltage > 0 ? AccVoltage : 20)) // 261109Cl 追加 (codex2 第18回): 表の電圧と今の電圧の混在を禁じる
+            throw new ArgumentException($"The table was built for {table.KV} kV but the current voltage is {AccVoltage} kV", nameof(table));
         var pool = table.Pool;
         var sw = Stopwatch.StartNew();
         // (1) 選択と繰り上げ
@@ -328,7 +399,10 @@ public partial class BetheMethod
     /// <param name="dirs">ブロックの各方向の (屈折後の k0、表面の法線)。どれも S∪Q の全ビームが P &gt; 0 であること</param>
     public DressedTailSolution[] SolveDressedTailBlockResearch(DressedTailTable table, Vector3DBase centerK0, Vector3DBase centerSurface, (Vector3DBase k0, Vector3DBase n)[] dirs,
         int n, double ps = 0.1, double regDepthNm = 45, bool oneProduct = false, bool parallel = false, DressedTailTiming timing = null, double[] blockSeconds = null,
-        (double x, double y, double z)[] atomSites = null)   // 261109Cl atomSites 追加: 渡すと全振幅の代わりに原子位置の振幅だけを求める (方向ごとの X·Z を中心の 1 回の積に回す)
+        (double x, double y, double z)[] atomSites = null,   // 261109Cl atomSites 追加: 渡すと全振幅の代わりに原子位置の振幅だけを求める (方向ごとの X·Z を中心の 1 回の積に回す)
+        bool backscatterSource = false,   // 261109Cl backscatterSource 追加: 後方散乱の源の行列をモードの基底へ射影する (表に源が要る)。旧シグネチャは atomSites までで、これを除いた形
+        (double weight, double sigmaNm)[] tailQuadratureAtoms = null, // 261109Cl 追加: 源の裾どうしの項を求積で積むときの原子ごとの (F(0) の分 A_n、Gauss の幅 σ_n = √(B/8π²) [nm])。atomSites と同じ並び
+        int tailQuadratureOrder = 0)      // 261109Cl 追加: その Gauss–Hermite の 1 軸の点の数 (0 = 求積せず源の表の疎な積)
     {
         var cr = DressCore(table, centerK0, centerSurface, n, ps, regDepthNm, oneProduct, parallel, timing);
         var pool = table.Pool;
@@ -381,6 +455,89 @@ public partial class BetheMethod
             }
             phiBase = phS + phQ * X;
         }
+        // 261109Cl 追加: 後方散乱の源の行列の射影 F_W = W†FW = F'_SS + F'_SQ X + X†(F'_QS + F'_QQ X) (' = 中心の D を両側に掛けたもの。F(行 g, 列 h) = F(g − h))。
+        //   方向に依らないので中心で 1 回。各方向は B = Z† F_W Z (明示 × 明示) だけ
+        Matrix<Complex> FW = null;
+        if (backscatterSource)
+        {
+            if (table.fRowPtr == null) throw new ArgumentException("The table has no backscatter source; create it with sourceEta", nameof(table));
+            Complex Ff(int ig, int ih)
+            {
+                var (h1, k1, l1) = pool.Hkl[ig]; var (h2, k2, l2) = pool.Hkl[ih];
+                return table.diffF[pool.DiffIndex(h1 - h2, k1 - k2, l1 - l2)];
+            }
+            var fss = new CDense(nS, nS); var fsq = new CDense(nS, nQ); var fqs = new CDense(nQ, nS);
+            for (int c = 0; c < nS; c++)
+                for (int r = 0; r < nS; r++)
+                    fss[r, c] = Ff(sArr[r], sArr[c]) * (Dc[sArr[r]] * Dc[sArr[c]]);
+            var fsqv = fsq.Values; var fqsv = fqs.Values;
+            Parallel.For(0, nS, new ParallelOptions { MaxDegreeOfParallelism = parallel ? -1 : 1 }, c =>
+            {
+                int sc = sArr[c]; double dc = Dc[sc];
+                for (int r = 0; r < nQ; r++)
+                {
+                    int qr = qArr[r]; double dd = Dc[qr] * dc;
+                    fqsv[r + c * nQ] = Ff(qr, sc) * dd;   // (行 Q_r, 列 S_c)
+                    fsqv[c + r * nS] = Ff(sc, qr) * dd;   // (行 S_c, 列 Q_r)
+                }
+            });
+            // 裾どうしの項 X†F'_QQ X。F はほとんど減衰しない (R40 で非零 5 千万〜1 億、η_F 0.1 で 1 方向 +15 s) ので、既定は求積:
+            //   F の包絡は DW の Gauss exp(−B|d|²/4) とほぼ同じ (Si 20 kV で比 0.98〜1.00、day5e) → F(g − h) ≈ Σ_n A_n e^{−2πi(g−h)·r_n} ∫G_σn(x) e^{−2πi(g−h)·x} d³x
+            //   (σ_n² = B_n/8π²、A_n = 原子 n の F(0) の分)。よって X†F'_QQ X ≈ Σ_n A_n Σ_q w_q χ_n,q† χ_n,q (χ = 裾の場 Σ_g D_g X_g e^{2πi g·(r_n + σ_n t_q)}、t_q = Gauss–Hermite の積の点)
+            Matrix<Complex> qq;
+            if (tailQuadratureOrder > 0)
+            {
+                if (atomSites == null || tailQuadratureAtoms == null || tailQuadratureAtoms.Length != atomSites.Length)
+                    throw new ArgumentException("The tail quadrature needs atomSites and one (weight, sigma) per site", nameof(tailQuadratureAtoms));
+                var (tq, wq) = GaussHermiteProbabilists(tailQuadratureOrder);
+                int nq = tq.Length, nPer = nq * nq * nq, na = atomSites.Length, nSites = na * nPer;
+                var ph = new CDense(nSites, nQ); var phv = ph.Values;
+                Parallel.For(0, nQ, new ParallelOptions { MaxDegreeOfParallelism = parallel ? -1 : 1 }, r =>
+                {
+                    int q = qArr[r]; var (h, k, l) = pool.Hkl[q];
+                    double gx = pool.GX[q], gy = pool.GY[q], gz = pool.GZ[q];
+                    Span<Complex> ex = stackalloc Complex[nq], ey = stackalloc Complex[nq], ez = stackalloc Complex[nq];
+                    for (int a = 0; a < na; a++)
+                    {
+                        var (ax, ay, az) = atomSites[a]; double sig = tailQuadratureAtoms[a].sigmaNm;
+                        var b0 = Complex.FromPolarCoordinates(Dc[q], 2 * Math.PI * (h * ax + k * ay + l * az));
+                        for (int i = 0; i < nq; i++)
+                        {
+                            ex[i] = Complex.FromPolarCoordinates(1, 2 * Math.PI * sig * gx * tq[i]);
+                            ey[i] = Complex.FromPolarCoordinates(1, 2 * Math.PI * sig * gy * tq[i]);
+                            ez[i] = Complex.FromPolarCoordinates(1, 2 * Math.PI * sig * gz * tq[i]);
+                        }
+                        int o = a * nPer;
+                        for (int i = 0; i < nq; i++)
+                            for (int j = 0; j < nq; j++)
+                            {
+                                var bij = b0 * ex[i] * ey[j];
+                                for (int m = 0; m < nq; m++) phv[o + (i * nq + j) * nq + m + (long)r * nSites] = bij * ez[m];
+                            }
+                    }
+                });
+                var chi = ph * X; // (点 × 明示)
+                var chiW = chi.Clone();
+                for (int a = 0; a < na; a++)
+                    for (int i = 0; i < nq; i++)
+                        for (int j = 0; j < nq; j++)
+                            for (int m = 0; m < nq; m++)
+                            {
+                                int row = a * nPer + (i * nq + j) * nq + m;
+                                double w = tailQuadratureAtoms[a].weight * wq[i] * wq[j] * wq[m];
+                                for (int c = 0; c < nS; c++) chiW[row, c] *= w;
+                            }
+                qq = chi.ConjugateTransposeThisAndMultiply(chiW);
+            }
+            else
+            {
+                var mapQ = new int[pool.Count]; Array.Fill(mapQ, -1);
+                for (int r = 0; r < nQ; r++) mapQ[qArr[r]] = r;
+                var FQX = SpMMTail(table, qArr, mapQ, Dc, X, parallel, source: true);
+                qq = X.ConjugateTransposeThisAndMultiply(FQX);
+            }
+            FW = fss + fsq * X + X.ConjugateTransposeThisAndMultiply(fqs) + qq;
+        }
         if (blockSeconds != null) blockSeconds[0] += sw.Elapsed.TotalSeconds;
         var result = new DressedTailSolution[dirs.Length];
         for (int t = 0; t < dirs.Length; t++)
@@ -392,7 +549,8 @@ public partial class BetheMethod
             // 全ビームが前方 (P > 0) であることを確かめる
             foreach (var i in sArr.Concat(qArr))
                 if (2 * Dot3(nx, pool.GX[i] + kx, ny, pool.GY[i] + ky, nz, pool.GZ[i] + kz) <= 0)
-                    throw new InvalidOperationException("A shared beam is not forward (P <= 0) in this direction; shrink the block");
+                    // throw new InvalidOperationException("A shared beam is not forward (P <= 0) in this direction; shrink the block"); // 261109Cl 変更前
+                    throw new DressedTailBackwardBeamException(); // 261109Cl 変更: 呼び出し側がブロックを分ける印 (InvalidOperationException の派生)
             var K = Cm + iu0 * G0 - 2 * (kx * Gx + ky * Gy + kz * Gz);
             var M = 2 * nk * G0 + 2 * (nx * Gx + ny * Gy + nz * Gz);
             var ch = M.Cholesky();
@@ -410,6 +568,7 @@ public partial class BetheMethod
             }
             else
                 result[t] = MakeDressedSolution(pool, sArr, qArr, X, Z, Dc, 1.0, evd.EigenValues.ToArray(), cr.NSelected);
+            if (FW != null) result[t].SourceMatrix = Z.ConjugateTransposeThisAndMultiply(FW * Z).ToColumnMajorArray(); // 261109Cl 追加
             if (blockSeconds != null) blockSeconds[1] += sw.Elapsed.TotalSeconds;
         }
         return result;
@@ -417,9 +576,11 @@ public partial class BetheMethod
 
     /// <summary>261109Cl 追加 (研究用): 裾どうしの疎な結合と密な行列の積 E·X (流束座標: E_wv = U(g_v − g_w) D_w D_v、w, v ∈ Q、w ≠ v)。
     /// X を行優先へ並べ替え、行ごとに CSR の非零 × X の行を AVX の複素の積和で足す。S の列 (map &lt; 0) は飛ばす。</summary>
-    private static Matrix<Complex> SpMMTail(DressedTailTable table, int[] qArr, int[] map, double[] D, Matrix<Complex> X, bool parallel)
+    // private static Matrix<Complex> SpMMTail(DressedTailTable table, int[] qArr, int[] map, double[] D, Matrix<Complex> X, bool parallel) // 261109Cl 旧シグネチャ
+    private static Matrix<Complex> SpMMTail(DressedTailTable table, int[] qArr, int[] map, double[] D, Matrix<Complex> X, bool parallel, bool source = false) // 261109Cl source 追加: 後方散乱の源の表 (F) で積む
     {
-        if (DressedSpMMSingle) return SpMMTailSingle(table, qArr, map, D, X, parallel); // 261109Cl
+        // if (DressedSpMMSingle) return SpMMTailSingle(table, qArr, map, D, X, parallel); // 261109Cl 変更前
+        if (DressedSpMMSingle) return SpMMTailSingle(table, qArr, map, D, X, parallel, source); // 261109Cl
         var sw = Stopwatch.StartNew();
         int nQ = X.RowCount, k = X.ColumnCount;
         var xcm = ((CDense)X).Values;
@@ -434,7 +595,8 @@ public partial class BetheMethod
                 }
         var outr = new Complex[nQ * k];
         DressedSpMMSeconds[0] += sw.Elapsed.TotalSeconds; sw.Restart();
-        var rowPtr = table.rowPtr; var col = table.colIdx; var vr = table.vRe; var vi = table.vIm;
+        // var rowPtr = table.rowPtr; var col = table.colIdx; var vr = table.vRe; var vi = table.vIm; // 261109Cl 変更前
+        var (rowPtr, col, vr, vi) = source ? (table.fRowPtr, table.fColIdx, table.fRe, table.fIm) : (table.rowPtr, table.colIdx, table.vRe, table.vIm); // 261109Cl
         // 行ごとに、列の塊 (AVX 4 本 = 複素 8 個) の積算先をレジスタに置いたまま行の非零を全部足す (積算先のメモリの読み書きを非零ごとから塊ごとへ減らす)。
         // Σ a·x と Σ b·swap(x) を別々に積み、最後に AddSubtract で (Σ a·re − Σ b·im, Σ a·im + Σ b·re) にする
         unsafe void Row(int r)
@@ -557,15 +719,23 @@ public partial class BetheMethod
 
     /// <summary>261109Cl 追加 (研究用): 単精度 (複素 float) の疎な積。X と結合の値を float にし、積和も float (E·X は着衣の補正なので丸め 1e−6 程度は効かない見込み、照合で確かめる)。
     /// 核は RowStream と同じ順 (非零ごとに X の行を流す)、AVX 1 本に複素 4 個。</summary>
-    private static Matrix<Complex> SpMMTailSingle(DressedTailTable table, int[] qArr, int[] map, double[] D, Matrix<Complex> X, bool parallel)
+    // private static Matrix<Complex> SpMMTailSingle(DressedTailTable table, int[] qArr, int[] map, double[] D, Matrix<Complex> X, bool parallel) // 261109Cl 旧シグネチャ
+    private static Matrix<Complex> SpMMTailSingle(DressedTailTable table, int[] qArr, int[] map, double[] D, Matrix<Complex> X, bool parallel, bool source = false) // 261109Cl source 追加
     {
         var sw = Stopwatch.StartNew();
         lock (table)
-            if (table.vReF == null)
+        {
+            if (!source && table.vReF == null)
             {
                 table.vReF = table.vRe.Select(v => (float)v).ToArray();
                 table.vImF = table.vIm.Select(v => (float)v).ToArray();
             }
+            if (source && table.fReF == null) // 261109Cl 追加
+            {
+                table.fReF = table.fRe.Select(v => (float)v).ToArray();
+                table.fImF = table.fIm.Select(v => (float)v).ToArray();
+            }
+        }
         int nQ = X.RowCount, k = X.ColumnCount, k2 = 2 * k;
         var xcm = ((CDense)X).Values;
         var xr = new float[nQ * k2];
@@ -582,7 +752,8 @@ public partial class BetheMethod
                 }
         var outr = new float[nQ * k2];
         DressedSpMMSeconds[0] += sw.Elapsed.TotalSeconds; sw.Restart();
-        var rowPtr = table.rowPtr; var col = table.colIdx; var vr = table.vReF; var vi = table.vImF;
+        // var rowPtr = table.rowPtr; var col = table.colIdx; var vr = table.vReF; var vi = table.vImF; // 261109Cl 変更前
+        var (rowPtr, col, vr, vi) = source ? (table.fRowPtr, table.fColIdx, table.fReF, table.fImF) : (table.rowPtr, table.colIdx, table.vReF, table.vImF); // 261109Cl
         unsafe void RowF(int r)
         {
             int pw = qArr[r], p0 = rowPtr[pw], p1 = rowPtr[pw + 1];
@@ -689,5 +860,228 @@ public partial class BetheMethod
             total += s.w * acc.Real;
         }
         return total;
+    }
+
+    /// <summary>261109Cl 追加: 標準正規分布 N(0, 1) の Gauss–Hermite 求積の点と重み (Golub–Welsch、重みの和 = 1)。</summary>
+    private static (double[] t, double[] w) GaussHermiteProbabilists(int n)
+    {
+        var J = Matrix<double>.Build.Dense(n, n);
+        for (int k = 1; k < n; k++) J[k - 1, k] = J[k, k - 1] = Math.Sqrt(k);
+        var evd = J.Evd(Symmetricity.Symmetric);
+        var t = new double[n]; var w = new double[n];
+        for (int i = 0; i < n; i++) { t[i] = evd.EigenValues[i].Real; w[i] = evd.EigenVectors[0, i] * evd.EigenVectors[0, i]; }
+        double sw = w.Sum();
+        for (int i = 0; i < n; i++) w[i] /= sw;
+        return (t, w);
+    }
+
+    /// <summary>261109Cl 追加 (研究用、照合用): 源の行列の密な形 F(行 r, 列 c) = F(g_r − g_c) (候補の番号の並び、列優先、差の箱の全部 = 疎化なし)。</summary>
+    public static Complex[] DressedTailSourceForResearch(DressedTailTable table, int[] poolIndices)
+    {
+        if (table.diffF == null) throw new ArgumentException("The table has no backscatter source", nameof(table));
+        var pool = table.Pool;
+        int n = poolIndices.Length;
+        var f = new Complex[n * n];
+        Parallel.For(0, n, c =>
+        {
+            var (h2, k2, l2) = pool.Hkl[poolIndices[c]];
+            for (int r = 0; r < n; r++)
+            {
+                var (h1, k1, l1) = pool.Hkl[poolIndices[r]];
+                f[r + c * n] = table.diffF[pool.DiffIndex(h1 - h2, k1 - k2, l1 - l2)];
+            }
+        });
+        return f;
+    }
+
+    /// <summary>261109Cl 追加 (研究用): ブロックの中に、中心で選んだビームが後ろ向き (P ≤ 0) になる方向がある。呼び出し側はブロックを分けて解き直す。</summary>
+    public sealed class DressedTailBackwardBeamException : InvalidOperationException
+    {
+        public DressedTailBackwardBeamException() : base("A shared beam is not forward (P <= 0) in this direction; shrink the block") { }
+    }
+
+    /// <summary>261109Cl 追加 (研究用): MasterPattern の経路 (RunEBSDNew) を、着衣つきの裾の方式 (方式の核 + 方向のブロックの共有) で解く設定。
+    /// <see cref="EbsdDressedTailResearch"/> に入れると、各エネルギーで「プール → 結合の表 → ブロックごとの解 → native の厚さ積分 (C = I、α = 1、phaseNG = 原子位置の振幅)」を回す。
+    /// 局所源と後方 TDS 行列 (IncludeTDSBackground、F_W = W†FW を中心で 1 回、各方向 B = Z†F_W Z) に対応。非局所吸収・吸収フラックスの再注入・源のぼかしは非対応で、指定すると例外。単精度の疎な積は <see cref="DressedSpMMSingle"/> (静的) で選ぶ。</summary>
+    public sealed class EbsdDressedTailOptions
+    {
+        /// <summary>裾の半径 R [nm⁻¹] (研究の既定 40)</summary>
+        public double TailRadiusNm { get; set; } = 40;
+        /// <summary>裾どうしの結合の閾値 η (通常用の候補 0.05、研究 0.02)</summary>
+        public double Eta { get; set; } = 0.05;
+        /// <summary>E1 で選ぶ本数 (000 を含む)</summary>
+        public int N { get; set; } = 300;
+        /// <summary>遅い反射の繰り上げの閾値 |Q/P| [nm⁻¹]</summary>
+        public double Ps { get; set; } = 0.1;
+        /// <summary>着衣の正則化の T [nm]</summary>
+        public double RegDepthNm { get; set; } = 45;
+        /// <summary>射影の E·X を着衣前の E·X₀ で近似する (疎な積 1 回。Galerkin の行列そのものを変える近似なので、既定は false = 2 回)</summary>
+        public bool OneProduct { get; set; } = false;
+        /// <summary>方向のブロックの一辺 (格子の画素の数。1 = 方向ごとに着衣、2 = 2×2 で共有し中心は画素の境目)</summary>
+        public int BlockSize { get; set; } = 2;
+        /// <summary>後方 TDS 行列 (IncludeTDSBackground) の源の表の疎化の閾値 (|F(d)| ≥ SourceEta·|F(0)|、0 = 差の箱の全部)</summary>
+        public double SourceEta { get; set; } = 1e-3;
+        /// <summary>源の裾どうしの項を Gauss–Hermite の求積で積むときの 1 軸の点の数 (0 = 源の表の疎な積。求積なら源の表は作らない)。
+        /// Si 20 kV・G16・36 方向で、全部の F に対する差の最大: 1 点 0.96 %、3 点 0.18 %、5 点 0.022 % (η_F 0.1 の疎な積 0.037 %・1 方向 +15 s に対し +1 s)。既定 5</summary>
+        public int SourceTailQuadrature { get; set; } = 5;
+        /// <summary>同時に解くブロックの数の上限 (1 ブロックの作業領域は裾 1 万本・明示 300 本で約 0.5 GB)</summary>
+        public int MaxParallelBlocks { get; set; } = 4;
+        /// <summary>走行の記録 (エネルギーごとに 1 行追加)</summary>
+        public List<EbsdDressedTailRecord> Records { get; } = [];
+    }
+
+    /// <summary>261109Cl 追加 (研究用): <see cref="EbsdDressedTailOptions"/> の 1 エネルギー分の記録。</summary>
+    public sealed class EbsdDressedTailRecord
+    {
+        public double KV;
+        public int Blocks, Directions, SplitBlocks, MinExplicit = int.MaxValue, MaxExplicit, MaxTail;
+        /// <summary>中心とメンバーの方向の角度の最大 [mrad]</summary>
+        public double MaxMemberAngleMrad;
+        public double SecondsPool, SecondsTable, SecondsSource, SecondsSolve, SecondsIntegrate;
+        public long TableNonzeros, SourceNonzeros;
+    }
+
+    /// <summary>261109Cl 追加 (研究用の口。既定 null = 従来の経路): MasterPattern の経路 (RunEBSDNew) を着衣つきの裾の方式で解く。研究用の道具だけが設定する。</summary>
+    public EbsdDressedTailOptions EbsdDressedTailResearch { get; set; } = null;
+
+    /// <summary>261109Cl 追加 (研究用): RunEBSDNew の 1 エネルギー分を着衣つきの裾の方式で解き、代表方向ごとの厚さの強度を返す (従来の ebsdIntensity と同じ形)。
+    /// 代表方向を元の半球の格子の BlockSize × BlockSize の升目でまとめ、升目の中心 (有効な画素の方向の平均を正規化) で着衣を作って共有する。
+    /// 各方向の k0・表面は従来と同じ式 (GetCrystalFixedMasterEquivalentBeamAndSurface → getVecK0)。ブロックの中に後ろ向きのビームがあれば方向ごとに解き直す。</summary>
+    private double[][] SolveEbsdDressedTailVoltage(EbsdDressedTailOptions opt, ref BeamSelectionPool pool, double kvac, double u0,
+        Vector3DBase referenceSurface, Vector3DBase referenceBeamDirection, Vector3DBase referenceAxisU, Vector3DBase referenceAxisV,
+        List<int> representatives, int[] symmetryMapping, int hemisphereLength, int gridSize,
+        (double x, double y, double z)[] atomArray, double[] sigmaArray, double tdsCoeff, double[][] background, int threads, Action<int> completed)
+    {
+        var rec = new EbsdDressedTailRecord { KV = AccVoltage };
+        var sw = Stopwatch.StartNew();
+        var mat = ((BaseRotation ?? new Matrix3D()) * Crystal.MatrixInverseTransposed).Tuple;
+        if (pool == null || pool.RadiusNm != opt.TailRadiusNm || pool.Mat != mat)
+            pool = CreateBeamSelectionPool(opt.TailRadiusNm, buildE0: false); // E1 の尺度は U/γ (電圧に依らない) なので、エネルギーの間で共有する
+        rec.SecondsPool = sw.Elapsed.TotalSeconds; sw.Restart();
+        bool tds = background != null;
+        var table = CreateDressedTailTable(pool, opt.Eta, !tds ? double.NaN : opt.SourceTailQuadrature > 0 ? double.PositiveInfinity : opt.SourceEta); // 吸収は電圧で変わるので、表はエネルギーごとに作り直す
+        // 源の裾どうしの項の求積: 原子ごとの F(0) の分 A_n (getU の後方半球の積分と同じ式) と Gauss の幅 σ_n = √(B/8π²) (等方の B_eq で近似)
+        (double weight, double sigmaNm)[] quadAtoms = null;
+        if (tds && opt.SourceTailQuadrature > 0)
+        {
+            var gammaRel = 1 + UniversalConstants.e0 * AccVoltage * 1E3 / UniversalConstants.m0 / UniversalConstants.c2;
+            var list = new List<(double, double)>();
+            foreach (var atoms in Crystal.Atoms)
+            {
+                double m = atoms.Dsf?.BisoEffective ?? 0;
+                if (!(m > 0)) m = 0;
+                int sub = _elasticIonModel == ElasticIonModel.Neutral ? 0 : atoms.SubNumberElectron;
+                double f = m == 0 ? 0 : AtomStatic.ElectronScatteringPeng[atoms.AtomicNumber][sub].FactorImaginaryAnnular(AccVoltage, new Vector3DBase(0, 0, 0), m, Math.PI / 2, Math.PI, 30, 12);
+                if (BackscatterSourceScaleForResearch != null) f *= BackscatterSourceScaleForResearch(atoms.AtomicNumber, AccVoltage);
+                double a = f * atoms.Occ * gammaRel / Math.PI / Crystal.Volume, sigma = Math.Sqrt(m / (8 * Math.PI * Math.PI));
+                foreach (var _ in atoms.Atom) list.Add((a, sigma));
+            }
+            quadAtoms = [.. list];
+            double sumA = quadAtoms.Sum(x => x.weight), f0 = table.diffF[pool.DiffIndex(0, 0, 0)].Real;
+            if (Math.Abs(sumA - f0) > 1e-9 * Math.Max(Math.Abs(f0), 1e-300)) // 原子の分の和 = F(0) (規格化の取り違えを止める)
+                throw new InvalidOperationException($"Tail quadrature weights {sumA} do not add up to F(0) = {f0}");
+        }
+        rec.SecondsTable = sw.Elapsed.TotalSeconds - table.SecondsSource; rec.SecondsSource = table.SecondsSource;
+        rec.TableNonzeros = table.Nonzeros; rec.SourceNonzeros = table.SourceNonzeros;
+
+        int b = Math.Max(1, opt.BlockSize), cellsPerRow = (gridSize + b - 1) / b;
+        var cells = new Dictionary<long, List<int>>();
+        foreach (var i in representatives)
+        {
+            int hemi = i / hemisphereLength, local = i - hemi * hemisphereLength, w = local % gridSize, h = local / gridSize;
+            long key = ((long)hemi * cellsPerRow + h / b) * cellsPerRow + w / b;
+            if (!cells.TryGetValue(key, out var list)) cells.Add(key, list = []);
+            list.Add(i);
+        }
+        var cellList = cells.OrderBy(c => c.Key).ToArray();
+        rec.Blocks = cellList.Length; rec.Directions = representatives.Count;
+
+        (Vector3DBase k0, Vector3DBase n) Dir(Vector3DBase d)
+        {
+            var (eb, es) = GetCrystalFixedMasterEquivalentBeamAndSurface(d, referenceSurface, referenceBeamDirection, referenceAxisU, referenceAxisV);
+            return (getVecK0(kvac, u0, eb, es), es);
+        }
+        var result = new double[BeamDirections.Length][];
+        int nAtoms = atomArray.Length, split = 0;
+        long solveTicks = 0, integrateTicks = 0;
+        var gate = new object();
+        Parallel.For(0, cellList.Length, new ParallelOptions { MaxDegreeOfParallelism = Math.Max(1, Math.Min(threads, opt.MaxParallelBlocks)) }, (c, state) =>
+        {
+            if (bwEBSDNew.CancellationPending) { state.Stop(); return; }
+            var (key, members) = cellList[c];
+            int hemi = (int)(key / ((long)cellsPerRow * cellsPerRow)), ch = (int)(key / cellsPerRow % cellsPerRow), cw = (int)(key % cellsPerRow);
+            // 升目の中心: 有効な画素 (六方の無効セルを除く) の方向の平均。画素が 1 つなら、その方向そのもの (従来の経路とビット単位で同じ k0)
+            double sx = 0, sy = 0, sz = 0; int valid = 0, last = -1;
+            for (int h = ch * b; h < Math.Min(ch * b + b, gridSize); h++)
+                for (int w = cw * b; w < Math.Min(cw * b + b, gridSize); w++)
+                {
+                    int p = hemi * hemisphereLength + h * gridSize + w;
+                    if (symmetryMapping[p] < 0) continue;
+                    var d = BeamDirections[p]; sx += d.X; sy += d.Y; sz += d.Z; valid++; last = p;
+                }
+            var center = valid == 1 ? BeamDirections[last] : Vector3DBase.Normarize(new Vector3DBase(sx, sy, sz));
+            var (ck0, cn) = Dir(center);
+            var dirs = members.Select(i => Dir(BeamDirections[i])).ToArray();
+            double maxAngle = 0;
+            foreach (var i in members)
+                maxAngle = Math.Max(maxAngle, Math.Acos(Math.Clamp(Vector3DBase.Normarize(BeamDirections[i]) * center, -1, 1)) * 1e3);
+            var swc = Stopwatch.StartNew();
+            DressedTailSolution[] sols;
+            try
+            {
+                sols = SolveDressedTailBlockResearch(table, ck0, cn, dirs, opt.N, opt.Ps, opt.RegDepthNm, opt.OneProduct, false, null, null, atomArray, tds, quadAtoms, opt.SourceTailQuadrature);
+            }
+            catch (DressedTailBackwardBeamException) when (members.Count > 1)
+            {
+                // P のクリップやビームの削除はせず、方向ごとに (自分を中心に) 解き直す
+                Interlocked.Increment(ref split);
+                sols = new DressedTailSolution[members.Count];
+                for (int m = 0; m < members.Count; m++)
+                    sols[m] = SolveDressedTailBlockResearch(table, dirs[m].k0, dirs[m].n, [dirs[m]], opt.N, opt.Ps, opt.RegDepthNm, opt.OneProduct, false, null, null, atomArray, tds, quadAtoms, opt.SourceTailQuadrature)[0];
+            }
+            Interlocked.Add(ref solveTicks, swc.Elapsed.Ticks);
+            swc.Restart();
+            int minS = int.MaxValue, maxS = 0, maxQ = 0;
+            for (int m = 0; m < members.Count; m++)
+            {
+                var s = sols[m];
+                int nm = s.Gamma.Length;
+                // native の B = P·C·diag(α) に C = I・α = 1・P = Φ (原子 × モード、Φ が初期係数と固有ベクトルを含む) を渡す
+                var ident = new Complex[nm * nm];
+                for (int j = 0; j < nm; j++) ident[j * nm + j] = Complex.One;
+                var ones = new Complex[nm];
+                Array.Fill(ones, Complex.One);
+                if (tds)
+                {
+                    // 従来の経路と同じ: 非局所源があれば局所値は使わない (原子 0 個として省き、計算済みの印の 0 配列を残す)。B は CreateMasterPatternMuBack と同じ並び (列優先、行 = 第 1 添字) で渡す
+                    if (EigenEnabled)
+                    {
+                        var r2 = NativeWrapper.EBSDSolverWithTDS(nm, s.Gamma, ident, ones, Array.Empty<Complex>(), Array.Empty<double>(), s.SourceMatrix, tdsCoeff, Thicknesses);
+                        result[members[m]] = r2.intensity; background[members[m]] = r2.tdsIntensity;
+                    }
+                    else
+                    {
+                        result[members[m]] = new double[Thicknesses.Length];
+                        background[members[m]] = ComputeTDSMatrixBackground(nm, s.Gamma, ident, ones, s.SourceMatrix, tdsCoeff, Thicknesses);
+                    }
+                }
+                else
+                    result[members[m]] = EigenEnabled
+                        ? NativeWrapper.EBSDSolver(nm, s.Gamma, ident, ones, s.AtomAmp, sigmaArray, Thicknesses)
+                        : EBSDSolverManaged(nm, nAtoms, s.Gamma, ident, ones, s.AtomAmp, sigmaArray, Thicknesses);
+                minS = Math.Min(minS, s.NExplicit); maxS = Math.Max(maxS, s.NExplicit); maxQ = Math.Max(maxQ, s.PoolIndices.Length - s.NExplicit);
+                completed(members[m]);
+            }
+            Interlocked.Add(ref integrateTicks, swc.Elapsed.Ticks);
+            lock (gate)
+            {
+                rec.MinExplicit = Math.Min(rec.MinExplicit, minS); rec.MaxExplicit = Math.Max(rec.MaxExplicit, maxS); rec.MaxTail = Math.Max(rec.MaxTail, maxQ);
+                rec.MaxMemberAngleMrad = Math.Max(rec.MaxMemberAngleMrad, maxAngle);
+            }
+        });
+        rec.SplitBlocks = split;
+        rec.SecondsSolve = TimeSpan.FromTicks(solveTicks).TotalSeconds; rec.SecondsIntegrate = TimeSpan.FromTicks(integrateTicks).TotalSeconds;
+        lock (opt.Records) opt.Records.Add(rec);
+        return result;
     }
 }

@@ -1627,6 +1627,11 @@ public partial class BetheMethod
                 symmetryRepresentativeIndices.Add(i); // (260327Ch) orbit ごとの最小 index を代表点に採用
         }
 
+        var dressedTail = EbsdDressedTailResearch; // 261109Cl 追加 (研究用の口、既定 null): 着衣つきの裾の方式。走行の初めに 1 回だけ読む
+        if (dressedTail != null && (double.IsFinite(SourceSmearingSigmaNm) || UseNonLocalAbsorption || IncludeAbsorbedFluxBackground)) // 261109Cl: 後方 TDS 行列 (IncludeTDSBackground) は対応済み
+            throw new NotSupportedException("EbsdDressedTailResearch does not support non-local absorption, absorbed-flux reinjection or source smearing yet.");
+        BeamSelectionPool dressedTailPool = null; // 261109Cl 追加: エネルギーの間で共有する候補のプール
+
         for (int vIndex = 0; vIndex < voltages.Length; vIndex++)
         {
             AccVoltage = voltages[vIndex];
@@ -1674,6 +1679,23 @@ public partial class BetheMethod
             double tdsCoeff = IncludeTDSBackground ? 2 * Math.PI / kvac : 0; // (260321Ch)
             double[][] ebsdIntensity;
 
+            if (dressedTail != null) // 261109Cl 追加: 着衣つきの裾の方式 (従来の beams・ポテンシャル行列・後方 TDS 行列を確保する前に分岐)
+            {
+                int vIndexLocal = vIndex;
+                ebsdIntensity = SolveEbsdDressedTailVoltage(dressedTail, ref dressedTailPool, kvac, u0,
+                    referenceSurface, referenceBeamDirection, referenceAxisU, referenceAxisV,
+                    symmetryRepresentativeIndices, symmetryRepresentativeMapping, hemisphereLength, directionGridSize,
+                    atomArray, sigmaArray, tdsCoeff, ebsdBackground, thread, i =>
+                    {
+                        var completedDirectionCount = Interlocked.Add(ref count, symmetryRepresentativeWeights[i]);
+                        if (completedDirectionCount / 50 != (completedDirectionCount - symmetryRepresentativeWeights[i]) / 50
+                            || completedDirectionCount == BeamDirections.Length * (vIndexLocal + 1))
+                            bwEBSDNew.ReportProgress(completedDirectionCount, reportString);
+                    });
+                if (bwEBSDNew.CancellationPending) { e.Cancel = true; return; }
+            }
+            else
+            { // 261109Cl 追加: 従来の経路 (字下げは変えない)
             #region beamsPreliminary
             // if (grid == 1 && !IncludeTDSBackground) { ... } else { ... } // (260321Ch) 旧実装: blockSize=1 だけ専用経路に分けていた
             // if (BeamDirections.Length % 2 != 0) throw ... // (260327Ch) 電圧ごとに不変なのでループ外へ移動
@@ -2063,6 +2085,7 @@ public partial class BetheMethod
             if (bwEBSDNew.CancellationPending) break; // 261107Cl 追加
             } // 261107Cl 追加: 塊のループの終わり
             if (bwEBSDNew.CancellationPending) { e.Cancel = true; return; } // 261107Cl 追加 (codex2 第 11 回): 中断したら残りのエネルギーへ進まない (途中の Disks は完成として渡さない)
+            } // 261109Cl 追加: 従来の経路の終わり
 
             for (int i = 0; i < BeamDirections.Length; i++) // 261107Cl 移動 (旧は解くループの直後): 未計算方向は exact representative から埋め戻す
             {
@@ -4161,13 +4184,16 @@ public partial class BetheMethod
     // 260316Cl nTheta, nPhi 引数を追加 (後方散乱用に求積点数を削減するため)
     // 260316Cl以前のシグネチャ:
     // public (Complex Real, Complex Imag) getU(in double kV, in Beam g, in Beam h = null, double inner = double.NaN, double outer = double.NaN)
-    // 261108Cl cache 引数を追加 (ビーム選択の研究用の差の表 = 数百万件を uDictionary に入れないため。既定 true = 従来と同じ)。旧シグネチャ:
+    // 261108Cl cache 引数を追加 (ビーム選択の研究用の差の表 = 数百万件を uDictionary に入れないため。既定 true = 従来と同じ)。
+    // 261109Cl cache:false は uDictionary を読みもしない (鍵に電圧・積分角度が無いため。研究用の表を本体のキャッシュの状態から独立させる)。旧シグネチャ:
     // public (Complex Real, Complex Imag) getU(in double kV, in Beam g, in Beam h = null, double inner = double.NaN, double outer = double.NaN, int nTheta = 60, int nPhi = 20)
     public (Complex Real, Complex Imag) getU(in double kV, in Beam g, in Beam h = null, double inner = double.NaN, double outer = double.NaN, int nTheta = 60, int nPhi = 20, bool cache = true)
     {
         var key1 = compose(g.Index);
         var key2 = h is null ? int.MaxValue : compose(h.Index);
-        if (!uDictionary.TryGetValue((key1, key2), out (Complex real, Complex imag) U))
+        // if (!uDictionary.TryGetValue((key1, key2), out (Complex real, Complex imag) U)) // 261109Cl 変更前: cache:false でも読み出しはしていた (鍵に電圧・積分角度が無いので、前の電圧や後方散乱の値を拾いうる)
+        (Complex real, Complex imag) U = default;
+        if (!cache || !uDictionary.TryGetValue((key1, key2), out U)) // 261109Cl 変更 (codex2 第18回): cache:false は読み書きとも迂回
         {
             var index = h is null ? g.Index : g.Index.Minus(h.Index);// (g.H - h.H, g.K - h.K, g.L - h.L) ;
 
