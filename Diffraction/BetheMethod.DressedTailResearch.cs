@@ -326,7 +326,10 @@ public partial class BetheMethod
         var sw = Stopwatch.StartNew();
         // (1) 選択と繰り上げ
         // var e1 = SelectIndicesResearch(pool, vecK0, surface, n, BeamPartnerSet.E1StrongSet, 170, out _, out _); // 261109Cl 変更前
-        var e1 = explicitSet != null ? [] : SelectIndicesResearch(pool, vecK0, surface, n, BeamPartnerSet.E1StrongSet, 170, out _, out _); // 261109Cl
+        // var e1 = explicitSet != null ? [] : SelectIndicesResearch(pool, vecK0, surface, n, BeamPartnerSet.E1StrongSet, 170, out _, out _); // 261109Cl // 261110Cl 変更前
+        double e1Thr = double.NaN; // 261110Cl 追加 (研究用、診断): E1 の N 本目の順位の値 (励起誤差 / 結合) を記録する
+        var e1 = explicitSet != null ? [] : SelectIndicesResearch(pool, vecK0, surface, n, BeamPartnerSet.E1StrongSet, 170, out e1Thr, out _, DressedE1ScoreCut); // 261110Cl: 順位の値の閾値 (研究用)
+        if (!double.IsNaN(e1Thr)) lock (DressedE1Thresholds) DressedE1Thresholds.Add(e1Thr);
         var (kX, kY, kZ) = vecK0.Tuple;
         var (sX, sY, sZ) = surface.Tuple;
         double k02 = vecK0.Length2;
@@ -1738,6 +1741,10 @@ public partial class BetheMethod
     public static double DressedTailNeighborPs { get; set; } = double.NaN;
     /// <summary>261110Cl 追加 (研究用、速さ): 裾の行を (h, k, l) の Morton 順に並べる (false = 候補の番号の順)</summary>
     public static bool DressedTailMortonOrder { get; set; } = false;
+    /// <summary>261110Cl 追加 (研究用、診断): DressCore で選んだ E1 の N 本目の順位の値の一覧 (呼び出し側が空にする)</summary>
+    public static readonly List<double> DressedE1Thresholds = [];
+    /// <summary>261110Cl 追加 (研究用): E1 の明示を「順位の値 (励起誤差 / 結合) がこれ以下」で選ぶ (NaN = 固定の本数 N。N は上限になる)</summary>
+    public static double DressedE1ScoreCut { get; set; } = double.NaN;
     /// <summary>261110Cl 追加 (研究用): 疎な表 (CSR) を作るか (false = stencil の疎な積だけ使う研究の経路。C# の疎な積・CSR の近傍は使えない)</summary>
     public static bool DressedTailBuildCsr { get; set; } = true;
     /// <summary>261110Cl 追加 (研究用): 近傍を距離の球でなく、中心から表の CSR の列 (|U(d)| ≥ η max) で一段つながる裾にする (DressedTailNeighborRadiusNm は NaN 以外で有効化だけに使う)</summary>

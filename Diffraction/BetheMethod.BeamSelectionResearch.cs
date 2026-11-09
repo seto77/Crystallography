@@ -343,7 +343,9 @@ public partial class BetheMethod
     }
 
     /// <summary>261109Cl 追加 (SelectBeamsResearch から移した選択の本体): 採る候補の番号 (000 を含まない、点数の昇順・同点は hkl の辞書順) を返す。</summary>
-    internal int[] SelectIndicesResearch(BeamSelectionPool pool, Vector3DBase vecK0, Vector3DBase surface, int n, BeamPartnerSet partners, double depthNm, out double threshold, out int m)
+    // internal int[] SelectIndicesResearch(BeamSelectionPool pool, Vector3DBase vecK0, Vector3DBase surface, int n, BeamPartnerSet partners, double depthNm, out double threshold, out int m) // 261110Cl 旧シグネチャ
+    internal int[] SelectIndicesResearch(BeamSelectionPool pool, Vector3DBase vecK0, Vector3DBase surface, int n, BeamPartnerSet partners, double depthNm, out double threshold, out int m,
+        double scoreCut = double.NaN) // 261110Cl scoreCut 追加 (研究用): NaN 以外なら、順位の値がこれ以下の反射を全部採る (n は上限)。本数を方向・電圧で順位の値から決める
     {
         if (pool.Owner != this)
             throw new ArgumentException("The pool was built for another BetheMethod", nameof(pool));
@@ -371,6 +373,12 @@ public partial class BetheMethod
         }
         var span = scored.AsSpan(0, m);
         int need = Math.Max(0, n - 1);
+        if (!double.IsNaN(scoreCut)) // 261110Cl 追加: 順位の値の閾値で本数を決める (上限 n − 1)
+        {
+            int below = 0;
+            foreach (var (r, _) in span) if (r <= scoreCut) below++;
+            need = Math.Min(need, below);
+        }
         int selected;
         if (need >= m)
         {
