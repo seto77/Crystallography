@@ -580,6 +580,28 @@ public sealed class EbsdPatternComposer
     /// 電子の平均 (= 検出器に当たる電子の平均。旧・検出器ビニングの全ビン和と同じ意味) になる。
     /// 射出半球のビンは等立体角なので、この係数を掛けないと検出器の端 (α が大きく、画素 1 個の立体角が小さい) を過大に数える。</para></summary>
     /// <param name="stride">画素を間引く間隔 (1 で全画素)。重みは画素間でなめらかなので 4 程度で十分。</param>
+    /// <summary>261110Cl 追加 (研究用、ビーム選択の本番の重みの検査): 検出器の画素 (col, row) の model 2 の重み (エネルギー × 深さの区間質量、長さ eLen·dLen、
+    /// 添字 ei·dLen + di) に画素の立体角 cos³α を掛けたもの (<see cref="ComputeDetectorAverageSliceWeights"/> の 1 画素分と同じ式) と、射出方向 (試料系、正規化) とその μ。
+    /// 試料表面より下へ向く画素は null。A(E)・非晶質層・背景は含まない (重みだけ)</summary>
+    public static (double[] w, double mu, double sx, double sy, double sz)? PixelSliceWeightsResearch(EbsdMonteCarloDistribution dist, EbsdDetectorGeometry detector, int col, int row)
+    {
+        ArgumentNullException.ThrowIfNull(dist);
+        ArgumentNullException.ThrowIfNull(detector);
+        int eLen = dist.EnergyCount, dLen = dist.DepthCount, nSlices = eLen * dLen;
+        var depths = dist.Depths; var widths = MasterPattern.ComputeDepthIntervals(depths);
+        var v = detector.PixelToSampleDirection(col, row);
+        double sx = -v.X, sy = -v.Y, sz = -v.Z;
+        if (!(sz > 0)) return null;
+        double len = Math.Sqrt(sx * sx + sy * sy + sz * sz), mu = sz / len;
+        var (bx, by) = EbsdMonteCarloDistribution.DirectionToBinCoords(sx, sy, sz, dist.BinCount);
+        var scratch = new BinScratch(nSlices, eLen);
+        EvaluatePathLengthWeights(dist, bx, by, mu, absolute: true, sliceMass: true, depths, widths, scratch, eLen, nSlices, false);
+        double cosA = detector.CameraLength / detector.PixelToLabPoint(col, row).Length, jac = cosA * cosA * cosA;
+        var w = new double[nSlices];
+        for (int k = 0; k < nSlices; k++) w[k] = scratch.Wv[k] * jac;
+        return (w, mu, sx / len, sy / len, sz / len);
+    }
+
     public static double[] ComputeDetectorAverageSliceWeights(EbsdMonteCarloDistribution dist, EbsdDetectorGeometry detector, int stride = 4)
     {
         ArgumentNullException.ThrowIfNull(dist);
