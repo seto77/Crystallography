@@ -144,6 +144,7 @@ public class EBSD
         public string BeamSelectionUsed { get; init; } = "Legacy";
         public string BeamSelectionSettingsVersion { get; init; } = "";
         public string BeamSelectionFallbackReason { get; init; } = "";
+        public string BeamSelectionNative { get; init; } = ""; // 261110Cl 追加
 
         public MasterPatternBuildRequest Request { get; }
         public BetheMethod.CBED_Disk[][] Disks { get; }
@@ -314,7 +315,8 @@ public class EBSD
                 bwMasterPattern.RunWorkerAsync(new MasterPatternCompilationArgument(request, completedBethe.Disks) // 261110Cl: ビーム選択の記録も渡す
                 {
                     BeamSelectionUsed = completedBethe.EbsdBeamSelectionUsed.ToString(),
-                    BeamSelectionSettingsVersion = completedBethe.EbsdBeamSelectionUsed == BetheMethod.EbsdBeamSelectionMethod.DressedTail ? BetheMethod.DressedTailProductionSettings.Version : "",
+                    BeamSelectionSettingsVersion = completedBethe.EbsdBeamSelectionUsed == BetheMethod.EbsdBeamSelectionMethod.DressedTail ? completedBethe.EbsdBeamSelectionSettingsVersion : "",
+                    BeamSelectionNative = completedBethe.EbsdBeamSelectionUsed == BetheMethod.EbsdBeamSelectionMethod.DressedTail ? completedBethe.EbsdBeamSelectionNative : "", // 261110Cl 追加 (codex2 第 32 回)
                     BeamSelectionFallbackReason = completedBethe.EbsdBeamSelectionFallbackReason ?? "",
                 });
                 return;
@@ -404,6 +406,7 @@ public class EBSD
             {
                 BeamSelectionRequested = request.BeamSelection.ToString(), BeamSelectionUsed = argument.BeamSelectionUsed, // 261110Cl 追加: ビーム選択の記録
                 BeamSelectionSettingsVersion = argument.BeamSelectionSettingsVersion, BeamSelectionFallbackReason = argument.BeamSelectionFallbackReason,
+                BeamSelectionNative = argument.BeamSelectionNative, // 261110Cl 追加
             });
     }
 
@@ -546,6 +549,8 @@ public sealed class MasterPattern
     public string BeamSelectionSettingsVersion { get; init; } = "";
     /// <summary>261110Cl 追加: 新方式を要求したのに従来へ戻した理由 (戻さなければ空)</summary>
     public string BeamSelectionFallbackReason { get; init; } = "";
+    /// <summary>261110Cl 追加 (codex2 第 32 回): 新方式が使った native の版 (DLL・機能の印・U の bf16)。従来なら空</summary>
+    public string BeamSelectionNative { get; init; } = "";
 
     /// <summary> MasterPattern 本体を初期化する。 </summary>
     public MasterPattern(int gridSize, double[] energies, double[] depths, float[][] positivePlanes, float[][] negativePlanes,

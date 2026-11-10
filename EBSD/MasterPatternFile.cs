@@ -54,6 +54,7 @@ public sealed class MasterPatternFileInfo
     public string BeamSelectionUsed { get; set; } = "Legacy";
     public string BeamSelectionSettingsVersion { get; set; } = "";
     public string BeamSelectionFallbackReason { get; set; } = "";
+    public string BeamSelectionNative { get; set; } = ""; // 261110Cl 追加 (codex2 第 32 回): 新方式が使った native の版
 
     /// <summary>構築リクエストから作成条件を作る</summary>
     // public static MasterPatternFileInfo FromBuildRequest(EBSD.MasterPatternBuildRequest request, double beamEnergyKeV, string creator = "") // 261110Cl 旧シグネチャ
@@ -76,6 +77,7 @@ public sealed class MasterPatternFileInfo
             BeamSelectionUsed = result?.BeamSelectionUsed ?? "Legacy",
             BeamSelectionSettingsVersion = result?.BeamSelectionSettingsVersion ?? "",
             BeamSelectionFallbackReason = result?.BeamSelectionFallbackReason ?? "",
+            BeamSelectionNative = result?.BeamSelectionNative ?? "",
         };
     }
 }
@@ -107,6 +109,7 @@ public static class MasterPatternFile
         BeamSelectionRequested = string.IsNullOrEmpty(info.BeamSelectionRequested) ? "Legacy" : info.BeamSelectionRequested,
         BeamSelectionUsed = string.IsNullOrEmpty(info.BeamSelectionUsed) ? "Legacy" : info.BeamSelectionUsed,
         BeamSelectionSettingsVersion = info.BeamSelectionSettingsVersion ?? "", BeamSelectionFallbackReason = info.BeamSelectionFallbackReason ?? "",
+        BeamSelectionNative = info.BeamSelectionNative ?? "", // 261110Cl 追加
     };
 
     /// <summary>既定の拡張子</summary>
@@ -131,6 +134,10 @@ public static class MasterPatternFile
         ArgumentNullException.ThrowIfNull(path);
         info ??= new MasterPatternFileInfo();
         info.FormatVersion = FormatVersion;
+        // 261110Cl 追加 (codex2 第 32 回): ビーム選択の方式は保存する MasterPattern から書く (info だけでは新方式の像を従来として記録しうる)
+        info.BeamSelectionRequested = masterPattern.BeamSelectionRequested; info.BeamSelectionUsed = masterPattern.BeamSelectionUsed;
+        info.BeamSelectionSettingsVersion = masterPattern.BeamSelectionSettingsVersion; info.BeamSelectionFallbackReason = masterPattern.BeamSelectionFallbackReason;
+        info.BeamSelectionNative = masterPattern.BeamSelectionNative;
         info.BackscatteredElectronCount = backscatteredElectrons?.Length ?? 0;
         if (string.IsNullOrEmpty(info.CreatedUtc)) info.CreatedUtc = DateTime.UtcNow.ToString("o", CultureInfo.InvariantCulture);
 

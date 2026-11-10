@@ -107,6 +107,9 @@ public static partial class NativeWrapper
         int[] sHkl, int[] qHkl, double[] ds, double[] dq, Complex[] hss, Complex[] lamQ, int[] qPhaseCol, double sqrtP0, double[] seconds = null)
     {
         int nS = ds.Length, nQ = dq.Length;
+        // 261110Cl 追加 (codex2 第 32 回): 配列の長さを検査する (native は長さを知らない)
+        if (sHkl.Length != 3 * nS || qHkl.Length != 3 * nQ || hss.Length != nS * nS || lamQ.Length != nQ || qPhaseCol.Length != nQ || (seconds != null && seconds.Length < 9))
+            throw new ArgumentException("dressed-tail native solve: inconsistent array lengths");
         var gamma = new Complex[nS]; var src = new Complex[nS * nS];
         int nM = 0, rc;
         bool addT = false, addW = false;

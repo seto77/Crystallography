@@ -33,9 +33,15 @@ public partial class BetheMethod
     public int EbsdBeamSelectionWorkers { get; private set; }
     /// <summary>261110Cl 追加: 直前の構築の新方式の資源の見積もり (共有・1 作業・予算・予算で許す作業の数) の文 (表示と記録用)</summary>
     public string EbsdBeamSelectionDetail { get; private set; }
+    /// <summary>261110Cl 追加 (codex2 第 32 回): 新方式を必須にする (研究・q の検証用)。使えない条件なら従来へ戻さず、構築の開始前に例外で止める</summary>
+    public bool EbsdBeamSelectionRequireDressedTail { get; set; }
+    /// <summary>261110Cl 追加 (codex2 第 32 回): 直前の構築で新方式が使った native の版 (DLL の名前・機能の印・U の bf16 を使ったか)</summary>
+    public string EbsdBeamSelectionNative { get; private set; } = "";
+    /// <summary>261110Cl 追加: 直前の構築の新方式の設定の版 (既定と違う設定なら +custom)</summary>
+    public string EbsdBeamSelectionSettingsVersion { get; private set; } = "";
 
-    /// <summary>261110Cl 追加: 新方式の本番の設定 (研究で確定した 1 つの組。仕様書 §12 末尾 (aaa)〜(hhh)、作者の判断 2026-11-10)</summary>
-    public sealed class DressedTailProductionSettings
+    /// <summary>261110Cl 追加: 新方式の本番の設定 (研究で確定した 1 つの組。仕様書 §12 末尾 (aaa)〜(hhh)、作者の判断 2026-11-10)。値で比べる (既定と違えば記録の版に +custom)</summary>
+    public sealed record DressedTailProductionSettings
     {
         /// <summary>設定の版 (保存情報とキャッシュの区別に使う)</summary>
         public const string Version = "DT1-261110";
@@ -82,7 +88,11 @@ public partial class BetheMethod
         EbsdBeamSelectionDetail = $"memory estimate: shared {shared / 1e9:f2} GB, {perWorker / 1e9:f2} GB per worker; budget {budget / 1e9:f1} GB (total {total / 1e9:f1}, free {free / 1e9:f1}, reserve {reserve / 1e9:f1}); workers {workers} (requested {threads}, cap {set.MaxWorkers}, logical CPUs {Environment.ProcessorCount}, by budget {byBudget})";
         if (workers < 1)
             return (null, null, $"estimated memory {(shared + perWorker) / 1e9:f1} GB (shared {shared / 1e9:f1} GB + {perWorker / 1e9:f1} GB per worker) exceeds the budget {budget / 1e9:f1} GB");
-        var run = new DressedTailNativeRun(set, workers);
+        // var run = new DressedTailNativeRun(set, workers); // 261110Cl 変更前
+        var run = new DressedTailNativeRun(set, workers, Math.Max(perWorker, (budget - shared) / workers)); // 261110Cl (codex2 第 32 回): 方向ごとに実際の大きさで予算を確かめる
+        int caps = NativeWrapper.DressedTailCapabilities;
+        EbsdBeamSelectionNative = $"{NativeWrapper.LoadedNativeLibrary} caps {caps}{(set.AllowUBf16 && (caps & 2) != 0 ? " U-bf16" : "")}";
+        EbsdBeamSelectionSettingsVersion = DressedTailProductionSettings.Version + (set == DressedTailDefaults ? "" : "+custom");
         var opt = new EbsdDressedTailOptions
         {
             TailRadiusNm = set.TailRadiusNm, PoolRadiusNm = set.PoolRadiusNm, Eta = set.Eta, N = set.N, Ps = set.Ps, RegDepthNm = set.RegDepthNm,
@@ -141,12 +151,14 @@ public partial class BetheMethod
         readonly ConcurrentBag<NativeWrapper.DressedTailWorkspaceHandle> idle = new();
         readonly List<NativeWrapper.DressedTailWorkspaceHandle> all = [];
         readonly object gate = new();
+        readonly long perWorkerBudget; // 261110Cl 追加 (codex2 第 32 回): 1 作業が使ってよい量 [byte]
         DressedTailTable curTable; NativeWrapper.DressedTailTablesHandle curNative; int[] curPoolCol;
         bool disposed;
 
-        public DressedTailNativeRun(DressedTailProductionSettings s, int workers)
+        // public DressedTailNativeRun(DressedTailProductionSettings s, int workers) // 261110Cl 旧シグネチャ
+        public DressedTailNativeRun(DressedTailProductionSettings s, int workers, long perWorkerBudget)
         {
-            set = s;
+            set = s; this.perWorkerBudget = perWorkerBudget;
             nset = new NativeWrapper.DressedTailNativeSettings
             {
                 AbiVersion = NativeWrapper.DressedTailAbiVersionExpected, AllowUBf16 = s.AllowUBf16 ? 1 : 0,
@@ -185,14 +197,16 @@ public partial class BetheMethod
             var (tables, poolCol) = GetTables(table, atomSites, quadAtoms);
             var b = bm.BuildDressedTailBlocksResearch(table, k0, n, set.N, set.Ps, sel);
             int nS = b.SArr.Length, nQ = b.QArr.Length; var hkl = table.Pool.Hkl;
+            // 261110Cl 追加 (codex2 第 32 回): 実際の大きさで大きな確保の前に予算を確かめる (式は EstimateDressedTailMemory と同じ・モードの数は nM = nS/2 で見込む)。超えたら失敗として止める (途中で従来へ戻さない)
+            double nMe = 0.5 * nS, need = 2.0 * nS * nQ * 8 + 3.0 * nQ * nMe * 8 + nQ * nMe * 4 + 10.0 * nS * nS * 16 + nQ * 64.0 + (double)nS * nQ * 16;
+            if (need > perWorkerBudget)
+                throw new InvalidOperationException($"Dressed-tail beam selection: a direction needs {need / 1e9:f2} GB (explicit {nS}, tail {nQ}), more than the per-worker budget {perWorkerBudget / 1e9:f2} GB. Build again with fewer threads or with the conventional beam selection.");
             var sHkl = new int[3 * nS]; var qHkl = new int[3 * nQ]; var ds = new double[nS]; var dq = new double[nQ]; var qCol = new int[nQ];
             for (int i = 0; i < nS; i++) { var (h, k, l) = hkl[b.SArr[i]]; sHkl[3 * i] = h; sHkl[3 * i + 1] = k; sHkl[3 * i + 2] = l; ds[i] = b.D[b.SArr[i]]; }
             for (int r = 0; r < nQ; r++) { var (h, k, l) = hkl[b.QArr[r]]; qHkl[3 * r] = h; qHkl[3 * r + 1] = k; qHkl[3 * r + 2] = l; dq[r] = b.D[b.QArr[r]]; qCol[r] = poolCol[b.QArr[r]]; }
-            if (!idle.TryTake(out var ws)) // 作業の数より多く並列に呼ばれたとき (起こらない設計) は 1 つ足す
-            {
-                ws = NativeWrapper.DressedTailCreateWorkspace();
-                lock (gate) all.Add(ws);
-            }
+            // 261110Cl 変更 (codex2 第 32 回): 作業の数より多く並列に呼ばれたら、予算を破って足さずに止める (不変条件の違反)
+            if (!idle.TryTake(out var ws))
+                throw new InvalidOperationException("Dressed-tail beam selection: no idle workspace (more parallel solves than workers)");
             try
             {
                 var (gamma, source) = NativeWrapper.DressedTailSolve(tables, ws, nset, sHkl, qHkl, ds, dq, b.HSS.Values, b.LamQ, qCol, Math.Sqrt(b.P[0]));

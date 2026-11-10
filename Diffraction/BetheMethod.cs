@@ -1640,6 +1640,7 @@ public partial class BetheMethod
         {
             var (dtOpt, dtRun, dtReason) = TryCreateDressedTailProduction(thread, IncludeTDSBackground);
             if (dtOpt != null) { dressedTail = dtOpt; dressedTailRun = dtRun; EbsdBeamSelectionUsed = EbsdBeamSelectionMethod.DressedTail; EbsdBeamSelectionWorkers = dtOpt.MaxParallelBlocks; }
+            else if (EbsdBeamSelectionRequireDressedTail) throw new InvalidOperationException("The dressed-tail beam selection is required but cannot be used: " + dtReason); // 261110Cl 追加 (codex2 第 32 回)
             else EbsdBeamSelectionFallbackReason = dtReason;
         }
         using var dressedTailRunScope = dressedTailRun; // 261110Cl 追加: 構築の終わり (例外でも) に native の表と作業領域を返す
