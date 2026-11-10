@@ -325,8 +325,7 @@ public partial class BetheMethod
         DressedTailSelectionSettings selection = null, // 261110Cl selection 追加 (本番の経路、codex2 第 31 回): 選択の設定 (null = 研究用の static)
         double modeTau = double.NaN, // 261110Cl modeTau 追加 (CBED の本番の経路): モードの組の打ち切り τ (NaN = 研究用の static DressedModeTau)
         Func<Matrix<Complex>, MathNet.Numerics.LinearAlgebra.Vector<Complex>, Matrix<Complex>, int[], bool[]> modeSelector = null, // 261110Cl modeSelector 追加 (CBED の区画): (V_b, γ, H_b, 明示) → 残すモード。渡すと τ の規則の代わりに使う
-        bool? denseSingle = null, bool? spmmSingle = null, // 261110Cl 追加 (CBED の本番の経路): 着衣の密な積・疎な積を単精度に (null = 研究用の static DressedDenseSingle・DressedSpMMSingle)
-        int innerDegree = 1) // 261111Cl 追加 (CBED の区画): parallel = false のときに、疎な積 (速い核) と H_QS・H_SQ の組み立てを並列にするスレッドの数 (結果は同じ)
+        bool? denseSingle = null, bool? spmmSingle = null) // 261110Cl 追加 (CBED の本番の経路): 着衣の密な積・疎な積を単精度に (null = 研究用の static DressedDenseSingle・DressedSpMMSingle)
     {
         double tauM = double.IsNaN(modeTau) ? DressedModeTau : modeTau; // 261110Cl 追加
         // 261110Cl 追加: 選択の設定。下の行は同じ名前の局所変数を読む (本番の経路は研究用の static を一時代入しない。null なら static の今の値)
@@ -471,8 +470,7 @@ public partial class BetheMethod
         bool skipQ = blocksOnly && DressedSkipQBlocks; // 261110Cl 追加: native の一体化した解は H_QS・H_SQ を自分で単精度に作る
         var hqs = skipQ ? null : new Complex[nQ * nS]; var hsq = skipQ ? null : new Complex[nS * nQ];
         if (!skipQ) // 261110Cl 追加
-        // Parallel.For(0, nS, new ParallelOptions { MaxDegreeOfParallelism = parallel ? -1 : 1 }, c => // 261111Cl 変更前
-        Parallel.For(0, nS, new ParallelOptions { MaxDegreeOfParallelism = parallel ? -1 : Math.Max(1, innerDegree) }, c => // 261111Cl 変更: 区画の中のスレッドの数
+        Parallel.For(0, nS, new ParallelOptions { MaxDegreeOfParallelism = parallel ? -1 : 1 }, c =>
         {
             int sc = sArr[c]; double dc = D[sc];
             for (int r = 0; r < nQ; r++)
@@ -554,7 +552,7 @@ public partial class BetheMethod
                 var l = lamQ[r]; var f = Complex.Conjugate(l) / (l.Real * l.Real + l.Imaginary * l.Imaginary + d2);
                 for (int c = 0; c < nM; c++) x0vv[r + c * nQ] = -f * tv[r + c * nQ];
             }
-            var EX0V = SpMMTail(table, qArr, map, D, x0v, parallel, false, rowKeep, spmmSingle, innerDegree); // 261111Cl: 区画の中のスレッドの数
+            var EX0V = SpMMTail(table, qArr, map, D, x0v, parallel, false, rowKeep, spmmSingle);
             if (timing != null) timing.SpMM1 = sw.Elapsed.TotalSeconds;
             sw.Restart();
             rhs = T + EX0V;
@@ -562,7 +560,7 @@ public partial class BetheMethod
         }
         else
         {
-            EX0 = SpMMTail(table, qArr, map, D, X0, parallel, false, rowKeep, spmmSingle, innerDegree); // 261111Cl: 区画の中のスレッドの数
+            EX0 = SpMMTail(table, qArr, map, D, X0, parallel, false, rowKeep, spmmSingle);
             if (timing != null) timing.SpMM1 = sw.Elapsed.TotalSeconds;
             sw.Restart();
             // var rhs = (HQS + EX0) * Vb; // 261109Cl 変更前
@@ -585,7 +583,7 @@ public partial class BetheMethod
         {
             if (timing != null) timing.Dress += sw.Elapsed.TotalSeconds;
             sw.Restart();
-            var EXt = oneProduct ? null : SpMMTail(table, qArr, map, D, rhs, parallel, false, null, spmmSingle, innerDegree); // 261111Cl: 区画の中のスレッドの数
+            var EXt = oneProduct ? null : SpMMTail(table, qArr, map, D, rhs, parallel, false, null, spmmSingle);
             if (timing != null) timing.SpMM2 = sw.Elapsed.TotalSeconds;
             return new DressCoreResult { SArr = sArr, QArr = qArr, P = P, D = D, NSelected = nSelected, HSS = HSS, HQS = HQS, HSQ = HSQ, LamQ = lamQ, Xt = rhs, Vb = Vb, R = Rkeep, EXt = EXt, Gb = gb.ToArray(), HqsVb = hqsVbKeep };
         }
@@ -593,7 +591,7 @@ public partial class BetheMethod
         if (timing != null) timing.Dress += sw.Elapsed.TotalSeconds;
         // 射影に使う E·X (oneProduct なら着衣前の E·X₀ で近似)
         sw.Restart();
-        var EX = oneProduct ? EX0 : SpMMTail(table, qArr, map, D, X, parallel, false, null, spmmSingle, innerDegree); // 261111Cl: 区画の中のスレッドの数
+        var EX = oneProduct ? EX0 : SpMMTail(table, qArr, map, D, X, parallel, false, null, spmmSingle);
         if (timing != null) timing.SpMM2 = sw.Elapsed.TotalSeconds;
         return new DressCoreResult { SArr = sArr, QArr = qArr, P = P, D = D, NSelected = nSelected, X = X, HSS = HSS, HQS = HQS, HSQ = HSQ, EX = EX, LamQ = lamQ };
     }
@@ -1391,16 +1389,14 @@ public partial class BetheMethod
     // private static Matrix<Complex> SpMMTail(DressedTailTable table, int[] qArr, int[] map, double[] D, Matrix<Complex> X, bool parallel, bool source = false) // 261109Cl 旧シグネチャ
     private static Matrix<Complex> SpMMTail(DressedTailTable table, int[] qArr, int[] map, double[] D, Matrix<Complex> X, bool parallel, bool source = false, // 261109Cl source 追加: 後方散乱の源の表 (F) で積む
         bool[] rowKeep = null, // 261109Cl rowKeep 追加: false の行は積まない (結果は 0)
-        bool? single = null, // 261110Cl single 追加: 単精度にするか (null = 研究用の static DressedSpMMSingle)
-        int degree = 1) // 261111Cl degree 追加: 並列にしないとき (parallel = false) の速い核の行の塊の並列の数
+        bool? single = null) // 261110Cl single 追加: 単精度にするか (null = 研究用の static DressedSpMMSingle)
     {
         bool sgl = single ?? DressedSpMMSingle; // 261110Cl 追加
         // if (DressedSpMMSingle) return SpMMTailSingle(table, qArr, map, D, X, parallel); // 261109Cl 変更前
         // if (DressedSpMMSingle) return SpMMTailSingle(table, qArr, map, D, X, parallel, source); // 261109Cl 変更前
         // if (DressedSpMMSingle && DressedSpMMKernel == 2 && !source && !parallel) return SpMMTailSingleSoA(table, qArr, map, D, X, rowKeep); // 261109Cl 追加: SoA の核 // 261110Cl 変更前
         // if (DressedSpMMSingle) return SpMMTailSingle(table, qArr, map, D, X, parallel, source, rowKeep); // 261109Cl // 261110Cl 変更前
-        // if (sgl && DressedSpMMKernel == 2 && !source && !parallel) return SpMMTailSingleSoA(table, qArr, map, D, X, rowKeep); // 261109Cl 追加: SoA の核 // 261111Cl 変更前
-        if (sgl && DressedSpMMKernel == 2 && !source && !parallel) return SpMMTailSingleSoA(table, qArr, map, D, X, rowKeep, degree); // 261111Cl 変更: 行の塊の並列の数
+        if (sgl && DressedSpMMKernel == 2 && !source && !parallel) return SpMMTailSingleSoA(table, qArr, map, D, X, rowKeep); // 261109Cl 追加: SoA の核
         if (sgl) return SpMMTailSingle(table, qArr, map, D, X, parallel, source, rowKeep); // 261109Cl
         var sw = Stopwatch.StartNew();
         int nQ = X.RowCount, k = X.ColumnCount;
@@ -1546,9 +1542,7 @@ public partial class BetheMethod
     // private static Matrix<Complex> SpMMTailSingle(DressedTailTable table, int[] qArr, int[] map, double[] D, Matrix<Complex> X, bool parallel, bool source = false) // 261109Cl 旧シグネチャ
     /// <summary>261109Cl 追加 (研究用、速さ): 単精度の疎な積で、実部と虚部を別の並び (SoA) にした形。非零ごとに X の行を流し、複素 8 個を FMA 4 回で積む
     /// (AoS の並べ替え・AddSubtract が要らない)。DressedSpMMKernel = 2 で選ぶ (源の表には使わない)。値は SpMMTailSingle と丸めの範囲で同じ。</summary>
-    // private static Matrix<Complex> SpMMTailSingleSoA(DressedTailTable table, int[] qArr, int[] map, double[] D, Matrix<Complex> X, bool[] rowKeep) // 261111Cl 旧シグネチャ
-    private static Matrix<Complex> SpMMTailSingleSoA(DressedTailTable table, int[] qArr, int[] map, double[] D, Matrix<Complex> X, bool[] rowKeep,
-        int degree = 1) // 261111Cl degree 追加: 行の塊 (256 行) を並列に積むスレッドの数 (行ごとに独立なので結果は同じ)
+    private static Matrix<Complex> SpMMTailSingleSoA(DressedTailTable table, int[] qArr, int[] map, double[] D, Matrix<Complex> X, bool[] rowKeep)
     {
         lock (table)
             if (table.vReF == null)
@@ -1572,16 +1566,12 @@ public partial class BetheMethod
                 }
         var yre = new float[(long)nQ * kp]; var yim = new float[(long)nQ * kp];
         var rowPtr = table.rowPtr; var col = table.colIdx; var vr = table.vReF; var vi = table.vImF;
-        // 261111Cl 変更: 行の範囲 [rStart, rEnd) を積む局所関数にして、degree > 1 なら 256 行の塊を並列に
-        void Rows(int rStart, int rEnd)
-        {
         unsafe
         {
             fixed (float* xr0 = xre, xi0 = xim, yr0 = yre, yi0 = yim, vrp = vr, vip = vi)
             fixed (int* colp = col, mapp = map)
             {
-                // for (int r = 0; r < nQ; r++) // 261111Cl 変更前
-                for (int r = rStart; r < rEnd; r++)
+                for (int r = 0; r < nQ; r++)
                 {
                     if (rowKeep != null && !rowKeep[r]) continue;
                     int pw = qArr[r], p0 = rowPtr[pw], p1 = rowPtr[pw + 1];
@@ -1614,9 +1604,6 @@ public partial class BetheMethod
                 }
             }
         }
-        }
-        if (degree > 1 && nQ > 512) Parallel.For(0, (nQ + 255) / 256, new ParallelOptions { MaxDegreeOfParallelism = degree }, bk => Rows(bk * 256, Math.Min(nQ, bk * 256 + 256)));
-        else Rows(0, nQ);
         var res = new CDense(nQ, k);
         var rv = res.Values;
         for (int c0 = 0; c0 < k; c0 += 32)
