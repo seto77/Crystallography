@@ -2962,6 +2962,7 @@ public partial class BetheMethod
         //  スライスの中点で標本を取る (sinc はスライスの中の q の位相の積分。G_n の符号は getU の exp(+2πiG·r_a) と fillUq の共役の規約による)。
         //  環境変数 RECIPRO_STEM_TDS_ZPHASE=0 で旧式 (搬送波込み・q の位相なし・右端の和。比べ用)。弾性の像は出口の面の干渉なので変えない
         var depthPhase = Environment.GetEnvironmentVariable("RECIPRO_STEM_TDS_ZPHASE") != "0";
+        var stemTdsNonLocal = Environment.GetEnvironmentVariable("RECIPRO_STEM_TDS_NONLOCAL") == "1";//261111Cl 追加 (研究用): TDS の検出器の核を非局所の形に (fillUq)
 
         //厚みを sliceThickness 程度で切り分ける (旧: 非弾性フェーズ冒頭で構築していたものを EVD 前へ移動。全-slice 物化経路では EVD 直後に使うため)
         var _thick = new double[Thicknesses.Length][];
@@ -3328,6 +3329,15 @@ public partial class BetheMethod
                     var (ih, ik, il) = Beams[i].Index;
                     //局所形式
                     // U[qIndex * bLen2 + j * bLen + i] = getU(AccVoltage, qList[qIndex] + Beams[i] - Beams[j], null, detAngleInner, detAngleOuter).Imag.Conjugate(); // 260602Cl 変更前
+                    //261111Cl 追加 (研究用、既定 = 未設定): RECIPRO_STEM_TDS_NONLOCAL=1 なら検出器の非局所の核 F(a, b) (FactorImaginaryAnnular の 2 ベクトルの形)。
+                    //  a = g_i + q/2 (共役の側 K+Q)、b = g_j − q/2 (K の側)。入射の方向は重なりの平均 (K ≈ −q/2) とみなす。000 どうしでは局所の形 F(G/2, −G/2) と同じで、
+                    //  違いはビーム対の平均の運動量 (g_i + g_j)/2 の分 (局所近似の評価、codex2 第 40・41 回)。キャッシュしない
+                    if (stemTdsNonLocal)
+                    {
+                        dest[destOffset + j * bLen + i] = getU(AccVoltage, new Beam((qh + ih, qk + ik, ql + il), vq / 2 + Beams[i].Vec), new Beam((jh, jk, jl), vj - vq / 2),
+                            detAngleInner, detAngleOuter, cache: false).Imag.Conjugate();
+                        continue;
+                    }
                     dest[destOffset + j * bLen + i] = getU(AccVoltage, (qh + ih - jh, qk + ik - jk, ql + il - jl), vq, Beams[i].Vec, vj, detAngleInner, detAngleOuter).Imag.Conjugate();//共役とると、なぜかいい感じ。
                     //非局所形式
                     //U[qIndex * bLen2 + j * bLen + i] = getU(AccVoltage, qList[qIndex], -Beams[i] + Beams[j], detAngleInner, detAngleOuter).Imag.Conjugate();
