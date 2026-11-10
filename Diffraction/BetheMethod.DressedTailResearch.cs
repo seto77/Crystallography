@@ -321,8 +321,10 @@ public partial class BetheMethod
         int[] explicitSet = null, // 261109Cl explicitSet 追加 (研究用、照合用): 明示の集合をこの候補の番号に固定する (000 が先頭。選択と繰り上げをしない)
         bool modeBasis = false, // 261109Cl modeBasis 追加: X = X̃V_b⁻¹ を作らず、モードの基底 (V_b, X̃) と R を返す (span([I; X]) = span([V_b; X̃]) なので Galerkin は同じ)
         bool blocksOnly = false, // 261109Cl blocksOnly 追加 (研究用、native の試作): 選択と密なブロックまでで返す
-        DressedTailSelectionSettings selection = null) // 261110Cl selection 追加 (本番の経路、codex2 第 31 回): 選択の設定 (null = 研究用の static)
+        DressedTailSelectionSettings selection = null, // 261110Cl selection 追加 (本番の経路、codex2 第 31 回): 選択の設定 (null = 研究用の static)
+        double modeTau = double.NaN) // 261110Cl modeTau 追加 (CBED の本番の経路): モードの組の打ち切り τ (NaN = 研究用の static DressedModeTau)
     {
+        double tauM = double.IsNaN(modeTau) ? DressedModeTau : modeTau; // 261110Cl 追加
         // 261110Cl 追加: 選択の設定。下の行は同じ名前の局所変数を読む (本番の経路は研究用の static を一時代入しない。null なら static の今の値)
         var sl = selection ?? DressedTailSelectionSettings.FromResearchStatics();
         double DressedTailCoreRadiusNm = sl.CoreRadiusNm, DressedTailNeighborRadiusNm = sl.NeighborRadiusNm, DressedTailNeighborPs = sl.NeighborPs,
@@ -502,7 +504,8 @@ public partial class BetheMethod
         if (double.IsFinite(DressedSpMMLambdaCut)) { rowKeep = new bool[nQ]; for (int r = 0; r < nQ; r++) rowKeep[r] = lamQ[r].Magnitude < DressedSpMMLambdaCut; }
         Matrix<Complex> rhs, EX0 = null; // 261109Cl: EX0 は打ち切りでないときだけ (着衣前の E·X₀)
         int nM = nS; // 261109Cl 追加: 着衣のモードの数 (打ち切りなら nS より少ない)
-        if (modeBasis && DressedModeTau > 0) // 261109Cl 追加 (研究用、native の試作と同じ規則): モードの組ごとの打ち切り。T = H_QS V_k、X₀V_k = −diag(f)T、R = T + E(X₀V_k)
+        // if (modeBasis && DressedModeTau > 0) // 261109Cl 追加 // 261110Cl 変更前
+        if (modeBasis && tauM > 0) // 261109Cl 追加 (261110Cl: τ は引数か static) (研究用、native の試作と同じ規則): モードの組ごとの打ち切り。T = H_QS V_k、X₀V_k = −diag(f)T、R = T + E(X₀V_k)
         {
             var aIn = Vb.Solve(MathNet.Numerics.LinearAlgebra.Vector<Complex>.Build.Dense(nS, i => i == 0 ? Complex.One : Complex.Zero));
             var par = Enumerable.Range(0, nS).ToArray();
@@ -520,7 +523,8 @@ public partial class BetheMethod
             var gw = new double[nS]; double wmax = 0;
             for (int r = 0; r < nS; r++)
                 if (used[r]) { double s = 0; for (int i = 0; i < nS; i++) { var z = gsum[i + r * nS]; s += z.Real * z.Real + z.Imaginary * z.Imaginary; } gw[r] = Math.Sqrt(s); wmax = Math.Max(wmax, gw[r]); }
-            var keep = Enumerable.Range(0, nS).Where(j => gw[Find(j)] >= DressedModeTau * wmax).ToArray();
+            // var keep = Enumerable.Range(0, nS).Where(j => gw[Find(j)] >= DressedModeTau * wmax).ToArray(); // 261110Cl 変更前
+            var keep = Enumerable.Range(0, nS).Where(j => gw[Find(j)] >= tauM * wmax).ToArray();
             nM = keep.Length;
             var vk = new Complex[nS * nM];
             for (int t = 0; t < nM; t++) Array.Copy(vbv, keep[t] * nS, vk, t * nS, nS);

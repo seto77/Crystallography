@@ -577,11 +577,23 @@ public partial class BetheMethod
         var reportString = $"{SolverLabel(solver)}{thread}"; //260611Cl 旧: $"{solver}{thread}" (MKL 不在時の managed 実行を可視化)
         #endregion
 
+        // 261110Cl 追加: ビーム選択の新方式 (着衣つきの裾、区画で着衣を使い回す)。要求され、使える条件なら Beams と方向ごとの振幅を差し替える (使えなければ従来へ戻して理由を残す)
+        CbedBeamSelectionUsed = CbedBeamSelectionMethod.Legacy;
+        Complex[][] dressedAmplitudes = null;
+        if (CbedBeamSelection == CbedBeamSelectionMethod.DressedTail)
+        {
+            var (dBeams, dAmp) = SolveCbedDressedTail(kvac, u0, beamDirectionsValid, Thicknesses, thread, solver, () => bwCBED.CancellationPending,
+                c => { if (c % 50 == 0) bwCBED.ReportProgress(c, "Dressed tail "); });
+            if (dBeams != null) { Beams = dBeams; dressedAmplitudes = dAmp; CbedBeamSelectionUsed = CbedBeamSelectionMethod.DressedTail; }
+        }
+        else CbedBeamSelectionFallbackReason = null;
+
         int bLen = Beams.Length, tLen = Thicknesses.Length;
         var beamDirectionsP = beamDirectionsValid.AsParallel().WithDegreeOfParallelism(thread);
 
         //ここからdiskValid[t*tLen +g]を計算.
-        var diskAmplitudeValid = beamDirectionsP.Select(beamDirection =>
+        // var diskAmplitudeValid = beamDirectionsP.Select(beamDirection => // 261110Cl 変更前
+        var diskAmplitudeValid = dressedAmplitudes ?? beamDirectionsP.Select(beamDirection => // 261110Cl 変更: 新方式なら計算済みの振幅
         {
             if (bwCBED.CancellationPending) return null;
             // 260829Cl 削除: var coeff = Math.Abs(1.0 / beamDirection.Z); // = 1/cosTau
@@ -4256,7 +4268,8 @@ public partial class BetheMethod
                             if (double.IsNaN(m))
                                 m = 0;
 
-                            imag = m == 0 ? 0 : double.IsNaN(inner * outer) ? es.FactorImaginary(kV, s2, m) :
+                            // imag = m == 0 ? 0 : double.IsNaN(inner * outer) ? es.FactorImaginary(kV, s2, m) : // 261110Cl 変更前
+                            imag = m == 0 ? 0 : double.IsNaN(inner * outer) ? FactorImaginaryMemo(es, atoms.AtomicNumber, sub, kV, s2, m) : // 261110Cl 変更: (元素, 電圧, s², m) で記憶 (値は同じ)
                                 h is null ? es.FactorImaginaryAnnular(kV, g.Vec, m, inner, outer, nTheta, nPhi) : es.FactorImaginaryAnnular(kV, g.Vec, h.Vec, m, inner, outer, nTheta, nPhi);//非弾性散乱因子 答えは無次元
                             if (BackscatterSourceScaleForResearch != null && !double.IsNaN(inner * outer)) // 261107Cl 追加 (研究用の口、既定 null): annular の分だけ元素ごとの倍率
                                 imag *= BackscatterSourceScaleForResearch(atoms.AtomicNumber, kV);
@@ -4278,6 +4291,21 @@ public partial class BetheMethod
         }
         return U;
     }
+    /// <summary>261110Cl 追加: 局所形式の非弾性散乱因子 (FactorImaginary、約 900 点の数値積分) の記憶。値は (元素, 電荷, 電圧, s², m) だけで決まる純粋な関数なので、
+    /// 鍵が同じなら同じ値 (ビット単位) を返す。ビーム選択の新方式の差の表 (数十万の d、|d|² の種類は数千) や大きな N の行列で同じ s² が何度も現れる。
+    /// 件数が上限を超えたら空にする (プロセス全体で共有、スレッドに安全)。弾性の因子の模型 (AbsorptionElasticModel、プロセス全体の切り替え) も鍵に入れる</summary>
+    static readonly ConcurrentDictionary<(int z, int sub, double kV, double s2, double m, AbsorptionElasticModel model), double> s_factorImaginaryMemo = new();
+    const int FactorImaginaryMemoLimit = 2_000_000;
+    static double FactorImaginaryMemo(AtomStatic.ES es, int z, int sub, double kV, double s2, double m)
+    {
+        var key = (z, sub, kV, s2, m, AbsorptionElasticModel);
+        if (s_factorImaginaryMemo.TryGetValue(key, out var v)) return v;
+        v = es.FactorImaginary(kV, s2, m);
+        if (s_factorImaginaryMemo.Count >= FactorImaginaryMemoLimit) s_factorImaginaryMemo.Clear();
+        s_factorImaginaryMemo.TryAdd(key, v);
+        return v;
+    }
+
     /// <summary>局所ポテンシャル形式で計算</summary>
     /// <param name="g"></param>
     /// <param name="h"></param>
