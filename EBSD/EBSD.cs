@@ -28,7 +28,9 @@ public class EBSD
             int thread = 1,
             bool useNonLocalAbsorption = false,
             bool includeTDSBackground = false,
-            bool includeAbsorbedFluxBackground = false) // 260919Cl 追加
+            // bool includeAbsorbedFluxBackground = false) // 260919Cl 追加 // 261110Cl 旧シグネチャの末尾
+            bool includeAbsorbedFluxBackground = false, // 260919Cl 追加
+            BetheMethod.EbsdBeamSelectionMethod beamSelection = BetheMethod.EbsdBeamSelectionMethod.Legacy) // 261110Cl 追加: ビーム選択の方式 (既定 = 従来)
         {
             Crystal = crystal ?? throw new ArgumentNullException(nameof(crystal));
             MaxNumOfBloch = maxNumOfBloch;
@@ -41,6 +43,7 @@ public class EBSD
             UseNonLocalAbsorption = useNonLocalAbsorption;
             IncludeTDSBackground = includeTDSBackground;
             IncludeAbsorbedFluxBackground = includeAbsorbedFluxBackground; // 260919Cl 追加
+            BeamSelection = beamSelection; // 261110Cl 追加
         }
 
         /// <summary>計算対象の結晶。</summary>
@@ -74,6 +77,8 @@ public class EBSD
         public bool IncludeTDSBackground { get; }
         /// <summary>260919Cl 追加: 吸収で失われたフラックスを拡散背景として再注入する。</summary>
         public bool IncludeAbsorbedFluxBackground { get; }
+        /// <summary>261110Cl 追加: ビーム選択の方式 (要求)。新方式が使えない条件なら構築の開始前に従来へ戻り、結果の MasterPattern に実際の方式と理由が残る</summary>
+        public BetheMethod.EbsdBeamSelectionMethod BeamSelection { get; }
 
         /// <summary>Bethe 計算側の進捗を規格化するための基準値。</summary>
         public int DivisionCount => Math.Max(1, GridSize * GridSize * Math.Max(1, Energies.Length) * 2); // (260321Ch) MasterPattern は常に全球計算する
@@ -81,7 +86,8 @@ public class EBSD
         /// <summary> 非同期実行中に UI 側の配列が変更されても影響しないよう、配列も複製して保持する。 </summary>
         public MasterPatternBuildRequest Clone()
             // => new(Crystal, MaxNumOfBloch, Energies, Depths, GridSize, Solver, Thread, UseNonLocalAbsorption, IncludeTDSBackground); // 260919Cl 変更前
-            => new(Crystal, MaxNumOfBloch, Energies, Depths, GridSize, Solver, Thread, UseNonLocalAbsorption, IncludeTDSBackground, IncludeAbsorbedFluxBackground); // 260919Cl
+            // => new(Crystal, MaxNumOfBloch, Energies, Depths, GridSize, Solver, Thread, UseNonLocalAbsorption, IncludeTDSBackground, IncludeAbsorbedFluxBackground); // 260919Cl // 261110Cl 変更前
+            => new(Crystal, MaxNumOfBloch, Energies, Depths, GridSize, Solver, Thread, UseNonLocalAbsorption, IncludeTDSBackground, IncludeAbsorbedFluxBackground, BeamSelection); // 261110Cl: 方式も写す
     }
 
     /// <summary>MasterPattern 作成中の進捗情報。</summary>
@@ -134,6 +140,10 @@ public class EBSD
             Request = request;
             Disks = disks;
         }
+        /// <summary>261110Cl 追加: 実際に使ったビーム選択の方式・設定の版・従来へ戻した理由 (BetheMethod の完了時に写す)</summary>
+        public string BeamSelectionUsed { get; init; } = "Legacy";
+        public string BeamSelectionSettingsVersion { get; init; } = "";
+        public string BeamSelectionFallbackReason { get; init; } = "";
 
         public MasterPatternBuildRequest Request { get; }
         public BetheMethod.CBED_Disk[][] Disks { get; }
@@ -238,7 +248,9 @@ public class EBSD
             EbsdRepresentativeDirectionBlockSize = currentMasterPatternBuildRequest.GridSize <= 512 ? 1
                 : currentMasterPatternBuildRequest.GridSize <= 1024 ? 3 : 5, // (260321Ch) 解像度に応じて 1 / 3 / 5 をその場で決める
             UseLocalSurfacePerBeamDirection = false, // (260321Ch) 新経路では結晶を回すので、既存 worker 側の局所表面近似は使わない
-            EbsdRepresentativeChunkSize = MasterPatternRepresentativeChunkSize // 261107Cl 追加
+            // EbsdRepresentativeChunkSize = MasterPatternRepresentativeChunkSize // 261107Cl 追加 // 261110Cl 変更前
+            EbsdRepresentativeChunkSize = MasterPatternRepresentativeChunkSize, // 261107Cl 追加
+            EbsdBeamSelection = currentMasterPatternBuildRequest.BeamSelection, // 261110Cl 追加: ビーム選択の方式 (要求)
         };
         masterPatternBethe.EBSD_ProgressChanged += MasterPatternBethe_EBSD_ProgressChanged;
         masterPatternBethe.EBSD_Completed += MasterPatternBethe_EBSD_Completed;
@@ -298,7 +310,13 @@ public class EBSD
         {
             try
             {
-                bwMasterPattern.RunWorkerAsync(new MasterPatternCompilationArgument(request, completedBethe.Disks));
+                // bwMasterPattern.RunWorkerAsync(new MasterPatternCompilationArgument(request, completedBethe.Disks)); // 261110Cl 変更前
+                bwMasterPattern.RunWorkerAsync(new MasterPatternCompilationArgument(request, completedBethe.Disks) // 261110Cl: ビーム選択の記録も渡す
+                {
+                    BeamSelectionUsed = completedBethe.EbsdBeamSelectionUsed.ToString(),
+                    BeamSelectionSettingsVersion = completedBethe.EbsdBeamSelectionUsed == BetheMethod.EbsdBeamSelectionMethod.DressedTail ? BetheMethod.DressedTailProductionSettings.Version : "",
+                    BeamSelectionFallbackReason = completedBethe.EbsdBeamSelectionFallbackReason ?? "",
+                });
                 return;
             }
             catch (Exception ex)
@@ -382,7 +400,11 @@ public class EBSD
         e.Result = new MasterPatternCompilationResult(
             request,
             // new EbsdMasterPattern(request.GridSize, [.. request.Energies], [.. request.Depths], request.Hemisphere, planes)); // (260321Ch) 旧案: 単一半球の plane 配列だけを保持していた
-            new MasterPattern(request.GridSize, [.. request.Energies], [.. request.Depths], positivePlanes, negativePlanes, request.GridType)); // 260331Cl gridType 追加
+            new MasterPattern(request.GridSize, [.. request.Energies], [.. request.Depths], positivePlanes, negativePlanes, request.GridType) // 260331Cl gridType 追加
+            {
+                BeamSelectionRequested = request.BeamSelection.ToString(), BeamSelectionUsed = argument.BeamSelectionUsed, // 261110Cl 追加: ビーム選択の記録
+                BeamSelectionSettingsVersion = argument.BeamSelectionSettingsVersion, BeamSelectionFallbackReason = argument.BeamSelectionFallbackReason,
+            });
     }
 
     /// <summary>plane 変換 worker の進捗を MasterPattern 全体の進捗へ換算して通知する。</summary>
@@ -515,6 +537,15 @@ public sealed class MasterPattern
         }
         return widths;
     }
+
+    /// <summary>261110Cl 追加: 構築で要求したビーム選択の方式 ("Legacy" / "DressedTail")。古いファイルは "Legacy"</summary>
+    public string BeamSelectionRequested { get; init; } = "Legacy";
+    /// <summary>261110Cl 追加: 実際に使ったビーム選択の方式 (新方式が使えない条件なら構築の開始前に "Legacy" へ戻る)</summary>
+    public string BeamSelectionUsed { get; init; } = "Legacy";
+    /// <summary>261110Cl 追加: 新方式の設定の版 (<see cref="BetheMethod.DressedTailProductionSettings.Version"/>。従来なら空)</summary>
+    public string BeamSelectionSettingsVersion { get; init; } = "";
+    /// <summary>261110Cl 追加: 新方式を要求したのに従来へ戻した理由 (戻さなければ空)</summary>
+    public string BeamSelectionFallbackReason { get; init; } = "";
 
     /// <summary> MasterPattern 本体を初期化する。 </summary>
     public MasterPattern(int gridSize, double[] energies, double[] depths, float[][] positivePlanes, float[][] negativePlanes,

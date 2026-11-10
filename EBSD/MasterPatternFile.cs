@@ -49,9 +49,16 @@ public sealed class MasterPatternFileInfo
     public double McEnergyThresholdKeV { get; set; } = double.NaN;
     /// <summary>電子を作った MC の入射電子数</summary>
     public int McIncidentCount { get; set; }
+    /// <summary>261110Cl 追加: ビーム選択の方式 (要求・実際・新方式の設定の版・従来へ戻した理由)。項目の無い古いファイルは従来 (Legacy)</summary>
+    public string BeamSelectionRequested { get; set; } = "Legacy";
+    public string BeamSelectionUsed { get; set; } = "Legacy";
+    public string BeamSelectionSettingsVersion { get; set; } = "";
+    public string BeamSelectionFallbackReason { get; set; } = "";
 
     /// <summary>構築リクエストから作成条件を作る</summary>
-    public static MasterPatternFileInfo FromBuildRequest(EBSD.MasterPatternBuildRequest request, double beamEnergyKeV, string creator = "")
+    // public static MasterPatternFileInfo FromBuildRequest(EBSD.MasterPatternBuildRequest request, double beamEnergyKeV, string creator = "") // 261110Cl 旧シグネチャ
+    public static MasterPatternFileInfo FromBuildRequest(EBSD.MasterPatternBuildRequest request, double beamEnergyKeV, string creator = "",
+        MasterPattern result = null) // 261110Cl result 追加: 構築の結果 (実際のビーム選択の方式を写す。null なら要求だけ)
     {
         ArgumentNullException.ThrowIfNull(request);
         return new MasterPatternFileInfo
@@ -65,6 +72,10 @@ public sealed class MasterPatternFileInfo
             UseNonLocalAbsorption = request.UseNonLocalAbsorption,
             IncludeTDSBackground = request.IncludeTDSBackground,
             IncludeAbsorbedFluxBackground = request.IncludeAbsorbedFluxBackground,
+            BeamSelectionRequested = request.BeamSelection.ToString(), // 261110Cl 追加
+            BeamSelectionUsed = result?.BeamSelectionUsed ?? "Legacy",
+            BeamSelectionSettingsVersion = result?.BeamSelectionSettingsVersion ?? "",
+            BeamSelectionFallbackReason = result?.BeamSelectionFallbackReason ?? "",
         };
     }
 }
@@ -89,6 +100,14 @@ public static class MasterPatternFile
     /// <summary>ファイル形式の版。形式を変えたら上げ、<see cref="Load"/> で旧版を読めるようにすること</summary>
     /// <remarks>261031Cl 追加: 本体 (格子の見出し・平面の並び・電子の区画) は <see cref="ReadElectronChunks"/> でも読む。形式を変えたら両方を直すこと</remarks>
     public const int FormatVersion = 1;
+
+    /// <summary>261110Cl 追加: 読み込んだ見出しのビーム選択の記録を MasterPattern に写す (項目の無い古いファイルは従来)</summary>
+    static MasterPattern WithBeamSelection(MasterPattern mp, MasterPatternFileInfo info) => new(mp.GridSize, mp.Energies, mp.Depths, mp.PositivePlanes, mp.NegativePlanes, mp.GridType)
+    {
+        BeamSelectionRequested = string.IsNullOrEmpty(info.BeamSelectionRequested) ? "Legacy" : info.BeamSelectionRequested,
+        BeamSelectionUsed = string.IsNullOrEmpty(info.BeamSelectionUsed) ? "Legacy" : info.BeamSelectionUsed,
+        BeamSelectionSettingsVersion = info.BeamSelectionSettingsVersion ?? "", BeamSelectionFallbackReason = info.BeamSelectionFallbackReason ?? "",
+    };
 
     /// <summary>既定の拡張子</summary>
     public const string Extension = ".rpmp";
@@ -191,12 +210,14 @@ public static class MasterPatternFile
             }
         // 261028Cl 追加: 電子を読まないときは、平面のあとの区画 (電子の本数と本体) を展開せずに返す
         if (!loadElectrons)
-            return new MasterPatternFileContent(new MasterPattern(gridSize, energies, depths, pos, neg, gridType), info, []);
+            // return new MasterPatternFileContent(new MasterPattern(gridSize, energies, depths, pos, neg, gridType), info, []); // 261110Cl 変更前
+            return new MasterPatternFileContent(WithBeamSelection(new MasterPattern(gridSize, energies, depths, pos, neg, gridType), info), info, []); // 261110Cl: ビーム選択の記録を写す
         int nBse = r.ReadInt32();
         if (nBse < 0) throw new InvalidDataException("Corrupt MasterPattern file (negative electron count).");
         var bses = new EbsdBackscatteredElectron[nBse];
         for (int i = 0; i < nBse; i++) bses[i] = ReadElectron(r);
-        return new MasterPatternFileContent(new MasterPattern(gridSize, energies, depths, pos, neg, gridType), info, bses);
+        // return new MasterPatternFileContent(new MasterPattern(gridSize, energies, depths, pos, neg, gridType), info, bses); // 261110Cl 変更前
+        return new MasterPatternFileContent(WithBeamSelection(new MasterPattern(gridSize, energies, depths, pos, neg, gridType), info), info, bses); // 261110Cl
     }
 
     /// <summary>261031Cl 追加: 保存した後方散乱電子を、chunkSize 本ずつの配列 (塊) にしてファイルの並び順に返す。
