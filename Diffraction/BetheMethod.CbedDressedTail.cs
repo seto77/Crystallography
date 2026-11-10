@@ -582,7 +582,8 @@ public partial class BetheMethod
             var row0 = cr.Vb.Row(0); // 000 (明示の先頭) の行
             var all = sArr.Concat(qArr).ToArray();
             double tb0 = swp.Elapsed.TotalSeconds;
-            var (Cm, G0, Gx, Gy, Gz) = CbedSharedBasis(cr, pool, set.OneProduct, set.SingleTailProducts);
+            // var (Cm, G0, Gx, Gy, Gz) = CbedSharedBasis(cr, pool, set.OneProduct, set.SingleTailProducts); // 261111Cl 変更前
+            var (Cm, G0, Gx, Gy, Gz) = CbedSharedBasis(cr, pool, set.OneProduct, set.SingleTailProducts, innerLocal); // 261111Cl 変更: 区画の中のスレッドで塊の積を並列に
             double tb1 = swp.Elapsed.TotalSeconds;
             cr = null; // 大きな行列を手放す
             // 一般化固有分解 G_n v = μ G₀ v (G₀ = LL†、C = L⁻¹G_nL⁻† のエルミートの固有分解、V = L⁻†U)
@@ -1029,7 +1030,9 @@ public partial class BetheMethod
     /// G₀ = W†W、G_a = W† diag(g_a) W、Cm = W†(V − diag|g|²)W (V = 流束座標の非対角の結合: A_S†H'_SS A_S + A_S†H_SQ A_Q + A_Q†(H_QS A_S + E A_Q)、
     /// 疎な積 1 回なら H_QS A_S + E A_Q ≈ R = (H_QS + E X₀)V_b)。SolveDressedTailBlockResearch と同じ式を一般の基底で。
     /// A† diag(w) A (w = D², D² g_x, D² g_y, D² g_z, D² |g|²) は行の塊ごとに積んで足す (5 倍幅の一時行列を全部の行で持たない)</summary>
-    private static (Matrix<Complex> Cm, Matrix<Complex> G0, Matrix<Complex> Gx, Matrix<Complex> Gy, Matrix<Complex> Gz) CbedSharedBasis(DressCoreResult cr, BeamSelectionPool pool, bool oneProduct, bool singleTail = false)
+    // private static (Matrix<Complex> Cm, Matrix<Complex> G0, Matrix<Complex> Gx, Matrix<Complex> Gy, Matrix<Complex> Gz) CbedSharedBasis(DressCoreResult cr, BeamSelectionPool pool, bool oneProduct, bool singleTail = false) // 261111Cl 旧シグネチャ
+    private static (Matrix<Complex> Cm, Matrix<Complex> G0, Matrix<Complex> Gx, Matrix<Complex> Gy, Matrix<Complex> Gz) CbedSharedBasis(DressCoreResult cr, BeamSelectionPool pool, bool oneProduct, bool singleTail = false,
+        int degree = 1) // 261111Cl degree 追加: 裾の塊の積を並列に作るスレッドの数 (足す順は塊の順のままなので結果は同じ)
     {
         var (sArr, qArr, AS, AQ, HSS, HQS, HSQ) = (cr.SArr, cr.QArr, cr.Vb, cr.Xt, cr.HSS, cr.HQS, cr.HSQ);
         double[] Dc = cr.D;
@@ -1049,7 +1052,9 @@ public partial class BetheMethod
         else Koff = AS.ConjugateTransposeThisAndMultiply(hssOff * AS + HSQ * AQ) + AQ.ConjugateTransposeThisAndMultiply(rq);
         rq = null;
         var T = new CDense(nB, 5 * nB);
-        void Accumulate(Matrix<Complex> A, int[] idx, int r0, int rows, bool single)
+        // void Accumulate(Matrix<Complex> A, int[] idx, int r0, int rows, bool single) // 261111Cl 変更前 (T に直接足した)
+        // 261111Cl 変更: 塊の積を返す (足すのは呼び出し側で塊の順に)
+        Matrix<Complex> Accumulate(Matrix<Complex> A, int[] idx, int r0, int rows, bool single)
         {
             var av = ((CDense)A).Values; int ld = A.RowCount;
             if (single) // 裾の塊: 単精度で積む
@@ -1066,8 +1071,9 @@ public partial class BetheMethod
                         Put(0, d2); Put(1, d2 * gx); Put(2, d2 * gy); Put(3, d2 * gz); Put(4, d2 * g2);
                     }
                 var p32 = new MathNet.Numerics.LinearAlgebra.Complex32.DenseMatrix(rows, nB, ac32).ConjugateTransposeThisAndMultiply(new MathNet.Numerics.LinearAlgebra.Complex32.DenseMatrix(rows, 5 * nB, y32));
-                T.Add(ToC64(p32), T);
-                return;
+                // T.Add(ToC64(p32), T); // 261111Cl 変更前
+                // return;
+                return ToC64(p32);
             }
             var Ac = new CDense(rows, nB); var ac = Ac.Values;
             var Y = new CDense(rows, 5 * nB); var yv = Y.Values;
@@ -1084,11 +1090,19 @@ public partial class BetheMethod
                     yv[rr + (col + 3 * nB) * rows] = x * (d2 * gz);
                     yv[rr + (col + 4 * nB) * rows] = x * (d2 * g2);
                 }
-            T.Add(Ac.ConjugateTransposeThisAndMultiply(Y), T);
+            // T.Add(Ac.ConjugateTransposeThisAndMultiply(Y), T); // 261111Cl 変更前
+            return Ac.ConjugateTransposeThisAndMultiply(Y);
         }
-        Accumulate(AS, sArr, 0, nS, false);
+        // Accumulate(AS, sArr, 0, nS, false); // 261111Cl 変更前 (3 行)
+        // const int chunk = 2048;
+        // for (int r0 = 0; r0 < nQ; r0 += chunk) Accumulate(AQ, qArr, r0, Math.Min(chunk, nQ - r0), singleTail);
+        // 261111Cl 変更: 明示の塊と裾の塊の積を並列に作り、前と同じ順 (明示、裾の塊の順) に T へ足す
         const int chunk = 2048;
-        for (int r0 = 0; r0 < nQ; r0 += chunk) Accumulate(AQ, qArr, r0, Math.Min(chunk, nQ - r0), singleTail);
+        int nChunk = (nQ + chunk - 1) / chunk;
+        var parts = new Matrix<Complex>[1 + nChunk];
+        Parallel.For(0, 1 + nChunk, new ParallelOptions { MaxDegreeOfParallelism = Math.Max(1, degree) }, b =>
+            parts[b] = b == 0 ? Accumulate(AS, sArr, 0, nS, false) : Accumulate(AQ, qArr, (b - 1) * chunk, Math.Min(chunk, nQ - (b - 1) * chunk), singleTail));
+        foreach (var pb in parts) T.Add(pb, T);
         Matrix<Complex> Part(int m) => T.SubMatrix(0, nB, m * nB, nB);
         return (Koff - Part(4), Part(0), Part(1), Part(2), Part(3));
     }
