@@ -7,6 +7,28 @@ namespace Crystallography.Tests;
 [Collection("Bethe global settings")]
 public class CbedSymmetryTests
 {
+    private const string GaAsCif = """
+data_GaAs
+_chemical_name_common GaAs
+_cell_length_a 5.6533
+_cell_length_b 5.6533
+_cell_length_c 5.6533
+_cell_angle_alpha 90
+_cell_angle_beta 90
+_cell_angle_gamma 90
+_symmetry_space_group_name_H-M 'F -4 3 m'
+_symmetry_Int_Tables_number 216
+loop_
+_atom_site_label
+_atom_site_type_symbol
+_atom_site_fract_x
+_atom_site_fract_y
+_atom_site_fract_z
+_atom_site_B_iso_or_equiv
+Ga1 Ga 0 0 0 0.6
+As1 As 0.25 0.25 0.25 0.5
+""";
+
     /// <summary>晶帯軸 [uvw] を実験室の +z へ向ける回転 (CBED の入射は −z)</summary>
     private static Matrix3D ZoneToZ(Crystal crystal, int u, int v, int w)
     {
@@ -68,5 +90,34 @@ public class CbedSymmetryTests
                 for (int r = 0; r < a.Length; r++)
                     Assert.True((a[r] - b[r]).Magnitude <= 1e-10, $"beam {full.Beams[g].Index}, pixel {r}, t {thick[t]}: {a[r]} vs {b[r]}");
             }
+    }
+
+    /// <summary>対称心のない GaAs [110] (−43m): ビーム軸まわりの 2 回回転は ZOLZ の |U| が Friedel で等しくても対称ではないので使わず、鏡映 (1−10) だけを使う。写した振幅は全方向を解いた値と一致する</summary>
+    [Fact]
+    public void LegacyCbed_GaAs110_UsesOnlyTheMirror()
+    {
+        var crystal = ConvertCrystalData.ConvertFromCifText(GaAsCif).ToCrystal();
+        var rot = ZoneToZ(crystal, 1, 1, 0);
+        var dirs = Grid(8, 1e-3);
+        double[] thick = [40];
+        var full = RunLegacy(crystal, rot, dirs, thick, false, 32);
+        var sym = RunLegacy(crystal, rot, dirs, thick, true, 32);
+        Assert.StartsWith("symmetry m(", sym.CbedSymmetryDetail);
+        Assert.DoesNotContain("symmetry 2", sym.CbedSymmetryDetail);
+        Assert.DoesNotContain(" 2 ", sym.CbedSymmetryDetail);
+        for (int g = 0; g < full.Beams.Length; g++)
+        {
+            var a = full.Disks[0][g].RawAmplitudes; var b = sym.Disks[0][g].RawAmplitudes;
+            for (int r = 0; r < a.Length; r++) Assert.True((a[r] - b[r]).Magnitude <= 1e-10, $"beam {full.Beams[g].Index}, pixel {r}");
+        }
+    }
+
+    /// <summary>晶帯軸から外れた向き (Si、[001] から 0.5° 傾けた) では対称を使わない</summary>
+    [Fact]
+    public void LegacyCbed_OffZone_DoesNotUseSymmetry()
+    {
+        var (crystal, rot) = BetheEigenReuseTests.TiltedSi();
+        var sym = RunLegacy(crystal, rot, Grid(6, 1e-3), [30], true, 32);
+        Assert.Equal("", sym.CbedSymmetryDetail);
     }
 }

@@ -600,13 +600,28 @@ public partial class BetheMethod
         int bLen = Beams.Length, tLen = Thicknesses.Length;
         // 261111Cl 追加: 従来の CBED でも晶帯軸の対称を使う (CbedLegacyUseSymmetry、既定は使わない)。軌道の最小の番号の方向を代表に解き、残りは振幅を位相込みで写す
         if (dressedAmplitudes == null) CbedSymmetryDetail = ""; // 新方式で解いたときは SolveCbedDressedTail が入れた値のまま
-        (string Name, int[] DirMap, int[] BeamMap, (double, double, double) W)[] legOps = [];
+        (string Name, int[] DirMap, int[] BeamMap, (double, double, double) W, int[] K)[] legOps = [];
         int[] legRep = null; (int rep, int op)[] legMap = null;
-        if (dressedAmplitudes == null && CbedLegacyUseSymmetry)
+        // if (dressedAmplitudes == null && CbedLegacyUseSymmetry) // 261111Cl 変更前
+        if (dressedAmplitudes == null && CbedLegacyUseSymmetry && !UseNonLocalAbsorption) // 261111Cl 変更: 非局所の吸収 (U' が g と h の組に依る) では判定が単独の g の U しか照合しないので使わない
         {
             var bIdx = new Dictionary<(int, int, int), int>(bLen); for (int b = 0; b < bLen; b++) bIdx[Beams[b].Index] = b;
             legOps = CbedSymmetryOps(Beams.Select(b => b.Index).ToArray(), Beams.Select(b => b.Vec.X).ToArray(), Beams.Select(b => b.Vec.Y).ToArray(), Beams.Select(b => b.Vec.Z).ToArray(),
                 h => bIdx.TryGetValue(h, out var j) ? j : -1, (BaseRotation * Crystal.MatrixInverseTransposed).Tuple, 25, beamDirectionsValid, Vector3DBase.Normarize(Surface));
+            // 261111Cl 追加 (codex2 第 38 回): 実際に解くポテンシャル行列の全要素で V_{Tg,Th} = exp(2πi(h_{Tg} − h_{Th})·w) V_{g,h} を照合する。外れたら対称を使わない
+            foreach (var op in legOps)
+            {
+                var ph = Beams.Select(b => { var (h, k, l) = b.Index; return Exp(new Complex(0, 2 * Math.PI * (h * op.W.Item1 + k * op.W.Item2 + l * op.W.Item3))); }).ToArray();
+                double vMax = 0; foreach (var z in potentialMatrix) vMax = Math.Max(vMax, z.Magnitude);
+                bool okV = true;
+                for (int col = 0; col < bLen && okV; col++)
+                    for (int row = 0; row < bLen; row++)
+                    {
+                        int tr = op.BeamMap[row], tc = op.BeamMap[col];
+                        if ((potentialMatrix[tr + tc * bLen] - potentialMatrix[row + col * bLen] * ph[tr] * Complex.Conjugate(ph[tc])).Magnitude > 1e-9 * vMax) { okV = false; break; }
+                    }
+                if (!okV) { legOps = []; break; }
+            }
             if (legOps.Length > 0)
             {
                 int nV = beamDirectionsValid.Count;
@@ -716,7 +731,8 @@ public partial class BetheMethod
                         result[t * bLen + b] *= Exp(PiI * (beams[b].P - 2 * kvac * Surface.Z) * Thicknesses[t]);
 
                 if (Interlocked.Increment(ref count) % progressStep == 0)
-                    bwCBED.ReportProgress(count, reportString);//進捗状況を報告
+                    // bwCBED.ReportProgress(count, reportString);//進捗状況を報告 // 261111Cl 変更前
+                    bwCBED.ReportProgress(legRep == null ? count : (int)((long)count * beamDirectionsValid.Count / legRep.Length), reportString);//進捗状況を報告 (261111Cl 変更: 対称で代表だけを解くときは全方向に換算)
 
                 return result;
             }

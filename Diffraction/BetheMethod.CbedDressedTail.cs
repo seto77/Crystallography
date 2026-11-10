@@ -45,7 +45,7 @@ public partial class BetheMethod
 
     /// <summary>261111Cl 追加: 従来の CBED (N 本の固定のビーム) でも晶帯軸の対称を使う (既定は使わない)。表面の法線・方向の格子・ビームの組・ポテンシャル (並進の位相込み) を
     /// 正確に移す操作 (<see cref="CbedSymmetryOps"/>) があれば、各軌道の代表の方向だけを解き、残りは振幅を位相込みで写す (各方向は独立に解くので結果は丸めの範囲で同じ)。
-    /// ビームの組がその操作で閉じていなければ (末尾の同点の組の扱いなど) その操作は使わない</summary>
+    /// ビームの組がその操作で閉じていなければ (末尾の同点の組の扱いなど) その操作は使わない。非局所の吸収 (UseNonLocalAbsorption) のときは使わない</summary>
     public bool CbedLegacyUseSymmetry { get; set; }
     /// <summary>261111Cl 追加: 直前の CBED (新方式・従来) で使った晶帯軸の対称と、解いた代表の方向の数 (使わなければ空)</summary>
     public string CbedSymmetryDetail { get; private set; } = "";
@@ -193,6 +193,30 @@ public partial class BetheMethod
         double symOffU = 0, symOffV = 0, symCos = 1, symSin = 0, sideMinSym = Math.Sqrt(2) * set.PatchRadiusMrad * 1e-3; // 升の格子のずれと回転 (斜めの鏡映の境に辺を合わせる。対称を使わなければ 0)
         // var symOps = set.UseSymmetry ? CbedSymmetryOps(pool, directions, n) : []; // 261111Cl 変更前
         var symOps = set.UseSymmetry ? CbedSymmetryOps(pool.Hkl, pool.GX, pool.GY, pool.GZ, pool.IndexOf, pool.Mat, Math.Min(25, 0.999 * pool.RadiusNm), directions, n) : [];
+        // 261111Cl 追加 (codex2 第 38 回): 実際に解くポテンシャル = 差の表 (|d| ≤ 2R の U + iU') の全要素で U_{Kd} = U_d exp(−2πi h_{Kd}·w) を照合する。外れたら対称を使わない
+        if (symOps.Length > 0)
+        {
+            int dh = pool.DiffBoundH, dk = pool.DiffBoundK, dl = pool.DiffBoundL; var du = table.diffUfull;
+            double uMaxD = 0; foreach (var z in du) uMaxD = Math.Max(uMaxD, z.Magnitude);
+            bool okAll = true;
+            foreach (var op in symOps)
+            {
+                var K = op.K; var (w1, w2, w3) = op.W;
+                Parallel.For(-dh, dh + 1, new ParallelOptions { MaxDegreeOfParallelism = threads }, (h, st) =>
+                {
+                    for (int k = -dk; k <= dk; k++) for (int l = -dl; l <= dl; l++)
+                    {
+                        var u = du[pool.DiffIndex(h, k, l)]; if (u == Complex.Zero) continue;
+                        int th = K[0] * h + K[1] * k + K[2] * l, tk = K[3] * h + K[4] * k + K[5] * l, tl = K[6] * h + K[7] * k + K[8] * l;
+                        if (Math.Abs(th) > dh || Math.Abs(tk) > dk || Math.Abs(tl) > dl) { okAll = false; st.Stop(); return; }
+                        var ph = Complex.Exp(new Complex(0, -2 * Math.PI * (th * w1 + tk * w2 + tl * w3)));
+                        if ((du[pool.DiffIndex(th, tk, tl)] - u * ph).Magnitude > 1e-9 * uMaxD) { okAll = false; st.Stop(); return; }
+                    }
+                });
+                if (!okAll) break;
+            }
+            if (!okAll) symOps = [];
+        }
         int[] repOrig = null; (int rep, int op)[] mapFrom = null; (double, double) bestOff = (0, 0); (double, double) bestRot = (1, 0);
         bool adaptiveSym = double.IsFinite(set.AdaptiveMaxRadiusMrad) && double.IsFinite(set.AdaptiveIndicatorLimit) && set.AdaptiveMaxRadiusMrad > set.PatchRadiusMrad; // 適応的な区画 (Split は軸にそろった升) では回さない
         if (symOps.Length > 0)
@@ -416,6 +440,26 @@ public partial class BetheMethod
                     if (bi >= 0) { eprobes.Add(bi); if (qn++ % 2 == 0) eprobesEarly.Add(bi); }
                 }
             }
+            // 261111Cl 追加 (codex2 第 38 回): 区画の全方向の k0 と、候補のビームが区画のどこかで遅い (|Q/P| < ps) か区画の中で Q/P の符号が変わるか (後ろ向き P ≤ 0 の方向は除く)
+            var memberK0 = members.Select(di => getVecK0(kvac, u0, directions[di], n).Tuple).ToArray();
+            bool[] SlowOverPatch(int[] poolIdx, Vector3DBase kc, (double X, double Y, double Z)[] ks)
+            {
+                var res = new bool[poolIdx.Length];
+                for (int i = 0; i < poolIdx.Length; i++)
+                {
+                    int s0 = poolIdx[i]; double lo = double.PositiveInfinity, hi = double.NegativeInfinity;
+                    foreach (var (kx, ky, kz) in ks.Append(kc.Tuple))
+                    {
+                        double vx = pool.GX[s0] + kx, vy = pool.GY[s0] + ky, vz = pool.GZ[s0] + kz, p2 = 2 * (nx * vx + ny * vy + nz * vz);
+                        if (!(p2 > 0)) continue;
+                        double l = (kx * kx + ky * ky + kz * kz - (vx * vx + vy * vy + vz * vz)) / p2;
+                        if (Math.Abs(l) < set.Ps) { res[i] = true; break; }
+                        lo = Math.Min(lo, l); hi = Math.Max(hi, l);
+                    }
+                    if (lo < 0 && hi > 0) res[i] = true;
+                }
+                return res;
+            }
             // 着衣の直後のモードの選び分け (EarlyModeTau): 探りの方向 (四隅) の励起を H_b + diag(Δλ_s) で見積もる
             Func<Matrix<Complex>, MathNet.Numerics.LinearAlgebra.Vector<Complex>, Matrix<Complex>, int[], bool[]> selector = null;
             if (double.IsFinite(set.EarlyModeTau) && set.EarlyModeTau > 0 && probes.Count > 0)
@@ -451,24 +495,19 @@ public partial class BetheMethod
                     // 中心: z(t) = e^{2πiγt} a0
                     var zc = new CDense(ns, tLen);
                     for (int t = 0; t < tLen; t++) for (int j = 0; j < ns; j++) zc[j, t] = Complex.Exp(twoPiI * gbv[j] * thicknesses[t]) * a0[j];
-                    var keepE = KeepClusters(gbv, Vb, zs.Append(zc), set.EarlyModeTau, perMode: true);
+                    // var keepE = KeepClusters(gbv, Vb, zs.Append(zc), set.EarlyModeTau, perMode: true); // 261111Cl 変更前 (遅いビームのモードを後から 1 つずつ足した)
                     // 261110Cl: 区画のどこか (中心か探り) で遅い (|Q/P| < ps) 明示の反射 (端で繰り上げた HOLZ など) に重み (5 % 以上) のあるモードは必ず残す
                     //   (H_b + diag(Δλ_s) の見積もりはこれらの励起を約 3 倍小さく見て、繰り上げと併用すると 1.5e−4 に悪化した)
-                    var slow = new bool[ns];
-                    for (int i = 0; i < ns; i++)
-                    {
-                        double l0 = Lam(sArrSel[i], cx, cy, cz), lo = l0, hi = l0;
-                        if (Math.Abs(l0) < set.Ps) { slow[i] = true; continue; }
-                        foreach (var di in probes) { var kd = getVecK0(kvac, u0, directions[di], n); double ld = Lam(sArrSel[i], kd.X, kd.Y, kd.Z); lo = Math.Min(lo, ld); hi = Math.Max(hi, ld); if (Math.Abs(ld) < set.Ps) { slow[i] = true; break; } }
-                        if (lo < 0 && hi > 0) slow[i] = true; // 261110Cl: 区画の中で符号が変わる (Bragg の線が横切る)
-                    }
+                    // 261111Cl 変更 (codex2 第 38 回): 遅いかは区画の全方向で判定し (8 方位の端だけでは円盤で切られた区画の境界を代表しない)、残すモードは近い固有値の組ごと (KeepClusters の force)
+                    var slow = SlowOverPatch(sArrSel, ck, memberK0);
+                    var forceE = new bool[ns];
                     for (int j = 0; j < ns; j++)
                     {
-                        if (keepE[j]) continue;
                         double tot = 0, sl = 0;
                         for (int i = 0; i < ns; i++) { double a2 = Vb[i, j].Magnitude; a2 *= a2; tot += a2; if (slow[i]) sl += a2; }
-                        if (tot > 0 && sl >= 0.05 * tot) keepE[j] = true;
+                        if (tot > 0 && sl >= 0.05 * tot) forceE[j] = true;
                     }
+                    var keepE = KeepClusters(gbv, Vb, zs.Append(zc), set.EarlyModeTau, perMode: true, force: forceE);
                     return keepE; // 261110Cl: 早い選び分けはモードごとの最大 (組の寄与 ‖R_G z_G‖ では 1.5e−4 に悪化した。近い組の打ち消しで小さく見積もる)
                 };
             // 全次元 (nB) の A'(d) と y(0) (基底の行列 bc, bx, by, bz, mu, v0 を作った後で使う)
@@ -595,37 +634,30 @@ public partial class BetheMethod
                     zsL.Add(zc);
                 }
                 // 261110Cl (codex2 第 37 回): 近い固有値の組は全組の連結成分、組の寄与 ‖R_G z_G‖ で判定 (実部の隣どうしでは複素で近い組を落とす)
-                var keepJ = KeepClusters(gc, Rc, zsL, set.ModeReduceTau);
+                // var keepJ = KeepClusters(gc, Rc, zsL, set.ModeReduceTau); // 261111Cl 変更前
                 // 261111Cl 追加: 区画のどこかで遅い明示の出射のビームに重みのあるモードは残す (LateSlowKeep)
-                if (set.LateSlowKeep && probes.Count > 0)
+                // 261111Cl 変更 (codex2 第 38 回): 遅いかは区画の全方向で、重みの分母はこの区画の明示の出射の行 (他の区画の都合で増えた出射の行に依らない)、残すモードは近い固有値の組ごと
+                bool[] forceL = null;
+                if (set.LateSlowKeep)
                 {
-                    var (sx, sy, sz) = ck.Tuple;
-                    double LamS(int s0, double kx, double ky, double kz) { double vx = pool.GX[s0] + kx, vy = pool.GY[s0] + ky, vz = pool.GZ[s0] + kz; double k2 = kx * kx + ky * ky + kz * kz; return (k2 - (vx * vx + vy * vy + vz * vz)) / (2 * (nx * vx + ny * vy + nz * vz)); }
-                    var probeK = probes.Select(di => getVecK0(kvac, u0, directions[di], n)).ToArray();
-                    var slowO = new List<int>();
-                    for (int o = 1; o < nOut; o++)
-                    {
-                        int pi = outPool[o];
-                        if (!posS.ContainsKey(pi)) continue;
-                        double l0 = LamS(pi, sx, sy, sz), lo = l0, hi = l0; bool sl = Math.Abs(l0) < set.Ps;
-                        foreach (var kd in probeK) { double ld = LamS(pi, kd.X, kd.Y, kd.Z); lo = Math.Min(lo, ld); hi = Math.Max(hi, ld); if (Math.Abs(ld) < set.Ps) sl = true; }
-                        if (sl || (lo < 0 && hi > 0)) slowO.Add(o);
-                    }
-                    if (slowO.Count > 0)
+                    var rowsS = Enumerable.Range(1, nOut - 1).Where(o => posS.ContainsKey(outPool[o])).ToArray();
+                    var slowS = SlowOverPatch(rowsS.Select(o => outPool[o]).ToArray(), ck, memberK0);
+                    var slowO = rowsS.Where((o, q) => slowS[q]).ToArray();
+                    if (slowO.Length > 0)
                     {
                         var Mo = wp * Rc; // 出射のビームの上のモードの物理振幅 (nOut × nB)
-                        int added = 0;
+                        forceL = new bool[nB];
                         for (int j = 0; j < nB; j++)
                         {
-                            if (keepJ[j]) continue;
                             double tot = 0, sw2 = 0;
-                            for (int o = 0; o < nOut; o++) { double a2 = Mo[o, j].Magnitude; tot += a2 * a2; }
+                            foreach (var o in rowsS) { double a2 = Mo[o, j].Magnitude; tot += a2 * a2; }
                             foreach (var o in slowO) { double a2 = Mo[o, j].Magnitude; sw2 += a2 * a2; }
-                            if (tot > 0 && sw2 >= 0.05 * tot) { keepJ[j] = true; added++; }
+                            if (tot > 0 && sw2 >= 0.05 * tot) forceL[j] = true;
                         }
-                        lock (gate) nSlowKept += added;
                     }
                 }
+                var keepJ = KeepClusters(gc, Rc, zsL, set.ModeReduceTau, force: forceL);
+                if (forceL != null) { var keep0 = KeepClusters(gc, Rc, zsL, set.ModeReduceTau); int added = 0; for (int j = 0; j < nB; j++) if (keepJ[j] && !keep0[j]) added++; lock (gate) nSlowKept += added; }
                 if (set.ReductionCrossingCheck) // 261110Cl 追加: 区画の中の交差の検出。探りは区画の端だけなので、中で残すモード j と落とすモード k が交差 (縮退) して振幅が移る所を見落とす
                 //   (Si [110] 200 kV・区画 2 mrad で FOLZ のモードが交差し、端の探りの照合 6.9e−5 のまま中で 4.4e−3・区画の境界の段差)。
                 //   中心の固有モードの基底で A'(d) ≈ A'_c + Σ δk_a E_a (E_a = L_c S_c (−2B_a) R_c) とし、区画の全方向で対角の差 Δ_kj(d) = (γ_k + E_kk(d)) − (γ_j + E_jj(d)) を見る。
@@ -808,14 +840,16 @@ public partial class BetheMethod
             // 261110Cl (codex2 第 37 回): 区画の中のスレッドは「スレッド数 / 同時に動く区画の数 (残りの区画の数まで)」(入れ子で指定のスレッド数を大きく超えない。始めた時点の値なので近似)
             int o2 = Math.Max(1, Math.Min(outer, work.Count));
             var cur = work.OrderByDescending(q => q.members.Length).ToList();
-            int remaining = cur.Count;
+            int remaining = cur.Count, active = 0;
             Parallel.ForEach(System.Collections.Concurrent.Partitioner.Create(cur, System.Collections.Concurrent.EnumerablePartitionerOptions.NoBuffering),
                 new ParallelOptions { MaxDegreeOfParallelism = o2 }, q =>
                 {
                     int rem = Interlocked.Decrement(ref remaining) + 1;
-                    int il = Math.Max(1, threads / Math.Max(1, Math.Min(o2, rem)));
+                    // int il = Math.Max(1, threads / Math.Max(1, Math.Min(o2, rem))); // 261111Cl 変更前 (未開始の数だけで割り、走っている区画を数えず、最後の巡で過剰になりえた、codex2 第 38 回)
+                    int act = Interlocked.Increment(ref active); // 261111Cl 変更: 走っている区画の数 (自分を含む) と未開始の数の大きい方で割る
+                    int il = Math.Max(1, threads / Math.Max(act, Math.Min(o2, rem)));
                     inner = Math.Max(inner, il);
-                    SolvePatch(q, il, next);
+                    try { SolvePatch(q, il, next); } finally { Interlocked.Decrement(ref active); }
                 });
             work = next.OrderBy(q => q.Item1).ThenBy(q => q.Item2).ToList();
             nLevels++;
@@ -853,6 +887,7 @@ public partial class BetheMethod
                 full[i] = dst;
             }
             amplitudes = full;
+            stage[7] = swAll.Elapsed.TotalSeconds; // 261111Cl 追加: 全体の時間は写しの後で (codex2 第 38 回)
         }
         string[] propName = ["native eigen", "native matrix exponential", "MathNet eigen"];
         CbedBeamSelectionDetail = $"dressed tail {CbedDressedTailSettings.Version}: N {set.N}, pool {pool.Count} within {set.PoolRadiusNm} nm⁻¹, eta {set.Eta}" +
@@ -871,11 +906,13 @@ public partial class BetheMethod
     /// 振幅は共役の位相で移る: ψ_{Tg}(Td) = ψ_g(d) exp(+2πi h_{Tg}·w) (Bloch の方程式が対角の位相の相似変換で移るため。行列の (g, h) 成分が U_{h−g} の規約で共役になる)。群として閉じていなければ何も返さない。</summary>
     // private (string Name, int[] DirMap, int[] BeamMap, (double, double, double) W)[] CbedSymmetryOps(BeamSelectionPool pool, IReadOnlyList<Vector3DBase> directions, Vector3DBase n) // 261111Cl 変更前
     // 261111Cl 変更: 候補のプールに依らない形 (従来の CBED のビームの組でも使う)。hkl[0] は 000、g = mat · hkl (実験室)、indexOf は hkl の番号 (無ければ −1)、checkRadius 以下の g でポテンシャルを照合
-    private (string Name, int[] DirMap, int[] BeamMap, (double, double, double) W)[] CbedSymmetryOps(IReadOnlyList<(int h, int k, int l)> hkl, double[] gx, double[] gy, double[] gz,
+    // private (string Name, int[] DirMap, int[] BeamMap, (double, double, double) W)[] CbedSymmetryOps(IReadOnlyList<(int h, int k, int l)> hkl, double[] gx, double[] gy, double[] gz, // 261111Cl 変更前 (返り値に K が無かった)
+    // 261111Cl 変更: 返り値に hkl の整数の行列 K (行優先 9 要素、h_{Tg} = K h_g) を足す (呼び出し側が実際のポテンシャルで照合するため)
+    private (string Name, int[] DirMap, int[] BeamMap, (double, double, double) W, int[] K)[] CbedSymmetryOps(IReadOnlyList<(int h, int k, int l)> hkl, double[] gx, double[] gy, double[] gz,
         Func<(int, int, int), int> indexOf, (double, double, double, double, double, double, double, double, double) mat, double checkRadius, IReadOnlyList<Vector3DBase> directions, Vector3DBase n)
     {
         var cands = new (string name, int a, int b, int c, int d)[] { ("2", -1, 0, 0, -1), ("4", 0, -1, 1, 0), ("4^3", 0, 1, -1, 0), ("m(x)", -1, 0, 0, 1), ("m(y)", 1, 0, 0, -1), ("m(x=y)", 0, 1, 1, 0), ("m(x=-y)", 0, -1, -1, 0) };
-        var found = new List<(string, int[], int[], (double, double, double), (int, int, int, int))>();
+        var found = new List<(string, int[], int[], (double, double, double), (int, int, int, int), int[])>();
         int nDir = directions.Count;
         static long Key(double v) => (long)Math.Round(v * 1e12);
         var dirKey = new Dictionary<(long, long), int>(nDir);
@@ -946,21 +983,29 @@ public partial class BetheMethod
                 var (h, k, l) = Kq(fit[f]); var hk = new[] { h, k, l };
                 for (int ax = 0; ax < 3; ax++) for (int q = 0; q < G; q++) eh[f, ax, q] = Complex.Exp(new Complex(0, -2 * Math.PI * hk[ax] * q / (double)G));
             }
-            double bestCost = double.PositiveInfinity; (int, int, int) bq = (0, 0, 0);
+            // double bestCost = double.PositiveInfinity; (int, int, int) bq = (0, 0, 0); // 261111Cl 変更前 (比の差の最小の 1 つだけを照合した。16 本で区別できない候補が複数あると正しい w を取り逃しうる、codex2 第 38 回)
+            // 261111Cl 変更: 16 本に合う (比の差の和 < 1e−6) 候補を全部集め、全点の照合に通る最初のものを使う
+            var cands48 = new List<(int, int, int)>();
             for (int q1 = 0; q1 < G; q1++) for (int q2 = 0; q2 < G; q2++) for (int q3 = 0; q3 < G; q3++)
             {
                 double cost = 0;
-                for (int f = 0; f < fit.Length && cost < bestCost; f++) cost += (rr[f] - eh[f, 0, q1] * eh[f, 1, q2] * eh[f, 2, q3]).Magnitude;
-                if (cost < bestCost) { bestCost = cost; bq = (q1, q2, q3); }
+                for (int f = 0; f < fit.Length && cost < 1e-6; f++) cost += (rr[f] - eh[f, 0, q1] * eh[f, 1, q2] * eh[f, 2, q3]).Magnitude;
+                if (cost < 1e-6) cands48.Add((q1, q2, q3));
             }
-            var w = (bq.Item1 / (double)G, bq.Item2 / (double)G, bq.Item3 / (double)G);
-            foreach (var q in chk)
+            ok = false; (double, double, double) w = default;
+            foreach (var bq in cands48)
             {
-                var tq = Kq(q); var (h, k, l) = tq;
-                var ph = Complex.Exp(new Complex(0, -2 * Math.PI * (h * w.Item1 + k * w.Item2 + l * w.Item3)));
-                if ((U(tq).Real - U(q).Real * ph).Magnitude > 1e-7 * uMax || (U(tq).Imag - U(q).Imag * ph).Magnitude > 1e-7 * upMax) { ok = false; break; }
+                w = (bq.Item1 / (double)G, bq.Item2 / (double)G, bq.Item3 / (double)G);
+                bool okW = true;
+                foreach (var q in chk)
+                {
+                    var tq = Kq(q); var (h, k, l) = tq;
+                    var ph = Complex.Exp(new Complex(0, -2 * Math.PI * (h * w.Item1 + k * w.Item2 + l * w.Item3)));
+                    if ((U(tq).Real - U(q).Real * ph).Magnitude > 1e-7 * uMax || (U(tq).Imag - U(q).Imag * ph).Magnitude > 1e-7 * upMax) { okW = false; break; }
+                }
+                if (okW) { ok = true; break; }
             }
-            if (ok) found.Add((name, dm, bm, w, (a, b, c, d)));
+            if (ok) found.Add((name, dm, bm, w, (a, b, c, d), ki));
         }
         // 群として閉じているか (2 つの合成が恒等か、見つけた操作のどれか)
         foreach (var x in found)
@@ -970,7 +1015,7 @@ public partial class BetheMethod
                 var z = (a1 * a2 + b1 * c2, a1 * b2 + b1 * d2, c1 * a2 + d1 * c2, c1 * b2 + d1 * d2);
                 if (z != (1, 0, 0, 1) && !found.Any(f => f.Item5 == z)) return [];
             }
-        return [.. found.Select(f => (f.Item1, f.Item2, f.Item3, f.Item4))];
+        return [.. found.Select(f => (f.Item1, f.Item2, f.Item3, f.Item4, f.Item6))];
     }
 
     /// <summary>261110Cl 追加: 区画の基底の行列。物理振幅の基底 W = D_c [A_S; A_Q] (A_S = V_b、A_Q = X̃ = 着衣のモードの基底。張る空間は [I; X] と同じ) の上で
@@ -1051,8 +1096,11 @@ public partial class BetheMethod
 
     /// <summary>261110Cl 追加 (codex2 第 37 回): モードの組の選び分け。固有値が 1e−3 nm⁻¹ より近い組を全組の連結成分でまとめ、組 G の寄与 = 探り・厚さごとの ‖R_G z_G‖ の最大
     /// (R = モードの列、z = モードの係数 (モード × 厚さ)) が全体の最大の τ 倍以上の組を残す</summary>
+    // private static bool[] KeepClusters(MathNet.Numerics.LinearAlgebra.Vector<Complex> gam, Matrix<Complex> R, IEnumerable<Matrix<Complex>> zs, double tau,
+    //     bool perMode = false) // 261111Cl 変更前
     private static bool[] KeepClusters(MathNet.Numerics.LinearAlgebra.Vector<Complex> gam, Matrix<Complex> R, IEnumerable<Matrix<Complex>> zs, double tau,
-        bool perMode = false) // perMode: 組の寄与の代わりにモードごとの |z_j|·‖R_j‖ の最大 (組の誰かが τ 以上なら組ごと残す、保守的)
+        bool perMode = false, // perMode: 組の寄与の代わりにモードごとの |z_j|·‖R_j‖ の最大 (組の誰かが τ 以上なら組ごと残す、保守的)
+        bool[] force = null) // 261111Cl 追加 (codex2 第 38 回): 必ず残すモード (遅いビームの規則)。そのモードを含む近い固有値の組を丸ごと残す
     {
         int n = gam.Count;
         var par = Enumerable.Range(0, n).ToArray();
@@ -1089,7 +1137,8 @@ public partial class BetheMethod
             }
         double wmax = w.Length > 0 ? w.Max() : 0;
         var keep = new bool[n];
-        for (int gi = 0; gi < groups.Length; gi++) if (w[gi] >= tau * wmax) foreach (var j in groups[gi]) keep[j] = true;
+        // for (int gi = 0; gi < groups.Length; gi++) if (w[gi] >= tau * wmax) foreach (var j in groups[gi]) keep[j] = true; // 261111Cl 変更前
+        for (int gi = 0; gi < groups.Length; gi++) if (w[gi] >= tau * wmax || (force != null && groups[gi].Any(j => force[j]))) foreach (var j in groups[gi]) keep[j] = true; // 261111Cl 変更: force の組も
         return keep;
     }
 
