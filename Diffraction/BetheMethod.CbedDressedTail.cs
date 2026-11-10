@@ -149,6 +149,14 @@ public partial class BetheMethod
         double mult = lt.StartsWith('F') ? 4 : lt.StartsWith('I') || lt.StartsWith('A') || lt.StartsWith('B') || lt.StartsWith('C') ? 2
             : lt.StartsWith('R') && Math.Abs(Crystal.Gamma - 2 * Math.PI / 3) < 0.02 ? 3 : 1;
         double poolEst = 4.0 / 3 * Math.PI * Math.Pow(set.PoolRadiusNm, 3) * Crystal.Volume / mult;
+        // 261111Cl 追加: 単位胞の大きい結晶では、候補のプールと差の表・結合の表 (CSR、候補 × 強い差) が巨大になり、下の区画の行列の見積もりをすり抜けた
+        //   (斜方輝石 Pbca・0.83 nm³ で候補 約 75 万本、表を作るだけで 35 GB を超えた)。候補の数の見積もりに上限を置き、超えたら従来へ戻す (Si 約 3.6 万、GaAs 約 4.2 万)
+        const double poolLimit = 150_000;
+        if (poolEst > poolLimit && CbedMemoryBudgetOverride <= 0)
+        {
+            CbedBeamSelectionFallbackReason = $"the unit cell is too large for the dressed-tail method (about {poolEst:f0} candidate beams within {set.PoolRadiusNm} nm⁻¹; the limit is {poolLimit:f0})";
+            return (null, null);
+        }
         double nSEst = Math.Min(poolEst, set.N + 150);
         double nQEst = double.IsNaN(set.CoreRadiusNm) || double.IsNaN(set.NeighborRadiusNm) ? poolEst : Math.Min(poolEst, 1.4 * 4.0 / 3 * Math.PI * Math.Pow(set.CoreRadiusNm, 3) * Crystal.Volume / mult);
         // long perPatch = (long)Math.Min(long.MaxValue / 4, 12 * nQEst * nSEst * 16); // 261110Cl 変更前
@@ -158,10 +166,15 @@ public partial class BetheMethod
         var (total, free) = PhysicalMemory();
         long reserve = Math.Max(2L << 30, (long)(0.15 * total));
         long budget = CbedMemoryBudgetOverride > 0 ? CbedMemoryBudgetOverride : Math.Min(total / 2, free - reserve);
-        int byBudget = (int)Math.Min(int.MaxValue, Math.Max(0, budget / Math.Max(1, perPatch)));
+        // 261111Cl 追加: 候補のプールと差の表・結合の表 (CSR) のメモリの見積もり。候補の数より速く増える (強い結合の数が単位胞とともに増える)。
+        //   実測 (11-11、区画の分を除く): Si R60 (候補 3.6 万) 約 2 GB、GaAs (4.2 万) 約 2.5 GB、コランダム (7.7 万) 約 12 GB → 候補 × 55 kB × (候補 / 3.6 万)^1.4 の経験式
+        double tableMem = poolEst * 55e3 * Math.Pow(Math.Max(1, poolEst / 36000), 1.4);
+        // int byBudget = (int)Math.Min(int.MaxValue, Math.Max(0, budget / Math.Max(1, perPatch))); // 261111Cl 変更前
+        int byBudget = (int)Math.Min(int.MaxValue, Math.Max(0, (budget - (CbedMemoryBudgetOverride > 0 ? 0 : (long)tableMem)) / Math.Max(1, perPatch))); // 261111Cl 変更: 表の分を引く
         if (byBudget < 1)
         {
-            CbedBeamSelectionFallbackReason = $"estimated memory {perPatch / 1e9:f1} GB per patch (about {poolEst:f0} candidates within {set.PoolRadiusNm} nm⁻¹) exceeds the budget {budget / 1e9:f1} GB";
+            // CbedBeamSelectionFallbackReason = $"estimated memory {perPatch / 1e9:f1} GB per patch (about {poolEst:f0} candidates within {set.PoolRadiusNm} nm⁻¹) exceeds the budget {budget / 1e9:f1} GB"; // 261111Cl 変更前
+            CbedBeamSelectionFallbackReason = $"estimated memory {tableMem / 1e9:f1} GB for the tables and {perPatch / 1e9:f1} GB per patch (about {poolEst:f0} candidates within {set.PoolRadiusNm} nm⁻¹) exceeds the budget {budget / 1e9:f1} GB";
             return (null, null);
         }
 
