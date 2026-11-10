@@ -366,14 +366,19 @@ public partial class BetheMethod
         }
         bool SlowInAny(int i) // 261109Cl 追加: ブロックの方向のどれかで遅い反射か
         {
+            // 261110Cl 追加: Q/P (励起誤差) は方向について一次なので、方向の間で符号が変わればその間 (ブロックの中) を Bragg の線が横切る → 遅い反射として繰り上げる
+            //   (端で |Q/P| ≥ ps でも中で共鳴する裾を落とした: Si [110] 200 kV・区画 2 mrad で FOLZ の反射の λ が ±0.1 を越えて動き、誤差 4.4e−3 と区画の境界の段差)
+            double lo = P[i] > 0 ? Q[i] / P[i] : double.PositiveInfinity, hi = P[i] > 0 ? Q[i] / P[i] : double.NegativeInfinity;
             foreach (var (mk, mn) in promoteAlso)
             {
                 var (ax, ay, az) = mk.Tuple; var (bx, by, bz) = mn.Tuple;
                 double vX = pool.GX[i] + ax, vY = pool.GY[i] + ay, vZ = pool.GZ[i] + az;
                 double q = mk.Length2 - Dot3(vX, vX, vY, vY, vZ, vZ), p = 2 * Dot3(bx, vX, by, vY, bz, vZ);
                 if (p > 0 && Math.Abs(q / p) < ps) return true;
+                if (p > 0) { lo = Math.Min(lo, q / p); hi = Math.Max(hi, q / p); } // 261110Cl 追加
             }
-            return false;
+            // return false; // 261110Cl 変更前
+            return lo < 0 && hi > 0; // 261110Cl: 符号が変わる
         }
         var inS = new bool[cnt];
         var S = new List<int>(e1.Length + 256) { 0 };

@@ -90,6 +90,8 @@ public partial class BetheMethod
         public bool PromoteOverPatch { get; init; } = true; // 261110Cl: 既定で繰り上げる (区画 2 mrad の使い回しの誤差 5.5e−4 → 4.3e−5)
         /// <summary>探りの方向で、縮約の解と全次元の解の出射の強度の差の最大がこれを超えたら、その区画は縮約しない (事後の検査)</summary>
         public double ReductionCheckLimit { get; init; } = 3e-4;
+        /// <summary>区画の中の交差の検出 (落とすモードと残すモードの対角が区画の中で交差する組を残す)</summary>
+        public bool ReductionCrossingCheck { get; init; } = false; // 261110Cl: 既定で無効 (残したモードで縮約の解が発散した区画があった。一般の位置の探りで足りるかを確かめる)
         /// <summary>裾の積を単精度 (complex64) で積む: 区画の基底の行列のうち裾 (A_Q) の積と、着衣の密な積 (H_SQ X₀・H_QS V_b) と疎な積 (E·X)。明示の部分は倍精度。
         /// 裾の寄与は小さいので丸めの影響は小さい (基底の行列の単精度で強度の差 5e−8、day11r)</summary>
         public bool SingleTailProducts { get; init; } = true; // 261110Cl: 既定で単精度 (強度の差 5e−8)
@@ -290,7 +292,7 @@ public partial class BetheMethod
             foreach (var i in idx) if (2 * Dot3(nx, pool.GX[i] + kx, ny, pool.GY[i] + ky, nz, pool.GZ[i] + kz) <= 0) return true;
             return false;
         }
-        int nReduceSkipped = 0; double maxProbeDiff = 0;
+        int nReduceSkipped = 0, nCrossKept = 0, nGuardResolved = 0; double maxProbeDiff = 0;
 
         // MathNet の固有分解で y(t) を作る (native の無いとき)
         Complex[] ManagedPropagate(Complex[] a, Complex[] y0, int dim)
@@ -326,6 +328,25 @@ public partial class BetheMethod
                     probes.Add(bi);
                     if (m8 % 2 == 1) probesDiag.Add(bi);
                 }
+            // 261110Cl 追加: 励起の見積もりの探り (早い選び分け・後段の打ち切り) は対称の線から外れた一般の位置に置く: 方位を 0.37 rad ずらした 8 方向の端と、区画の中の非対称な 4 点。
+            //   晶帯軸の区画では x・y 軸と対角線が鏡映の線に乗り、そこでは鏡映で反対称なモードの励起が 0 に見える (Si [110] 200 kV・区画 2 mrad で 4.4e−3 を見落とした)。
+            //   繰り上げ (λ は方向の一次なので四隅で足りる) には今までの 8 方位 (probes) を使う
+            var eprobes = new HashSet<int>();
+            if (members.Length > 9)
+            {
+                for (int m8 = 0; m8 < 8; m8++)
+                {
+                    double ang = m8 * Math.PI / 4 + 0.37, ca = Math.Cos(ang), sa = Math.Sin(ang), best = double.NegativeInfinity; int bi = members[0];
+                    foreach (var i in members) { double pr = (uu[i] - sq.uc) * ca + (vv[i] - sq.vc) * sa; if (pr > best) { best = pr; bi = i; } }
+                    eprobes.Add(bi);
+                }
+                foreach (var (qu, qv) in new[] { (0.23, 0.11), (-0.13, 0.27), (-0.27, -0.09), (0.07, -0.29) })
+                {
+                    double tu = sq.uc + qu * sq.side, tv = sq.vc + qv * sq.side; int bi = -1; double bd = double.PositiveInfinity;
+                    foreach (var i in members) { double d2u = (uu[i] - tu) * (uu[i] - tu) + (vv[i] - tv) * (vv[i] - tv); if (d2u < bd) { bd = d2u; bi = i; } }
+                    if (bi >= 0) eprobes.Add(bi);
+                }
+            }
             // 着衣の直後のモードの選び分け (EarlyModeTau): 探りの方向 (四隅) の励起を H_b + diag(Δλ_s) で見積もる
             Func<Matrix<Complex>, MathNet.Numerics.LinearAlgebra.Vector<Complex>, Matrix<Complex>, int[], bool[]> selector = null;
             if (double.IsFinite(set.EarlyModeTau) && set.EarlyModeTau > 0 && probes.Count > 0)
@@ -344,7 +365,7 @@ public partial class BetheMethod
                     // 探りの方向 (四隅 = 8 方位の斜めの 4 つ) の励起を H_d = H_b + diag(Δλ_s(d)) の固有分解で厳密に伝播し、中心のモードへ射影する
                     //   (一次の摂動の上界は 2 段の経由の励起を落とし (誤差 3.9e−4)、くり返すと保守的すぎてモードが減らない (261110Cl の試し) ので使わない)
                     // var probeList = probesDiag.ToArray(); // 261110Cl 変更前
-                    var probeList = probes.Where(di => !BackwardAt(di, sArrSel)).ToArray(); // 261110Cl (codex2 第 37 回): 明示に後ろ向きのビームがある探りは使わない。8 方位を使う
+                    var probeList = eprobes.Where(di => !BackwardAt(di, sArrSel)).ToArray(); // 261110Cl (codex2 第 37 回): 明示に後ろ向きのビームがある探りは使わない。一般の位置の探り (eprobes) を使う
                     var zs = new Matrix<Complex>[probeList.Length]; // 探りごとの中心のモードの係数 (ns × tLen)
                     Parallel.For(0, probeList.Length, new ParallelOptions { MaxDegreeOfParallelism = Math.Max(1, innerLocal) }, pi =>
                     {
@@ -367,8 +388,10 @@ public partial class BetheMethod
                     var slow = new bool[ns];
                     for (int i = 0; i < ns; i++)
                     {
-                        if (Math.Abs(Lam(sArrSel[i], cx, cy, cz)) < set.Ps) { slow[i] = true; continue; }
-                        foreach (var di in probes) { var kd = getVecK0(kvac, u0, directions[di], n); if (Math.Abs(Lam(sArrSel[i], kd.X, kd.Y, kd.Z)) < set.Ps) { slow[i] = true; break; } }
+                        double l0 = Lam(sArrSel[i], cx, cy, cz), lo = l0, hi = l0;
+                        if (Math.Abs(l0) < set.Ps) { slow[i] = true; continue; }
+                        foreach (var di in probes) { var kd = getVecK0(kvac, u0, directions[di], n); double ld = Lam(sArrSel[i], kd.X, kd.Y, kd.Z); lo = Math.Min(lo, ld); hi = Math.Max(hi, ld); if (Math.Abs(ld) < set.Ps) { slow[i] = true; break; } }
+                        if (lo < 0 && hi > 0) slow[i] = true; // 261110Cl: 区画の中で符号が変わる (Bragg の線が横切る)
                     }
                     for (int j = 0; j < ns; j++)
                     {
@@ -478,7 +501,7 @@ public partial class BetheMethod
                 var Lc = Rc.Inverse();
                 // 探り (前方の条件を満たすもの) を全次元で解く
                 var zsL = new List<Matrix<Complex>>();
-                foreach (var di in probes.Where(di => !BackwardAt(di, all)))
+                foreach (var di in eprobes.Where(di => !BackwardAt(di, all)))
                 {
                     var (a, y0, _, _) = FullSystem(di);
                     var yt = prop == 0 ? NativeWrapper.CBEDSolver_Eigen(a, y0, thicknesses) : prop == 1 ? NativeWrapper.CBEDSolver_MatExp(a, y0, thicknesses) : ManagedPropagate(a, y0, nB); // 261110Cl (codex2 第 37 回): 通常の方向と同じ 3 分岐
@@ -495,6 +518,56 @@ public partial class BetheMethod
                 }
                 // 261110Cl (codex2 第 37 回): 近い固有値の組は全組の連結成分、組の寄与 ‖R_G z_G‖ で判定 (実部の隣どうしでは複素で近い組を落とす)
                 var keepJ = KeepClusters(gc, Rc, zsL, set.ModeReduceTau);
+                if (set.ReductionCrossingCheck) // 261110Cl 追加: 区画の中の交差の検出。探りは区画の端だけなので、中で残すモード j と落とすモード k が交差 (縮退) して振幅が移る所を見落とす
+                //   (Si [110] 200 kV・区画 2 mrad で FOLZ のモードが交差し、端の探りの照合 6.9e−5 のまま中で 4.4e−3・区画の境界の段差)。
+                //   中心の固有モードの基底で A'(d) ≈ A'_c + Σ δk_a E_a (E_a = L_c S_c (−2B_a) R_c) とし、区画の全方向で対角の差 Δ_kj(d) = (γ_k + E_kk(d)) − (γ_j + E_jj(d)) を見る。
+                //   移る振幅 ≈ max|E_kj| |z_j| min(2/min|Δ|, 2π t_max) (Δ の実部が符号を変えれば交差 = min|Δ| 0) が τ 以上なら k も残す。経由を拾うため 2 回くり返す
+                {
+                    var Ea = new Matrix<Complex>[3]; var bsrc = new[] { bx, by, bz };
+                    for (int a = 0; a < 3; a++)
+                    {
+                        var Ma = new CDense(nB, nB); var mv = Ma.Values; var src = bsrc[a];
+                        for (int col = 0; col < nB; col++) { int o = col * nB; for (int i = 0; i < nB; i++) mv[o + i] = -2 * scc[i] * src[o + i]; }
+                        Ea[a] = Lc * (Ma * Rc);
+                    }
+                    var (ckx2, cky2, ckz2) = ck.Tuple;
+                    var dks = members.Select(di => { var kd = getVecK0(kvac, u0, directions[di], n); return (kd.X - ckx2, kd.Y - cky2, kd.Z - ckz2); }).ToArray();
+                    double dxm = dks.Max(d => Math.Abs(d.Item1)), dym = dks.Max(d => Math.Abs(d.Item2)), dzm = dks.Max(d => Math.Abs(d.Item3));
+                    var rnormC = new double[nB]; for (int j = 0; j < nB; j++) rnormC[j] = Rc.Column(j).L2Norm();
+                    var zmag = new double[nB];
+                    foreach (var z in zsL) for (int j = 0; j < nB; j++) for (int t = 0; t < tLen; t++) zmag[j] = Math.Max(zmag[j], z[j, t].Magnitude);
+                    double wAll = 0; for (int j = 0; j < nB; j++) wAll = Math.Max(wAll, zmag[j] * rnormC[j]);
+                    double tmax = thicknesses.Max(), cap = 2 * Math.PI * tmax;
+                    var dg = new Complex[3][]; for (int a = 0; a < 3; a++) { dg[a] = new Complex[nB]; for (int j = 0; j < nB; j++) dg[a][j] = Ea[a][j, j]; }
+                    for (int iter = 0; iter < 2; iter++)
+                    {
+                        var addW = new double[nB];
+                        for (int k = 0; k < nB; k++)
+                        {
+                            if (keepJ[k]) continue;
+                            double best = 0;
+                            for (int j = 0; j < nB; j++)
+                            {
+                                if (!keepJ[j] || zmag[j] == 0) continue;
+                                double ekj = dxm * Ea[0][k, j].Magnitude + dym * Ea[1][k, j].Magnitude + dzm * Ea[2][k, j].Magnitude;
+                                if (ekj * zmag[j] * cap < set.ModeReduceTau * wAll / Math.Max(rnormC[k], 1e-300)) continue; // 交差しても届かない
+                                var d0 = gc[k] - gc[j]; double gmin = double.PositiveInfinity; bool neg = false, pos = false;
+                                foreach (var (ex, ey, ez) in dks)
+                                {
+                                    var dd = d0 + ex * (dg[0][k] - dg[0][j]) + ey * (dg[1][k] - dg[1][j]) + ez * (dg[2][k] - dg[2][j]);
+                                    gmin = Math.Min(gmin, dd.Magnitude); if (dd.Real < 0) neg = true; else pos = true;
+                                }
+                                if (neg && pos) gmin = 0;
+                                best = Math.Max(best, ekj * zmag[j] * Math.Min(gmin > 0 ? 2 / gmin : cap, cap));
+                            }
+                            addW[k] = best;
+                        }
+                        bool changed = false;
+                        for (int k = 0; k < nB; k++)
+                            if (!keepJ[k] && addW[k] * rnormC[k] >= set.ModeReduceTau * wAll) { keepJ[k] = true; zmag[k] = Math.Max(zmag[k], addW[k]); changed = true; lock (gate) nCrossKept++; }
+                        if (!changed) break;
+                    }
+                }
                 // 健全性: L_c R_c ≈ I、S(d) の一次近似の誤差 max x² (x = Δnk/(n·k_c + μ))
                 double xmax = 0; double wmaxMu = 0; for (int i = 0; i < nB; i++) wmaxMu = Math.Max(wmaxMu, 1 / (nkc + mu[i]));
                 foreach (var di in members) { var kd = getVecK0(kvac, u0, directions[di], n); xmax = Math.Max(xmax, Math.Abs(Dot3(nx, kd.X, ny, kd.Y, nz, kd.Z) - nkc) * wmaxMu); }
@@ -515,6 +588,15 @@ public partial class BetheMethod
                 }
                 wpR = (CDense)(wp * Rk);
                 // 261110Cl (codex2 第 37 回): 事後の検査。探りの方向で縮約の解と全次元の解の出射の強度を比べ、上限を超えたら縮約しない
+                //   261110Cl 追加: 区画の内側の 4 方向 (升の中心から ±side/4) も全次元で解いて比べる (端の探りだけでは中の交差を見落とした)
+                foreach (var (qu, qv) in new[] { (-0.31, 0.17), (0.19, -0.13), (0.33, 0.29), (-0.09, -0.34) }) // 261110Cl: 対称の線から外れた点 (探りとも別)
+                {
+                    double tu = sq.uc + qu * sq.side, tv = sq.vc + qv * sq.side; int bi = -1; double bd = double.PositiveInfinity;
+                    foreach (var i in members) { double d2u = (uu[i] - tu) * (uu[i] - tu) + (vv[i] - tv) * (vv[i] - tv); if (d2u < bd) { bd = d2u; bi = i; } }
+                    if (bi < 0 || probeDone.ContainsKey(bi) || BackwardAt(bi, all)) continue;
+                    var (a, y0, _, _) = FullSystem(bi);
+                    probeDone[bi] = prop == 0 ? NativeWrapper.CBEDSolver_Eigen(a, y0, thicknesses) : prop == 1 ? NativeWrapper.CBEDSolver_MatExp(a, y0, thicknesses) : ManagedPropagate(a, y0, nB);
+                }
                 double probeDiff = 0;
                 foreach (var kv in probeDone)
                 {
@@ -555,6 +637,19 @@ public partial class BetheMethod
                 }
                 double t2 = swd.Elapsed.TotalSeconds;
                 var psi = (wUse * new CDense(nUse, tLen, yt)).ToColumnMajorArray(); // nOut × tLen
+                // 261110Cl 追加: 縮約の解の安全装置。斜めの射影は非正規な行列で成長するにせのモードを作りうる → 出射の強度の和が 1.1 を超えたら (吸収のある結晶では起きない) 全次元で解き直す
+                if (nUse != nB)
+                {
+                    bool bad = false;
+                    for (int t = 0; t < tLen && !bad; t++) { double sI = 0; for (int o = 0; o < nOut; o++) { var z = psi[o + t * nOut]; sI += z.Real * z.Real + z.Imaginary * z.Imaginary; } if (!(sI <= 1.1)) bad = true; }
+                    if (bad)
+                    {
+                        var (a, y0, _, _) = FullSystem(di);
+                        yt = prop == 0 ? NativeWrapper.CBEDSolver_Eigen(a, y0, thicknesses) : prop == 1 ? NativeWrapper.CBEDSolver_MatExp(a, y0, thicknesses) : ManagedPropagate(a, y0, nB);
+                        psi = (wp * new CDense(nB, tLen, yt)).ToColumnMajorArray();
+                        Interlocked.Increment(ref nGuardResolved);
+                    }
+                }
                 // 出射面の位相 (従来と同じ: exp(πi(P_g − 2k Surface.Z)t)、P_g = 2n·(k0 + g))
                 for (int o = 0; o < nOut; o++)
                 {
@@ -609,7 +704,7 @@ public partial class BetheMethod
         string[] propName = ["native eigen", "native matrix exponential", "MathNet eigen"];
         CbedBeamSelectionDetail = $"dressed tail {CbedDressedTailSettings.Version}: N {set.N}, pool {pool.Count} within {set.PoolRadiusNm} nm⁻¹, eta {set.Eta}" +
             (double.IsNaN(set.NeighborRadiusNm) ? "" : $", core {set.CoreRadiusNm} + neighbours {set.NeighborRadiusNm} nm⁻¹") + (set.OneProduct ? ", one product" : "") + "; " +
-            (adaptive ? $"adaptive patches (radius {set.AdaptiveMaxRadiusMrad} down to {set.PatchRadiusMrad} mrad, indicator limit {set.AdaptiveIndicatorLimit}): {nSolvedPatches} solved, {nSplit} split, {nLevels} rounds" : $"{nSolvedPatches} patches (radius {set.PatchRadiusMrad} mrad)") + $" for {nDir} directions, {nBackward} re-solved alone; explicit {minS}-{maxS} (mean {(nPatchesDone > 0 ? sumS / nPatchesDone : 0)}), tail mean {(nPatchesDone > 0 ? sumQ / nPatchesDone : 0)}, dressed modes mean {(nPatchesDone > 0 ? sumNb / nPatchesDone : 0)}, basis mean {(nPatchesDone > 0 ? sumB / nPatchesDone : 0)} (mode tau {set.ModeTau}{(double.IsFinite(set.ModeReduceTau) ? $", reduced by {set.ModeReduceTau}" : "")}), indicator {etaMin:e2}-{etaMax:e2}{(set.PromoteOverPatch ? ", promoted over patch edges" : "")}, reduction skipped in {nReduceSkipped} patches, probe check max |dI| {maxProbeDiff:e1}; " +
+            (adaptive ? $"adaptive patches (radius {set.AdaptiveMaxRadiusMrad} down to {set.PatchRadiusMrad} mrad, indicator limit {set.AdaptiveIndicatorLimit}): {nSolvedPatches} solved, {nSplit} split, {nLevels} rounds" : $"{nSolvedPatches} patches (radius {set.PatchRadiusMrad} mrad)") + $" for {nDir} directions, {nBackward} re-solved alone; explicit {minS}-{maxS} (mean {(nPatchesDone > 0 ? sumS / nPatchesDone : 0)}), tail mean {(nPatchesDone > 0 ? sumQ / nPatchesDone : 0)}, dressed modes mean {(nPatchesDone > 0 ? sumNb / nPatchesDone : 0)}, basis mean {(nPatchesDone > 0 ? sumB / nPatchesDone : 0)} (mode tau {set.ModeTau}{(double.IsFinite(set.ModeReduceTau) ? $", reduced by {set.ModeReduceTau}" : "")}), indicator {etaMin:e2}-{etaMax:e2}{(set.PromoteOverPatch ? ", promoted over patch edges" : "")}, reduction skipped in {nReduceSkipped} patches, modes kept for crossings {nCrossKept}, probe check max |dI| {maxProbeDiff:e1}, directions re-solved by the guard {nGuardResolved}; " +
             $"output beams {nOut}; propagation {propName[prop]}, dense products {(MathNetProviderManager.MklActive ? "MKL" : "managed (MKL not loaded: about 4 times slower)")}; time (patch-s = sum of patch wall times, includes inner parallel work): tables {stage[0]:f1} s, output-beam selection {stage[1]:f1} s, dressing {stage[2]:f1} patch-s (select {stage[11]:f1}, blocks {stage[12]:f1}, X0 {stage[13]:f1}, eig {stage[14]:f1}, rest {stage[15]:f1}, spmm {stage[16]:f1}+{stage[17]:f1}), basis {stage[3]:f1} patch-s (Gram {stage[8]:f1}, pencil {stage[9]:f1}, reduction {stage[10]:f1}), " +
             $"per direction form {stage[4]:f1} / propagate {stage[5]:f1} / output {stage[6]:f1} patch-s, total {stage[7]:f1} s; parallel {outer} patches × {inner}";
         return (beams, amplitudes);
