@@ -599,7 +599,7 @@ public partial class BetheMethod
 
         int bLen = Beams.Length, tLen = Thicknesses.Length;
         // 261111Cl 追加: 従来の CBED でも晶帯軸の対称を使う (CbedLegacyUseSymmetry、既定は使わない)。軌道の最小の番号の方向を代表に解き、残りは振幅を位相込みで写す
-        CbedLegacySymmetryDetail = "";
+        if (dressedAmplitudes == null) CbedSymmetryDetail = ""; // 新方式で解いたときは SolveCbedDressedTail が入れた値のまま
         (string Name, int[] DirMap, int[] BeamMap, (double, double, double) W)[] legOps = [];
         int[] legRep = null; (int rep, int op)[] legMap = null;
         if (dressedAmplitudes == null && CbedLegacyUseSymmetry)
@@ -618,7 +618,7 @@ public partial class BetheMethod
                 for (int r = 0; r < legRep.Length; r++)
                     for (int k = 0; k < legOps.Length; k++) { int i = legOps[k].DirMap[legRep[r]]; if (repPos[i] < 0 && legMap[i].Item1 < 0) legMap[i] = (r, k); }
                 if (Enumerable.Range(0, nV).Any(i => repPos[i] < 0 && legMap[i].Item1 < 0)) { legOps = []; legRep = null; legMap = null; } // 届かない方向があれば使わない (起きない筈)
-                else CbedLegacySymmetryDetail = $"symmetry {string.Join(" ", legOps.Select(o => o.Name))}: {legRep.Length} of {nV} directions solved";
+                else CbedSymmetryDetail = $"symmetry {string.Join(" ", legOps.Select(o => o.Name))}: {legRep.Length} of {nV} directions solved";
             }
         }
         // var beamDirectionsP = beamDirectionsValid.AsParallel().WithDegreeOfParallelism(thread); // 261111Cl 変更前

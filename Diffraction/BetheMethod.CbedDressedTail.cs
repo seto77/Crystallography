@@ -47,8 +47,8 @@ public partial class BetheMethod
     /// 正確に移す操作 (<see cref="CbedSymmetryOps"/>) があれば、各軌道の代表の方向だけを解き、残りは振幅を位相込みで写す (各方向は独立に解くので結果は丸めの範囲で同じ)。
     /// ビームの組がその操作で閉じていなければ (末尾の同点の組の扱いなど) その操作は使わない</summary>
     public bool CbedLegacyUseSymmetry { get; set; }
-    /// <summary>261111Cl 追加: 直前の従来の CBED で使った対称 (使わなければ空)</summary>
-    public string CbedLegacySymmetryDetail { get; private set; } = "";
+    /// <summary>261111Cl 追加: 直前の CBED (新方式・従来) で使った晶帯軸の対称と、解いた代表の方向の数 (使わなければ空)</summary>
+    public string CbedSymmetryDetail { get; private set; } = "";
 
     /// <summary>261110Cl 追加 (研究用): メモリの予算を上書きする [byte] (0 以下 = 物理メモリの空きから決める。込み合った機械での検査用)</summary>
     public long CbedMemoryBudgetOverride { get; set; }
@@ -861,6 +861,7 @@ public partial class BetheMethod
             $"output beams {nOut}; propagation {propName[prop]}, dense products {(MathNetProviderManager.MklActive ? "MKL" : "managed (MKL not loaded: about 4 times slower)")}; time (patch-s = sum of patch wall times, includes inner parallel work): tables {stage[0]:f1} s, output-beam selection {stage[1]:f1} s, dressing {stage[2]:f1} patch-s (select {stage[11]:f1}, blocks {stage[12]:f1}, X0 {stage[13]:f1}, eig {stage[14]:f1}, rest {stage[15]:f1}, spmm {stage[16]:f1}+{stage[17]:f1}), basis {stage[3]:f1} patch-s (Gram {stage[8]:f1}, pencil {stage[9]:f1}, reduction {stage[10]:f1}), " +
             $"per direction form {stage[4]:f1} / propagate {stage[5]:f1} / output {stage[6]:f1} patch-s, total {stage[7]:f1} s; parallel {outer} patches × {inner}" +
             (symOps.Length > 0 ? $"; symmetry {string.Join(" ", symOps.Select(o => o.Name))}: {nDir} of {nAll} directions solved" : "; symmetry not used"); // 261111Cl 追加
+        CbedSymmetryDetail = symOps.Length > 0 ? $"symmetry {string.Join(" ", symOps.Select(o => o.Name))}: {nDir} of {nAll} directions solved" : ""; // 261111Cl 追加
         return (beams, amplitudes);
     }
 

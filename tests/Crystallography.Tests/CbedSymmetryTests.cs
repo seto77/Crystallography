@@ -58,8 +58,8 @@ public class CbedSymmetryTests
         var full = RunLegacy(crystal, rot, dirs, thick, false, n);
         var sym = RunLegacy(crystal, rot, dirs, thick, true, n);
         if (n >= 200) Assert.Contains(full.Beams, b => Math.Abs(b.Vec.Z) > 1); // HOLZ のビームが組にある
-        Assert.Equal("", full.CbedLegacySymmetryDetail);
-        Assert.StartsWith("symmetry 2 ", sym.CbedLegacySymmetryDetail);
+        Assert.Equal("", full.CbedSymmetryDetail);
+        Assert.StartsWith("symmetry 2 ", sym.CbedSymmetryDetail);
         Assert.Equal(full.Beams.Select(b => b.Index), sym.Beams.Select(b => b.Index));
         for (int t = 0; t < thick.Length; t++)
             for (int g = 0; g < full.Beams.Length; g++)
