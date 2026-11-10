@@ -30,7 +30,9 @@ public class EBSD
             bool includeTDSBackground = false,
             // bool includeAbsorbedFluxBackground = false) // 260919Cl 追加 // 261110Cl 旧シグネチャの末尾
             bool includeAbsorbedFluxBackground = false, // 260919Cl 追加
-            BetheMethod.EbsdBeamSelectionMethod beamSelection = BetheMethod.EbsdBeamSelectionMethod.Legacy) // 261110Cl 追加: ビーム選択の方式 (既定 = 従来)
+            // BetheMethod.EbsdBeamSelectionMethod beamSelection = BetheMethod.EbsdBeamSelectionMethod.Legacy) // 261110Cl 追加: ビーム選択の方式 (既定 = 従来) // 261110Cl 旧シグネチャの末尾
+            BetheMethod.EbsdBeamSelectionMethod beamSelection = BetheMethod.EbsdBeamSelectionMethod.Legacy, // 261110Cl 追加: ビーム選択の方式 (既定 = 従来)
+            BetheMethod.DressedTailProductionSettings dressedTailSettings = null) // 261110Cl 追加: 新方式の設定 (null = 既定の設定で N だけ要求の本数、軽量なら BetheMethod.DressedTailLight)
         {
             Crystal = crystal ?? throw new ArgumentNullException(nameof(crystal));
             MaxNumOfBloch = maxNumOfBloch;
@@ -44,6 +46,7 @@ public class EBSD
             IncludeTDSBackground = includeTDSBackground;
             IncludeAbsorbedFluxBackground = includeAbsorbedFluxBackground; // 260919Cl 追加
             BeamSelection = beamSelection; // 261110Cl 追加
+            DressedTailSettings = dressedTailSettings; // 261110Cl 追加
         }
 
         /// <summary>計算対象の結晶。</summary>
@@ -79,6 +82,8 @@ public class EBSD
         public bool IncludeAbsorbedFluxBackground { get; }
         /// <summary>261110Cl 追加: ビーム選択の方式 (要求)。新方式が使えない条件なら構築の開始前に従来へ戻り、結果の MasterPattern に実際の方式と理由が残る</summary>
         public BetheMethod.EbsdBeamSelectionMethod BeamSelection { get; }
+        /// <summary>261110Cl 追加: 新方式の設定 (null = 既定の設定で E1 の基準の本数だけ MaxNumOfBloch)</summary>
+        public BetheMethod.DressedTailProductionSettings DressedTailSettings { get; }
 
         /// <summary>Bethe 計算側の進捗を規格化するための基準値。</summary>
         public int DivisionCount => Math.Max(1, GridSize * GridSize * Math.Max(1, Energies.Length) * 2); // (260321Ch) MasterPattern は常に全球計算する
@@ -87,7 +92,8 @@ public class EBSD
         public MasterPatternBuildRequest Clone()
             // => new(Crystal, MaxNumOfBloch, Energies, Depths, GridSize, Solver, Thread, UseNonLocalAbsorption, IncludeTDSBackground); // 260919Cl 変更前
             // => new(Crystal, MaxNumOfBloch, Energies, Depths, GridSize, Solver, Thread, UseNonLocalAbsorption, IncludeTDSBackground, IncludeAbsorbedFluxBackground); // 260919Cl // 261110Cl 変更前
-            => new(Crystal, MaxNumOfBloch, Energies, Depths, GridSize, Solver, Thread, UseNonLocalAbsorption, IncludeTDSBackground, IncludeAbsorbedFluxBackground, BeamSelection); // 261110Cl: 方式も写す
+            // => new(Crystal, MaxNumOfBloch, Energies, Depths, GridSize, Solver, Thread, UseNonLocalAbsorption, IncludeTDSBackground, IncludeAbsorbedFluxBackground, BeamSelection); // 261110Cl: 方式も写す // 261110Cl 変更前
+            => new(Crystal, MaxNumOfBloch, Energies, Depths, GridSize, Solver, Thread, UseNonLocalAbsorption, IncludeTDSBackground, IncludeAbsorbedFluxBackground, BeamSelection, DressedTailSettings); // 261110Cl: 新方式の設定も
     }
 
     /// <summary>MasterPattern 作成中の進捗情報。</summary>
@@ -255,7 +261,7 @@ public class EBSD
             // 261110Cl 追加 (作者の判断 2026-11-10、AskUserQuestion「欄を使えるようにする」): 新方式では要求の本数 (FormEBSD の「回折波の数」) を E1 の基準の本数 N に使う。
             //   既定 300 なら既定の設定と同じ (版は DT1-261110)、それ以外は +custom-指紋。従来の方式ではこの設定を読まない
             EbsdDressedTailSettings = currentMasterPatternBuildRequest.BeamSelection == BetheMethod.EbsdBeamSelectionMethod.DressedTail
-                ? BetheMethod.DressedTailDefaults with { N = Math.Max(2, currentMasterPatternBuildRequest.MaxNumOfBloch) } : BetheMethod.DressedTailDefaults,
+                ? currentMasterPatternBuildRequest.DressedTailSettings ?? BetheMethod.DressedTailDefaults with { N = Math.Max(2, currentMasterPatternBuildRequest.MaxNumOfBloch) } : BetheMethod.DressedTailDefaults, // 261110Cl: 要求の設定 (軽量など) を優先
         };
         masterPatternBethe.EBSD_ProgressChanged += MasterPatternBethe_EBSD_ProgressChanged;
         masterPatternBethe.EBSD_Completed += MasterPatternBethe_EBSD_Completed;

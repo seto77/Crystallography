@@ -74,6 +74,10 @@ public partial class BetheMethod
     }
     /// <summary>261110Cl 追加: 新方式の本番の設定 (既定)</summary>
     public static DressedTailProductionSettings DressedTailDefaults { get; } = new();
+    /// <summary>261110Cl 追加 (作者の判断 2026-11-10「EBSD は 3 択」): 新方式の軽量の設定 (手早く確かめる用途)。E1 の基準の本数 32、候補と裾の半径 40 nm⁻¹、芯 31 nm⁻¹。
+    /// Si 20 keV の本番の重みで最大 2.8 % (従来 N32 は 27 %)、格子 256 の 1 エネルギー 約 26 s (従来 N32 は 1 s)。MnAl 14 keV では最大 13 % が残る (従来 28 %) ので、定量の当てはめの検証済みの設定ではない。
+    /// 版は DT1-261110-light</summary>
+    public static DressedTailProductionSettings DressedTailLight { get; } = new() { N = 32, PoolRadiusNm = 40, TailRadiusNm = 40, CoreRadiusNm = 31 };
     /// <summary>261110Cl 追加: この BetheMethod の構築で使う新方式の設定 (既定 = <see cref="DressedTailDefaults"/>。構築の要求から渡す。研究の照合では値を変えた複製を渡せる)</summary>
     public DressedTailProductionSettings EbsdDressedTailSettings { get; set; } = DressedTailDefaults;
 
@@ -114,7 +118,8 @@ public partial class BetheMethod
         int caps = NativeWrapper.DressedTailCapabilities;
         EbsdBeamSelectionNative = $"{NativeWrapper.LoadedNativeLibrary} caps {caps}{(set.AllowUBf16 && (caps & 2) != 0 ? " U-bf16" : "")}";
         // EbsdBeamSelectionSettingsVersion = DressedTailProductionSettings.Version + (set == DressedTailDefaults ? "" : "+custom"); // 261110Cl 変更前
-        EbsdBeamSelectionSettingsVersion = DressedTailProductionSettings.Version + (set == DressedTailDefaults ? "" : "+custom-" + set.Fingerprint()); // 261110Cl (codex2 第 34 回): 既定と違う設定どうしも区別する
+        // EbsdBeamSelectionSettingsVersion = DressedTailProductionSettings.Version + (set == DressedTailDefaults ? "" : "+custom-" + set.Fingerprint()); // 261110Cl (codex2 第 34 回): 既定と違う設定どうしも区別する // 261110Cl 変更前
+        EbsdBeamSelectionSettingsVersion = DressedTailProductionSettings.Version + (set == DressedTailDefaults ? "" : set == DressedTailLight ? "-light" : "+custom-" + set.Fingerprint()); // 261110Cl: 軽量の設定には名前
         var opt = new EbsdDressedTailOptions
         {
             TailRadiusNm = set.TailRadiusNm, PoolRadiusNm = set.PoolRadiusNm, Eta = set.Eta, N = set.N, Ps = set.Ps, RegDepthNm = set.RegDepthNm,
