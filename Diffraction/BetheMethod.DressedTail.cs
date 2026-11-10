@@ -145,8 +145,11 @@ public partial class BetheMethod
         double sites = Math.Max(1, atoms) * set.SourceQuadrature;
         double box = (4 * set.PoolRadiusNm * Crystal.A + 1) * (4 * set.PoolRadiusNm * Crystal.B + 1) * (4 * set.PoolRadiusNm * Crystal.C + 1);
         double shared = pool * sites * 24 + box * 48 + pool * 200; // 位相の表 (倍精度 + 単精度の写し)、差の表 (U・F、倍精度 + 単精度)、候補の配列
-        double nS = set.N + 2 * Math.PI * set.PoolRadiusNm * set.PoolRadiusNm * set.Ps * rho;
-        double nQ = 1.4 * 4.0 / 3 * Math.PI * Math.Pow(set.CoreRadiusNm, 3) * rho;
+        // double nS = set.N + 2 * Math.PI * set.PoolRadiusNm * set.PoolRadiusNm * set.Ps * rho; // 261110Cl 変更前
+        // double nQ = 1.4 * 4.0 / 3 * Math.PI * Math.Pow(set.CoreRadiusNm, 3) * rho; // 261110Cl 変更前
+        // 261110Cl 変更: 明示・裾の数は候補の数 (前方の全部 ≤ pool) を超えない (繰り上げの閾値を大きくした照合の設定で桁があふれた)
+        double nS = Math.Min(pool, set.N + 2 * Math.PI * set.PoolRadiusNm * set.PoolRadiusNm * set.Ps * rho);
+        double nQ = Math.Min(pool, 1.4 * 4.0 / 3 * Math.PI * Math.Pow(set.CoreRadiusNm, 3) * rho);
         // double nM = 0.5 * nS; // 261110Cl 変更前
         double nM = nS; // 261110Cl 変更 (codex2 第 33 回): モードの数の上限 (τ = 0 なら nM = nS)。方向ごとの検査と同じ式
         double perWorker = 2 * nS * nQ * 8 + 3 * nQ * nM * 8 + nQ * nM * 4 + 10 * nS * nS * 16 + nQ * 64 + nS * nQ * 16; // H_SQ・X₀、T・EX₀・Y、X の bf16、密な小行列、裾の配列、C# のブロック
