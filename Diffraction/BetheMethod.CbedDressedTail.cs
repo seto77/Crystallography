@@ -557,7 +557,7 @@ public partial class BetheMethod
             if (set.PromoteOverPatch && members.Length > 1)
                 promote = (members.Length <= 16 ? members : probes.ToArray()).Select(di => (getVecK0(kvac, u0, directions[di], n), n)).ToArray();
             var cr = DressCore(table, ck, n, set.N, set.Ps, set.RegDepthNm, set.OneProduct, parallelInside, dtm, promoteAlso: promote, modeBasis: true, selection: sel, modeTau: set.ModeTau, modeSelector: selector,
-                denseSingle: set.SingleTailProducts, spmmSingle: set.SingleTailProducts);
+                denseSingle: set.SingleTailProducts, spmmSingle: set.SingleTailProducts, innerDegree: innerLocal); // 261111Cl innerDegree 追加: 区画の中のスレッドで疎な積を並列に (結果は同じ)
             double tDress = swp.Elapsed.TotalSeconds; swp.Restart();
             var (sArr, qArr, Dc) = (cr.SArr, cr.QArr, cr.D);
             int nS = sArr.Length, nQ = qArr.Length; nB = cr.Vb.ColumnCount;
