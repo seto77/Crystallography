@@ -192,31 +192,28 @@ public partial class BetheMethod
         int nAll = nDir; var allDirections = directions;
         double symOffU = 0, symOffV = 0, symCos = 1, symSin = 0, sideMinSym = Math.Sqrt(2) * set.PatchRadiusMrad * 1e-3; // 升の格子のずれと回転 (斜めの鏡映の境に辺を合わせる。対称を使わなければ 0)
         // var symOps = set.UseSymmetry ? CbedSymmetryOps(pool, directions, n) : []; // 261111Cl 変更前
-        var symOps = set.UseSymmetry ? CbedSymmetryOps(pool.Hkl, pool.GX, pool.GY, pool.GZ, pool.IndexOf, pool.Mat, Math.Min(25, 0.999 * pool.RadiusNm), directions, n) : [];
-        // 261111Cl 追加 (codex2 第 38 回): 実際に解くポテンシャル = 差の表 (|d| ≤ 2R の U + iU') の全要素で U_{Kd} = U_d exp(−2πi h_{Kd}·w) を照合する。外れたら対称を使わない
-        if (symOps.Length > 0)
+        // 261111Cl 追加 (codex2 第 38 回): 実際に解くポテンシャル = 差の表 (|d| ≤ 2R の U + iU') の全要素で U_{Kd} = U_d exp(−2πi h_{Kd}·w) を照合する
+        // 261111Cl 変更 (codex2 第 39 回): 判定の後の照合 (外れたら対称を諦める) から、w の候補の選び分けの中の照合 (fullCheck) へ。通る候補があればそれを使う
+        bool DiffTableOk(int[] K, int[] _, (double, double, double) w)
         {
             int dh = pool.DiffBoundH, dk = pool.DiffBoundK, dl = pool.DiffBoundL; var du = table.diffUfull;
             double uMaxD = 0; foreach (var z in du) uMaxD = Math.Max(uMaxD, z.Magnitude);
-            bool okAll = true;
-            foreach (var op in symOps)
+            var (w1, w2, w3) = w; bool okAll = true;
+            Parallel.For(-dh, dh + 1, new ParallelOptions { MaxDegreeOfParallelism = threads }, (h, st) =>
             {
-                var K = op.K; var (w1, w2, w3) = op.W;
-                Parallel.For(-dh, dh + 1, new ParallelOptions { MaxDegreeOfParallelism = threads }, (h, st) =>
+                for (int k = -dk; k <= dk; k++) for (int l = -dl; l <= dl; l++)
                 {
-                    for (int k = -dk; k <= dk; k++) for (int l = -dl; l <= dl; l++)
-                    {
-                        var u = du[pool.DiffIndex(h, k, l)]; if (u == Complex.Zero) continue;
-                        int th = K[0] * h + K[1] * k + K[2] * l, tk = K[3] * h + K[4] * k + K[5] * l, tl = K[6] * h + K[7] * k + K[8] * l;
-                        if (Math.Abs(th) > dh || Math.Abs(tk) > dk || Math.Abs(tl) > dl) { okAll = false; st.Stop(); return; }
-                        var ph = Complex.Exp(new Complex(0, -2 * Math.PI * (th * w1 + tk * w2 + tl * w3)));
-                        if ((du[pool.DiffIndex(th, tk, tl)] - u * ph).Magnitude > 1e-9 * uMaxD) { okAll = false; st.Stop(); return; }
-                    }
-                });
-                if (!okAll) break;
-            }
-            if (!okAll) symOps = [];
+                    var u = du[pool.DiffIndex(h, k, l)]; if (u == Complex.Zero) continue;
+                    int th = K[0] * h + K[1] * k + K[2] * l, tk = K[3] * h + K[4] * k + K[5] * l, tl = K[6] * h + K[7] * k + K[8] * l;
+                    if (Math.Abs(th) > dh || Math.Abs(tk) > dk || Math.Abs(tl) > dl) { okAll = false; st.Stop(); return; }
+                    var ph = Complex.Exp(new Complex(0, -2 * Math.PI * (th * w1 + tk * w2 + tl * w3)));
+                    if ((du[pool.DiffIndex(th, tk, tl)] - u * ph).Magnitude > 1e-9 * uMaxD) { okAll = false; st.Stop(); return; }
+                }
+            });
+            return okAll;
         }
+        // var symOps = set.UseSymmetry ? CbedSymmetryOps(pool.Hkl, pool.GX, pool.GY, pool.GZ, pool.IndexOf, pool.Mat, Math.Min(25, 0.999 * pool.RadiusNm), directions, n) : []; // 261111Cl 変更前
+        var symOps = set.UseSymmetry ? CbedSymmetryOps(pool.Hkl, pool.GX, pool.GY, pool.GZ, pool.IndexOf, pool.Mat, Math.Min(25, 0.999 * pool.RadiusNm), directions, n, DiffTableOk) : [];
         int[] repOrig = null; (int rep, int op)[] mapFrom = null; (double, double) bestOff = (0, 0); (double, double) bestRot = (1, 0);
         bool adaptiveSym = double.IsFinite(set.AdaptiveMaxRadiusMrad) && double.IsFinite(set.AdaptiveIndicatorLimit) && set.AdaptiveMaxRadiusMrad > set.PatchRadiusMrad; // 適応的な区画 (Split は軸にそろった升) では回さない
         if (symOps.Length > 0)
@@ -361,9 +358,13 @@ public partial class BetheMethod
             }
             // 261111Cl 追加: 解いた後の円盤の組み立て (cbed_DoWork) の山 = 方向ごとの振幅 + ディスクの生の振幅と重ねた後の振幅 (正方格子の全画素、円の外も含む) ≈ 出力の 3.6 倍。
             //   新方式は出射のビームが多い (500 本前後、従来は N 本) ので、組み立ての時にメモリが足りなくならないかも確かめる (研究用の予算の上書きでは確かめない)
-            if (CbedMemoryBudgetOverride <= 0 && 3.6 * outMem > budget2 + outMem)
+            // if (CbedMemoryBudgetOverride <= 0 && 3.6 * outMem > budget2 + outMem) // 261111Cl 変更前 (3.6 倍は上限ではない: 座標の配列があり、厚さ 1 なら約 5.5 倍、codex2 第 39 回)
+            // 261111Cl 変更: 主な配列の和 M ≈ 16VBT (方向ごとの振幅) + 32GBT (生の振幅と重ねた後の振幅) + 24GB (ディスクの画素の座標) + 8GTC (重ねるときの強度の一時、C = 同時に組み立てるビーム)、
+            //   G = 正方格子の全画素 ≈ V·4/π (円の外も含む)。配列の管理の分の余裕に 1.1 倍
+            double gPix = Math.Ceiling(nAll * 4 / Math.PI) + 2 * Math.Sqrt(nAll) + 1, asmMem = 1.1 * (16.0 * nAll * nOut * tLen + 32.0 * gPix * nOut * tLen + 24.0 * gPix * nOut + 8.0 * gPix * tLen * threads);
+            if (CbedMemoryBudgetOverride <= 0 && asmMem > budget2 + outMem)
             {
-                CbedBeamSelectionFallbackReason = $"assembling the disks would need about {3.6 * outMem / 1e9:f1} GB ({nOut} output beams × {nAll} directions × {tLen} thicknesses), more than the budget {(budget2 + outMem) / 1e9:f1} GB";
+                CbedBeamSelectionFallbackReason = $"assembling the disks would need about {asmMem / 1e9:f1} GB ({nOut} output beams × {nAll} directions × {tLen} thicknesses), more than the budget {(budget2 + outMem) / 1e9:f1} GB";
                 return (null, null);
             }
         }
@@ -663,8 +664,11 @@ public partial class BetheMethod
                         }
                     }
                 }
-                var keepJ = KeepClusters(gc, Rc, zsL, set.ModeReduceTau, force: forceL);
-                if (forceL != null) { var keep0 = KeepClusters(gc, Rc, zsL, set.ModeReduceTau); int added = 0; for (int j = 0; j < nB; j++) if (keepJ[j] && !keep0[j]) added++; lock (gate) nSlowKept += added; }
+                // var keepJ = KeepClusters(gc, Rc, zsL, set.ModeReduceTau, force: forceL); // 261111Cl 変更前 (2 行、数えるために 2 回計算した)
+                // if (forceL != null) { var keep0 = KeepClusters(gc, Rc, zsL, set.ModeReduceTau); int added = 0; for (int j = 0; j < nB; j++) if (keepJ[j] && !keep0[j]) added++; lock (gate) nSlowKept += added; }
+                var forcedOnly = new int[1];
+                var keepJ = KeepClusters(gc, Rc, zsL, set.ModeReduceTau, force: forceL, forcedOnly: forcedOnly); // 261111Cl 変更 (codex2 第 39 回): 1 回で
+                lock (gate) nSlowKept += forcedOnly[0];
                 if (set.ReductionCrossingCheck) // 261110Cl 追加: 区画の中の交差の検出。探りは区画の端だけなので、中で残すモード j と落とすモード k が交差 (縮退) して振幅が移る所を見落とす
                 //   (Si [110] 200 kV・区画 2 mrad で FOLZ のモードが交差し、端の探りの照合 6.9e−5 のまま中で 4.4e−3・区画の境界の段差)。
                 //   中心の固有モードの基底で A'(d) ≈ A'_c + Σ δk_a E_a (E_a = L_c S_c (−2B_a) R_c) とし、区画の全方向で対角の差 Δ_kj(d) = (γ_k + E_kk(d)) − (γ_j + E_jj(d)) を見る。
@@ -722,54 +726,59 @@ public partial class BetheMethod
                 if (!healthy) { keepJ = Enumerable.Repeat(true, nB).ToArray(); lock (gate) nReduceSkipped++; }
                 var keep = Enumerable.Range(0, nB).Where(j => keepJ[j]).ToArray();
                 nR = keep.Length;
-                var Rk = CDense.Create(nB, nR, (i, j) => Rc[i, keep[j]]);
-                Lk = CDense.Create(nR, nB, (i, j) => Lc[keep[i], j]);
-                var wv = new double[nB]; for (int i = 0; i < nB; i++) wv[i] = 1 / (nkc + mu[i]);
-                redP = new CDense[4]; redQ = new CDense[4];
-                var mats = new[] { bc, bx, by, bz };
-                for (int mm = 0; mm < 4; mm++)
+                // 261111Cl 追加 (codex2 第 39 回): 全部のモードが残るなら縮約しない (縮約の行列・中の 4 点・縮約の解との照合を作ってから捨てていた。結果は同じ)
+                if (nR == nB) redP = null;
+                else
                 {
-                    var Ms = new CDense(nB, nB); var Mw = new CDense(nB, nB); var msv = Ms.Values; var mwv = Mw.Values; var src = mats[mm];
-                    for (int col = 0; col < nB; col++) { int o = col * nB; for (int i = 0; i < nB; i++) { msv[o + i] = src[o + i] * scc[i]; mwv[o + i] = src[o + i] * (scc[i] * wv[i]); } }
-                    redP[mm] = (CDense)(Lk * (Ms * Rk)); redQ[mm] = (CDense)(Lk * (Mw * Rk));
+                    var Rk = CDense.Create(nB, nR, (i, j) => Rc[i, keep[j]]);
+                    Lk = CDense.Create(nR, nB, (i, j) => Lc[keep[i], j]);
+                    var wv = new double[nB]; for (int i = 0; i < nB; i++) wv[i] = 1 / (nkc + mu[i]);
+                    redP = new CDense[4]; redQ = new CDense[4];
+                    var mats = new[] { bc, bx, by, bz };
+                    for (int mm = 0; mm < 4; mm++)
+                    {
+                        var Ms = new CDense(nB, nB); var Mw = new CDense(nB, nB); var msv = Ms.Values; var mwv = Mw.Values; var src = mats[mm];
+                        for (int col = 0; col < nB; col++) { int o = col * nB; for (int i = 0; i < nB; i++) { msv[o + i] = src[o + i] * scc[i]; mwv[o + i] = src[o + i] * (scc[i] * wv[i]); } }
+                        redP[mm] = (CDense)(Lk * (Ms * Rk)); redQ[mm] = (CDense)(Lk * (Mw * Rk));
+                    }
+                    wpR = (CDense)(wp * Rk);
+                    // 261110Cl (codex2 第 37 回): 事後の検査。探りの方向で縮約の解と全次元の解の出射の強度を比べ、上限を超えたら縮約しない
+                    //   261110Cl 追加: 区画の内側の 4 方向 (升の中心から ±side/4) も全次元で解いて比べる (端の探りだけでは中の交差を見落とした)
+                    var inner4 = new List<int>(); // 261111Cl: 中の 4 点を選んでから並列に解く (下の 2 つのループも並列に。結果は同じ)
+                    foreach (var (qu, qv) in new[] { (-0.31, 0.17), (0.19, -0.13), (0.33, 0.29), (-0.09, -0.34) }) // 261110Cl: 対称の線から外れた点 (探りとも別)
+                    {
+                        double tu = sq.uc + qu * sq.side, tv = sq.vc + qv * sq.side; int bi = -1; double bd = double.PositiveInfinity;
+                        foreach (var i in members) { double d2u = (uu[i] - tu) * (uu[i] - tu) + (vv[i] - tv) * (vv[i] - tv); if (d2u < bd) { bd = d2u; bi = i; } }
+                        if (bi < 0 || probeDone.ContainsKey(bi) || inner4.Contains(bi) || BackwardAt(bi, all)) continue;
+                        // var (a, y0, _, _) = FullSystem(bi); // 261111Cl 変更前 (逐次)
+                        // probeDone[bi] = prop == 0 ? NativeWrapper.CBEDSolver_Eigen(a, y0, thicknesses) : prop == 1 ? NativeWrapper.CBEDSolver_MatExp(a, y0, thicknesses) : ManagedPropagate(a, y0, nB);
+                        inner4.Add(bi);
+                    }
+                    var inY = new Complex[inner4.Count][];
+                    Parallel.For(0, inner4.Count, new ParallelOptions { MaxDegreeOfParallelism = Math.Max(1, innerLocal) }, q =>
+                    {
+                        var (a, y0, _, _) = FullSystem(inner4[q]);
+                        inY[q] = prop == 0 ? NativeWrapper.CBEDSolver_Eigen(a, y0, thicknesses) : prop == 1 ? NativeWrapper.CBEDSolver_MatExp(a, y0, thicknesses) : ManagedPropagate(a, y0, nB);
+                    });
+                    for (int q = 0; q < inner4.Count; q++) probeDone[inner4[q]] = inY[q];
+                    double probeDiff = 0;
+                    // foreach (var kv in probeDone) // 261111Cl 変更前 (逐次)
+                    // {
+                    //     var yr = ReducedY(kv.Key);
+                    //     var pr = (wpR * new CDense(nR, tLen, yr)).Values; var pf = (wp * new CDense(nB, tLen, kv.Value)).Values;
+                    //     for (int i = 0; i < pr.Length; i++) probeDiff = Math.Max(probeDiff, Math.Abs(pr[i].Magnitude * pr[i].Magnitude - pf[i].Magnitude * pf[i].Magnitude));
+                    // }
+                    var pdList = probeDone.ToArray(); var pdMax = new double[pdList.Length];
+                    Parallel.For(0, pdList.Length, new ParallelOptions { MaxDegreeOfParallelism = Math.Max(1, innerLocal) }, q =>
+                    {
+                        var yr = ReducedY(pdList[q].Key);
+                        var pr = (wpR * new CDense(nR, tLen, yr)).Values; var pf = (wp * new CDense(nB, tLen, pdList[q].Value)).Values;
+                        for (int i = 0; i < pr.Length; i++) pdMax[q] = Math.Max(pdMax[q], Math.Abs(pr[i].Magnitude * pr[i].Magnitude - pf[i].Magnitude * pf[i].Magnitude));
+                    });
+                    foreach (var v in pdMax) probeDiff = Math.Max(probeDiff, v);
+                    lock (gate) maxProbeDiff = Math.Max(maxProbeDiff, probeDiff);
+                    if (probeDiff > set.ReductionCheckLimit || nR == nB) { redP = null; nR = nB; if (nR != nB || probeDiff > set.ReductionCheckLimit) lock (gate) nReduceSkipped++; }
                 }
-                wpR = (CDense)(wp * Rk);
-                // 261110Cl (codex2 第 37 回): 事後の検査。探りの方向で縮約の解と全次元の解の出射の強度を比べ、上限を超えたら縮約しない
-                //   261110Cl 追加: 区画の内側の 4 方向 (升の中心から ±side/4) も全次元で解いて比べる (端の探りだけでは中の交差を見落とした)
-                var inner4 = new List<int>(); // 261111Cl: 中の 4 点を選んでから並列に解く (下の 2 つのループも並列に。結果は同じ)
-                foreach (var (qu, qv) in new[] { (-0.31, 0.17), (0.19, -0.13), (0.33, 0.29), (-0.09, -0.34) }) // 261110Cl: 対称の線から外れた点 (探りとも別)
-                {
-                    double tu = sq.uc + qu * sq.side, tv = sq.vc + qv * sq.side; int bi = -1; double bd = double.PositiveInfinity;
-                    foreach (var i in members) { double d2u = (uu[i] - tu) * (uu[i] - tu) + (vv[i] - tv) * (vv[i] - tv); if (d2u < bd) { bd = d2u; bi = i; } }
-                    if (bi < 0 || probeDone.ContainsKey(bi) || inner4.Contains(bi) || BackwardAt(bi, all)) continue;
-                    // var (a, y0, _, _) = FullSystem(bi); // 261111Cl 変更前 (逐次)
-                    // probeDone[bi] = prop == 0 ? NativeWrapper.CBEDSolver_Eigen(a, y0, thicknesses) : prop == 1 ? NativeWrapper.CBEDSolver_MatExp(a, y0, thicknesses) : ManagedPropagate(a, y0, nB);
-                    inner4.Add(bi);
-                }
-                var inY = new Complex[inner4.Count][];
-                Parallel.For(0, inner4.Count, new ParallelOptions { MaxDegreeOfParallelism = Math.Max(1, innerLocal) }, q =>
-                {
-                    var (a, y0, _, _) = FullSystem(inner4[q]);
-                    inY[q] = prop == 0 ? NativeWrapper.CBEDSolver_Eigen(a, y0, thicknesses) : prop == 1 ? NativeWrapper.CBEDSolver_MatExp(a, y0, thicknesses) : ManagedPropagate(a, y0, nB);
-                });
-                for (int q = 0; q < inner4.Count; q++) probeDone[inner4[q]] = inY[q];
-                double probeDiff = 0;
-                // foreach (var kv in probeDone) // 261111Cl 変更前 (逐次)
-                // {
-                //     var yr = ReducedY(kv.Key);
-                //     var pr = (wpR * new CDense(nR, tLen, yr)).Values; var pf = (wp * new CDense(nB, tLen, kv.Value)).Values;
-                //     for (int i = 0; i < pr.Length; i++) probeDiff = Math.Max(probeDiff, Math.Abs(pr[i].Magnitude * pr[i].Magnitude - pf[i].Magnitude * pf[i].Magnitude));
-                // }
-                var pdList = probeDone.ToArray(); var pdMax = new double[pdList.Length];
-                Parallel.For(0, pdList.Length, new ParallelOptions { MaxDegreeOfParallelism = Math.Max(1, innerLocal) }, q =>
-                {
-                    var yr = ReducedY(pdList[q].Key);
-                    var pr = (wpR * new CDense(nR, tLen, yr)).Values; var pf = (wp * new CDense(nB, tLen, pdList[q].Value)).Values;
-                    for (int i = 0; i < pr.Length; i++) pdMax[q] = Math.Max(pdMax[q], Math.Abs(pr[i].Magnitude * pr[i].Magnitude - pf[i].Magnitude * pf[i].Magnitude));
-                });
-                foreach (var v in pdMax) probeDiff = Math.Max(probeDiff, v);
-                lock (gate) maxProbeDiff = Math.Max(maxProbeDiff, probeDiff);
-                if (probeDiff > set.ReductionCheckLimit || nR == nB) { redP = null; nR = nB; if (nR != nB || probeDiff > set.ReductionCheckLimit) lock (gate) nReduceSkipped++; }
             }
             double tBasis = swp.Elapsed.TotalSeconds;
             if (cancelled?.Invoke() == true) return;
@@ -847,16 +856,18 @@ public partial class BetheMethod
             // 261110Cl (codex2 第 37 回): 区画の中のスレッドは「スレッド数 / 同時に動く区画の数 (残りの区画の数まで)」(入れ子で指定のスレッド数を大きく超えない。始めた時点の値なので近似)
             int o2 = Math.Max(1, Math.Min(outer, work.Count));
             var cur = work.OrderByDescending(q => q.members.Length).ToList();
-            int remaining = cur.Count, active = 0;
+            int remaining = cur.Count;
             Parallel.ForEach(System.Collections.Concurrent.Partitioner.Create(cur, System.Collections.Concurrent.EnumerablePartitionerOptions.NoBuffering),
                 new ParallelOptions { MaxDegreeOfParallelism = o2 }, q =>
                 {
                     int rem = Interlocked.Decrement(ref remaining) + 1;
                     // int il = Math.Max(1, threads / Math.Max(1, Math.Min(o2, rem))); // 261111Cl 変更前 (未開始の数だけで割り、走っている区画を数えず、最後の巡で過剰になりえた、codex2 第 38 回)
-                    int act = Interlocked.Increment(ref active); // 261111Cl 変更: 走っている区画の数 (自分を含む) と未開始の数の大きい方で割る
-                    int il = Math.Max(1, threads / Math.Max(act, Math.Min(o2, rem)));
+                    // int act = Interlocked.Increment(ref active); // 261111Cl 変更: 走っている区画の数 (自分を含む) と未開始の数の大きい方で割る // 261111Cl 変更前 (2 行、まだ超えうる: threads 12・区画 4 で 3・4・4・3 = 14、codex2 第 39 回)
+                    // int il = Math.Max(1, threads / Math.Max(act, Math.Min(o2, rem)));
+                    int il = Math.Max(1, threads / o2); // 261111Cl 変更 (codex2 第 39 回): 固定 (同時の区画 o2 × il ≤ threads)
                     inner = Math.Max(inner, il);
-                    try { SolvePatch(q, il, next); } finally { Interlocked.Decrement(ref active); }
+                    // try { SolvePatch(q, il, next); } finally { Interlocked.Decrement(ref active); } // 261111Cl 変更前
+                    SolvePatch(q, il, next);
                 });
             work = next.OrderBy(q => q.Item1).ThenBy(q => q.Item2).ToList();
             nLevels++;
@@ -916,7 +927,8 @@ public partial class BetheMethod
     // private (string Name, int[] DirMap, int[] BeamMap, (double, double, double) W)[] CbedSymmetryOps(IReadOnlyList<(int h, int k, int l)> hkl, double[] gx, double[] gy, double[] gz, // 261111Cl 変更前 (返り値に K が無かった)
     // 261111Cl 変更: 返り値に hkl の整数の行列 K (行優先 9 要素、h_{Tg} = K h_g) を足す (呼び出し側が実際のポテンシャルで照合するため)
     private (string Name, int[] DirMap, int[] BeamMap, (double, double, double) W, int[] K)[] CbedSymmetryOps(IReadOnlyList<(int h, int k, int l)> hkl, double[] gx, double[] gy, double[] gz,
-        Func<(int, int, int), int> indexOf, (double, double, double, double, double, double, double, double, double) mat, double checkRadius, IReadOnlyList<Vector3DBase> directions, Vector3DBase n)
+        Func<(int, int, int), int> indexOf, (double, double, double, double, double, double, double, double, double) mat, double checkRadius, IReadOnlyList<Vector3DBase> directions, Vector3DBase n,
+        Func<int[], int[], (double, double, double), bool> fullCheck = null) // 261111Cl 追加 (codex2 第 39 回): (K, ビームの写像, w) を実際に解くポテンシャルの全体で照合する。w の候補はこれにも通るものを選ぶ
     {
         var cands = new (string name, int a, int b, int c, int d)[] { ("2", -1, 0, 0, -1), ("4", 0, -1, 1, 0), ("4^3", 0, 1, -1, 0), ("m(x)", -1, 0, 0, 1), ("m(y)", 1, 0, 0, -1), ("m(x=y)", 0, 1, 1, 0), ("m(x=-y)", 0, -1, -1, 0) };
         var found = new List<(string, int[], int[], (double, double, double), (int, int, int, int), int[])>();
@@ -1010,7 +1022,8 @@ public partial class BetheMethod
                     var ph = Complex.Exp(new Complex(0, -2 * Math.PI * (h * w.Item1 + k * w.Item2 + l * w.Item3)));
                     if ((U(tq).Real - U(q).Real * ph).Magnitude > 1e-7 * uMax || (U(tq).Imag - U(q).Imag * ph).Magnitude > 1e-7 * upMax) { okW = false; break; }
                 }
-                if (okW) { ok = true; break; }
+                // if (okW) { ok = true; break; } // 261111Cl 変更前
+                if (okW && (fullCheck == null || fullCheck(ki, bm, w))) { ok = true; break; } // 261111Cl 変更: 実際のポテンシャルの照合まで通る候補
             }
             if (ok) found.Add((name, dm, bm, w, (a, b, c, d), ki));
         }
@@ -1107,7 +1120,8 @@ public partial class BetheMethod
     //     bool perMode = false) // 261111Cl 変更前
     private static bool[] KeepClusters(MathNet.Numerics.LinearAlgebra.Vector<Complex> gam, Matrix<Complex> R, IEnumerable<Matrix<Complex>> zs, double tau,
         bool perMode = false, // perMode: 組の寄与の代わりにモードごとの |z_j|·‖R_j‖ の最大 (組の誰かが τ 以上なら組ごと残す、保守的)
-        bool[] force = null) // 261111Cl 追加 (codex2 第 38 回): 必ず残すモード (遅いビームの規則)。そのモードを含む近い固有値の組を丸ごと残す
+        bool[] force = null, // 261111Cl 追加 (codex2 第 38 回): 必ず残すモード (遅いビームの規則)。そのモードを含む近い固有値の組を丸ごと残す
+        int[] forcedOnly = null) // 261111Cl 追加 (codex2 第 39 回): force だけで残したモードの数を [0] に足す (記録用。二重に計算しない)
     {
         int n = gam.Count;
         var par = Enumerable.Range(0, n).ToArray();
@@ -1145,7 +1159,13 @@ public partial class BetheMethod
         double wmax = w.Length > 0 ? w.Max() : 0;
         var keep = new bool[n];
         // for (int gi = 0; gi < groups.Length; gi++) if (w[gi] >= tau * wmax) foreach (var j in groups[gi]) keep[j] = true; // 261111Cl 変更前
-        for (int gi = 0; gi < groups.Length; gi++) if (w[gi] >= tau * wmax || (force != null && groups[gi].Any(j => force[j]))) foreach (var j in groups[gi]) keep[j] = true; // 261111Cl 変更: force の組も
+        // for (int gi = 0; gi < groups.Length; gi++) if (w[gi] >= tau * wmax || (force != null && groups[gi].Any(j => force[j]))) foreach (var j in groups[gi]) keep[j] = true; // 261111Cl 変更: force の組も // 261111Cl 変更前
+        for (int gi = 0; gi < groups.Length; gi++)
+        {
+            bool byW = w[gi] >= tau * wmax, byF = force != null && groups[gi].Any(j => force[j]);
+            if (byW || byF) foreach (var j in groups[gi]) keep[j] = true;
+            if (!byW && byF && forcedOnly != null) forcedOnly[0] += groups[gi].Length; // 261111Cl 追加
+        }
         return keep;
     }
 
