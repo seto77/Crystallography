@@ -2870,6 +2870,18 @@ public partial class BetheMethod
 
     /// <summary>261105Cl 追加: STEM 専用の複製が持つ、RunSTEM を呼んだ時点の結晶の向き (Crystal.RotationMatrix)。それ以外は null</summary>
     private Matrix3D CrystalRotation;
+
+    /// <summary>261111Cl 追加 (研究用): STEM の TDS の深さの積分を固有解から解析的に検算するための中身 (codex2 第 40・41 回)。
+    /// EigenVectorsTimesAlpha[k] は列優先 (列 β に α_β を掛けた固有ベクトル)、CommonCarrier[k] = n·K0、Inelastic[q, t, d] はスライスの和で求めた値</summary>
+    public sealed record StemDepthResearchData(int BLen, int DLen, double[] Thicknesses, double Kvac,
+        Complex[][] EigenValues, Complex[][] EigenVectorsTimesAlpha, double[] CommonCarrier, double[] QNormal,
+        int[][] EntryK, int[][] EntryN4, double[][] EntryR4, Complex[][] EntryLenz,
+        Action<int, Complex[]> FillU, Complex[,,] Inelastic, bool DepthPhase);
+
+    /// <summary>261111Cl 追加 (研究用、既定 null): 設定すると、STEM が旧来の経路 (固有ベクトルを保持する。RECIPRO_STEM_ALLSLICE=0 など) で走ったとき、
+    /// 非弾性の段の後に <see cref="StemDepthResearchData"/> を渡して呼ぶ (結果は変えない)</summary>
+    public static Action<StemDepthResearchData> StemDepthResearchHook { get; set; }
+
     public unsafe void StemDoWork(object sender, DoWorkEventArgs e)
     {
         //MathNetの行列の内部は、1列目の要素、2列目の要素、という順番で格納されている
@@ -3662,6 +3674,11 @@ public partial class BetheMethod
         }
         if (bwSTEM.CancellationPending) { e.Cancel = true; return; }
         #endregion
+
+        //261111Cl 追加 (研究用、既定 null): 深さの積分の解析的な検算 (固有ベクトルを保持している旧来の経路のときだけ)
+        if (StemDepthResearchHook is { } depthHook && !useAllSliceTc && eVec.Any(v => v is not null))
+            depthHook(new StemDepthResearchData(bLen, dLen, Thicknesses, kvac, eVal, eVec, [.. k_vec.Select(v => Surface * v)], qN,
+                qEntryK, qEntryN4, qEntryR4, qEntryLenz, (q, u) => fillUq(q, u, 0), I_Inel, depthPhase));
 
         //260802Cl 追加 (作者指示: 物理としての正しさを優先): 弾性・TDS にも設計書 §3.4 の規律を適用する。
         //像 I(r) は実数の強度なので、そのフーリエ係数は I(−q)=I(q)* を**厳密に**満たさなければならない。
