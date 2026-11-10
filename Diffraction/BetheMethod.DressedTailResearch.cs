@@ -587,7 +587,8 @@ public partial class BetheMethod
         (double weight, double sigmaNm)[] tailQuadratureAtoms = null, // 261109Cl 追加: 源の裾どうしの項を求積で積むときの原子ごとの (F(0) の分 A_n、Gauss の幅 σ_n = √(B/8π²) [nm])。atomSites と同じ並び
         int tailQuadratureOrder = 0,      // 261109Cl 追加: その Gauss–Hermite の 1 軸の点の数 (0 = 求積せず源の表の疎な積)
         bool promoteOverBlock = false,    // 261109Cl 追加: ブロックのどれかの方向で遅い裾の反射も明示へ繰り上げる
-        int[] explicitSet = null)         // 261109Cl 追加 (研究用、照合用): 明示の集合を固定する (候補の番号、000 が先頭)
+        int[] explicitSet = null,         // 261109Cl 追加 (研究用、照合用): 明示の集合を固定する (候補の番号、000 が先頭)
+        int incidentPoolIndex = 0)        // 261110Cl 追加 (研究用、STEM の折り返しの試験): 入射のビーム (候補の番号、明示に含まれること)。0 = 000 (従来どおり)
     {
         // var cr = DressCore(table, centerK0, centerSurface, n, ps, regDepthNm, oneProduct, parallel, timing); // 261109Cl 変更前
         var cr = DressCore(table, centerK0, centerSurface, n, ps, regDepthNm, oneProduct, parallel, timing, promoteOverBlock ? dirs : null, explicitSet);
@@ -776,7 +777,13 @@ public partial class BetheMethod
             var ch = M.Cholesky();
             var evd = ch.Solve(K).Evd(Symmetricity.Asymmetric);
             var Cv = evd.EigenVectors;
-            var e0 = MathNet.Numerics.LinearAlgebra.Vector<Complex>.Build.Dense(nS); e0[0] = 2 * nk * Dc[0]; // W†P e₀ = P_000 · D_c,000 e₀ (P_000 = 2 n·k0)
+            // var e0 = MathNet.Numerics.LinearAlgebra.Vector<Complex>.Build.Dense(nS); e0[0] = 2 * nk * Dc[0]; // W†P e₀ = P_000 · D_c,000 e₀ (P_000 = 2 n·k0) // 261110Cl 変更前
+            // 261110Cl 変更: 入射のビーム g を選べる (W†P e_g = P_g · D_c,g e_{s_g}、P_g = 2 n·(k0 + g))。g = 000 なら従来と同じ
+            var e0 = MathNet.Numerics.LinearAlgebra.Vector<Complex>.Build.Dense(nS);
+            int sInc = Array.IndexOf(sArr, incidentPoolIndex);
+            if (sInc < 0) throw new ArgumentException("The incident beam must be explicit", nameof(incidentPoolIndex));
+            double pInc = 2 * Dot3(nx, pool.GX[incidentPoolIndex] + kx, ny, pool.GY[incidentPoolIndex] + ky, nz, pool.GZ[incidentPoolIndex] + kz);
+            e0[sInc] = pInc * Dc[incidentPoolIndex];
             var a = Cv.Solve(ch.Solve(e0));
             var Z = Cv * Matrix<Complex>.Build.DiagonalOfDiagonalVector(a);
             if (phiBase != null)
