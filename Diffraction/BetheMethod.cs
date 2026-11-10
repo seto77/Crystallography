@@ -3165,6 +3165,27 @@ public partial class BetheMethod
         var mat = BaseRotation * Crystal.MatrixInverseTransposed;
         var qList = Beams.AsParallel().SelectMany(e1 => Beams.Select(e2 => (e1 - e2).Index)).Distinct()
             .Select(e => new Beam(e, mat * e)).Where(e => k_xy.Any(e2 => A(e2) && A(e2 + e.Vec.ToPointD))).OrderBy(e => e.Vec.Length2).ToList();
+        //261111Cl 追加 (研究用、既定 = 未設定): 環境変数 RECIPRO_STEM_QNMAX (nm⁻¹) を指定すると、q の集合をビームの差によらず、
+        //  「K と K+q がともに収束絞りの中にある方向がある、|q_n| ≤ 指定値の格子のベクトル全部」にする
+        //  (q の打ち切りと伝播の N を分けて収束を見る、codex2 第 41 回)。ビームの差に無い q は弾性の項を持たない
+        if (double.TryParse(Environment.GetEnvironmentVariable("RECIPRO_STEM_QNMAX"), System.Globalization.NumberStyles.Float,
+            System.Globalization.CultureInfo.InvariantCulture, out var qnMaxResearch))
+        {
+            double qrMax = Math.Sqrt(4 * conv2 * 1.21 + qnMaxResearch * qnMaxResearch);
+            int hqM = (int)Math.Ceiling(qrMax * Crystal.A), kqM = (int)Math.Ceiling(qrMax * Crystal.B), lqM = (int)Math.Ceiling(qrMax * Crystal.C);
+            var qAll = new List<Beam>();
+            for (int hq = -hqM; hq <= hqM; hq++)
+                for (int kq = -kqM; kq <= kqM; kq++)
+                    for (int lq = -lqM; lq <= lqM; lq++)
+                    {
+                        var qv = mat * (hq, kq, lq);
+                        if (Math.Abs(Surface * qv) > qnMaxResearch + 1e-9) continue;
+                        var qp = qv.ToPointD;
+                        if (k_xy.Any(e2 => A(e2) && A(e2 + qp))) qAll.Add(new Beam((hq, kq, lq), qv));
+                    }
+            qList = [.. qAll.OrderBy(q => q.Vec.Length2)];
+            Console.Error.WriteLine($"[STEM QNMAX {qnMaxResearch}] q {qList.Count} (|q_n| > 1e-9: {qList.Count(q => Math.Abs(Surface * q.Vec) > 1e-9)}), beams {Beams.Length}");
+        }
         //261111Cl 追加: q の法線の成分 q_n と、スライス (t, si) の深さの位相の重み exp(2πi q_n z)·sinc(π q_n Δz) (旧式・q_n = 0 では 1)
         var qN = qList.Select(q => depthPhase ? Surface * q.Vec : 0).ToArray();
         Complex DepthWeight(int qIndex, int t, int si)
