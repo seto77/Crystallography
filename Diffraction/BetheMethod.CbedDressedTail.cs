@@ -359,6 +359,13 @@ public partial class BetheMethod
                 CbedBeamSelectionFallbackReason = $"memory {perPatch / 1e9:f1} GB per patch (explicit {maxNS}, tail {maxNQ}) and {outMem / 1e9:f1} GB of output exceed the budget {(budget2 + outMem) / 1e9:f1} GB";
                 return (null, null);
             }
+            // 261111Cl 追加: 解いた後の円盤の組み立て (cbed_DoWork) の山 = 方向ごとの振幅 + ディスクの生の振幅と重ねた後の振幅 (正方格子の全画素、円の外も含む) ≈ 出力の 3.6 倍。
+            //   新方式は出射のビームが多い (500 本前後、従来は N 本) ので、組み立ての時にメモリが足りなくならないかも確かめる (研究用の予算の上書きでは確かめない)
+            if (CbedMemoryBudgetOverride <= 0 && 3.6 * outMem > budget2 + outMem)
+            {
+                CbedBeamSelectionFallbackReason = $"assembling the disks would need about {3.6 * outMem / 1e9:f1} GB ({nOut} output beams × {nAll} directions × {tLen} thicknesses), more than the budget {(budget2 + outMem) / 1e9:f1} GB";
+                return (null, null);
+            }
         }
 
         // 並列: 区画を外側で (メモリの予算の内)、区画の中の方向を内側で
