@@ -535,14 +535,8 @@ public partial class BetheMethod
         var u0 = getU(AccVoltage).Real.Real;
         //k0ベクトルを計算
         var vecK0 = getVecK0(kvac, u0);
-        //計算対象のg-Vectorsを決める。indexが小さく、かつsg(励起誤差)の小さいg-vectorを抽出する
-        Beams = Find_gVectors(BaseRotation, vecK0);
+        // 261110Cl 移動 (codex2 第 37 回): 従来の準備 (Find_gVectors・ポテンシャル行列・進捗の刻み) は、新方式を試した後、従来で解くときだけ行う (下の「従来の準備」)
 
-        //入射面での波動関数を定義
-        var psi0 = new DVec([.. ValueEnumerable.Range(0, Beams.Length).Select(g => g == 0 ? One : 0)]);
-        //ポテンシャルマトリックスを初期化
-        uDictionary.Clear();
-        var potentialMatrix = getPotentialMatrix(Beams);
         //有効なRotationだけを選択
         int width = (int)Math.Sqrt(BeamDirections.Length);
         double radius = width / 2.0;
@@ -553,13 +547,6 @@ public partial class BetheMethod
 
         //進捗状況報告用の各種定数を初期化
         int count = 0;
-        int progressStep = Beams.Length switch
-        {
-            < 100 => 400,
-            < 200 => 200,
-            < 300 => 50,
-            _ => 5
-        };
 
         #region solver, thread の設定
         if (solver == Solver.Auto || (!EigenEnabled && (solver == Solver.Eigen_Eigen || solver == Solver.MtxExp_Eigen)))
@@ -584,9 +571,31 @@ public partial class BetheMethod
         {
             var (dBeams, dAmp) = SolveCbedDressedTail(kvac, u0, beamDirectionsValid, Thicknesses, thread, solver, () => bwCBED.CancellationPending,
                 c => { if (c % 50 == 0) bwCBED.ReportProgress(c, "Dressed tail "); });
+            if (bwCBED.CancellationPending) { e.Cancel = true; return; } // 261110Cl (codex2 第 37 回): 取り消されたらディスクを組み立てない
             if (dBeams != null) { Beams = dBeams; dressedAmplitudes = dAmp; CbedBeamSelectionUsed = CbedBeamSelectionMethod.DressedTail; }
         }
         else CbedBeamSelectionFallbackReason = null;
+
+        // 従来の準備 (261110Cl: 新方式で解いたときは行わない)
+        DVec psi0 = null; Complex[] potentialMatrix = null; int progressStep = 5;
+        if (dressedAmplitudes == null)
+        {
+            //計算対象のg-Vectorsを決める。indexが小さく、かつsg(励起誤差)の小さいg-vectorを抽出する
+            Beams = Find_gVectors(BaseRotation, vecK0);
+
+            //入射面での波動関数を定義
+            psi0 = new DVec([.. ValueEnumerable.Range(0, Beams.Length).Select(g => g == 0 ? One : 0)]);
+            //ポテンシャルマトリックスを初期化
+            uDictionary.Clear();
+            potentialMatrix = getPotentialMatrix(Beams);
+            progressStep = Beams.Length switch
+            {
+                < 100 => 400,
+                < 200 => 200,
+                < 300 => 50,
+                _ => 5
+            };
+        }
 
         int bLen = Beams.Length, tLen = Thicknesses.Length;
         var beamDirectionsP = beamDirectionsValid.AsParallel().WithDegreeOfParallelism(thread);

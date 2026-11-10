@@ -312,6 +312,7 @@ public partial class BetheMethod
         public Complex[] Gb; // 261109Cl 追加: 着衣のモードの固有値 γ_j (modeBasis のとき)
         public int[] Map; // 261109Cl 追加: 候補の番号 → 裾の行 (blocksOnly のとき)
         public Matrix<Complex> Xt, Vb, R, EXt; // 261109Cl 追加: モードの基底 (modeBasis) のとき = X̃ (X = X̃V_b⁻¹)、V_b、R = (H_QS + E X₀)V_b (着衣の倍率の前)、E·X̃ (疎な積 2 回のときだけ)
+        public Matrix<Complex> HqsVb; // 261110Cl 追加 (codex2 第 37 回): モードの打ち切りの経路の T = H_QS V_k (CBED の基底が H_QS A_S を作り直さない)
     }
 
     /// <summary>261109Cl 追加 (SolveDressedTailResearch から切り出し): 選択・繰り上げ・密なブロック・着衣 (Sylvester の 1 段) と、射影に使う E·X。</summary>
@@ -505,6 +506,7 @@ public partial class BetheMethod
         bool[] rowKeep = null; // 261109Cl 追加 (研究用、速さ): |λ_q| が DressedSpMMLambdaCut 以上の裾の行は E·X₀ を積まない (着衣で 1/λ_q 倍になる寄与)
         if (double.IsFinite(DressedSpMMLambdaCut)) { rowKeep = new bool[nQ]; for (int r = 0; r < nQ; r++) rowKeep[r] = lamQ[r].Magnitude < DressedSpMMLambdaCut; }
         Matrix<Complex> rhs, EX0 = null; // 261109Cl: EX0 は打ち切りでないときだけ (着衣前の E·X₀)
+        Matrix<Complex> hqsVbKeep = null; // 261110Cl 追加
         int nM = nS; // 261109Cl 追加: 着衣のモードの数 (打ち切りなら nS より少ない)
         // if (modeBasis && DressedModeTau > 0) // 261109Cl 追加 // 261110Cl 変更前
         if (modeBasis && (tauM > 0 || modeSelector != null)) // 261109Cl 追加 (261110Cl: τ は引数か static、または選び方を外から) (研究用、native の試作と同じ規則): モードの組ごとの打ち切り。T = H_QS V_k、X₀V_k = −diag(f)T、R = T + E(X₀V_k)
@@ -549,6 +551,7 @@ public partial class BetheMethod
             if (timing != null) timing.SpMM1 = sw.Elapsed.TotalSeconds;
             sw.Restart();
             rhs = T + EX0V;
+            hqsVbKeep = T; // 261110Cl 追加
         }
         else
         {
@@ -558,7 +561,8 @@ public partial class BetheMethod
             // var rhs = (HQS + EX0) * Vb; // 261109Cl 変更前
             rhs = MulMaybeSingle(HQS + EX0, Vb, single: denseSingle); // 261109Cl
         }
-        var Rkeep = modeBasis ? rhs.Clone() : null; // 261109Cl 追加: 倍率の前の R
+        // var Rkeep = modeBasis ? rhs.Clone() : null; // 261109Cl 追加: 倍率の前の R // 261110Cl 変更前
+        var Rkeep = modeBasis && oneProduct ? rhs.Clone() : null; // 261109Cl 追加: 倍率の前の R (261110Cl: 使うのは疎な積 1 回のときだけなので、そのときだけ複製する (codex2 第 37 回))
         var xt = ((CDense)rhs).Values;
         // for (int c = 0; c < nS; c++) // 261109Cl 変更前
         for (int c = 0; c < nM; c++) // 261109Cl: 打ち切りならモードの数
@@ -576,7 +580,7 @@ public partial class BetheMethod
             sw.Restart();
             var EXt = oneProduct ? null : SpMMTail(table, qArr, map, D, rhs, parallel, false, null, spmmSingle);
             if (timing != null) timing.SpMM2 = sw.Elapsed.TotalSeconds;
-            return new DressCoreResult { SArr = sArr, QArr = qArr, P = P, D = D, NSelected = nSelected, HSS = HSS, HQS = HQS, HSQ = HSQ, LamQ = lamQ, Xt = rhs, Vb = Vb, R = Rkeep, EXt = EXt, Gb = gb.ToArray() };
+            return new DressCoreResult { SArr = sArr, QArr = qArr, P = P, D = D, NSelected = nSelected, HSS = HSS, HQS = HQS, HSQ = HSQ, LamQ = lamQ, Xt = rhs, Vb = Vb, R = Rkeep, EXt = EXt, Gb = gb.ToArray(), HqsVb = hqsVbKeep };
         }
         var X = rhs * Vb.Inverse();
         if (timing != null) timing.Dress += sw.Elapsed.TotalSeconds;
