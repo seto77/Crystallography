@@ -1631,6 +1631,18 @@ public partial class BetheMethod
         if (dressedTail != null && (double.IsFinite(SourceSmearingSigmaNm) || UseNonLocalAbsorption || IncludeAbsorbedFluxBackground)) // 261109Cl: 後方 TDS 行列 (IncludeTDSBackground) は対応済み
             throw new NotSupportedException("EbsdDressedTailResearch does not support non-local absorption, absorbed-flux reinjection or source smearing yet.");
         BeamSelectionPool dressedTailPool = null; // 261109Cl 追加: エネルギーの間で共有する候補のプール
+        // 261110Cl 追加: 本番の新方式 (EbsdBeamSelection = DressedTail)。研究用の口が無いときだけ。開始前に使えるか・作業の数を決め、使えなければ従来へ戻して理由を残す
+        //   (codex2 第 31 回: 戻す判断は開始前・マスター全体で。途中の失敗は従来へ戻さず失敗として止める)
+        EbsdBeamSelectionUsed = dressedTail != null ? EbsdBeamSelectionMethod.DressedTail : EbsdBeamSelectionMethod.Legacy;
+        EbsdBeamSelectionFallbackReason = null; EbsdBeamSelectionWorkers = dressedTail?.MaxParallelBlocks ?? 0;
+        DressedTailNativeRun dressedTailRun = null;
+        if (dressedTail == null && EbsdBeamSelection == EbsdBeamSelectionMethod.DressedTail)
+        {
+            var (dtOpt, dtRun, dtReason) = TryCreateDressedTailProduction(thread, IncludeTDSBackground);
+            if (dtOpt != null) { dressedTail = dtOpt; dressedTailRun = dtRun; EbsdBeamSelectionUsed = EbsdBeamSelectionMethod.DressedTail; EbsdBeamSelectionWorkers = dtOpt.MaxParallelBlocks; }
+            else EbsdBeamSelectionFallbackReason = dtReason;
+        }
+        using var dressedTailRunScope = dressedTailRun; // 261110Cl 追加: 構築の終わり (例外でも) に native の表と作業領域を返す
 
         for (int vIndex = 0; vIndex < voltages.Length; vIndex++)
         {

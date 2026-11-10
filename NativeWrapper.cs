@@ -260,6 +260,8 @@ public static partial class NativeWrapper
 
     /// <summary>260611Cl 追加: 実際にロードされた native DLL のファイル名 (generic/avx2/avx512 のどの flavor が選ばれたかの確認用)。未ロードなら null</summary>
     public static string? LoadedNativeLibrary { get; private set; }
+    /// <summary>261110Cl 追加: ロードした native DLL の手綱 (未ロードなら 0)。入口の有無の確認 (<see cref="NativeLibrary.TryGetExport"/>) に使う</summary>
+    internal static IntPtr LoadedNativeHandle { get; private set; }
 
     // 260602Cl 追加: この P/Invoke 層は全て Complex[] を (double*) として {real, imag} 連続 16 byte と仮定して再解釈する。
     // この ABI 前提が崩れると全 native 呼び出しがメモリ破壊になるため、起動時に検証する。
@@ -330,12 +332,14 @@ public static partial class NativeWrapper
             if (NativeLibrary.TryLoad(absolutePath, out var handle))
             {
                 LoadedNativeLibrary = candidate; // 260611Cl 追加
+                LoadedNativeHandle = handle; // 261110Cl 追加: 新しい入口 (着衣つきの裾) の有無を TryGetExport で確かめるため
                 return handle;
             }
 
             if (NativeLibrary.TryLoad(candidate, assembly, searchPath, out handle))
             {
                 LoadedNativeLibrary = candidate; // 260611Cl 追加
+                LoadedNativeHandle = handle; // 261110Cl 追加
                 return handle;
             }
         }

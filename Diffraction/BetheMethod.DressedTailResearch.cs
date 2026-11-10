@@ -100,9 +100,12 @@ public partial class BetheMethod
     /// <param name="sourceEta">261109Cl 追加: 後方散乱の源の行列の表も作るときの閾値 (|F(d)| ≥ sourceEta·|F(0)|、0 = 差の箱の全部。NaN = 作らない)</param>
     // public DressedTailTable CreateDressedTailTable(BeamSelectionPool pool, double eta) // 261109Cl 旧シグネチャ
     // public DressedTailTable CreateDressedTailTable(BeamSelectionPool pool, double eta, double sourceEta = double.NaN) // 261109Cl 旧シグネチャ
+    // public DressedTailTable CreateDressedTailTable(BeamSelectionPool pool, double eta, double sourceEta = double.NaN, double tailRadiusNm = double.NaN) // 261110Cl 旧シグネチャ
     public DressedTailTable CreateDressedTailTable(BeamSelectionPool pool, double eta, double sourceEta = double.NaN,
-        double tailRadiusNm = double.NaN) // 261109Cl tailRadiusNm 追加: 裾の半径 (プールの半径以下、NaN = プールの半径)。遅い反射の繰り上げと E1 はプールの半径の全部から
+        double tailRadiusNm = double.NaN, // 261109Cl tailRadiusNm 追加: 裾の半径 (プールの半径以下、NaN = プールの半径)。遅い反射の繰り上げと E1 はプールの半径の全部から
+        bool? buildCsr = null) // 261110Cl buildCsr 追加 (本番の経路、codex2 第 31 回): CSR を作るか (null = 研究用の static DressedTailBuildCsr)
     {
+        bool DressedTailBuildCsr = buildCsr ?? BetheMethod.DressedTailBuildCsr; // 261110Cl 追加: 下の行は同じ名前の局所変数を読む (本番は static を一時代入しない)
         if (pool.Owner != this) throw new ArgumentException("The pool was built for another BetheMethod", nameof(pool));
         var sw = Stopwatch.StartNew();
         double kV = AccVoltage > 0 ? AccVoltage : 20;
@@ -317,8 +320,15 @@ public partial class BetheMethod
         (Vector3DBase k0, Vector3DBase n)[] promoteAlso = null, // 261109Cl promoteAlso 追加: これらの方向のどれかで遅い (|Q/P| < ps) 裾の反射も明示へ繰り上げる (ブロックの共有用)
         int[] explicitSet = null, // 261109Cl explicitSet 追加 (研究用、照合用): 明示の集合をこの候補の番号に固定する (000 が先頭。選択と繰り上げをしない)
         bool modeBasis = false, // 261109Cl modeBasis 追加: X = X̃V_b⁻¹ を作らず、モードの基底 (V_b, X̃) と R を返す (span([I; X]) = span([V_b; X̃]) なので Galerkin は同じ)
-        bool blocksOnly = false) // 261109Cl blocksOnly 追加 (研究用、native の試作): 選択と密なブロックまでで返す
+        bool blocksOnly = false, // 261109Cl blocksOnly 追加 (研究用、native の試作): 選択と密なブロックまでで返す
+        DressedTailSelectionSettings selection = null) // 261110Cl selection 追加 (本番の経路、codex2 第 31 回): 選択の設定 (null = 研究用の static)
     {
+        // 261110Cl 追加: 選択の設定。下の行は同じ名前の局所変数を読む (本番の経路は研究用の static を一時代入しない。null なら static の今の値)
+        var sl = selection ?? DressedTailSelectionSettings.FromResearchStatics();
+        double DressedTailCoreRadiusNm = sl.CoreRadiusNm, DressedTailNeighborRadiusNm = sl.NeighborRadiusNm, DressedTailNeighborPs = sl.NeighborPs,
+            DressedTailShellLambdaCut = sl.ShellLambdaCut, DressedE1ScoreCut = sl.E1ScoreCut;
+        bool DressedTailNeighborUseCsr = sl.NeighborUseCsr, DressedTailMortonOrder = sl.MortonOrder, DressedBlockUnionE1 = sl.BlockUnionE1,
+            DressedCountOnly = sl.CountOnly, DressedSkipQBlocks = sl.SkipQBlocks;
         if (table.Owner != this) throw new ArgumentException("The table was built for another BetheMethod", nameof(table));
         if (table.KV != (AccVoltage > 0 ? AccVoltage : 20)) // 261109Cl 追加 (codex2 第18回): 表の電圧と今の電圧の混在を禁じる
             throw new ArgumentException($"The table was built for {table.KV} kV but the current voltage is {AccVoltage} kV", nameof(table));
@@ -329,7 +339,8 @@ public partial class BetheMethod
         // var e1 = explicitSet != null ? [] : SelectIndicesResearch(pool, vecK0, surface, n, BeamPartnerSet.E1StrongSet, 170, out _, out _); // 261109Cl // 261110Cl 変更前
         double e1Thr = double.NaN; // 261110Cl 追加 (研究用、診断): E1 の N 本目の順位の値 (励起誤差 / 結合) を記録する
         var e1 = explicitSet != null ? [] : SelectIndicesResearch(pool, vecK0, surface, n, BeamPartnerSet.E1StrongSet, 170, out e1Thr, out _, DressedE1ScoreCut); // 261110Cl: 順位の値の閾値 (研究用)
-        if (!double.IsNaN(e1Thr)) lock (DressedE1Thresholds) DressedE1Thresholds.Add(e1Thr);
+        // if (!double.IsNaN(e1Thr)) lock (DressedE1Thresholds) DressedE1Thresholds.Add(e1Thr); // 261110Cl 変更前
+        if (sl.RecordDiagnostics && !double.IsNaN(e1Thr)) lock (DressedE1Thresholds) DressedE1Thresholds.Add(e1Thr); // 261110Cl: 本番の経路は診断の記録を貯めない
         var (kX, kY, kZ) = vecK0.Tuple;
         var (sX, sY, sZ) = surface.Tuple;
         double k02 = vecK0.Length2;
@@ -1635,9 +1646,12 @@ public partial class BetheMethod
     }
 
     /// <summary>261109Cl 追加 (研究用、native の試作): 選択と密なブロックだけを作る</summary>
-    public DressedTailBlocks BuildDressedTailBlocksResearch(DressedTailTable table, Vector3DBase vecK0, Vector3DBase surface, int n, double ps)
+    // public DressedTailBlocks BuildDressedTailBlocksResearch(DressedTailTable table, Vector3DBase vecK0, Vector3DBase surface, int n, double ps) // 261110Cl 旧シグネチャ
+    public DressedTailBlocks BuildDressedTailBlocksResearch(DressedTailTable table, Vector3DBase vecK0, Vector3DBase surface, int n, double ps,
+        DressedTailSelectionSettings selection = null) // 261110Cl selection 追加 (本番の経路): 選択の設定 (null = 研究用の static)
     {
-        var cr = DressCore(table, vecK0, surface, n, ps, 45, true, false, null, null, null, false, true);
+        // var cr = DressCore(table, vecK0, surface, n, ps, 45, true, false, null, null, null, false, true); // 261110Cl 変更前
+        var cr = DressCore(table, vecK0, surface, n, ps, 45, true, false, null, null, null, false, true, selection); // 261110Cl
         return new DressedTailBlocks { SArr = cr.SArr, QArr = cr.QArr, Map = cr.Map, P = cr.P, D = cr.D, NSelected = cr.NSelected,
             HSS = (CDense)cr.HSS, HQS = (CDense)cr.HQS, HSQ = (CDense)cr.HSQ, LamQ = cr.LamQ }; // 261110Cl: DressedCountOnly なら H は null
     }
@@ -1755,6 +1769,34 @@ public partial class BetheMethod
     public static double DressedE1ScoreCut { get; set; } = double.NaN;
     /// <summary>261110Cl 追加 (研究用): DressCore を選択と裾の集合までで止める (ブロックの部品は H を null で返す。規模の数えだけ)</summary>
     public static bool DressedCountOnly { get; set; } = false;
+    /// <summary>261110Cl 追加 (本番の経路、codex2 第 31 回): 選択と裾の集合の設定 (<see cref="DressCore"/> が読む)。研究用の static の代わりに引数で渡す。
+    /// 既定値は研究用の static の既定と同じ (近傍の裾なし)。<see cref="FromResearchStatics"/> は static の今の値を写す</summary>
+    public sealed class DressedTailSelectionSettings
+    {
+        /// <summary>芯の半径 [nm⁻¹] (近傍の裾を使うとき、この中は全部を裾に)</summary>
+        public double CoreRadiusNm { get; init; } = 40;
+        /// <summary>近傍の裾の半径 [nm⁻¹] (NaN = 使わない)</summary>
+        public double NeighborRadiusNm { get; init; } = double.NaN;
+        /// <summary>近傍の中心に |Q/P| &lt; これの候補も (NaN = 明示だけ)</summary>
+        public double NeighborPs { get; init; } = double.NaN;
+        public double ShellLambdaCut { get; init; } = double.NaN;
+        /// <summary>E1 の順位の値の閾値 (NaN = 使わない、N は上限)</summary>
+        public double E1ScoreCut { get; init; } = double.NaN;
+        public bool NeighborUseCsr { get; init; }
+        public bool MortonOrder { get; init; }
+        public bool BlockUnionE1 { get; init; }
+        public bool CountOnly { get; init; }
+        /// <summary>H_QS・H_SQ を作らない (native の一体化した解は差の表から自分で作る)</summary>
+        public bool SkipQBlocks { get; init; }
+        /// <summary>E1 の閾値などの診断を static の一覧に貯める (研究用。本番は false)</summary>
+        public bool RecordDiagnostics { get; init; } = true;
+        public static DressedTailSelectionSettings FromResearchStatics() => new()
+        {
+            CoreRadiusNm = DressedTailCoreRadiusNm, NeighborRadiusNm = DressedTailNeighborRadiusNm, NeighborPs = DressedTailNeighborPs, ShellLambdaCut = DressedTailShellLambdaCut,
+            E1ScoreCut = DressedE1ScoreCut, NeighborUseCsr = DressedTailNeighborUseCsr, MortonOrder = DressedTailMortonOrder, BlockUnionE1 = DressedBlockUnionE1,
+            CountOnly = DressedCountOnly, SkipQBlocks = DressedSkipQBlocks, RecordDiagnostics = true,
+        };
+    }
     /// <summary>261110Cl 追加 (研究用、native の一体化した解): BuildDressedTailBlocksResearch で H_QS・H_SQ を作らない (null)。native が差の表から単精度で直接作る</summary>
     public static bool DressedSkipQBlocks { get; set; } = false;
 
@@ -2099,6 +2141,10 @@ public partial class BetheMethod
         public int MaxParallelBlocks { get; set; } = 4;
         /// <summary>走行の記録 (エネルギーごとに 1 行追加)</summary>
         public List<EbsdDressedTailRecord> Records { get; } = [];
+        /// <summary>261110Cl 追加 (本番の経路): 結合の表の CSR を作るか (null = 研究用の static DressedTailBuildCsr)</summary>
+        public bool? BuildCsr { get; set; }
+        /// <summary>261110Cl 追加 (本番の経路): 1 エネルギーの解が終わったとき (例外でも) に表を渡して呼ぶ (native の表を返すため)</summary>
+        public Action<DressedTailTable> VoltageFinished { get; set; }
     }
 
     /// <summary>261109Cl 追加 (研究用): <see cref="EbsdDressedTailOptions"/> の 1 エネルギー分の記録。</summary>
@@ -2134,7 +2180,10 @@ public partial class BetheMethod
         rec.SecondsPool = sw.Elapsed.TotalSeconds; sw.Restart();
         bool tds = background != null;
         // var table = CreateDressedTailTable(pool, opt.Eta, !tds ? double.NaN : opt.SourceTailQuadrature > 0 ? double.PositiveInfinity : opt.SourceEta); // 261109Cl 変更前
-        var table = CreateDressedTailTable(pool, opt.Eta, !tds ? double.NaN : opt.SourceTailQuadrature > 0 ? double.PositiveInfinity : opt.SourceEta, opt.TailRadiusNm); // 吸収は電圧で変わるので、表はエネルギーごとに作り直す
+        // var table = CreateDressedTailTable(pool, opt.Eta, !tds ? double.NaN : opt.SourceTailQuadrature > 0 ? double.PositiveInfinity : opt.SourceEta, opt.TailRadiusNm); // 261110Cl 変更前
+        var table = CreateDressedTailTable(pool, opt.Eta, !tds ? double.NaN : opt.SourceTailQuadrature > 0 ? double.PositiveInfinity : opt.SourceEta, opt.TailRadiusNm, opt.BuildCsr); // 吸収は電圧で変わるので、表はエネルギーごとに作り直す。261110Cl: CSR の要否を設定から
+        try // 261110Cl 追加: 終わり (例外でも) に VoltageFinished を呼ぶ
+        {
         (double weight, double sigmaNm)[] quadAtoms = tds && opt.SourceTailQuadrature > 0 ? DressedTailSourceAtomsResearch(table) : null;
         rec.SecondsTable = sw.Elapsed.TotalSeconds - table.SecondsSource; rec.SecondsSource = table.SecondsSource;
         rec.TableNonzeros = table.Nonzeros; rec.SourceNonzeros = table.SourceNonzeros;
@@ -2247,5 +2296,7 @@ public partial class BetheMethod
         rec.SecondsSolve = TimeSpan.FromTicks(solveTicks).TotalSeconds; rec.SecondsIntegrate = TimeSpan.FromTicks(integrateTicks).TotalSeconds;
         lock (opt.Records) opt.Records.Add(rec);
         return result;
+        }
+        finally { opt.VoltageFinished?.Invoke(table); } // 261110Cl 追加
     }
 }
