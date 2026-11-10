@@ -38,8 +38,10 @@ public partial class BetheMethod
     /// <summary>261110Cl 追加: 直前の新方式の CBED の内訳 (候補・区画・明示と裾の本数・時間) の文 (表示と記録用)</summary>
     public string CbedBeamSelectionDetail { get; private set; } = "";
     /// <summary>261110Cl 追加: 直前の新方式の CBED の段ごとの時間 [s] (0 表、1 出射のビームの選択、2 着衣 (CPU 秒)、3 区画の基底 (CPU 秒)、
-    /// 4 方向ごとの行列の組み立て (CPU 秒)、5 厚さへの伝播 (固有分解など、CPU 秒)、6 出射の振幅と位相 (CPU 秒)、7 全体 (実時間))</summary>
-    public double[] CbedDressedTailStageSeconds { get; } = new double[8];
+    /// 4 方向ごとの行列の組み立て (CPU 秒)、5 厚さへの伝播 (固有分解など、CPU 秒)、6 出射の振幅と位相 (CPU 秒)、7 全体 (実時間)、
+    /// 3 の内訳: 8 Gram の積 (CbedSharedBasis)、9 一般化固有分解と基底 V への変換、10 モードの打ち切り (中心の固有分解・探り・縮約の行列)。
+    /// 2 の内訳 (DressCore の段): 11 選択、12 密なブロック、13 X₀ と H_SQ X₀、14 H_b の固有分解、15 着衣の残り (選び分け・T・倍率)、16 疎な積 1、17 疎な積 2)</summary>
+    public double[] CbedDressedTailStageSeconds { get; } = new double[18];
 
     /// <summary>261110Cl 追加 (研究用): メモリの予算を上書きする [byte] (0 以下 = 物理メモリの空きから決める。込み合った機械での検査用)</summary>
     public long CbedMemoryBudgetOverride { get; set; }
@@ -79,7 +81,12 @@ public partial class BetheMethod
         /// <summary>区画の中のモードの打ち切り (NaN = 使わない)。区画の中心の A' の固有モード (右 R・左 L = R⁻¹) のうち、区画の中心と端の探りの方向 (最大 8) で
         /// 厚さのどこかの振幅 |(L y(t))_j|·‖R_j‖ が最大のこの比以上のモード (近い固有値の組は一緒に) だけを残し、各方向は L_k A'(d) R_k (次元 nM) で解く</summary>
         public double ModeReduceTau { get; init; } = double.NaN;
-        /// <summary>区画の基底の行列のうち裾 (A_Q) の積を単精度 (complex64) で積む (明示の部分は倍精度)。裾の寄与は小さいので丸めの影響は小さい見込み</summary>
+        /// <summary>着衣の直後のモードの選び分け (NaN = 使わない)。明示の着衣のモード V_b (H_b の固有ベクトル) のうち、区画の中心と探りの方向 (8 方位で最も遠い方向) の励起を
+        /// H_b + diag(Δλ_s(d)) (明示の励起誤差の変化だけ、裾の変化は無視) の伝播で見積もり、最大のこの比以上のモード (近い固有値の組は一緒に) だけを着衣・基底に使う。
+        /// Gram の積と着衣の後半が (nM/nS)² に減る。後段の ModeReduceTau (厳密な 2 側の射影) と併用する前提で、それより小さく取る</summary>
+        public double EarlyModeTau { get; init; } = double.NaN;
+        /// <summary>裾の積を単精度 (complex64) で積む: 区画の基底の行列のうち裾 (A_Q) の積と、着衣の密な積 (H_SQ X₀・H_QS V_b) と疎な積 (E·X)。明示の部分は倍精度。
+        /// 裾の寄与は小さいので丸めの影響は小さい (基底の行列の単精度で強度の差 5e−8、day11r)</summary>
         public bool SingleTailProducts { get; init; }
     }
     /// <summary>261110Cl 追加: CBED の新方式の既定の設定</summary>
@@ -119,7 +126,10 @@ public partial class BetheMethod
         double poolEst = 4.0 / 3 * Math.PI * Math.Pow(set.PoolRadiusNm, 3) * Crystal.Volume / mult;
         double nSEst = Math.Min(poolEst, set.N + 150);
         double nQEst = double.IsNaN(set.CoreRadiusNm) || double.IsNaN(set.NeighborRadiusNm) ? poolEst : Math.Min(poolEst, 1.4 * 4.0 / 3 * Math.PI * Math.Pow(set.CoreRadiusNm, 3) * Crystal.Volume / mult);
-        long perPatch = (long)Math.Min(long.MaxValue / 4, 12 * nQEst * nSEst * 16);
+        // long perPatch = (long)Math.Min(long.MaxValue / 4, 12 * nQEst * nSEst * 16); // 261110Cl 変更前
+        // 261110Cl 変更: 着衣と基底で同時に生きる nQ 行の行列 ≈ 3 nS (H_QS・H_SQ・X₀) + 10 nM (T・X₀V・疎な積の作業・R・X̃・E X̃・基底の一時)。早い選び分けなら nM ≈ 0.65 nS
+        double nMEst = double.IsFinite(set.EarlyModeTau) && set.EarlyModeTau > 0 ? 0.65 * nSEst : nSEst;
+        long perPatch = (long)Math.Min(long.MaxValue / 4, (3 * nSEst + 10 * nMEst) * nQEst * 16);
         var (total, free) = PhysicalMemory();
         long reserve = Math.Max(2L << 30, (long)(0.15 * total));
         long budget = CbedMemoryBudgetOverride > 0 ? CbedMemoryBudgetOverride : Math.Min(total / 2, free - reserve);
@@ -217,7 +227,7 @@ public partial class BetheMethod
         var amplitudes = new Complex[nDir][];
         var iu0 = Complex.ImaginaryOne * getU(AccVoltage, new Beam((0, 0, 0), new Vector3DBase(0, 0, 0)), cache: false).Imag;
         int done = 0, nPatchesDone = 0;
-        long sumS = 0, sumQ = 0, sumB = 0; int minS = int.MaxValue, maxS = 0, nBackward = 0; double etaMin = double.PositiveInfinity, etaMax = 0;
+        long sumS = 0, sumQ = 0, sumB = 0, sumNb = 0; int minS = int.MaxValue, maxS = 0, nBackward = 0; double etaMin = double.PositiveInfinity, etaMax = 0;
         var patchEta = new List<(Vector3DBase center, double eta)>();
         int nSplit = 0, nSolvedPatches = 0;
         var gate = new object();
@@ -248,6 +258,65 @@ public partial class BetheMethod
             double rEff = 0; foreach (var i in members) rEff = Math.Max(rEff, Math.Acos(Math.Min(1, directions[i] * center))); // 中心から最も遠い方向までの角度 [rad]
             var swp = Stopwatch.StartNew();
             var ck = getVecK0(kvac, u0, center, n);
+            // 探り: 区画の中心から 8 方位で最も遠い方向
+            var probes = new HashSet<int>(); var probesDiag = new HashSet<int>(); // 8 方位 (後段の打ち切り) と斜めの 4 つ = 四隅 (着衣の直後の選び分け)
+            if (members.Length > 9)
+                for (int m8 = 0; m8 < 8; m8++)
+                {
+                    double ca = Math.Cos(m8 * Math.PI / 4), sa = Math.Sin(m8 * Math.PI / 4), best = double.NegativeInfinity; int bi = members[0];
+                    foreach (var i in members) { double pr = (uu[i] - sq.uc) * ca + (vv[i] - sq.vc) * sa; if (pr > best) { best = pr; bi = i; } }
+                    probes.Add(bi);
+                    if (m8 % 2 == 1) probesDiag.Add(bi);
+                }
+            // 着衣の直後のモードの選び分け (EarlyModeTau): 探りの方向 (四隅) の励起を H_b + diag(Δλ_s) で見積もる
+            Func<Matrix<Complex>, MathNet.Numerics.LinearAlgebra.Vector<Complex>, Matrix<Complex>, int[], bool[]> selector = null;
+            if (double.IsFinite(set.EarlyModeTau) && set.EarlyModeTau > 0 && probes.Count > 0)
+                selector = (Vb, gbv, hb, sArrSel) =>
+                {
+                    int ns = sArrSel.Length;
+                    var vbInv = Vb.Inverse();
+                    var vnorm = new double[ns]; for (int j = 0; j < ns; j++) vnorm[j] = Vb.Column(j).L2Norm();
+                    var w = new double[ns];
+                    var e0 = MathNet.Numerics.LinearAlgebra.Vector<Complex>.Build.Dense(ns, i => i == 0 ? Complex.One : Complex.Zero);
+                    var a0 = vbInv * e0; // 中心
+                    for (int j = 0; j < ns; j++) w[j] = a0[j].Magnitude * vnorm[j];
+                    var (cx, cy, cz) = ck.Tuple;
+                    double Lam(int s0, double kx, double ky, double kz) { double vx = pool.GX[s0] + kx, vy = pool.GY[s0] + ky, vz = pool.GZ[s0] + kz; double k2 = kx * kx + ky * ky + kz * kz; return (k2 - (vx * vx + vy * vy + vz * vz)) / (2 * (nx * vx + ny * vy + nz * vz)); }
+                    // 探りの方向 (四隅 = 8 方位の斜めの 4 つ) の励起を H_d = H_b + diag(Δλ_s(d)) の固有分解で厳密に伝播し、中心のモードへ射影する
+                    //   (一次の摂動の上界は 2 段の経由の励起を落とし (誤差 3.9e−4)、くり返すと保守的すぎてモードが減らない (261110Cl の試し) ので使わない)
+                    var probeList = probesDiag.ToArray();
+                    var wp4 = new double[probeList.Length][];
+                    Parallel.For(0, probeList.Length, new ParallelOptions { MaxDegreeOfParallelism = parallelInside ? Math.Max(1, inner) : 1 }, pi =>
+                    {
+                        var kd = getVecK0(kvac, u0, directions[probeList[pi]], n); var (dx, dy, dz) = kd.Tuple;
+                        var hd = hb.Clone();
+                        for (int i = 0; i < ns; i++) hd[i, i] += Lam(sArrSel[i], dx, dy, dz) - Lam(sArrSel[i], cx, cy, cz);
+                        var evd = hd.Evd(MathNet.Numerics.LinearAlgebra.Symmetricity.Asymmetric);
+                        var ad = evd.EigenVectors.Solve(e0);
+                        var tr = vbInv * evd.EigenVectors;
+                        var wl = new double[ns];
+                        foreach (var t in thicknesses)
+                        {
+                            var ph = MathNet.Numerics.LinearAlgebra.Vector<Complex>.Build.Dense(ns, j => Complex.Exp(twoPiI * evd.EigenValues[j] * t) * ad[j]);
+                            var z = tr * ph;
+                            for (int j = 0; j < ns; j++) wl[j] = Math.Max(wl[j], z[j].Magnitude * vnorm[j]);
+                        }
+                        wp4[pi] = wl;
+                    });
+                    foreach (var wl in wp4) for (int j = 0; j < ns; j++) w[j] = Math.Max(w[j], wl[j]);
+                    double wmax = w.Max();
+                    var order = Enumerable.Range(0, ns).OrderBy(j => gbv[j].Real).ToArray();
+                    var keepJ = new bool[ns];
+                    for (int a1 = 0; a1 < ns;)
+                    {
+                        int b1 = a1 + 1;
+                        while (b1 < ns && (gbv[order[b1]] - gbv[order[b1 - 1]]).Magnitude < 1e-3) b1++;
+                        bool k = false; for (int q = a1; q < b1; q++) if (w[order[q]] >= set.EarlyModeTau * wmax) k = true;
+                        for (int q = a1; q < b1; q++) keepJ[order[q]] = k;
+                        a1 = b1;
+                    }
+                    return keepJ;
+                };
             // 全次元 (nB) の A'(d) と y(0) (基底の行列 bc, bx, by, bz, mu, v0 を作った後で使う)
             Complex[] bc = null, bx = null, by = null, bz = null, v0 = null; double[] mu = null; int nB = 0;
             (Complex[] a, Complex[] y0, double nk, Vector3DBase k0) FullSystem(int di)
@@ -265,7 +334,9 @@ public partial class BetheMethod
                 return (a, y0, nk, k0);
             }
             // 着衣はモードの基底 (A_S = V_b、A_Q = X̃、張る空間は [I; X] と同じ) のまま使う: X = X̃V_b⁻¹ の積と逆行列を省き、τ > 0 ならモードを打ち切る
-            var cr = DressCore(table, ck, n, set.N, set.Ps, set.RegDepthNm, set.OneProduct, parallelInside, null, modeBasis: true, selection: sel, modeTau: set.ModeTau);
+            var dtm = new DressedTailTiming();
+            var cr = DressCore(table, ck, n, set.N, set.Ps, set.RegDepthNm, set.OneProduct, parallelInside, dtm, modeBasis: true, selection: sel, modeTau: set.ModeTau, modeSelector: selector,
+                denseSingle: set.SingleTailProducts, spmmSingle: set.SingleTailProducts);
             double tDress = swp.Elapsed.TotalSeconds; swp.Restart();
             var (sArr, qArr, Dc) = (cr.SArr, cr.QArr, cr.D);
             int nS = sArr.Length, nQ = qArr.Length; nB = cr.Vb.ColumnCount;
@@ -289,7 +360,9 @@ public partial class BetheMethod
             }
             var row0 = cr.Vb.Row(0); // 000 (明示の先頭) の行
             var all = sArr.Concat(qArr).ToArray();
+            double tb0 = swp.Elapsed.TotalSeconds;
             var (Cm, G0, Gx, Gy, Gz) = CbedSharedBasis(cr, pool, set.OneProduct, set.SingleTailProducts);
+            double tb1 = swp.Elapsed.TotalSeconds;
             cr = null; // 大きな行列を手放す
             // 一般化固有分解 G_n v = μ G₀ v (G₀ = LL†、C = L⁻¹G_nL⁻† のエルミートの固有分解、V = L⁻†U)
             var Gn = nx * Gx + ny * Gy + nz * Gz;
@@ -308,6 +381,7 @@ public partial class BetheMethod
             Cm = G0 = Gx = Gy = Gz = Gn = Linv = Ch = V = Vh = null;
             // 区画の中のモードの打ち切り (2 側の射影)。A'(d) = S(d)B(d)、S(d)_i = ½/(n·k0 + μ_i) = S_c,i (1 − Δnk/(n·k0 + μ_i)) ≈ S_c,i (1 − Δnk w_i) (w_i = 1/(n·k_c + μ_i)、Δnk² の項は 1e−11 程度)
             //   → L_k A'(d) R_k = Σ_M c_M (P_M − Δnk Q_M)、P_M = L_k S_c M R_k、Q_M = L_k S_c W M R_k (M = B_c, B_x, B_y, B_z、c = 1, −2k_x, −2k_y, −2k_z)
+            double tb2 = swp.Elapsed.TotalSeconds;
             int nR = nB; CDense[] redP = null, redQ = null; Matrix<Complex> Lk = null; CDense wpR = null; double nkc = Dot3(nx, ck.X, ny, ck.Y, nz, ck.Z);
             var probeDone = new Dictionary<int, Complex[]>(); // 探りの方向は全次元で解いた結果をそのまま使う
             if (double.IsFinite(set.ModeReduceTau) && set.ModeReduceTau > 0 && members.Length > 9)
@@ -320,14 +394,6 @@ public partial class BetheMethod
                 var Rc = evc.EigenVectors; var gc = evc.EigenValues;
                 var Lc = Rc.Inverse();
                 var rnorm = new double[nB]; for (int j = 0; j < nB; j++) rnorm[j] = Rc.Column(j).L2Norm();
-                // 探り: 区画の中心から 8 方位で最も遠い方向
-                var probes = new HashSet<int>();
-                for (int m8 = 0; m8 < 8; m8++)
-                {
-                    double ca = Math.Cos(m8 * Math.PI / 4), sa = Math.Sin(m8 * Math.PI / 4), best = double.NegativeInfinity; int bi = members[0];
-                    foreach (var i in members) { double pr = (uu[i] - sq.uc) * ca + (vv[i] - sq.vc) * sa; if (pr > best) { best = pr; bi = i; } }
-                    probes.Add(bi);
-                }
                 var wgt = new double[nB];
                 foreach (var di in probes)
                 {
@@ -426,8 +492,9 @@ public partial class BetheMethod
             }, acc => { lock (gate) { tForm += acc.Item1; tProp += acc.Item2; tOut += acc.Item3; } });
             lock (gate)
             {
-                stage[2] += tDress; stage[3] += tBasis; stage[4] += tForm; stage[5] += tProp; stage[6] += tOut; nPatchesDone++; nSolvedPatches++;
-                sumS += nS; sumQ += nQ; sumB += nR; minS = Math.Min(minS, nS); maxS = Math.Max(maxS, nS); etaMin = Math.Min(etaMin, eta); etaMax = Math.Max(etaMax, eta); patchEta.Add((center, eta));
+                stage[2] += tDress; stage[3] += tBasis; stage[8] += tb1 - tb0; stage[9] += tb2 - tb1; stage[10] += tBasis - tb2;
+                stage[11] += dtm.Select; stage[12] += dtm.Blocks; stage[13] += dtm.Project; stage[14] += dtm.Eig; stage[15] += dtm.Dress - dtm.Project - dtm.Eig; stage[16] += dtm.SpMM1; stage[17] += dtm.SpMM2; stage[4] += tForm; stage[5] += tProp; stage[6] += tOut; nPatchesDone++; nSolvedPatches++;
+                sumS += nS; sumQ += nQ; sumB += nR; sumNb += nB; minS = Math.Min(minS, nS); maxS = Math.Max(maxS, nS); etaMin = Math.Min(etaMin, eta); etaMax = Math.Max(etaMax, eta); patchEta.Add((center, eta));
             }
         }
 
@@ -436,10 +503,13 @@ public partial class BetheMethod
         while (work.Count > 0 && cancelled?.Invoke() != true)
         {
             var next = new System.Collections.Concurrent.ConcurrentBag<(double, double, double, int[])>();
-            int o2 = Math.Max(1, Math.Min(outer, work.Count)), i2 = Math.Max(1, threads / o2);
+            // int o2 = Math.Max(1, Math.Min(outer, work.Count)), i2 = Math.Max(1, threads / o2); // 261110Cl 変更前 (区画の中の並列を threads / 外側 に固定 → 最後の巡で区画が少ないとコアが余った)
+            // 261110Cl 変更: 区画の中の方向の並列はスレッド数まで許す (入れ子の並列はスレッドプールが分け合う)。メモリは同時に着衣する区画の数 (外側) で抑える。区画は大きい順に 1 つずつ取る
+            int o2 = Math.Max(1, Math.Min(outer, work.Count)), i2 = threads;
             inner = i2;
-            var cur = work;
-            Parallel.For(0, cur.Count, new ParallelOptions { MaxDegreeOfParallelism = o2 }, p => SolvePatch(cur[p], o2 == 1 || i2 > 1, next));
+            var cur = work.OrderByDescending(q => q.members.Length).ToList();
+            Parallel.ForEach(System.Collections.Concurrent.Partitioner.Create(cur, System.Collections.Concurrent.EnumerablePartitionerOptions.NoBuffering),
+                new ParallelOptions { MaxDegreeOfParallelism = o2 }, q => SolvePatch(q, true, next));
             work = next.OrderBy(q => q.Item1).ThenBy(q => q.Item2).ToList();
             nLevels++;
         }
@@ -452,8 +522,8 @@ public partial class BetheMethod
         string[] propName = ["native eigen", "native matrix exponential", "MathNet eigen"];
         CbedBeamSelectionDetail = $"dressed tail {CbedDressedTailSettings.Version}: N {set.N}, pool {pool.Count} within {set.PoolRadiusNm} nm⁻¹, eta {set.Eta}" +
             (double.IsNaN(set.NeighborRadiusNm) ? "" : $", core {set.CoreRadiusNm} + neighbours {set.NeighborRadiusNm} nm⁻¹") + (set.OneProduct ? ", one product" : "") + "; " +
-            (adaptive ? $"adaptive patches (radius {set.AdaptiveMaxRadiusMrad} down to {set.PatchRadiusMrad} mrad, indicator limit {set.AdaptiveIndicatorLimit}): {nSolvedPatches} solved, {nSplit} split, {nLevels} rounds" : $"{nSolvedPatches} patches (radius {set.PatchRadiusMrad} mrad)") + $" for {nDir} directions, {nBackward} re-solved alone; explicit {minS}-{maxS} (mean {(nPatchesDone > 0 ? sumS / nPatchesDone : 0)}), tail mean {(nPatchesDone > 0 ? sumQ / nPatchesDone : 0)}, basis mean {(nPatchesDone > 0 ? sumB / nPatchesDone : 0)} (mode tau {set.ModeTau}{(double.IsFinite(set.ModeReduceTau) ? $", reduced by {set.ModeReduceTau}" : "")}), indicator {etaMin:e2}-{etaMax:e2}; " +
-            $"output beams {nOut}; propagation {propName[prop]}; time: tables {stage[0]:f1} s, output-beam selection {stage[1]:f1} s, dressing {stage[2]:f1} CPU-s, basis {stage[3]:f1} CPU-s, " +
+            (adaptive ? $"adaptive patches (radius {set.AdaptiveMaxRadiusMrad} down to {set.PatchRadiusMrad} mrad, indicator limit {set.AdaptiveIndicatorLimit}): {nSolvedPatches} solved, {nSplit} split, {nLevels} rounds" : $"{nSolvedPatches} patches (radius {set.PatchRadiusMrad} mrad)") + $" for {nDir} directions, {nBackward} re-solved alone; explicit {minS}-{maxS} (mean {(nPatchesDone > 0 ? sumS / nPatchesDone : 0)}), tail mean {(nPatchesDone > 0 ? sumQ / nPatchesDone : 0)}, dressed modes mean {(nPatchesDone > 0 ? sumNb / nPatchesDone : 0)}, basis mean {(nPatchesDone > 0 ? sumB / nPatchesDone : 0)} (mode tau {set.ModeTau}{(double.IsFinite(set.ModeReduceTau) ? $", reduced by {set.ModeReduceTau}" : "")}), indicator {etaMin:e2}-{etaMax:e2}; " +
+            $"output beams {nOut}; propagation {propName[prop]}; time: tables {stage[0]:f1} s, output-beam selection {stage[1]:f1} s, dressing {stage[2]:f1} CPU-s (select {stage[11]:f1}, blocks {stage[12]:f1}, X0 {stage[13]:f1}, eig {stage[14]:f1}, rest {stage[15]:f1}, spmm {stage[16]:f1}+{stage[17]:f1}), basis {stage[3]:f1} CPU-s (Gram {stage[8]:f1}, pencil {stage[9]:f1}, reduction {stage[10]:f1}), " +
             $"per direction form {stage[4]:f1} / propagate {stage[5]:f1} / output {stage[6]:f1} CPU-s, total {stage[7]:f1} s; parallel {outer} patches × {inner}";
         return (beams, amplitudes);
     }

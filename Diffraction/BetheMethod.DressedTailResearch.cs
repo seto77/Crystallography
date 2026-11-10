@@ -322,7 +322,9 @@ public partial class BetheMethod
         bool modeBasis = false, // 261109Cl modeBasis 追加: X = X̃V_b⁻¹ を作らず、モードの基底 (V_b, X̃) と R を返す (span([I; X]) = span([V_b; X̃]) なので Galerkin は同じ)
         bool blocksOnly = false, // 261109Cl blocksOnly 追加 (研究用、native の試作): 選択と密なブロックまでで返す
         DressedTailSelectionSettings selection = null, // 261110Cl selection 追加 (本番の経路、codex2 第 31 回): 選択の設定 (null = 研究用の static)
-        double modeTau = double.NaN) // 261110Cl modeTau 追加 (CBED の本番の経路): モードの組の打ち切り τ (NaN = 研究用の static DressedModeTau)
+        double modeTau = double.NaN, // 261110Cl modeTau 追加 (CBED の本番の経路): モードの組の打ち切り τ (NaN = 研究用の static DressedModeTau)
+        Func<Matrix<Complex>, MathNet.Numerics.LinearAlgebra.Vector<Complex>, Matrix<Complex>, int[], bool[]> modeSelector = null, // 261110Cl modeSelector 追加 (CBED の区画): (V_b, γ, H_b, 明示) → 残すモード。渡すと τ の規則の代わりに使う
+        bool? denseSingle = null, bool? spmmSingle = null) // 261110Cl 追加 (CBED の本番の経路): 着衣の密な積・疎な積を単精度に (null = 研究用の static DressedDenseSingle・DressedSpMMSingle)
     {
         double tauM = double.IsNaN(modeTau) ? DressedModeTau : modeTau; // 261110Cl 追加
         // 261110Cl 追加: 選択の設定。下の行は同じ名前の局所変数を読む (本番の経路は研究用の static を一時代入しない。null なら static の今の値)
@@ -492,7 +494,7 @@ public partial class BetheMethod
             }
         var X0 = new CDense(nQ, nS, x0);
         // var evdB = (HSS + HSQ * X0).Evd(Symmetricity.Asymmetric); // 261109Cl 変更前
-        var hbm = HSS + MulMaybeSingle(HSQ, X0); // 261109Cl: 着衣の積は単精度を選べる (DressedDenseSingle)
+        var hbm = HSS + MulMaybeSingle(HSQ, X0, single: denseSingle); // 261109Cl: 着衣の積は単精度を選べる (DressedDenseSingle。261110Cl: 引数でも)
         if (timing != null) timing.Project = sw.Elapsed.TotalSeconds; // 261109Cl 追加: X₀ と H_SQ X₀ まで
         var evdB = hbm.Evd(Symmetricity.Asymmetric);
         if (timing != null) timing.Eig = sw.Elapsed.TotalSeconds - timing.Project; // 261109Cl 追加: H_b の固有分解
@@ -505,8 +507,11 @@ public partial class BetheMethod
         Matrix<Complex> rhs, EX0 = null; // 261109Cl: EX0 は打ち切りでないときだけ (着衣前の E·X₀)
         int nM = nS; // 261109Cl 追加: 着衣のモードの数 (打ち切りなら nS より少ない)
         // if (modeBasis && DressedModeTau > 0) // 261109Cl 追加 // 261110Cl 変更前
-        if (modeBasis && tauM > 0) // 261109Cl 追加 (261110Cl: τ は引数か static) (研究用、native の試作と同じ規則): モードの組ごとの打ち切り。T = H_QS V_k、X₀V_k = −diag(f)T、R = T + E(X₀V_k)
+        if (modeBasis && (tauM > 0 || modeSelector != null)) // 261109Cl 追加 (261110Cl: τ は引数か static、または選び方を外から) (研究用、native の試作と同じ規則): モードの組ごとの打ち切り。T = H_QS V_k、X₀V_k = −diag(f)T、R = T + E(X₀V_k)
         {
+            int[] keep; // 261110Cl: 外から選ぶか τ の規則か
+            if (modeSelector != null) { var mask = modeSelector(Vb, gb, hbm, sArr); keep = Enumerable.Range(0, nS).Where(j => mask[j]).ToArray(); }
+            else {
             var aIn = Vb.Solve(MathNet.Numerics.LinearAlgebra.Vector<Complex>.Build.Dense(nS, i => i == 0 ? Complex.One : Complex.Zero));
             var par = Enumerable.Range(0, nS).ToArray();
             int Find(int x) { while (par[x] != x) x = par[x] = par[par[x]]; return x; }
@@ -524,31 +529,34 @@ public partial class BetheMethod
             for (int r = 0; r < nS; r++)
                 if (used[r]) { double s = 0; for (int i = 0; i < nS; i++) { var z = gsum[i + r * nS]; s += z.Real * z.Real + z.Imaginary * z.Imaginary; } gw[r] = Math.Sqrt(s); wmax = Math.Max(wmax, gw[r]); }
             // var keep = Enumerable.Range(0, nS).Where(j => gw[Find(j)] >= DressedModeTau * wmax).ToArray(); // 261110Cl 変更前
-            var keep = Enumerable.Range(0, nS).Where(j => gw[Find(j)] >= tauM * wmax).ToArray();
+            keep = Enumerable.Range(0, nS).Where(j => gw[Find(j)] >= tauM * wmax).ToArray();
+            } // 261110Cl
             nM = keep.Length;
             var vk = new Complex[nS * nM];
-            for (int t = 0; t < nM; t++) Array.Copy(vbv, keep[t] * nS, vk, t * nS, nS);
+            var vbvAll = ((CDense)Vb).Values; // 261110Cl 追加 (外から選ぶ経路でも使う)
+            // for (int t = 0; t < nM; t++) Array.Copy(vbv, keep[t] * nS, vk, t * nS, nS); // 261110Cl 変更前
+            for (int t = 0; t < nM; t++) Array.Copy(vbvAll, keep[t] * nS, vk, t * nS, nS);
             Vb = new CDense(nS, nM, vk);
             gb = MathNet.Numerics.LinearAlgebra.Vector<Complex>.Build.Dense(nM, t => gb[keep[t]]);
-            var T = MulMaybeSingle(HQS, Vb);
+            var T = MulMaybeSingle(HQS, Vb, single: denseSingle);
             var x0v = new CDense(nQ, nM); var x0vv = x0v.Values; var tv = ((CDense)T).Values;
             for (int r = 0; r < nQ; r++)
             {
                 var l = lamQ[r]; var f = Complex.Conjugate(l) / (l.Real * l.Real + l.Imaginary * l.Imaginary + d2);
                 for (int c = 0; c < nM; c++) x0vv[r + c * nQ] = -f * tv[r + c * nQ];
             }
-            var EX0V = SpMMTail(table, qArr, map, D, x0v, parallel, false, rowKeep);
+            var EX0V = SpMMTail(table, qArr, map, D, x0v, parallel, false, rowKeep, spmmSingle);
             if (timing != null) timing.SpMM1 = sw.Elapsed.TotalSeconds;
             sw.Restart();
             rhs = T + EX0V;
         }
         else
         {
-            EX0 = SpMMTail(table, qArr, map, D, X0, parallel, false, rowKeep);
+            EX0 = SpMMTail(table, qArr, map, D, X0, parallel, false, rowKeep, spmmSingle);
             if (timing != null) timing.SpMM1 = sw.Elapsed.TotalSeconds;
             sw.Restart();
             // var rhs = (HQS + EX0) * Vb; // 261109Cl 変更前
-            rhs = MulMaybeSingle(HQS + EX0, Vb); // 261109Cl
+            rhs = MulMaybeSingle(HQS + EX0, Vb, single: denseSingle); // 261109Cl
         }
         var Rkeep = modeBasis ? rhs.Clone() : null; // 261109Cl 追加: 倍率の前の R
         var xt = ((CDense)rhs).Values;
@@ -566,7 +574,7 @@ public partial class BetheMethod
         {
             if (timing != null) timing.Dress += sw.Elapsed.TotalSeconds;
             sw.Restart();
-            var EXt = oneProduct ? null : SpMMTail(table, qArr, map, D, rhs, parallel);
+            var EXt = oneProduct ? null : SpMMTail(table, qArr, map, D, rhs, parallel, false, null, spmmSingle);
             if (timing != null) timing.SpMM2 = sw.Elapsed.TotalSeconds;
             return new DressCoreResult { SArr = sArr, QArr = qArr, P = P, D = D, NSelected = nSelected, HSS = HSS, HQS = HQS, HSQ = HSQ, LamQ = lamQ, Xt = rhs, Vb = Vb, R = Rkeep, EXt = EXt, Gb = gb.ToArray() };
         }
@@ -574,7 +582,7 @@ public partial class BetheMethod
         if (timing != null) timing.Dress += sw.Elapsed.TotalSeconds;
         // 射影に使う E·X (oneProduct なら着衣前の E·X₀ で近似)
         sw.Restart();
-        var EX = oneProduct ? EX0 : SpMMTail(table, qArr, map, D, X, parallel);
+        var EX = oneProduct ? EX0 : SpMMTail(table, qArr, map, D, X, parallel, false, null, spmmSingle);
         if (timing != null) timing.SpMM2 = sw.Elapsed.TotalSeconds;
         return new DressCoreResult { SArr = sArr, QArr = qArr, P = P, D = D, NSelected = nSelected, X = X, HSS = HSS, HQS = HQS, HSQ = HSQ, EX = EX, LamQ = lamQ };
     }
@@ -1371,12 +1379,16 @@ public partial class BetheMethod
     // private static Matrix<Complex> SpMMTail(DressedTailTable table, int[] qArr, int[] map, double[] D, Matrix<Complex> X, bool parallel) // 261109Cl 旧シグネチャ
     // private static Matrix<Complex> SpMMTail(DressedTailTable table, int[] qArr, int[] map, double[] D, Matrix<Complex> X, bool parallel, bool source = false) // 261109Cl 旧シグネチャ
     private static Matrix<Complex> SpMMTail(DressedTailTable table, int[] qArr, int[] map, double[] D, Matrix<Complex> X, bool parallel, bool source = false, // 261109Cl source 追加: 後方散乱の源の表 (F) で積む
-        bool[] rowKeep = null) // 261109Cl rowKeep 追加: false の行は積まない (結果は 0)
+        bool[] rowKeep = null, // 261109Cl rowKeep 追加: false の行は積まない (結果は 0)
+        bool? single = null) // 261110Cl single 追加: 単精度にするか (null = 研究用の static DressedSpMMSingle)
     {
+        bool sgl = single ?? DressedSpMMSingle; // 261110Cl 追加
         // if (DressedSpMMSingle) return SpMMTailSingle(table, qArr, map, D, X, parallel); // 261109Cl 変更前
         // if (DressedSpMMSingle) return SpMMTailSingle(table, qArr, map, D, X, parallel, source); // 261109Cl 変更前
-        if (DressedSpMMSingle && DressedSpMMKernel == 2 && !source && !parallel) return SpMMTailSingleSoA(table, qArr, map, D, X, rowKeep); // 261109Cl 追加: SoA の核
-        if (DressedSpMMSingle) return SpMMTailSingle(table, qArr, map, D, X, parallel, source, rowKeep); // 261109Cl
+        // if (DressedSpMMSingle && DressedSpMMKernel == 2 && !source && !parallel) return SpMMTailSingleSoA(table, qArr, map, D, X, rowKeep); // 261109Cl 追加: SoA の核 // 261110Cl 変更前
+        // if (DressedSpMMSingle) return SpMMTailSingle(table, qArr, map, D, X, parallel, source, rowKeep); // 261109Cl // 261110Cl 変更前
+        if (sgl && DressedSpMMKernel == 2 && !source && !parallel) return SpMMTailSingleSoA(table, qArr, map, D, X, rowKeep); // 261109Cl 追加: SoA の核
+        if (sgl) return SpMMTailSingle(table, qArr, map, D, X, parallel, source, rowKeep); // 261109Cl
         var sw = Stopwatch.StartNew();
         int nQ = X.RowCount, k = X.ColumnCount;
         var xcm = ((CDense)X).Values;
@@ -2005,9 +2017,11 @@ public partial class BetheMethod
     }
 
     /// <summary>261109Cl 追加: a·b を、DressedDenseSingle なら単精度で積んで倍精度へ戻す (b32 = b の単精度を渡すと変換を省く)</summary>
-    private static Matrix<Complex> MulMaybeSingle(Matrix<Complex> a, Matrix<Complex> b, MathNet.Numerics.LinearAlgebra.Complex32.DenseMatrix b32 = null)
+    // private static Matrix<Complex> MulMaybeSingle(Matrix<Complex> a, Matrix<Complex> b, MathNet.Numerics.LinearAlgebra.Complex32.DenseMatrix b32 = null) // 261110Cl 旧シグネチャ
+    private static Matrix<Complex> MulMaybeSingle(Matrix<Complex> a, Matrix<Complex> b, MathNet.Numerics.LinearAlgebra.Complex32.DenseMatrix b32 = null, bool? single = null) // 261110Cl single 追加 (null = static)
     {
-        if (!DressedDenseSingle) return a * b;
+        // if (!DressedDenseSingle) return a * b; // 261110Cl 変更前
+        if (!(single ?? DressedDenseSingle)) return a * b;
         var p = ToC32(a) * (b32 ?? ToC32(b));
         var pv = ((MathNet.Numerics.LinearAlgebra.Complex32.DenseMatrix)p).Values;
         var r = new Complex[pv.Length];
