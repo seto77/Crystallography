@@ -2971,6 +2971,14 @@ public partial class BetheMethod
         //全 segment×slice を処理してから返す (保持量 Q×N² → 同時 worker 数×N²)。全-slice 物化 (tcSlice) が前提。
         //slice の加算順・segment 累積順は旧経路と同一なので q ごとに数値等価。RECIPRO_STEM_USTREAM=0 で旧経路 (一括 U 構築) へ強制
         var useUStream = useAllSliceTc && Environment.GetEnvironmentVariable("RECIPRO_STEM_USTREAM") != "0";
+        //261111Cl 追加 (研究用、既定 = 未設定 = 従来と同じ): TDS・EDX の z の位相の扱いの切り替え。
+        //  tcSlice は各ビームの搬送波 exp(2πi n·(K0+g) z) を含み、U'(q+g_i−g_j) は 3 次元の G を使うが、局所の吸収ポテンシャルの z の位相 exp(2πi G_n z) は掛けていない
+        //  (q_n ≠ 0 の q の写しでは ZOLZ 同士の強い組が振動せずに足され、q_n = 0 でも HOLZ と ZOLZ の組が搬送波の差で振動してスライスの和で折り返される)。
+        //  "1" / "-1": スライスの列から各ビームの搬送波を外し (共通の n·K0 は残す)、q ごとに exp(±2πi q_n z) を掛ける (局所の 3 次元の式。q_n の振動を解く細かいスライスが要る)
+        //  "2": 搬送波を外し、q_n = 0 の q だけを使う (厚い結晶で振動する項を落とす近似)
+        var tdsZPhase = int.TryParse(Environment.GetEnvironmentVariable("RECIPRO_STEM_TDS_ZPHASE"), out var tdsZPhaseEnv) ? tdsZPhaseEnv : 0;
+        if (tdsZPhase != 0 && !useUStream)
+            throw new NotSupportedException("RECIPRO_STEM_TDS_ZPHASE (research) needs the all-slice q-major path.");
         //260801Cl 追加: STEM-EDX (v0a) は全-slice 物化 + q-major streaming 経路限定 (設計書 §5.7-5)。
         //EVD より前に hard error で拒否する (Stage4 後の警告スキップは計算時間を浪費するため禁止。codex 16巡)。
         //旧経路 (MKL bLen≥500 / managed) fallback は v1 出荷ゲート。
@@ -3035,11 +3043,13 @@ public partial class BetheMethod
                         _kgzA[g] = beams[g].P / 2;
                     //kg_z[i] = _kgzA;//260711Cl 全-slice 経路では下流 (GenerateTC1B/非Eigen再生成) が走らないため保持不要 (codex 指摘)
                     //位相補正 exp(2πi·kg_z·t)。旧経路では弾性 tc はラムダ末尾、slice 分は GenerateTC1B 内で適用していたのと同じ式
+                    var kz0 = tdsZPhase != 0 ? Surface * vecK0 : 0;//261111Cl 追加 (研究用): 共通の搬送波 n·K0 (= P_000/2)
                     for (int c = 0; c < allThick.Length; c++)
                     {
                         var th = allThick[c];
                         for (int g = 0; g < bLen; g++)
-                            tgAll[c * bLen + g] *= Exp(TwoPiI * _kgzA[g] * th);
+                            // tgAll[c * bLen + g] *= Exp(TwoPiI * _kgzA[g] * th); // 261111Cl 変更前
+                            tgAll[c * bLen + g] *= Exp(TwoPiI * (tdsZPhase != 0 && c >= tLen ? kz0 : _kgzA[g]) * th); // 261111Cl 変更: 研究用の z の位相の扱いでは、スライスの列から各ビームの搬送波を外す (弾性の列はそのまま)
                     }
                     //slice 列を共有バッファへ scatter (方向 i が自分の列を専有するため lock 不要)
                     for (int s = 0; s < sliceTotal; s++)
@@ -3138,6 +3148,9 @@ public partial class BetheMethod
         var mat = BaseRotation * Crystal.MatrixInverseTransposed;
         var qList = Beams.AsParallel().SelectMany(e1 => Beams.Select(e2 => (e1 - e2).Index)).Distinct()
             .Select(e => new Beam(e, mat * e)).Where(e => k_xy.Any(e2 => A(e2) && A(e2 + e.Vec.ToPointD))).OrderBy(e => e.Vec.Length2).ToList();
+        var qN = tdsZPhase == 0 ? null : qList.Select(q => Surface * q.Vec).ToArray();//261111Cl 追加 (研究用): q の法線の成分 q_n
+        if (qN != null)
+            Console.Error.WriteLine($"[STEM TDS z-phase {tdsZPhase}] beams {Beams.Length}, q {qList.Count}, q_n ≠ 0: {qN.Count(x => Math.Abs(x) > 1e-9)}, max |q_n| {qN.Max(Math.Abs):f3} nm⁻¹, distinct |q_n| {string.Join(" ", qN.Select(x => Math.Round(Math.Abs(x), 3)).Distinct().Order().Take(8))}");
 
         //g_q_index (あるq[m]に対して、g-qの反射は、Beams配列で何番目か)
         // var g_qIndex = qList.Select(q => Beams.Select((g1, n) => (g: n, g_q: Array.FindIndex(Beams, g2 => g2.Index == (g1 - q).Index))).Where(e => e.g_q != -1).ToArray()).ToArray(); // 260610Cl 変更前: Array.FindIndex (O(N)) を q×g1 の全組合せで呼ぶため O(Q·N²)
@@ -3363,18 +3376,29 @@ public partial class BetheMethod
             {
                 var entryCount = qEntryK[qIndex]?.Length ?? 0;
                 if (entryCount == 0 || bwSTEM.CancellationPending) return;
+                if (tdsZPhase == 2 && Math.Abs(qN[qIndex]) > 1e-9) return;//261111Cl 追加 (研究用): q_n = 0 の q だけを使う
                 var Uq = localUq.Value;
                 var sumD = new Complex[dLen];
+                var sumS = tdsZPhase is 1 or -1 ? new Complex[dLen] : null;//261111Cl 追加 (研究用): スライス 1 枚分 (exp(±2πi q_n z) を掛けて足す)
                 fillU(qIndex, Uq);
                 if (bwSTEM.CancellationPending) return;
                 for (int t = 0; t < Thicknesses.Length; t++)
                 {
                     Array.Clear(sumD, 0, dLen);
                     for (int si = 0; si < _thick[t].Length; si++)
-                        fixed (Complex* _tc = tcSlice[sliceOffset[t] + si], _Uq = Uq, _sumD = sumD, _lenz = qEntryLenz[qIndex])
+                    {
+                        if (sumS != null) Array.Clear(sumS, 0, dLen);//261111Cl 追加 (研究用)
+                        // fixed (Complex* _tc = tcSlice[sliceOffset[t] + si], _Uq = Uq, _sumD = sumD, _lenz = qEntryLenz[qIndex]) // 261111Cl 変更前
+                        fixed (Complex* _tc = tcSlice[sliceOffset[t] + si], _Uq = Uq, _sumD = sumS ?? sumD, _lenz = qEntryLenz[qIndex]) // 261111Cl 変更: 研究用の位相の扱いではスライス 1 枚分へ
                         fixed (int* _k = qEntryK[qIndex], _n4 = qEntryN4[qIndex])
                         fixed (double* _r4 = qEntryR4[qIndex])
                             NativeWrapper.STEM_InelasticQ(bLen, dLen, entryCount, _Uq, _tc, _k, _n4, _r4, _lenz, _sumD);
+                        if (sumS != null)//261111Cl 追加 (研究用): exp(±2πi q_n z) を掛けて足す
+                        {
+                            var ph = Exp(TwoPiI * (tdsZPhase * qN[qIndex] * _thick[t][si]));
+                            for (int d = 0; d < dLen; d++) sumD[d] += sumS[d] * ph;
+                        }
+                    }
                     var coeff = 2 * Math.PI / kvac * tStep[t];
                     for (int dIndex = 0; dIndex < dLen; dIndex++)
                     {
