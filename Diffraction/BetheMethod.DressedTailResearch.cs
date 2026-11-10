@@ -115,7 +115,7 @@ public partial class BetheMethod
         var full = new Complex[(2 * dh + 1) * dnk * dnl];
         double r2 = pool.RadiusNm * pool.RadiusNm * (1 + 1e-9), d2max = 4 * r2;
         // 全ての U (弾性 + i·吸収) を差の箱で求める。getU (cache: false) をそのまま使う (式を複製しない)
-        Parallel.For(-dh, dh + 1, h =>
+        Parallel.For(-dh, dh + 1, DressedTailPrecomputeOptions, h => // 261110Cl: 前計算の並列を構築のスレッドの数で抑える
         {
             for (int k = -dk; k <= dk; k++)
                 for (int l = -dl; l <= dl; l++)
@@ -159,7 +159,7 @@ public partial class BetheMethod
         var inT = new bool[n];
         for (int i = 0; i < n; i++) inT[i] = Dot3(pool.GX[i], pool.GX[i], pool.GY[i], pool.GY[i], pool.GZ[i], pool.GZ[i]) <= rtt;
         var rows = new (int j, Complex u)[n][];
-        Parallel.For(0, n, i =>
+        Parallel.For(0, n, DressedTailPrecomputeOptions, i => // 261110Cl: 前計算の並列を構築のスレッドの数で抑える
         {
             if (!inT[i]) { rows[i] = []; return; } // 261109Cl
             var (h0, k0, l0) = pool.Hkl[i];
@@ -176,7 +176,7 @@ public partial class BetheMethod
         var rowPtr = new int[n + 1];
         for (int i = 0; i < n; i++) rowPtr[i + 1] = rowPtr[i] + rows[i].Length;
         var col = new int[rowPtr[n]]; var vr = new double[rowPtr[n]]; var vi = new double[rowPtr[n]];
-        Parallel.For(0, n, i =>
+        Parallel.For(0, n, DressedTailPrecomputeOptions, i => // 261110Cl: 前計算の並列を構築のスレッドの数で抑える
         {
             int p = rowPtr[i];
             foreach (var (j, u) in rows[i]) { col[p] = j; vr[p] = u.Real; vi[p] = u.Imaginary; p++; }
@@ -188,7 +188,7 @@ public partial class BetheMethod
         {
             sw.Restart();
             var fFull = new Complex[full.Length];
-            Parallel.For(-dh, dh + 1, h =>
+            Parallel.For(-dh, dh + 1, DressedTailPrecomputeOptions, h => // 261110Cl: 前計算の並列を構築のスレッドの数で抑える
             {
                 for (int k = -dk; k <= dk; k++)
                     for (int l = -dl; l <= dl; l++)
@@ -214,7 +214,7 @@ public partial class BetheMethod
                         if (Math.Max(fm.Magnitude, fFull[Box(h, k, l)].Magnitude) >= fThr) fds.Add((h, k, l, fm));
                     }
             var fRows = new (int j, Complex f)[n][];
-            Parallel.For(0, n, i =>
+            Parallel.For(0, n, DressedTailPrecomputeOptions, i => // 261110Cl: 前計算の並列を構築のスレッドの数で抑える
             {
                 var (h0, k0, l0) = pool.Hkl[i];
                 var list = new List<(int, Complex)>();
@@ -230,7 +230,7 @@ public partial class BetheMethod
             long fTotal = 0;
             for (int i = 0; i < n; i++) { fTotal += fRows[i].Length; if (fTotal > int.MaxValue) throw new OutOfMemoryException("The backscatter source table exceeds int.MaxValue nonzeros; raise sourceEta"); fPtr[i + 1] = (int)fTotal; }
             var fCol = new int[fTotal]; var fr = new double[fTotal]; var fi = new double[fTotal];
-            Parallel.For(0, n, i =>
+            Parallel.For(0, n, DressedTailPrecomputeOptions, i => // 261110Cl: 前計算の並列を構築のスレッドの数で抑える
             {
                 int p = fPtr[i];
                 foreach (var (j, f) in fRows[i]) { fCol[p] = j; fr[p] = f.Real; fi[p] = f.Imaginary; p++; }
@@ -1870,7 +1870,7 @@ public partial class BetheMethod
             var w = new double[nSites];
             for (int g = 0; g < ng; g++) for (int t = 0; t < np; t++) w[g * np + t] = gw[g] * wpt[t];
             var phase = new Complex[(long)tail.Count * nSites];
-            Parallel.For(0, tail.Count, ci =>
+            Parallel.For(0, tail.Count, table.Owner.DressedTailPrecomputeOptions, ci => // 261110Cl: 前計算の並列を構築のスレッドの数で抑える
             {
                 int i = tail[ci]; var (h, k, l) = pool.Hkl[i]; double gx = pool.GX[i], gy = pool.GY[i], gz = pool.GZ[i];
                 long o = (long)ci * nSites;
@@ -2164,12 +2164,17 @@ public partial class BetheMethod
     /// <summary>261109Cl 追加 (研究用): RunEBSDNew の 1 エネルギー分を着衣つきの裾の方式で解き、代表方向ごとの厚さの強度を返す (従来の ebsdIntensity と同じ形)。
     /// 代表方向を元の半球の格子の BlockSize × BlockSize の升目でまとめ、升目の中心 (有効な画素の方向の平均を正規化) で着衣を作って共有する。
     /// 各方向の k0・表面は従来と同じ式 (GetCrystalFixedMasterEquivalentBeamAndSurface → getVecK0)。ブロックの中に後ろ向きのビームがあれば方向ごとに解き直す。</summary>
+    /// <summary>261110Cl 追加 (codex2 第 31 回): 新方式の前計算 (候補のプール・電圧ごとの表・求積の表) の並列の上限。構築 (SolveEbsdDressedTailVoltage) が
+    /// 要求のスレッドの数に合わせる (既定 −1 = 上限なし、研究の直接の呼び出し)。結果は並列の数に依らない (各添字が自分の場所だけ書く)</summary>
+    internal ParallelOptions DressedTailPrecomputeOptions { get; private set; } = new();
+
     private double[][] SolveEbsdDressedTailVoltage(EbsdDressedTailOptions opt, ref BeamSelectionPool pool, double kvac, double u0,
         Vector3DBase referenceSurface, Vector3DBase referenceBeamDirection, Vector3DBase referenceAxisU, Vector3DBase referenceAxisV,
         List<int> representatives, int[] symmetryMapping, int hemisphereLength, int gridSize,
         (double x, double y, double z)[] atomArray, double[] sigmaArray, double tdsCoeff, double[][] background, int threads, Action<int> completed)
     {
         var rec = new EbsdDressedTailRecord { KV = AccVoltage };
+        DressedTailPrecomputeOptions = new ParallelOptions { MaxDegreeOfParallelism = Math.Max(1, threads) }; // 261110Cl 追加
         var sw = Stopwatch.StartNew();
         var mat = ((BaseRotation ?? new Matrix3D()) * Crystal.MatrixInverseTransposed).Tuple;
         // if (pool == null || pool.RadiusNm != opt.TailRadiusNm || pool.Mat != mat) // 261109Cl 変更前

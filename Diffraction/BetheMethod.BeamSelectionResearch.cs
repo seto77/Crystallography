@@ -205,7 +205,7 @@ public partial class BetheMethod
         var diff = new Complex[(2 * dh + 1) * dnk * dnl];
         double d2max = 4 * r2, gammaRef = ElasticGamma(kV);
         int entries = 0;
-        Parallel.For(-dh, dh + 1, () => 0, (h, _, local) =>
+        Parallel.For(-dh, dh + 1, DressedTailPrecomputeOptions, () => 0, (h, _, local) => // 261110Cl: 前計算の並列を構築のスレッドの数で抑える
         {
             for (int k = -dk; k <= dk; k++)
                 for (int l = -dl; l <= dl; l++)
@@ -252,7 +252,7 @@ public partial class BetheMethod
         pool.StrongSet = [.. strong.Select(i => pool.Hkl[i])];
         pool.StrongPartnerCount = take;
         var c1 = new double[n]; var p1 = new int[n];
-        Parallel.For(1, n, i =>
+        Parallel.For(1, n, DressedTailPrecomputeOptions, i => // 261110Cl: 前計算の並列を構築のスレッドの数で抑える
         {
             double best = 0; int partner = -1;
             foreach (var j in strong)
@@ -282,7 +282,7 @@ public partial class BetheMethod
                     }
             var dsSorted = ds.OrderByDescending(x => x.absU).ThenBy(x => (x.h, x.k, x.l)).ToArray();
             var c0 = new double[n]; var p0 = new int[n];
-            Parallel.For(1, n, i =>
+            Parallel.For(1, n, DressedTailPrecomputeOptions, i => // 261110Cl: 前計算の並列を構築のスレッドの数で抑える
             {
                 var (h, k, l) = pool.Hkl[i];
                 c0[i] = 0; p0[i] = -1;
