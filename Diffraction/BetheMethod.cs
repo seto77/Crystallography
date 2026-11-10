@@ -598,7 +598,31 @@ public partial class BetheMethod
         }
 
         int bLen = Beams.Length, tLen = Thicknesses.Length;
-        var beamDirectionsP = beamDirectionsValid.AsParallel().WithDegreeOfParallelism(thread);
+        // 261111Cl 追加: 従来の CBED でも晶帯軸の対称を使う (CbedLegacyUseSymmetry、既定は使わない)。軌道の最小の番号の方向を代表に解き、残りは振幅を位相込みで写す
+        CbedLegacySymmetryDetail = "";
+        (string Name, int[] DirMap, int[] BeamMap, (double, double, double) W)[] legOps = [];
+        int[] legRep = null; (int rep, int op)[] legMap = null;
+        if (dressedAmplitudes == null && CbedLegacyUseSymmetry)
+        {
+            var bIdx = new Dictionary<(int, int, int), int>(bLen); for (int b = 0; b < bLen; b++) bIdx[Beams[b].Index] = b;
+            legOps = CbedSymmetryOps(Beams.Select(b => b.Index).ToArray(), Beams.Select(b => b.Vec.X).ToArray(), Beams.Select(b => b.Vec.Y).ToArray(), Beams.Select(b => b.Vec.Z).ToArray(),
+                h => bIdx.TryGetValue(h, out var j) ? j : -1, (BaseRotation * Crystal.MatrixInverseTransposed).Tuple, 25, beamDirectionsValid, Vector3DBase.Normarize(Surface));
+            if (legOps.Length > 0)
+            {
+                int nV = beamDirectionsValid.Count;
+                var repPos = new int[nV]; Array.Fill(repPos, -1);
+                var reps = new List<int>();
+                for (int i = 0; i < nV; i++) if (legOps.All(op => op.DirMap[i] >= i)) { repPos[i] = reps.Count; reps.Add(i); }
+                legRep = [.. reps];
+                legMap = new (int, int)[nV]; Array.Fill(legMap, (-1, -1));
+                for (int r = 0; r < legRep.Length; r++)
+                    for (int k = 0; k < legOps.Length; k++) { int i = legOps[k].DirMap[legRep[r]]; if (repPos[i] < 0 && legMap[i].Item1 < 0) legMap[i] = (r, k); }
+                if (Enumerable.Range(0, nV).Any(i => repPos[i] < 0 && legMap[i].Item1 < 0)) { legOps = []; legRep = null; legMap = null; } // 届かない方向があれば使わない (起きない筈)
+                else CbedLegacySymmetryDetail = $"symmetry {string.Join(" ", legOps.Select(o => o.Name))}: {legRep.Length} of {nV} directions solved";
+            }
+        }
+        // var beamDirectionsP = beamDirectionsValid.AsParallel().WithDegreeOfParallelism(thread); // 261111Cl 変更前
+        var beamDirectionsP = (legRep == null ? beamDirectionsValid : legRep.Select(i => beamDirectionsValid[i]).ToList()).AsParallel().WithDegreeOfParallelism(thread); // 261111Cl 変更: 対称を使うときは代表だけ
 
         //ここからdiskValid[t*tLen +g]を計算.
         // var diskAmplitudeValid = beamDirectionsP.Select(beamDirection => // 261110Cl 変更前
@@ -698,6 +722,22 @@ public partial class BetheMethod
             }
             finally { Shared.Return(eigenMatrix); ArrayPool<Beam>.Shared.Return(beams); }
         }).ToArray();
+        // 261111Cl 追加: 対称で残りの方向へ写す。ψ_{Tg}(Td) = ψ_g(d) exp(+2πi h_{Tg}·w) (新方式と同じ規約。出射面の位相は T で変わらない)
+        if (legRep != null) // 取り消しで代表の解が null なら写した先も null
+        {
+            var oPh = legOps.Select(op => Beams.Select(b => { var (h, k, l) = b.Index; return Exp(new Complex(0, 2 * Math.PI * (h * op.W.Item1 + k * op.W.Item2 + l * op.W.Item3))); }).ToArray()).ToArray();
+            var full = new Complex[beamDirectionsValid.Count][];
+            for (int r = 0; r < legRep.Length; r++) full[legRep[r]] = diskAmplitudeValid[r];
+            for (int i = 0; i < full.Length; i++)
+            {
+                var (r, k) = legMap[i];
+                if (r < 0 || diskAmplitudeValid[r] == null) continue;
+                var src = diskAmplitudeValid[r]; var dst = new Complex[src.Length]; var bm = legOps[k].BeamMap; var ph = oPh[k];
+                for (int t = 0; t < tLen; t++) for (int b = 0; b < bLen; b++) dst[t * bLen + bm[b]] = src[t * bLen + b] * ph[bm[b]];
+                full[i] = dst;
+            }
+            diskAmplitudeValid = full;
+        }
 
         //無効なRotationも再び組み込んでdisk[RotationIndex][Z_index][G_index]を構築
         var diskAmplitude = new Complex[BeamDirections.Length][];

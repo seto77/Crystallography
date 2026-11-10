@@ -43,6 +43,13 @@ public partial class BetheMethod
     /// 2 の内訳 (DressCore の段): 11 選択、12 密なブロック、13 X₀ と H_SQ X₀、14 H_b の固有分解、15 着衣の残り (選び分け・T・倍率)、16 疎な積 1、17 疎な積 2)</summary>
     public double[] CbedDressedTailStageSeconds { get; } = new double[18];
 
+    /// <summary>261111Cl 追加: 従来の CBED (N 本の固定のビーム) でも晶帯軸の対称を使う (既定は使わない)。表面の法線・方向の格子・ビームの組・ポテンシャル (並進の位相込み) を
+    /// 正確に移す操作 (<see cref="CbedSymmetryOps"/>) があれば、各軌道の代表の方向だけを解き、残りは振幅を位相込みで写す (各方向は独立に解くので結果は丸めの範囲で同じ)。
+    /// ビームの組がその操作で閉じていなければ (末尾の同点の組の扱いなど) その操作は使わない</summary>
+    public bool CbedLegacyUseSymmetry { get; set; }
+    /// <summary>261111Cl 追加: 直前の従来の CBED で使った対称 (使わなければ空)</summary>
+    public string CbedLegacySymmetryDetail { get; private set; } = "";
+
     /// <summary>261110Cl 追加 (研究用): メモリの予算を上書きする [byte] (0 以下 = 物理メモリの空きから決める。込み合った機械での検査用)</summary>
     public long CbedMemoryBudgetOverride { get; set; }
 
@@ -184,7 +191,8 @@ public partial class BetheMethod
         // 261111Cl 追加: 晶帯軸の対称。使える操作があれば、各軌道の代表 (区画の数が最も少なくなる向きと升の格子のずれを選ぶ) だけを解き、最後に残りの方向へ写す
         int nAll = nDir; var allDirections = directions;
         double symOffU = 0, symOffV = 0, symCos = 1, symSin = 0, sideMinSym = Math.Sqrt(2) * set.PatchRadiusMrad * 1e-3; // 升の格子のずれと回転 (斜めの鏡映の境に辺を合わせる。対称を使わなければ 0)
-        var symOps = set.UseSymmetry ? CbedSymmetryOps(pool, directions, n) : [];
+        // var symOps = set.UseSymmetry ? CbedSymmetryOps(pool, directions, n) : []; // 261111Cl 変更前
+        var symOps = set.UseSymmetry ? CbedSymmetryOps(pool.Hkl, pool.GX, pool.GY, pool.GZ, pool.IndexOf, pool.Mat, Math.Min(25, 0.999 * pool.RadiusNm), directions, n) : [];
         int[] repOrig = null; (int rep, int op)[] mapFrom = null; (double, double) bestOff = (0, 0); (double, double) bestRot = (1, 0);
         bool adaptiveSym = double.IsFinite(set.AdaptiveMaxRadiusMrad) && double.IsFinite(set.AdaptiveIndicatorLimit) && set.AdaptiveMaxRadiusMrad > set.PatchRadiusMrad; // 適応的な区画 (Split は軸にそろった升) では回さない
         if (symOps.Length > 0)
@@ -834,7 +842,10 @@ public partial class BetheMethod
     /// 表面の法線を保ち、方向の組と候補のビームの組を移し (結晶の向きのずれ 1e−9 以内)、ポテンシャルが並進の位相つきで移る
     /// (U_{Tg} = U_g exp(−2πi h_{Tg}·w)、U' も同じ。w (分率) を 1/48 刻みで探し、|g| ≤ 25 nm⁻¹ の全部で 1e−7 の精度で照合) ものを返す。
     /// 振幅は共役の位相で移る: ψ_{Tg}(Td) = ψ_g(d) exp(+2πi h_{Tg}·w) (Bloch の方程式が対角の位相の相似変換で移るため。行列の (g, h) 成分が U_{h−g} の規約で共役になる)。群として閉じていなければ何も返さない。</summary>
-    private (string Name, int[] DirMap, int[] BeamMap, (double, double, double) W)[] CbedSymmetryOps(BeamSelectionPool pool, IReadOnlyList<Vector3DBase> directions, Vector3DBase n)
+    // private (string Name, int[] DirMap, int[] BeamMap, (double, double, double) W)[] CbedSymmetryOps(BeamSelectionPool pool, IReadOnlyList<Vector3DBase> directions, Vector3DBase n) // 261111Cl 変更前
+    // 261111Cl 変更: 候補のプールに依らない形 (従来の CBED のビームの組でも使う)。hkl[0] は 000、g = mat · hkl (実験室)、indexOf は hkl の番号 (無ければ −1)、checkRadius 以下の g でポテンシャルを照合
+    private (string Name, int[] DirMap, int[] BeamMap, (double, double, double) W)[] CbedSymmetryOps(IReadOnlyList<(int h, int k, int l)> hkl, double[] gx, double[] gy, double[] gz,
+        Func<(int, int, int), int> indexOf, (double, double, double, double, double, double, double, double, double) mat, double checkRadius, IReadOnlyList<Vector3DBase> directions, Vector3DBase n)
     {
         var cands = new (string name, int a, int b, int c, int d)[] { ("2", -1, 0, 0, -1), ("4", 0, -1, 1, 0), ("4^3", 0, 1, -1, 0), ("m(x)", -1, 0, 0, 1), ("m(y)", 1, 0, 0, -1), ("m(x=y)", 0, 1, 1, 0), ("m(x=-y)", 0, -1, -1, 0) };
         var found = new List<(string, int[], int[], (double, double, double), (int, int, int, int))>();
@@ -842,15 +853,30 @@ public partial class BetheMethod
         static long Key(double v) => (long)Math.Round(v * 1e12);
         var dirKey = new Dictionary<(long, long), int>(nDir);
         for (int i = 0; i < nDir; i++) dirKey.TryAdd((Key(directions[i].X), Key(directions[i].Y)), i);
-        var (m11, m12, m13, m21, m22, m23, m31, m32, m33) = pool.Mat; // 実験室の g = Mat · hkl
+        var (m11, m12, m13, m21, m22, m23, m31, m32, m33) = mat; // 実験室の g = mat · hkl
         var M = new Matrix3D(m11, m21, m31, m12, m22, m32, m13, m23, m33);
         var Minv = M.Inverse();
-        double gChk = Math.Min(25, 0.999 * pool.RadiusNm);
-        var chk = Enumerable.Range(1, pool.Count - 1).Where(i => pool.GX[i] * pool.GX[i] + pool.GY[i] * pool.GY[i] + pool.GZ[i] * pool.GZ[i] <= gChk * gChk).ToArray();
-        var uCache = new Dictionary<int, (Complex Real, Complex Imag)>();
-        (Complex Real, Complex Imag) U(int i)
+        int count = hkl.Count;
+        // var chk = Enumerable.Range(1, count - 1).Where(i => gx[i] * gx[i] + gy[i] * gy[i] + gz[i] * gz[i] <= checkRadius * checkRadius).ToArray(); // 261111Cl 変更前 (ビームの組の中で照合)
+        // var uCache = new Dictionary<int, (Complex Real, Complex Imag)>();
+        // 261111Cl 変更: ポテンシャルの照合の組は、ビームの組に依らない |g| ≤ checkRadius の 3 次元の逆格子の点 (多くても約 6000 点に半径を抑える)。
+        //   従来の N 本のビームの組は |g| ≤ 25 が ZOLZ ばかりで、並進 w のビーム軸方向の成分が決まらず、HOLZ の層ごとに振幅の位相がずれた (Si [110] 200 kV N200 の FOLZ で e^{−i 105°}、強度は一致)
+        var mi = Minv.Tuple;
+        double vol = 1 / Math.Abs(m11 * (m22 * m33 - m23 * m32) - m12 * (m21 * m33 - m23 * m31) + m13 * (m21 * m32 - m22 * m31)); // 単位胞の体積 [nm³] (逆格子の胞の体積の逆数)
+        double rChk = Math.Min(checkRadius, Math.Cbrt(6000 / (4.19 * vol)));
+        int hb = (int)Math.Ceiling(rChk * Math.Sqrt(mi.E11 * mi.E11 + mi.E12 * mi.E12 + mi.E13 * mi.E13)), kb = (int)Math.Ceiling(rChk * Math.Sqrt(mi.E21 * mi.E21 + mi.E22 * mi.E22 + mi.E23 * mi.E23)),
+            lb = (int)Math.Ceiling(rChk * Math.Sqrt(mi.E31 * mi.E31 + mi.E32 * mi.E32 + mi.E33 * mi.E33));
+        var chk = new List<(int, int, int)>();
+        for (int h = -hb; h <= hb; h++) for (int k = -kb; k <= kb; k++) for (int l = -lb; l <= lb; l++)
         {
-            if (!uCache.TryGetValue(i, out var u)) uCache[i] = u = getU(AccVoltage, pool.Hkl[i], new Vector3DBase(pool.GX[i], pool.GY[i], pool.GZ[i]));
+            if (h == 0 && k == 0 && l == 0) continue;
+            double x = m11 * h + m12 * k + m13 * l, y = m21 * h + m22 * k + m23 * l, z = m31 * h + m32 * k + m33 * l;
+            if (x * x + y * y + z * z <= rChk * rChk) chk.Add((h, k, l));
+        }
+        var uCache = new Dictionary<(int, int, int), (Complex Real, Complex Imag)>();
+        (Complex Real, Complex Imag) U((int h, int k, int l) q)
+        {
+            if (!uCache.TryGetValue(q, out var u)) uCache[q] = u = getU(AccVoltage, q, new Vector3DBase(m11 * q.h + m12 * q.k + m13 * q.l, m21 * q.h + m22 * q.k + m23 * q.l, m31 * q.h + m32 * q.k + m33 * q.l));
             return u;
         }
         foreach (var (name, a, b, c, d) in cands)
@@ -870,26 +896,27 @@ public partial class BetheMethod
             var kt = K.Tuple; var ke = new[] { kt.E11, kt.E12, kt.E13, kt.E21, kt.E22, kt.E23, kt.E31, kt.E32, kt.E33 };
             if (ke.Any(e => Math.Abs(e - Math.Round(e)) > 1e-6)) continue;
             var ki = ke.Select(e => (int)Math.Round(e)).ToArray();
-            var bm = new int[pool.Count];
-            for (int i = 0; i < pool.Count && ok; i++)
+            var bm = new int[count];
+            for (int i = 0; i < count && ok; i++)
             {
-                var (h, k, l) = pool.Hkl[i];
-                int j = pool.IndexOf((ki[0] * h + ki[1] * k + ki[2] * l, ki[3] * h + ki[4] * k + ki[5] * l, ki[6] * h + ki[7] * k + ki[8] * l));
-                double gx = a * pool.GX[i] + b * pool.GY[i], gy = c * pool.GX[i] + d * pool.GY[i], gz = pool.GZ[i];
-                if (j < 0 || Math.Abs(pool.GX[j] - gx) + Math.Abs(pool.GY[j] - gy) + Math.Abs(pool.GZ[j] - gz) > 1e-9 * (1 + Math.Abs(gx) + Math.Abs(gy) + Math.Abs(gz))) ok = false;
+                var (h, k, l) = hkl[i];
+                int j = indexOf((ki[0] * h + ki[1] * k + ki[2] * l, ki[3] * h + ki[4] * k + ki[5] * l, ki[6] * h + ki[7] * k + ki[8] * l));
+                double tx = a * gx[i] + b * gy[i], ty = c * gx[i] + d * gy[i], tz = gz[i];
+                if (j < 0 || Math.Abs(gx[j] - tx) + Math.Abs(gy[j] - ty) + Math.Abs(gz[j] - tz) > 1e-9 * (1 + Math.Abs(tx) + Math.Abs(ty) + Math.Abs(tz))) ok = false;
                 else bm[i] = j;
             }
-            if (!ok || chk.Length < 3) continue;
+            if (!ok || chk.Count < 3) continue;
             // ポテンシャル: 並進 w の位相を、|U| の大きい 16 本の比 U_{Tg}/U_g から 1/48 刻みで探す
-            double uMax = chk.Max(i => U(i).Real.Magnitude), upMax = chk.Max(i => U(i).Imag.Magnitude);
+            (int, int, int) Kq((int h, int k, int l) q) => (ki[0] * q.h + ki[1] * q.k + ki[2] * q.l, ki[3] * q.h + ki[4] * q.k + ki[5] * q.l, ki[6] * q.h + ki[7] * q.k + ki[8] * q.l);
+            double uMax = chk.Max(q => U(q).Real.Magnitude), upMax = chk.Max(q => U(q).Imag.Magnitude);
             if (!(uMax > 0)) continue;
-            var fit = chk.Where(i => U(i).Real.Magnitude >= 1e-3 * uMax).OrderByDescending(i => U(i).Real.Magnitude).Take(16).ToArray();
+            var fit = chk.Where(q => U(q).Real.Magnitude >= 1e-3 * uMax).OrderByDescending(q => U(q).Real.Magnitude).Take(16).ToArray();
             const int G = 48;
-            var rr = fit.Select(i => U(bm[i]).Real / U(i).Real).ToArray();
+            var rr = fit.Select(q => U(Kq(q)).Real / U(q).Real).ToArray();
             var eh = new Complex[fit.Length, 3, G];
             for (int f = 0; f < fit.Length; f++)
             {
-                var (h, k, l) = pool.Hkl[bm[fit[f]]]; var hk = new[] { h, k, l };
+                var (h, k, l) = Kq(fit[f]); var hk = new[] { h, k, l };
                 for (int ax = 0; ax < 3; ax++) for (int q = 0; q < G; q++) eh[f, ax, q] = Complex.Exp(new Complex(0, -2 * Math.PI * hk[ax] * q / (double)G));
             }
             double bestCost = double.PositiveInfinity; (int, int, int) bq = (0, 0, 0);
@@ -900,11 +927,11 @@ public partial class BetheMethod
                 if (cost < bestCost) { bestCost = cost; bq = (q1, q2, q3); }
             }
             var w = (bq.Item1 / (double)G, bq.Item2 / (double)G, bq.Item3 / (double)G);
-            foreach (var i in chk)
+            foreach (var q in chk)
             {
-                var (h, k, l) = pool.Hkl[bm[i]];
+                var tq = Kq(q); var (h, k, l) = tq;
                 var ph = Complex.Exp(new Complex(0, -2 * Math.PI * (h * w.Item1 + k * w.Item2 + l * w.Item3)));
-                if ((U(bm[i]).Real - U(i).Real * ph).Magnitude > 1e-7 * uMax || (U(bm[i]).Imag - U(i).Imag * ph).Magnitude > 1e-7 * upMax) { ok = false; break; }
+                if ((U(tq).Real - U(q).Real * ph).Magnitude > 1e-7 * uMax || (U(tq).Imag - U(q).Imag * ph).Magnitude > 1e-7 * upMax) { ok = false; break; }
             }
             if (ok) found.Add((name, dm, bm, w, (a, b, c, d)));
         }
