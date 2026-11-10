@@ -137,7 +137,8 @@ public partial class BetheMethod
         double shared = pool * sites * 24 + box * 48 + pool * 200; // 位相の表 (倍精度 + 単精度の写し)、差の表 (U・F、倍精度 + 単精度)、候補の配列
         double nS = set.N + 2 * Math.PI * set.PoolRadiusNm * set.PoolRadiusNm * set.Ps * rho;
         double nQ = 1.4 * 4.0 / 3 * Math.PI * Math.Pow(set.CoreRadiusNm, 3) * rho;
-        double nM = 0.5 * nS;
+        // double nM = 0.5 * nS; // 261110Cl 変更前
+        double nM = nS; // 261110Cl 変更 (codex2 第 33 回): モードの数の上限 (τ = 0 なら nM = nS)。方向ごとの検査と同じ式
         double perWorker = 2 * nS * nQ * 8 + 3 * nQ * nM * 8 + nQ * nM * 4 + 10 * nS * nS * 16 + nQ * 64 + nS * nQ * 16; // H_SQ・X₀、T・EX₀・Y、X の bf16、密な小行列、裾の配列、C# のブロック
         return ((long)Math.Min(long.MaxValue / 4, shared), (long)Math.Min(long.MaxValue / 4, perWorker));
     }
@@ -197,8 +198,8 @@ public partial class BetheMethod
             var (tables, poolCol) = GetTables(table, atomSites, quadAtoms);
             var b = bm.BuildDressedTailBlocksResearch(table, k0, n, set.N, set.Ps, sel);
             int nS = b.SArr.Length, nQ = b.QArr.Length; var hkl = table.Pool.Hkl;
-            // 261110Cl 追加 (codex2 第 32 回): 実際の大きさで大きな確保の前に予算を確かめる (式は EstimateDressedTailMemory と同じ・モードの数は nM = nS/2 で見込む)。超えたら失敗として止める (途中で従来へ戻さない)
-            double nMe = 0.5 * nS, need = 2.0 * nS * nQ * 8 + 3.0 * nQ * nMe * 8 + nQ * nMe * 4 + 10.0 * nS * nS * 16 + nQ * 64.0 + (double)nS * nQ * 16;
+            // 261110Cl 追加 (codex2 第 32 回): 実際の大きさで大きな確保の前に予算を確かめる (式は EstimateDressedTailMemory と同じ・モードの数は上限の nM = nS で見込む)。超えたら失敗として止める (途中で従来へ戻さない)
+            double nMe = nS, need = 2.0 * nS * nQ * 8 + 3.0 * nQ * nMe * 8 + nQ * nMe * 4 + 10.0 * nS * nS * 16 + nQ * 64.0 + (double)nS * nQ * 16;
             if (need > perWorkerBudget)
                 throw new InvalidOperationException($"Dressed-tail beam selection: a direction needs {need / 1e9:f2} GB (explicit {nS}, tail {nQ}), more than the per-worker budget {perWorkerBudget / 1e9:f2} GB. Build again with fewer threads or with the conventional beam selection.");
             var sHkl = new int[3 * nS]; var qHkl = new int[3 * nQ]; var ds = new double[nS]; var dq = new double[nQ]; var qCol = new int[nQ];

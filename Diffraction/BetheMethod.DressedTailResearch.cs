@@ -2175,8 +2175,12 @@ public partial class BetheMethod
         // if (pool == null || pool.RadiusNm != opt.TailRadiusNm || pool.Mat != mat) // 261109Cl 変更前
         //     pool = CreateBeamSelectionPool(opt.TailRadiusNm, buildE0: false);
         double poolRadius = Math.Max(opt.PoolRadiusNm, opt.TailRadiusNm); // 261109Cl: 候補の半径と裾の半径を分ける
-        if (pool == null || pool.RadiusNm != poolRadius || pool.Mat != mat)
-            pool = CreateBeamSelectionPool(poolRadius, buildE0: false); // E1 の尺度は U/γ (電圧に依らない) なので、エネルギーの間で共有する
+        // if (pool == null || pool.RadiusNm != poolRadius || pool.Mat != mat) // 261110Cl 変更前 (エネルギーの間で共有)
+        //     pool = CreateBeamSelectionPool(poolRadius, buildE0: false); // E1 の尺度は U/γ (電圧に依らない) なので、エネルギーの間で共有する
+        // 261110Cl 変更: プールはエネルギーごとに作り直す。U/γ は式では電圧に依らないが、作った電圧で丸めの最後の桁が変わり、少数の方向で結果が変わる
+        //   (20 → 14 keV の 14 keV が単独の 14 keV と最大 2.3e−5 違った。推測: E1 の同点の並び → モードの打ち切りの境の組の出入り)。作り直しは Si で 0.4〜0.6 s (表は 1.4 s)
+        if (pool == null || pool.RadiusNm != poolRadius || pool.Mat != mat || pool.ReferenceKV != (AccVoltage > 0 ? AccVoltage : 20))
+            pool = CreateBeamSelectionPool(poolRadius, buildE0: false);
         rec.SecondsPool = sw.Elapsed.TotalSeconds; sw.Restart();
         bool tds = background != null;
         // var table = CreateDressedTailTable(pool, opt.Eta, !tds ? double.NaN : opt.SourceTailQuadrature > 0 ? double.PositiveInfinity : opt.SourceEta); // 261109Cl 変更前
