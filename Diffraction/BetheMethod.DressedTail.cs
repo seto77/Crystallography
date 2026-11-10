@@ -68,6 +68,10 @@ public partial class BetheMethod
     /// <summary>261110Cl 追加: この BetheMethod の構築で使う新方式の設定 (既定 = <see cref="DressedTailDefaults"/>。構築の要求から渡す。研究の照合では値を変えた複製を渡せる)</summary>
     public DressedTailProductionSettings EbsdDressedTailSettings { get; set; } = DressedTailDefaults;
 
+    /// <summary>261110Cl 追加: このプロセスで走っている新方式の構築が見込んだメモリの合計 [byte] (同時に走る構築が予算を二重に使わないため)</summary>
+    static long s_dressedTailReserved;
+    static readonly object s_dressedTailBudgetGate = new();
+
     /// <summary>261110Cl 追加: 構築の開始前に、新方式を使えるか・作業の数を決める。使えなければ (null, 理由)</summary>
     private (EbsdDressedTailOptions opt, DressedTailNativeRun run, string reason) TryCreateDressedTailProduction(int threads, bool tds)
     {
@@ -80,16 +84,22 @@ public partial class BetheMethod
         var (shared, perWorker) = EstimateDressedTailMemory(set);
         // var info = GC.GetGCMemoryInfo(); // 261110Cl 変更前 (GC の値はヒープの上限 (GCHeapHardLimit) を反映し、機械のメモリではない)
         // long total = info.TotalAvailableMemoryBytes, free = Math.Max(0, total - info.MemoryLoadBytes);
+        DressedTailNativeRun run; int workers;
+        lock (s_dressedTailBudgetGate) // 261110Cl 追加: 予算の計算と見込みの登録を一度に (同時に始めた構築が同じ空きを二重に数えない)
+        {
         var (total, free) = PhysicalMemory(); // 261110Cl: OS の物理メモリと使えるメモリ (GlobalMemoryStatusEx)
         long reserve = Math.Max(2L << 30, (long)(0.15 * total));
-        long budget = Math.Min(total / 2, free - reserve);
+        // long budget = Math.Min(total / 2, free - reserve); // 261110Cl 変更前
+        long others = s_dressedTailReserved; // 261110Cl 追加: 走っているほかの構築の見込み (もう確保した分は free にも出るので保守的に二重に数える)
+        long budget = Math.Min(total / 2, free - reserve) - others;
         int byBudget = perWorker > 0 ? (int)Math.Min(int.MaxValue, Math.Max(0, (budget - shared) / perWorker)) : 0;
-        int workers = Math.Min(Math.Min(Math.Max(1, threads), set.MaxWorkers), Math.Min(Environment.ProcessorCount, byBudget));
-        EbsdBeamSelectionDetail = $"memory estimate: shared {shared / 1e9:f2} GB, {perWorker / 1e9:f2} GB per worker; budget {budget / 1e9:f1} GB (total {total / 1e9:f1}, free {free / 1e9:f1}, reserve {reserve / 1e9:f1}); workers {workers} (requested {threads}, cap {set.MaxWorkers}, logical CPUs {Environment.ProcessorCount}, by budget {byBudget})";
+        workers = Math.Min(Math.Min(Math.Max(1, threads), set.MaxWorkers), Math.Min(Environment.ProcessorCount, byBudget));
+        EbsdBeamSelectionDetail = $"memory estimate: shared {shared / 1e9:f2} GB, {perWorker / 1e9:f2} GB per worker; budget {budget / 1e9:f1} GB (total {total / 1e9:f1}, free {free / 1e9:f1}, reserve {reserve / 1e9:f1}, other builds {others / 1e9:f1}); workers {workers} (requested {threads}, cap {set.MaxWorkers}, logical CPUs {Environment.ProcessorCount}, by budget {byBudget})";
         if (workers < 1)
             return (null, null, $"estimated memory {(shared + perWorker) / 1e9:f1} GB (shared {shared / 1e9:f1} GB + {perWorker / 1e9:f1} GB per worker) exceeds the budget {budget / 1e9:f1} GB");
         // var run = new DressedTailNativeRun(set, workers); // 261110Cl 変更前
-        var run = new DressedTailNativeRun(set, workers, Math.Max(perWorker, (budget - shared) / workers)); // 261110Cl (codex2 第 32 回): 方向ごとに実際の大きさで予算を確かめる
+        run = new DressedTailNativeRun(set, workers, Math.Max(perWorker, (budget - shared) / workers), shared + workers * perWorker); // 261110Cl (codex2 第 32 回): 方向ごとに実際の大きさで予算を確かめる。見込みを登録
+        }
         int caps = NativeWrapper.DressedTailCapabilities;
         EbsdBeamSelectionNative = $"{NativeWrapper.LoadedNativeLibrary} caps {caps}{(set.AllowUBf16 && (caps & 2) != 0 ? " U-bf16" : "")}";
         EbsdBeamSelectionSettingsVersion = DressedTailProductionSettings.Version + (set == DressedTailDefaults ? "" : "+custom");
@@ -153,13 +163,16 @@ public partial class BetheMethod
         readonly List<NativeWrapper.DressedTailWorkspaceHandle> all = [];
         readonly object gate = new();
         readonly long perWorkerBudget; // 261110Cl 追加 (codex2 第 32 回): 1 作業が使ってよい量 [byte]
+        readonly long reservedBytes; // 261110Cl 追加: この構築が s_dressedTailReserved に登録した見込み [byte] (Dispose で戻す)
         DressedTailTable curTable; NativeWrapper.DressedTailTablesHandle curNative; int[] curPoolCol;
         bool disposed;
 
         // public DressedTailNativeRun(DressedTailProductionSettings s, int workers) // 261110Cl 旧シグネチャ
-        public DressedTailNativeRun(DressedTailProductionSettings s, int workers, long perWorkerBudget)
+        // public DressedTailNativeRun(DressedTailProductionSettings s, int workers, long perWorkerBudget) // 261110Cl 旧シグネチャ
+        public DressedTailNativeRun(DressedTailProductionSettings s, int workers, long perWorkerBudget, long reservedBytes)
         {
             set = s; this.perWorkerBudget = perWorkerBudget;
+            lock (s_dressedTailBudgetGate) { s_dressedTailReserved += reservedBytes; this.reservedBytes = reservedBytes; } // 261110Cl 追加
             nset = new NativeWrapper.DressedTailNativeSettings
             {
                 AbiVersion = NativeWrapper.DressedTailAbiVersionExpected, AllowUBf16 = s.AllowUBf16 ? 1 : 0,
@@ -232,6 +245,7 @@ public partial class BetheMethod
                 curNative?.Dispose(); curNative = null; curTable = null;
                 foreach (var w in all) w.Dispose();
                 all.Clear();
+                lock (s_dressedTailBudgetGate) s_dressedTailReserved -= reservedBytes; // 261110Cl 追加: 見込みを戻す (disposed で 1 回だけ)
             }
         }
     }
