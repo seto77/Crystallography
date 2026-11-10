@@ -794,6 +794,100 @@ public partial class BetheMethod
         return result;
     }
 
+    /// <summary>261110Cl 追加 (研究用、高速化の研究の 3: CBED の区画の基底の圧縮)。中心で着衣 (S・Q・X) と基底の行列 (Cm・G₀・G_x・G_y・G_z) を作り、
+    /// 学習の方向 (区画の中心・辺・角など) を全次元 nS で解いて、物理振幅の基底の係数 c(z) = Σ_j Z_j e^{2πiγ_j z} を厚さ thick で集め (スナップショット)、
+    /// G₀ の計量 (流束) で特異値分解して上位 r 本の基底 U_r を作る。検査の方向は K_r = U_r†KU_r・M_r = U_r†MU_r の r 次元の固有分解だけで解く。
+    /// 返り値: [ranks の順][検査の方向] の解 (Amp = 全ビームの物理振幅)。ranks に 0 を入れると全次元 (圧縮なし、共有と同じ) を返す。sv に特異値 (相対) を返す</summary>
+    public DressedTailSolution[][] SolveDressedTailBlockPodResearch(DressedTailTable table, Vector3DBase centerK0, Vector3DBase centerSurface,
+        (Vector3DBase k0, Vector3DBase n)[] trainDirs, (Vector3DBase k0, Vector3DBase n)[] testDirs, int n, double[] thick, int[] ranks, out double[] sv, double ps = 0.1)
+    {
+        var cr = DressCore(table, centerK0, centerSurface, n, ps, 45, false, true, null, null, null);
+        var pool = table.Pool;
+        var (sArr, qArr, X, HSS, HQS, HSQ, EX) = (cr.SArr, cr.QArr, cr.X, cr.HSS, cr.HQS, cr.HSQ, cr.EX);
+        double[] Dc = cr.D;
+        int nS = sArr.Length, nQ = qArr.Length;
+        var hssOff = HSS.Clone();
+        for (int i = 0; i < nS; i++) hssOff[i, i] = 0;
+        var Koff = hssOff + HSQ * X + X.ConjugateTransposeThisAndMultiply(HQS + EX);
+        var xv = ((CDense)X).Values;
+        var Yw = new CDense(nQ, 5 * nS); var yv = Yw.Values;
+        for (int c = 0; c < nS; c++)
+            for (int r = 0; r < nQ; r++)
+            {
+                int q = qArr[r]; double d2 = Dc[q] * Dc[q];
+                double gx = pool.GX[q], gy = pool.GY[q], gz = pool.GZ[q], g2 = Dot3(gx, gx, gy, gy, gz, gz);
+                var x = xv[r + c * nQ];
+                yv[r + c * nQ] = x * d2; yv[r + (c + nS) * nQ] = x * (d2 * gx); yv[r + (c + 2 * nS) * nQ] = x * (d2 * gy); yv[r + (c + 3 * nS) * nQ] = x * (d2 * gz); yv[r + (c + 4 * nS) * nQ] = x * (d2 * g2);
+            }
+        var T = X.ConjugateTransposeThisAndMultiply(Yw);
+        Matrix<Complex> Part(int m) => T.SubMatrix(0, nS, m * nS, nS);
+        var G0 = Part(0); var Gx = Part(1); var Gy = Part(2); var Gz = Part(3); var Gg2 = Part(4);
+        for (int i = 0; i < nS; i++)
+        {
+            int s = sArr[i]; double d2 = Dc[s] * Dc[s];
+            double gx = pool.GX[s], gy = pool.GY[s], gz = pool.GZ[s];
+            G0[i, i] += d2; Gx[i, i] += d2 * gx; Gy[i, i] += d2 * gy; Gz[i, i] += d2 * gz; Gg2[i, i] += d2 * Dot3(gx, gx, gy, gy, gz, gz);
+        }
+        var Cm = Koff - Gg2;
+        var iu0 = Complex.ImaginaryOne * table.U000Imag;
+        (Matrix<Complex> K, Matrix<Complex> M, MathNet.Numerics.LinearAlgebra.Vector<Complex> b) Mats((Vector3DBase k0, Vector3DBase n) d)
+        {
+            var (kx, ky, kz) = d.k0.Tuple; var (nx, ny, nz) = d.n.Tuple;
+            double nk = Dot3(nx, kx, ny, ky, nz, kz);
+            foreach (var i in sArr.Concat(qArr))
+                if (2 * Dot3(nx, pool.GX[i] + kx, ny, pool.GY[i] + ky, nz, pool.GZ[i] + kz) <= 0) throw new DressedTailBackwardBeamException();
+            var K = Cm + iu0 * G0 - 2 * (kx * Gx + ky * Gy + kz * Gz);
+            var M = 2 * nk * G0 + 2 * (nx * Gx + ny * Gy + nz * Gz);
+            var b = MathNet.Numerics.LinearAlgebra.Vector<Complex>.Build.Dense(nS); b[0] = 2 * nk * Dc[0];
+            return (K, M, b);
+        }
+        // 一般の (K, M, b) を解く: M a(0) = b、M⁻¹K の固有分解 → Z = C diag(a)
+        (Complex[] gam, Matrix<Complex> Z) Solve(Matrix<Complex> K, Matrix<Complex> M, MathNet.Numerics.LinearAlgebra.Vector<Complex> b)
+        {
+            var ch = M.Cholesky();
+            var evd = ch.Solve(K).Evd(Symmetricity.Asymmetric);
+            var Cv = evd.EigenVectors;
+            var a = Cv.Solve(ch.Solve(b));
+            return (evd.EigenValues.ToArray(), Cv * Matrix<Complex>.Build.DiagonalOfDiagonalVector(a));
+        }
+        // 学習: 全次元で解いて c(z) を集める
+        var snaps = new List<MathNet.Numerics.LinearAlgebra.Vector<Complex>>();
+        foreach (var d in trainDirs)
+        {
+            var (K, M, b) = Mats(d);
+            var (gam, Z) = Solve(K, M, b);
+            foreach (var t in thick)
+            {
+                var ph = MathNet.Numerics.LinearAlgebra.Vector<Complex>.Build.Dense(gam.Length, j => Complex.Exp(2 * Math.PI * Complex.ImaginaryOne * gam[j] * t));
+                snaps.Add(Z * ph);
+            }
+            snaps.Add(Z * MathNet.Numerics.LinearAlgebra.Vector<Complex>.Build.Dense(gam.Length, Complex.One)); // z = 0
+        }
+        var S = Matrix<Complex>.Build.DenseOfColumnVectors(snaps);
+        // G₀ の計量で直交化: G₀ = L L† → SVD(L† S) → U_r = L^{−†} V_r
+        var L = G0.Cholesky().Factor;
+        var svd = (L.ConjugateTranspose() * S).Svd(true);
+        var sing = svd.S.ToArray().Select(x => x.Magnitude).ToArray();
+        sv = sing.Select(x => x / sing[0]).ToArray();
+        var LhInv = L.ConjugateTranspose().Inverse();
+        var result = new DressedTailSolution[ranks.Length][];
+        for (int ri = 0; ri < ranks.Length; ri++)
+        {
+            int r = ranks[ri] <= 0 ? nS : Math.Min(ranks[ri], Math.Min(nS, S.ColumnCount));
+            var Ur = ranks[ri] <= 0 ? Matrix<Complex>.Build.DenseIdentity(nS) : LhInv * svd.U.SubMatrix(0, nS, 0, r);
+            result[ri] = new DressedTailSolution[testDirs.Length];
+            for (int t = 0; t < testDirs.Length; t++)
+            {
+                var (K, M, b) = Mats(testDirs[t]);
+                var Uh = Ur.ConjugateTranspose();
+                var (gam, Zr) = Solve(Uh * K * Ur, Uh * M * Ur, Uh * b);
+                var Z = Ur * Zr; // nS × r の係数 (W の基底での振幅)
+                result[ri][t] = MakeDressedSolution(pool, sArr, qArr, X, Z, Dc, 1.0, gam, cr.NSelected);
+            }
+        }
+        return result;
+    }
+
     /// <summary>261109Cl 追加 (研究用、codex2 第 20 回): 一般の基底 W = D_c [A_S; A_Q] (D_c = 中心の P^{−1/2}、列 nB 本) での Galerkin と後方 TDS の源。
     /// 各方向で K = A†V'A − G_|g|² + iU'₀G₀ − 2Σ k0_a G_a、M = 2(n·k0)G₀ + 2Σ n_a G_a (G_w = A_S† diag(D_S² w) A_S + A_Q† diag(D_Q² w) A_Q、V' = 流束座標の非対角の結合)、
     /// 初期値 M a(0) = W†P e₀ = conj(A_S[0, :])·2(n·k0)·D_c,000、源 B = Z†F_W Z (裾どうしは球面の求積)。EAQ = E·A_Q (中心の流束座標の疎な積)。返り値は方向ごとの (γ, B)。</summary>
