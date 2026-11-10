@@ -345,7 +345,10 @@ public static class MasterPatternFile
     }
 
     /// <summary>作成条件が今の結晶・電圧と一致するか。一致しなければ理由を返す (一致なら null)</summary>
-    public static string CheckCompatibility(MasterPatternFileInfo info, Crystal crystal, double beamEnergyKeV)
+    /// <param name="beamSelectionUsed">261110Cl 追加 (codex2 第 34 回): null 以外なら、ビーム選択の方式 (Legacy・DressedTail) も一致を求める (較正や複数のマスターを組み合わせる道具用。表示は従来どおり方式を問わない)</param>
+    /// <param name="beamSelectionSettingsVersion">261110Cl 追加: null 以外なら、新方式の設定の版 (DT1-261110、+custom-指紋) も一致を求める</param>
+    // public static string CheckCompatibility(MasterPatternFileInfo info, Crystal crystal, double beamEnergyKeV) // 261110Cl 旧シグネチャ
+    public static string CheckCompatibility(MasterPatternFileInfo info, Crystal crystal, double beamEnergyKeV, string beamSelectionUsed = null, string beamSelectionSettingsVersion = null)
     {
         ArgumentNullException.ThrowIfNull(info);
         ArgumentNullException.ThrowIfNull(crystal);
@@ -353,6 +356,11 @@ public static class MasterPatternFile
             return $"The file was made for a different crystal (\"{info.CrystalName}\"), or the cell, atoms or B differ.";
         if (Math.Abs(info.BeamEnergyKeV - beamEnergyKeV) > 1E-6)
             return $"The file was made at {info.BeamEnergyKeV:g6} keV, not {beamEnergyKeV:g6} keV.";
+        // 261110Cl 追加 (codex2 第 34 回): 方式と設定の版 (求められたときだけ。古いファイルは Legacy・版なしとして読まれている)
+        if (beamSelectionUsed != null && (info.BeamSelectionUsed ?? "Legacy") != beamSelectionUsed)
+            return $"The file was made with the {info.BeamSelectionUsed ?? "Legacy"} beam selection, not {beamSelectionUsed}.";
+        if (beamSelectionSettingsVersion != null && (info.BeamSelectionSettingsVersion ?? "") != beamSelectionSettingsVersion)
+            return $"The file was made with the beam-selection settings '{info.BeamSelectionSettingsVersion}', not '{beamSelectionSettingsVersion}'.";
         return null;
     }
 }

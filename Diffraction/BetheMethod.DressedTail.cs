@@ -60,8 +60,17 @@ public partial class BetheMethod
         public double RegDepthNm { get; init; } = 45;
         public int SourceQuadrature { get; init; } = 77;
         public bool AllowUBf16 { get; init; } = true;
-        /// <summary>作業の数の上限 (研究の経路は論理 CPU 24 の機械で 24 並列が最速、32 では遅い。他の CPU で 24 が最適とは言わない)</summary>
+        // /// <summary>作業の数の上限 (研究の経路は論理 CPU 24 の機械で 24 並列が最速、32 では遅い。他の CPU で 24 が最適とは言わない)</summary> // 261110Cl 変更前 (機械の記述の誤り)
+        /// <summary>作業の数の上限 (研究の経路は 16 コア・32 論理 CPU の機械 (Ryzen 9 9950X) で 24 並列が最速、32 では SMT の取り合いで遅い。他の CPU で 24 が最適とは言わない)</summary>
         public int MaxWorkers { get; init; } = 24;
+
+        /// <summary>261110Cl 追加 (codex2 第 34 回): 数値に効く設定の全部の指紋 (文化に依らない文字列の SHA-256 の先頭 8 桁)。既定と違う設定の版を区別する (N300 と N600 など)。作業の数の上限は結果を変えないので含めない</summary>
+        public string Fingerprint()
+        {
+            string text = string.Create(System.Globalization.CultureInfo.InvariantCulture,
+                $"pool={PoolRadiusNm:R};tail={TailRadiusNm:R};core={CoreRadiusNm:R};rn={NeighborRadiusNm:R};p2={NeighborPs:R};eta={Eta:R};N={N};ps={Ps:R};tau={ModeTau:R};deg={DegTol:R};ed={EdeltaThreshold:R};reg={RegDepthNm:R};quad={SourceQuadrature};ubf16={AllowUBf16}");
+            return Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(text)))[..8].ToLowerInvariant();
+        }
     }
     /// <summary>261110Cl 追加: 新方式の本番の設定 (既定)</summary>
     public static DressedTailProductionSettings DressedTailDefaults { get; } = new();
@@ -98,11 +107,14 @@ public partial class BetheMethod
         if (workers < 1)
             return (null, null, $"estimated memory {(shared + perWorker) / 1e9:f1} GB (shared {shared / 1e9:f1} GB + {perWorker / 1e9:f1} GB per worker) exceeds the budget {budget / 1e9:f1} GB");
         // var run = new DressedTailNativeRun(set, workers); // 261110Cl 変更前
-        run = new DressedTailNativeRun(set, workers, Math.Max(perWorker, (budget - shared) / workers), shared + workers * perWorker); // 261110Cl (codex2 第 32 回): 方向ごとに実際の大きさで予算を確かめる。見込みを登録
+        // 261110Cl 変更 (codex2 第 34 回): 1 作業に許す量と登録する見込みを一致させる (許す量 = 見積もりの 2 倍まで、予算の残りの等分まで)。前は登録が見積もりで許す量がそれより大きく、同時の構築の安全の枠に抜けがあった
+        long allowedPerWorker = Math.Max(perWorker, Math.Min(2 * perWorker, (budget - shared) / workers));
+        run = new DressedTailNativeRun(set, workers, allowedPerWorker, shared + workers * allowedPerWorker); // 261110Cl (codex2 第 32 回): 方向ごとに実際の大きさで予算を確かめる。見込みを登録
         }
         int caps = NativeWrapper.DressedTailCapabilities;
         EbsdBeamSelectionNative = $"{NativeWrapper.LoadedNativeLibrary} caps {caps}{(set.AllowUBf16 && (caps & 2) != 0 ? " U-bf16" : "")}";
-        EbsdBeamSelectionSettingsVersion = DressedTailProductionSettings.Version + (set == DressedTailDefaults ? "" : "+custom");
+        // EbsdBeamSelectionSettingsVersion = DressedTailProductionSettings.Version + (set == DressedTailDefaults ? "" : "+custom"); // 261110Cl 変更前
+        EbsdBeamSelectionSettingsVersion = DressedTailProductionSettings.Version + (set == DressedTailDefaults ? "" : "+custom-" + set.Fingerprint()); // 261110Cl (codex2 第 34 回): 既定と違う設定どうしも区別する
         var opt = new EbsdDressedTailOptions
         {
             TailRadiusNm = set.TailRadiusNm, PoolRadiusNm = set.PoolRadiusNm, Eta = set.Eta, N = set.N, Ps = set.Ps, RegDepthNm = set.RegDepthNm,
