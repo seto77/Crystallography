@@ -570,13 +570,22 @@ public partial class BetheMethod
                 var Lc = Rc.Inverse();
                 // 探り (前方の条件を満たすもの) を全次元で解く
                 var zsL = new List<Matrix<Complex>>();
-                foreach (var di in eprobes.Where(di => !BackwardAt(di, all)))
+                // foreach (var di in eprobes.Where(di => !BackwardAt(di, all))) // 261111Cl 変更前 (逐次。対称で区画が少ないと、この段が全体の待ち時間を延ばしてコアが余った)
+                // {
+                //     var (a, y0, _, _) = FullSystem(di);
+                //     var yt = prop == 0 ? NativeWrapper.CBEDSolver_Eigen(a, y0, thicknesses) : prop == 1 ? NativeWrapper.CBEDSolver_MatExp(a, y0, thicknesses) : ManagedPropagate(a, y0, nB); // 261110Cl (codex2 第 37 回): 通常の方向と同じ 3 分岐
+                //     probeDone[di] = yt;
+                //     zsL.Add(Lc * new CDense(nB, tLen, yt));
+                // }
+                // 261111Cl 変更: 探りの全次元の解は区画の中のスレッドで並列に解く (結果は同じ)
+                var epList = eprobes.Where(di => !BackwardAt(di, all)).ToArray();
+                var epY = new Complex[epList.Length][];
+                Parallel.For(0, epList.Length, new ParallelOptions { MaxDegreeOfParallelism = Math.Max(1, innerLocal) }, q =>
                 {
-                    var (a, y0, _, _) = FullSystem(di);
-                    var yt = prop == 0 ? NativeWrapper.CBEDSolver_Eigen(a, y0, thicknesses) : prop == 1 ? NativeWrapper.CBEDSolver_MatExp(a, y0, thicknesses) : ManagedPropagate(a, y0, nB); // 261110Cl (codex2 第 37 回): 通常の方向と同じ 3 分岐
-                    probeDone[di] = yt;
-                    zsL.Add(Lc * new CDense(nB, tLen, yt));
-                }
+                    var (a, y0, _, _) = FullSystem(epList[q]);
+                    epY[q] = prop == 0 ? NativeWrapper.CBEDSolver_Eigen(a, y0, thicknesses) : prop == 1 ? NativeWrapper.CBEDSolver_MatExp(a, y0, thicknesses) : ManagedPropagate(a, y0, nB); // 通常の方向と同じ 3 分岐
+                });
+                for (int q = 0; q < epList.Length; q++) { probeDone[epList[q]] = epY[q]; zsL.Add(Lc * new CDense(nB, tLen, epY[q])); }
                 // 区画の中心 (方向の平均) の励起: z(t) = e^{2πiγt} L_c y0_c
                 {
                     var y0c = new Complex[nB]; for (int i = 0; i < nB; i++) y0c[i] = 2 * nkc * scc[i] * v0[i];
@@ -688,21 +697,38 @@ public partial class BetheMethod
                 wpR = (CDense)(wp * Rk);
                 // 261110Cl (codex2 第 37 回): 事後の検査。探りの方向で縮約の解と全次元の解の出射の強度を比べ、上限を超えたら縮約しない
                 //   261110Cl 追加: 区画の内側の 4 方向 (升の中心から ±side/4) も全次元で解いて比べる (端の探りだけでは中の交差を見落とした)
+                var inner4 = new List<int>(); // 261111Cl: 中の 4 点を選んでから並列に解く (下の 2 つのループも並列に。結果は同じ)
                 foreach (var (qu, qv) in new[] { (-0.31, 0.17), (0.19, -0.13), (0.33, 0.29), (-0.09, -0.34) }) // 261110Cl: 対称の線から外れた点 (探りとも別)
                 {
                     double tu = sq.uc + qu * sq.side, tv = sq.vc + qv * sq.side; int bi = -1; double bd = double.PositiveInfinity;
                     foreach (var i in members) { double d2u = (uu[i] - tu) * (uu[i] - tu) + (vv[i] - tv) * (vv[i] - tv); if (d2u < bd) { bd = d2u; bi = i; } }
-                    if (bi < 0 || probeDone.ContainsKey(bi) || BackwardAt(bi, all)) continue;
-                    var (a, y0, _, _) = FullSystem(bi);
-                    probeDone[bi] = prop == 0 ? NativeWrapper.CBEDSolver_Eigen(a, y0, thicknesses) : prop == 1 ? NativeWrapper.CBEDSolver_MatExp(a, y0, thicknesses) : ManagedPropagate(a, y0, nB);
+                    if (bi < 0 || probeDone.ContainsKey(bi) || inner4.Contains(bi) || BackwardAt(bi, all)) continue;
+                    // var (a, y0, _, _) = FullSystem(bi); // 261111Cl 変更前 (逐次)
+                    // probeDone[bi] = prop == 0 ? NativeWrapper.CBEDSolver_Eigen(a, y0, thicknesses) : prop == 1 ? NativeWrapper.CBEDSolver_MatExp(a, y0, thicknesses) : ManagedPropagate(a, y0, nB);
+                    inner4.Add(bi);
                 }
-                double probeDiff = 0;
-                foreach (var kv in probeDone)
+                var inY = new Complex[inner4.Count][];
+                Parallel.For(0, inner4.Count, new ParallelOptions { MaxDegreeOfParallelism = Math.Max(1, innerLocal) }, q =>
                 {
-                    var yr = ReducedY(kv.Key);
-                    var pr = (wpR * new CDense(nR, tLen, yr)).Values; var pf = (wp * new CDense(nB, tLen, kv.Value)).Values;
-                    for (int i = 0; i < pr.Length; i++) probeDiff = Math.Max(probeDiff, Math.Abs(pr[i].Magnitude * pr[i].Magnitude - pf[i].Magnitude * pf[i].Magnitude));
-                }
+                    var (a, y0, _, _) = FullSystem(inner4[q]);
+                    inY[q] = prop == 0 ? NativeWrapper.CBEDSolver_Eigen(a, y0, thicknesses) : prop == 1 ? NativeWrapper.CBEDSolver_MatExp(a, y0, thicknesses) : ManagedPropagate(a, y0, nB);
+                });
+                for (int q = 0; q < inner4.Count; q++) probeDone[inner4[q]] = inY[q];
+                double probeDiff = 0;
+                // foreach (var kv in probeDone) // 261111Cl 変更前 (逐次)
+                // {
+                //     var yr = ReducedY(kv.Key);
+                //     var pr = (wpR * new CDense(nR, tLen, yr)).Values; var pf = (wp * new CDense(nB, tLen, kv.Value)).Values;
+                //     for (int i = 0; i < pr.Length; i++) probeDiff = Math.Max(probeDiff, Math.Abs(pr[i].Magnitude * pr[i].Magnitude - pf[i].Magnitude * pf[i].Magnitude));
+                // }
+                var pdList = probeDone.ToArray(); var pdMax = new double[pdList.Length];
+                Parallel.For(0, pdList.Length, new ParallelOptions { MaxDegreeOfParallelism = Math.Max(1, innerLocal) }, q =>
+                {
+                    var yr = ReducedY(pdList[q].Key);
+                    var pr = (wpR * new CDense(nR, tLen, yr)).Values; var pf = (wp * new CDense(nB, tLen, pdList[q].Value)).Values;
+                    for (int i = 0; i < pr.Length; i++) pdMax[q] = Math.Max(pdMax[q], Math.Abs(pr[i].Magnitude * pr[i].Magnitude - pf[i].Magnitude * pf[i].Magnitude));
+                });
+                foreach (var v in pdMax) probeDiff = Math.Max(probeDiff, v);
                 lock (gate) maxProbeDiff = Math.Max(maxProbeDiff, probeDiff);
                 if (probeDiff > set.ReductionCheckLimit || nR == nB) { redP = null; nR = nB; if (nR != nB || probeDiff > set.ReductionCheckLimit) lock (gate) nReduceSkipped++; }
             }
