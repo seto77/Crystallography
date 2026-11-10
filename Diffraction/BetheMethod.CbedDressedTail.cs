@@ -331,20 +331,21 @@ public partial class BetheMethod
             // 261110Cl 追加: 励起の見積もりの探り (早い選び分け・後段の打ち切り) は対称の線から外れた一般の位置に置く: 方位を 0.37 rad ずらした 8 方向の端と、区画の中の非対称な 4 点。
             //   晶帯軸の区画では x・y 軸と対角線が鏡映の線に乗り、そこでは鏡映で反対称なモードの励起が 0 に見える (Si [110] 200 kV・区画 2 mrad で 4.4e−3 を見落とした)。
             //   繰り上げ (λ は方向の一次なので四隅で足りる) には今までの 8 方位 (probes) を使う
-            var eprobes = new HashSet<int>();
+            var eprobes = new HashSet<int>(); var eprobesEarly = new HashSet<int>(); // 後段 (12 点) と、早い選び分け (6 点: ずらした方位の斜めの 4 つ + 中の 2 点。近似なので少なく)
             if (members.Length > 9)
             {
                 for (int m8 = 0; m8 < 8; m8++)
                 {
                     double ang = m8 * Math.PI / 4 + 0.37, ca = Math.Cos(ang), sa = Math.Sin(ang), best = double.NegativeInfinity; int bi = members[0];
                     foreach (var i in members) { double pr = (uu[i] - sq.uc) * ca + (vv[i] - sq.vc) * sa; if (pr > best) { best = pr; bi = i; } }
-                    eprobes.Add(bi);
+                    eprobes.Add(bi); if (m8 % 2 == 1) eprobesEarly.Add(bi);
                 }
+                int qn = 0;
                 foreach (var (qu, qv) in new[] { (0.23, 0.11), (-0.13, 0.27), (-0.27, -0.09), (0.07, -0.29) })
                 {
                     double tu = sq.uc + qu * sq.side, tv = sq.vc + qv * sq.side; int bi = -1; double bd = double.PositiveInfinity;
                     foreach (var i in members) { double d2u = (uu[i] - tu) * (uu[i] - tu) + (vv[i] - tv) * (vv[i] - tv); if (d2u < bd) { bd = d2u; bi = i; } }
-                    if (bi >= 0) eprobes.Add(bi);
+                    if (bi >= 0) { eprobes.Add(bi); if (qn++ % 2 == 0) eprobesEarly.Add(bi); }
                 }
             }
             // 着衣の直後のモードの選び分け (EarlyModeTau): 探りの方向 (四隅) の励起を H_b + diag(Δλ_s) で見積もる
@@ -365,7 +366,7 @@ public partial class BetheMethod
                     // 探りの方向 (四隅 = 8 方位の斜めの 4 つ) の励起を H_d = H_b + diag(Δλ_s(d)) の固有分解で厳密に伝播し、中心のモードへ射影する
                     //   (一次の摂動の上界は 2 段の経由の励起を落とし (誤差 3.9e−4)、くり返すと保守的すぎてモードが減らない (261110Cl の試し) ので使わない)
                     // var probeList = probesDiag.ToArray(); // 261110Cl 変更前
-                    var probeList = eprobes.Where(di => !BackwardAt(di, sArrSel)).ToArray(); // 261110Cl (codex2 第 37 回): 明示に後ろ向きのビームがある探りは使わない。一般の位置の探り (eprobes) を使う
+                    var probeList = eprobesEarly.Where(di => !BackwardAt(di, sArrSel)).ToArray(); // 261110Cl (codex2 第 37 回): 明示に後ろ向きのビームがある探りは使わない。一般の位置の探り (eprobes) を使う
                     var zs = new Matrix<Complex>[probeList.Length]; // 探りごとの中心のモードの係数 (ns × tLen)
                     Parallel.For(0, probeList.Length, new ParallelOptions { MaxDegreeOfParallelism = Math.Max(1, innerLocal) }, pi =>
                     {
