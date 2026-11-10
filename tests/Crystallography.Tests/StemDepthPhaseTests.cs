@@ -10,7 +10,7 @@ public class StemDepthPhaseTests
     private const double KV = 200, Conv = 0.015;
 
     /// <summary>BetheBench と同じ形の入射方向 (収束角の 1.05 倍の正方格子) で STEM を走らせ、TDS の像を返す</summary>
-    private static double[][][] RunTds(Crystal crystal, Matrix3D rot, int n, double slice, Vector3D surface = null, double maxThickness = 30)
+    private static double[][][] RunTds(Crystal crystal, Matrix3D rot, int n, double slice, Vector3D surface = null, double maxThickness = 30, double[] thicknesses = null)
     {
         crystal.RotationMatrix = rot;
         var bethe = new BetheMethod(crystal);
@@ -29,7 +29,7 @@ public class StemDepthPhaseTests
         bethe.StemCompleted += (s, e) => { error = e.Error; done.Set(); };
         var context = SynchronizationContext.Current;
         SynchronizationContext.SetSynchronizationContext(null); // 完了通知をスレッドプールへ
-        try { bethe.RunSTEM(n, KV, 5e5, 3, slice, new System.Drawing.Size(12, 12), 0.032, 0, rot, [10.0, maxThickness], [0.0], directions, Conv, 0.040, 0.120); }
+        try { bethe.RunSTEM(n, KV, 5e5, 3, slice, new System.Drawing.Size(12, 12), 0.032, 0, rot, thicknesses ?? [10.0, maxThickness], [0.0], directions, Conv, 0.040, 0.120); }
         finally { SynchronizationContext.SetSynchronizationContext(context); }
         Assert.True(done.Wait(TimeSpan.FromMinutes(5)), "STEM が終わらない");
         Assert.Null(error);
@@ -73,6 +73,19 @@ public class StemDepthPhaseTests
         var fine = RunTds(crystal, new Matrix3D(), 300, 0.5, maxThickness: 20);
         var rel = MaxRelDiff(coarse, fine);
         Assert.True(rel < 2e-3, $"スライス 1 nm と 0.5 nm の TDS の差 {rel:e2}");
+    }
+
+    /// <summary>厚さの列が重なって幅 0 の区間がある (10, 10, 20 nm) 傾けた Si (全部の q に q_n ≠ 0): sinc(0)/0 で NaN にならず、
+    /// 2 つ目の厚さの像は 1 つ目と同じ (codex2 第 41 回)</summary>
+    [Fact]
+    public void ZeroWidthThicknessSegment_NoNaN()
+    {
+        var crystal = ConvertCrystalData.ConvertFromCifText(SiCifText).ToCrystal();
+        var img = RunTds(crystal, Matrix3D.Rot(new Vector3DBase(1, 0, 0), 5e-3), 40, 1.0, thicknesses: [10.0, 10.0, 20.0]);
+        Assert.All(img.SelectMany(t => t).SelectMany(d => d), v => Assert.False(double.IsNaN(v), "TDS の像に NaN"));
+        var scale = img[0][0].Max(Math.Abs);
+        for (int i = 0; i < img[0][0].Length; i++)
+            Assert.True(Math.Abs(img[1][0][i] - img[0][0][i]) <= 1e-12 * scale, $"幅 0 の区間で像が変わった (画素 {i})");
     }
 
     private const string SiCifText = """

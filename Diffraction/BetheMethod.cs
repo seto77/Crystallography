@@ -2850,6 +2850,7 @@ public partial class BetheMethod
         stem.BeamDirections = (Vector3DBase[])beamDirections.Clone(); // 261105Cl 追加 (260801Cl と同じく呼び出し元の配列の参照は渡さない)
         stem.Thicknesses = (double[])thicknesses.Clone(); // 261105Cl 追加
         stem.Surface = new Vector3D(Surface); // 261105Cl 追加 (Surface は可変のオブジェクト)
+        stem.UseLocalSurfacePerBeamDirection = false; // 261111Cl 追加 (codex2 第 41 回): EBSD 用の方向ごとの局所の法線は STEM では使わない (K0 の屈折と P・深さの位相の法線を固定の Surface にそろえる)
         stem.CrystalRotation = new Matrix3D(Crystal.RotationMatrix); // 261105Cl 追加: 像の原点のずらし (StemDoWork) に使う結晶の向き
         lastStemRun = stem; // 261105Cl 追加: 完了時に、使ったビームの一覧をこのインスタンスへ渡すため (Stem_RunWorkerCompleted)
         //bwSTEM.RunWorkerAsync((solver, thread, cs, delta, sliceThickness, convergenceAngle, detAngleInner, detAngleOuter, thicknesses, defocusses, imageSize, resolution, sourceSize, ionization, ionData, runId));//260801Cl 変更前 (1 チャネル)
@@ -3157,7 +3158,8 @@ public partial class BetheMethod
         Complex DepthWeight(int qIndex, int t, int si)
         {
             double qn = qN[qIndex], x = Math.PI * qn * tStep[t];
-            return qn == 0 ? 1 : Exp(TwoPiI * qn * _thick[t][si]) * (Math.Sin(x) / x);
+            // return qn == 0 ? 1 : Exp(TwoPiI * qn * _thick[t][si]) * (Math.Sin(x) / x); // 261111Cl 変更前 (幅 0 の区間 (厚さの列の重なりや 0) で 0/0 = NaN、codex2 第 41 回)
+            return qn == 0 ? 1 : Exp(TwoPiI * qn * _thick[t][si]) * (x == 0 ? 1 : Math.Sin(x) / x); // 261111Cl 変更
         }
 
         //g_q_index (あるq[m]に対して、g-qの反射は、Beams配列で何番目か)
@@ -3523,10 +3525,9 @@ public partial class BetheMethod
                                     //261111Cl 追加: q_n ≠ 0 ではスライス 1 枚分を一時の領域に積み、深さの位相の重みを掛けて足す (q_n = 0 では直接)
                                     var weighted = qN[qIndex] != 0;
                                     var w = weighted ? DepthWeight(qIndex, t, si) : 1;
-                                    Complex* tmpD = stackalloc Complex[dLen];
-                                    for (int d = 0; d < dLen; d++) tmpD[d] = 0;
+                                    var tmpArr = weighted ? new Complex[dLen] : null;//スライス 1 枚分 (dLen = 焦点の数に上限が無いのでヒープに置く)
                                     //fixed (Complex* _tc_k = tc_k, _U = U, _sum = sum, _lenz = qEntryLenz[qIndex]) //260711Cl 変更前
-                                    fixed (Complex* _tc_k = sliceTc, _U = U, _sum = sum, _lenz = qEntryLenz[qIndex])//260711Cl 変更: 全-slice 物化時は物化済みバッファ、旧経路では tc_k (sliceTc==tc_k)
+                                    fixed (Complex* _tc_k = sliceTc, _U = U, _sum = sum, _lenz = qEntryLenz[qIndex], tmpD = tmpArr)//260711Cl 変更: 全-slice 物化時は物化済みバッファ、旧経路では tc_k (sliceTc==tc_k) //261111Cl tmpD を追加
                                     fixed (int* _k = qEntryK[qIndex], _n4 = qEntryN4[qIndex])
                                     fixed (double* _r4 = qEntryR4[qIndex])
                                     {
@@ -3539,14 +3540,14 @@ public partial class BetheMethod
                                     //違うのは U (U_ion[ch]) と出力先 (sumEdx[ch]) だけ
                                     if (U_ion is not null)
                                         for (int ch = 0; ch < U_ion.Length; ch++)
-                                            fixed (Complex* _tcE = sliceTc, _Ui = U_ion[ch], _sumE = sumEdx[ch], _lenzE = qEntryLenz[qIndex])
+                                            fixed (Complex* _tcE = sliceTc, _Ui = U_ion[ch], _sumE = sumEdx[ch], _lenzE = qEntryLenz[qIndex], tmpE = tmpArr) //261111Cl tmpE を追加
                                             fixed (int* _kE = qEntryK[qIndex], _n4E = qEntryN4[qIndex])
                                             fixed (double* _r4E = qEntryR4[qIndex])
                                             {
                                                 // NativeWrapper.STEM_InelasticQ(bLen, dLen, entryCount, _Ui + qIndex * bLen2, _tcE, _kE, _n4E, _r4E, _lenzE, _sumE + qIndex * dLen); // 261111Cl 変更前
-                                                NativeWrapper.STEM_InelasticQ(bLen, dLen, entryCount, _Ui + qIndex * bLen2, _tcE, _kE, _n4E, _r4E, _lenzE, weighted ? tmpD : _sumE + qIndex * dLen); // 261111Cl 変更
+                                                NativeWrapper.STEM_InelasticQ(bLen, dLen, entryCount, _Ui + qIndex * bLen2, _tcE, _kE, _n4E, _r4E, _lenzE, weighted ? tmpE : _sumE + qIndex * dLen); // 261111Cl 変更
                                                 if (weighted) // 261111Cl 追加
-                                                    for (int d = 0; d < dLen; d++) { _sumE[qIndex * dLen + d] += tmpD[d] * w; tmpD[d] = 0; }
+                                                    for (int d = 0; d < dLen; d++) { _sumE[qIndex * dLen + d] += tmpE[d] * w; tmpE[d] = 0; }
                                             }
                                     if (Interlocked.Increment(ref count) % 100 == 0) report(StemStage.InelasticQ, (double)count / total);//状況を報告 //260802Cl 型付き進捗へ
                                 });
