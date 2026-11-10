@@ -91,11 +91,12 @@ Si1 Si 0 0 0 0.46
     /// <summary>Si [110] 200 kV (2mm、鏡映は画面の斜め): 対称を使うと 4 分の 1 近くの方向だけを解き、振幅 (位相込み) は全方向を解いた値と 1e−10 で一致する。
     /// N200 は FOLZ のビーム (|g| ≈ 44 nm⁻¹) を含み、並進のビーム軸方向の成分による HOLZ の層の位相を確かめる (照合の組がビームの組の ZOLZ だけだった頃は e^{−i 105°} ずれた)</summary>
     [Theory]
-    [InlineData(32, 10)]
-    [InlineData(200, 6)]
-    public void LegacyCbed_WithSymmetry_MatchesFullSolve(int n, int division)
+    [InlineData(32, 10, false)]
+    [InlineData(200, 6, false)]
+    [InlineData(32, 10, true)] // 原点の選択 1: 並進の位相が ±i で、写しの位相の符号の誤りが見える
+    public void LegacyCbed_WithSymmetry_MatchesFullSolve(int n, int division, bool origin1)
     {
-        var (crystal, _) = BetheEigenReuseTests.TiltedSi(); // 結晶だけ使う (向きは下の rot を RunCBED に渡す)
+        var crystal = origin1 ? ConvertCrystalData.ConvertFromCifText(SiOrigin1Cif).ToCrystal() : BetheEigenReuseTests.TiltedSi().Crystal; // 結晶だけ使う (向きは下の rot を RunCBED に渡す)
         var rot = ZoneToZ(crystal, 1, 1, 0);
         var dirs = Grid(division, 1e-3);
         double[] thick = [30, 60];
