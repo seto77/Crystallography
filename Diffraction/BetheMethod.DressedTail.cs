@@ -179,6 +179,7 @@ public partial class BetheMethod
         readonly object gate = new();
         readonly long perWorkerBudget; // 261110Cl 追加 (codex2 第 32 回): 1 作業が使ってよい量 [byte]
         readonly long reservedBytes; // 261110Cl 追加: この構築が s_dressedTailReserved に登録した見込み [byte] (Dispose で戻す)
+        readonly int workerCount; // 261110Cl 追加: 作業の数 (方向ごとの検査で、そのときの空きを作業で割るため)
         DressedTailTable curTable; NativeWrapper.DressedTailTablesHandle curNative; int[] curPoolCol;
         bool disposed;
 
@@ -186,7 +187,7 @@ public partial class BetheMethod
         // public DressedTailNativeRun(DressedTailProductionSettings s, int workers, long perWorkerBudget) // 261110Cl 旧シグネチャ
         public DressedTailNativeRun(DressedTailProductionSettings s, int workers, long perWorkerBudget, long reservedBytes)
         {
-            set = s; this.perWorkerBudget = perWorkerBudget;
+            set = s; this.perWorkerBudget = perWorkerBudget; workerCount = Math.Max(1, workers);
             lock (s_dressedTailBudgetGate) { s_dressedTailReserved += reservedBytes; this.reservedBytes = reservedBytes; } // 261110Cl 追加
             nset = new NativeWrapper.DressedTailNativeSettings
             {
@@ -228,7 +229,10 @@ public partial class BetheMethod
             int nS = b.SArr.Length, nQ = b.QArr.Length; var hkl = table.Pool.Hkl;
             // 261110Cl 追加 (codex2 第 32 回): 実際の大きさで大きな確保の前に予算を確かめる (式は EstimateDressedTailMemory と同じ・モードの数は上限の nM = nS で見込む)。超えたら失敗として止める (途中で従来へ戻さない)
             double nMe = nS, need = 2.0 * nS * nQ * 8 + 3.0 * nQ * nMe * 8 + nQ * nMe * 4 + 10.0 * nS * nS * 16 + nQ * 64.0 + (double)nS * nQ * 16;
-            if (need > perWorkerBudget)
+            // if (need > perWorkerBudget) // 261110Cl 変更前
+            // 261110Cl 変更: 見積もりは裾を芯の球で数えるので、繰り上げた高次の明示のまわりの近傍が多い設定 (芯を小さくした軽い設定など) では実際の裾が数倍になる
+            //   (Si・N64・芯 25 で見積もりの約 4 倍)。許す量を超えても、そのときの物理メモリの空き (予約を引いて作業で割った分) に収まれば進める。収まらなければ止める
+            if (need > perWorkerBudget && need > (double)(PhysicalMemory().free - Math.Max(2L << 30, (long)(0.15 * PhysicalMemory().total))) / workerCount)
                 throw new InvalidOperationException($"Dressed-tail beam selection: a direction needs {need / 1e9:f2} GB (explicit {nS}, tail {nQ}), more than the per-worker budget {perWorkerBudget / 1e9:f2} GB. Build again with fewer threads or with the conventional beam selection.");
             var sHkl = new int[3 * nS]; var qHkl = new int[3 * nQ]; var ds = new double[nS]; var dq = new double[nQ]; var qCol = new int[nQ];
             for (int i = 0; i < nS; i++) { var (h, k, l) = hkl[b.SArr[i]]; sHkl[3 * i] = h; sHkl[3 * i + 1] = k; sHkl[3 * i + 2] = l; ds[i] = b.D[b.SArr[i]]; }
