@@ -252,6 +252,10 @@ public class EBSD
             // EbsdRepresentativeChunkSize = MasterPatternRepresentativeChunkSize // 261107Cl 追加 // 261110Cl 変更前
             EbsdRepresentativeChunkSize = MasterPatternRepresentativeChunkSize, // 261107Cl 追加
             EbsdBeamSelection = currentMasterPatternBuildRequest.BeamSelection, // 261110Cl 追加: ビーム選択の方式 (要求)
+            // 261110Cl 追加 (作者の判断 2026-11-10、AskUserQuestion「欄を使えるようにする」): 新方式では要求の本数 (FormEBSD の「回折波の数」) を E1 の基準の本数 N に使う。
+            //   既定 300 なら既定の設定と同じ (版は DT1-261110)、それ以外は +custom-指紋。従来の方式ではこの設定を読まない
+            EbsdDressedTailSettings = currentMasterPatternBuildRequest.BeamSelection == BetheMethod.EbsdBeamSelectionMethod.DressedTail
+                ? BetheMethod.DressedTailDefaults with { N = Math.Max(2, currentMasterPatternBuildRequest.MaxNumOfBloch) } : BetheMethod.DressedTailDefaults,
         };
         masterPatternBethe.EBSD_ProgressChanged += MasterPatternBethe_EBSD_ProgressChanged;
         masterPatternBethe.EBSD_Completed += MasterPatternBethe_EBSD_Completed;
