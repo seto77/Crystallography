@@ -50,7 +50,8 @@ public partial class BetheMethod
     public sealed record CbedDressedTailSettings
     {
         /// <summary>設定の版</summary>
-        public const string Version = "CDT1-261110";
+        // public const string Version = "CDT1-261110"; // 261111Cl 変更前
+        public const string Version = "CDT2-261111"; // 261111Cl 変更: 晶帯軸の対称の利用 (UseSymmetry) を足した
         /// <summary>E1 の基準の本数 (000 を含む。遅い反射の繰り上げで明示の本数は増える)</summary>
         public int N { get; init; } = 300;
         /// <summary>候補の半径 [nm⁻¹] (明示の繰り上げはこの中の全部から)。R40 では Si [111] 100 kV の 40〜60 nm⁻¹ の HOLZ を落として誤差 6.5e−3 (R60 は 2.6e−4、§5.19)</summary>
@@ -95,6 +96,13 @@ public partial class BetheMethod
         /// <summary>裾の積を単精度 (complex64) で積む: 区画の基底の行列のうち裾 (A_Q) の積と、着衣の密な積 (H_SQ X₀・H_QS V_b) と疎な積 (E·X)。明示の部分は倍精度。
         /// 裾の寄与は小さいので丸めの影響は小さい (基底の行列の単精度で強度の差 5e−8、day11r)</summary>
         public bool SingleTailProducts { get; init; } = true; // 261110Cl: 既定で単精度 (強度の差 5e−8)
+        /// <summary>261111Cl 追加: 晶帯軸の対称を使う。ビーム軸まわりの 2 回・4 回の回転と縦・横・斜めの鏡映のうち、表面の法線・方向の格子・候補のビーム・
+        /// ポテンシャル (U と U'、並進の位相込み) を正確に移すものがあれば、代表の方向だけを解き、残りの方向の振幅は位相込みで写す (<see cref="CbedSymmetryOps"/>)</summary>
+        public bool UseSymmetry { get; init; } = true;
+        /// <summary>261111Cl 追加: 後段の打ち切り (ModeReduceTau) でも、区画のどこか (中心・8 方位の端) で遅い (|Q/P| &lt; ps) か区画の中で Q/P の符号が変わる明示の出射のビームに
+        /// 重み (出射のビームの上の振幅の 2 乗の 5 % 以上) のあるモードは残す (早い選び分けと同じ規則)。探り (4 隅 + 中の 4 点) から離れた所だけを通る HOLZ の線のモードを落とさない
+        /// (Si [111] 100 kV・区画 2 mrad の中ほどの線で 1.5e−3、day13f)</summary>
+        public bool LateSlowKeep { get; init; } = true;
     }
     /// <summary>261110Cl 追加: CBED の新方式の既定の設定</summary>
     public static CbedDressedTailSettings CbedDressedTailDefaults { get; } = new();
@@ -173,17 +181,60 @@ public partial class BetheMethod
         var e2 = Vector3DBase.Normarize(Vector3DBase.VectorProduct(c, e1));
         var uu = new double[nDir]; var vv = new double[nDir];
         for (int i = 0; i < nDir; i++) { var d = directions[i]; double dc = d * c; uu[i] = (d * e1) / dc; vv[i] = (d * e2) / dc; }
+        // 261111Cl 追加: 晶帯軸の対称。使える操作があれば、各軌道の代表 (区画の数が最も少なくなる向きと升の格子のずれを選ぶ) だけを解き、最後に残りの方向へ写す
+        int nAll = nDir; var allDirections = directions;
+        double symOffU = 0, symOffV = 0, symCos = 1, symSin = 0, sideMinSym = Math.Sqrt(2) * set.PatchRadiusMrad * 1e-3; // 升の格子のずれと回転 (斜めの鏡映の境に辺を合わせる。対称を使わなければ 0)
+        var symOps = set.UseSymmetry ? CbedSymmetryOps(pool, directions, n) : [];
+        int[] repOrig = null; (int rep, int op)[] mapFrom = null; (double, double) bestOff = (0, 0); (double, double) bestRot = (1, 0);
+        bool adaptiveSym = double.IsFinite(set.AdaptiveMaxRadiusMrad) && double.IsFinite(set.AdaptiveIndicatorLimit) && set.AdaptiveMaxRadiusMrad > set.PatchRadiusMrad; // 適応的な区画 (Split は軸にそろった升) では回さない
+        if (symOps.Length > 0)
+        {
+            int bestCount = int.MaxValue;
+            foreach (var (px, py) in new[] { (1.0, 0.0), (0.0, 1.0), (1.0, 1.0), (1.0, -1.0), (1.0, 0.31), (0.31, 1.0) })
+            {
+                // 軌道の代表 = (p·d, p⊥·d) が辞書順で最大の方向 (同じなら番号の小さい方)
+                (double, double) KeyOf(int i) { var d = directions[i]; return (Math.Round((px * d.X + py * d.Y) * 1e12), Math.Round((-py * d.X + px * d.Y) * 1e12)); }
+                var reps = new List<int>();
+                for (int i = 0; i < nDir; i++)
+                {
+                    var ki = KeyOf(i); bool isRep = true;
+                    foreach (var op in symOps) { int j = op.DirMap[i]; if (j == i) continue; var kj = KeyOf(j); if (kj.Item1 > ki.Item1 || (kj.Item1 == ki.Item1 && (kj.Item2 > ki.Item2 || (kj.Item2 == ki.Item2 && j < i)))) { isRep = false; break; } }
+                    if (isRep) reps.Add(i);
+                }
+                foreach (var rot in adaptiveSym ? [0.0] : new[] { 0.0, Math.PI / 4 })
+                    foreach (var (ou, ov) in new[] { (0.0, 0.0), (0.5, 0.0), (0.0, 0.5), (0.5, 0.5) })
+                    {
+                        (symOffU, symOffV, symCos, symSin) = (ou * sideMinSym, ov * sideMinSym, Math.Cos(rot), Math.Sin(rot));
+                        int cnt = Squares(reps, sideMinSym).Count;
+                        if (cnt < bestCount) { bestCount = cnt; repOrig = [.. reps]; bestOff = (symOffU, symOffV); bestRot = (symCos, symSin); }
+                    }
+            }
+            (symOffU, symOffV) = bestOff; (symCos, symSin) = bestRot;
+            // 代表でない方向 i = T_k (代表 r) の (r の代表の中の番号, k)
+            var repPos = new int[nDir]; Array.Fill(repPos, -1);
+            for (int r = 0; r < repOrig.Length; r++) repPos[repOrig[r]] = r;
+            mapFrom = new (int, int)[nDir]; Array.Fill(mapFrom, (-1, -1));
+            for (int r = 0; r < repOrig.Length; r++)
+                for (int k = 0; k < symOps.Length; k++) { int i = symOps[k].DirMap[repOrig[r]]; if (repPos[i] < 0 && mapFrom[i].Item1 < 0) mapFrom[i] = (r, k); }
+            for (int i = 0; i < nDir; i++) if (repPos[i] < 0 && mapFrom[i].Item1 < 0) throw new InvalidOperationException("CBED symmetry: a direction is not reached from its representative");
+            directions = repOrig.Select(i => allDirections[i]).ToArray();
+            uu = repOrig.Select(i => uu[i]).ToArray(); vv = repOrig.Select(i => vv[i]).ToArray();
+            nDir = repOrig.Length;
+        }
         // 升 (中心 (uc, vc)・一辺 side・方向の番号)。原点を升の中心にした格子で分ける
         List<(double uc, double vc, double side, int[] members)> Squares(IEnumerable<int> idx, double sd)
         {
             var g = new Dictionary<(long, long), List<int>>();
             foreach (var i in idx)
             {
-                var key = ((long)Math.Floor(uu[i] / sd + 0.5), (long)Math.Floor(vv[i] / sd + 0.5));
+                // var key = ((long)Math.Floor(uu[i] / sd + 0.5), (long)Math.Floor(vv[i] / sd + 0.5)); // 261111Cl 変更前
+                double pu = symCos * uu[i] + symSin * vv[i], pv = -symSin * uu[i] + symCos * vv[i]; // 261111Cl: 回した格子の座標 (対称を使わなければ uu, vv のまま)
+                var key = ((long)Math.Floor((pu - symOffU) / sd + 0.5), (long)Math.Floor((pv - symOffV) / sd + 0.5)); // 261111Cl 変更: 対称の代表の境を升の辺に合わせるずれと回転
                 if (!g.TryGetValue(key, out var list)) g[key] = list = [];
                 list.Add(i);
             }
-            return g.OrderBy(kv => kv.Key).Select(kv => ((double)kv.Key.Item1 * sd, (double)kv.Key.Item2 * sd, sd, kv.Value.ToArray())).ToList();
+            // return g.OrderBy(kv => kv.Key).Select(kv => ((double)kv.Key.Item1 * sd, (double)kv.Key.Item2 * sd, sd, kv.Value.ToArray())).ToList(); // 261111Cl 変更前
+            return g.OrderBy(kv => kv.Key).Select(kv => { double pc = kv.Key.Item1 * sd + symOffU, qc = kv.Key.Item2 * sd + symOffV; return (symCos * pc - symSin * qc, symSin * pc + symCos * qc, sd, kv.Value.ToArray()); }).ToList(); // 261111Cl 変更 (中心は uu, vv の座標へ戻す)
         }
         // 升を 2^L × 2^L に分ける
         List<(double uc, double vc, double side, int[] members)> Split((double uc, double vc, double side, int[] members) sq, int L)
@@ -243,6 +294,13 @@ public partial class BetheMethod
         foreach (var p in patchOrder)
             foreach (var i in selections[p])
                 if (!inOut[i]) { inOut[i] = true; outPool.Add(i); }
+        // 261111Cl 追加: 対称で写す先のビームも出射に含める (出射のビームの組を対称の操作で閉じる)
+        for (bool grown = symOps.Length > 0; grown;)
+        {
+            grown = false;
+            foreach (var op in symOps)
+                for (int o = 0; o < outPool.Count; o++) { int j = op.BeamMap[outPool[o]]; if (!inOut[j]) { inOut[j] = true; outPool.Add(j); grown = true; } }
+        }
         int nOut = outPool.Count, tLen = thicknesses.Length;
         var gOut = outPool.Select(i => (pool.GX[i], pool.GY[i], pool.GZ[i])).ToArray();
         var cK0 = getVecK0(kvac, u0, c, n);
@@ -259,7 +317,8 @@ public partial class BetheMethod
             int maxNS = selections.Max(a => a.Length), maxNQ = selNQ.Max();
             double nMReal = double.IsFinite(set.EarlyModeTau) && set.EarlyModeTau > 0 ? 0.75 * maxNS : maxNS;
             perPatch = (long)Math.Min(long.MaxValue / 4, (3.0 * maxNS + 10.0 * nMReal) * maxNQ * 16);
-            long outMem = (long)nDir * nOut * tLen * 16;
+            // long outMem = (long)nDir * nOut * tLen * 16; // 261111Cl 変更前
+            long outMem = (long)nAll * nOut * tLen * 16; // 261111Cl 変更: 対称で写した後の全方向
             var (total2, free2) = PhysicalMemory();
             long budget2 = (CbedMemoryBudgetOverride > 0 ? CbedMemoryBudgetOverride : Math.Min(total2 / 2, free2 - reserve)) - outMem;
             byBudget = (int)Math.Min(int.MaxValue, Math.Max(0, budget2 / Math.Max(1, perPatch)));
@@ -293,6 +352,7 @@ public partial class BetheMethod
             return false;
         }
         int nReduceSkipped = 0, nCrossKept = 0, nGuardResolved = 0; double maxProbeDiff = 0;
+        long nSlowKept = 0; // 261111Cl 追加: 後段の打ち切りで遅いビームのために残したモードの数 (区画の和)
 
         // MathNet の固有分解で y(t) を作る (native の無いとき)
         Complex[] ManagedPropagate(Complex[] a, Complex[] y0, int dim)
@@ -519,6 +579,36 @@ public partial class BetheMethod
                 }
                 // 261110Cl (codex2 第 37 回): 近い固有値の組は全組の連結成分、組の寄与 ‖R_G z_G‖ で判定 (実部の隣どうしでは複素で近い組を落とす)
                 var keepJ = KeepClusters(gc, Rc, zsL, set.ModeReduceTau);
+                // 261111Cl 追加: 区画のどこかで遅い明示の出射のビームに重みのあるモードは残す (LateSlowKeep)
+                if (set.LateSlowKeep && probes.Count > 0)
+                {
+                    var (sx, sy, sz) = ck.Tuple;
+                    double LamS(int s0, double kx, double ky, double kz) { double vx = pool.GX[s0] + kx, vy = pool.GY[s0] + ky, vz = pool.GZ[s0] + kz; double k2 = kx * kx + ky * ky + kz * kz; return (k2 - (vx * vx + vy * vy + vz * vz)) / (2 * (nx * vx + ny * vy + nz * vz)); }
+                    var probeK = probes.Select(di => getVecK0(kvac, u0, directions[di], n)).ToArray();
+                    var slowO = new List<int>();
+                    for (int o = 1; o < nOut; o++)
+                    {
+                        int pi = outPool[o];
+                        if (!posS.ContainsKey(pi)) continue;
+                        double l0 = LamS(pi, sx, sy, sz), lo = l0, hi = l0; bool sl = Math.Abs(l0) < set.Ps;
+                        foreach (var kd in probeK) { double ld = LamS(pi, kd.X, kd.Y, kd.Z); lo = Math.Min(lo, ld); hi = Math.Max(hi, ld); if (Math.Abs(ld) < set.Ps) sl = true; }
+                        if (sl || (lo < 0 && hi > 0)) slowO.Add(o);
+                    }
+                    if (slowO.Count > 0)
+                    {
+                        var Mo = wp * Rc; // 出射のビームの上のモードの物理振幅 (nOut × nB)
+                        int added = 0;
+                        for (int j = 0; j < nB; j++)
+                        {
+                            if (keepJ[j]) continue;
+                            double tot = 0, sw2 = 0;
+                            for (int o = 0; o < nOut; o++) { double a2 = Mo[o, j].Magnitude; tot += a2 * a2; }
+                            foreach (var o in slowO) { double a2 = Mo[o, j].Magnitude; sw2 += a2 * a2; }
+                            if (tot > 0 && sw2 >= 0.05 * tot) { keepJ[j] = true; added++; }
+                        }
+                        lock (gate) nSlowKept += added;
+                    }
+                }
                 if (set.ReductionCrossingCheck) // 261110Cl 追加: 区画の中の交差の検出。探りは区画の端だけなので、中で残すモード j と落とすモード k が交差 (縮退) して振幅が移る所を見落とす
                 //   (Si [110] 200 kV・区画 2 mrad で FOLZ のモードが交差し、端の探りの照合 6.9e−5 のまま中で 4.4e−3・区画の境界の段差)。
                 //   中心の固有モードの基底で A'(d) ≈ A'_c + Σ δk_a E_a (E_a = L_c S_c (−2B_a) R_c) とし、区画の全方向で対角の差 Δ_kj(d) = (γ_k + E_kk(d)) − (γ_j + E_jj(d)) を見る。
@@ -661,7 +751,8 @@ public partial class BetheMethod
                 }
                 amplitudes[di] = psi;
                 int dn = Interlocked.Increment(ref done);
-                progressed?.Invoke(dn);
+                // progressed?.Invoke(dn); // 261111Cl 変更前
+                progressed?.Invoke(nAll == nDir ? dn : (int)((long)dn * nAll / nDir)); // 261111Cl 変更: 対称の代表だけを解くときは全方向に換算
                 double t3 = swd.Elapsed.TotalSeconds;
                 return (acc.Item1 + t1, acc.Item2 + t2 - t1, acc.Item3 + t3 - t2);
             }, acc => { lock (gate) { tForm += acc.Item1; tProp += acc.Item2; tOut += acc.Item3; } });
@@ -702,13 +793,130 @@ public partial class BetheMethod
         Parallel.For(0, back.Length, new ParallelOptions { MaxDegreeOfParallelism = Math.Max(1, Math.Min(threads, byBudget)) }, b => SolvePatch((uu[back[b]], vv[back[b]], 0, new[] { back[b] }), 1, null));
         stage[7] = swAll.Elapsed.TotalSeconds;
 
+        // 261111Cl 追加: 対称で残りの方向へ写す。ψ_{Tg}(Td) = ψ_g(d) exp(+2πi h_{Tg}·w) (U_{Tg} = U_g exp(−2πi h_{Tg}·w) の共役。出射面の位相 exp(πi(P_g − 2k Surface.Z)t) は T で変わらない)
+        if (symOps.Length > 0)
+        {
+            var outPos = new Dictionary<int, int>(nOut); for (int o = 0; o < nOut; o++) outPos[outPool[o]] = o;
+            var oMap = new int[symOps.Length][]; var oPh = new Complex[symOps.Length][];
+            for (int k = 0; k < symOps.Length; k++)
+            {
+                oMap[k] = new int[nOut]; oPh[k] = new Complex[nOut]; var (w1, w2, w3) = symOps[k].W;
+                for (int o = 0; o < nOut; o++)
+                {
+                    int j = outPos[symOps[k].BeamMap[outPool[o]]]; oMap[k][o] = j;
+                    var (h, kk, l) = pool.Hkl[outPool[j]];
+                    oPh[k][o] = Complex.Exp(new Complex(0, 2 * Math.PI * (h * w1 + kk * w2 + l * w3))); // 振幅は U の比の共役で移る (行列の (g, h) が U_{h−g} の規約。各方向を自分の区画で解いた対称なし/ありの差 6e−7、day13s)
+                }
+            }
+            var full = new Complex[nAll][];
+            for (int r = 0; r < nDir; r++) full[repOrig[r]] = amplitudes[r];
+            for (int i = 0; i < nAll; i++)
+            {
+                var (r, k) = mapFrom[i];
+                if (r < 0 || amplitudes[r] == null) continue;
+                var src = amplitudes[r]; var dst = new Complex[src.Length]; var om = oMap[k]; var ph = oPh[k];
+                for (int t = 0; t < tLen; t++) for (int o = 0; o < nOut; o++) dst[t * nOut + om[o]] = src[t * nOut + o] * ph[o];
+                full[i] = dst;
+            }
+            amplitudes = full;
+        }
         string[] propName = ["native eigen", "native matrix exponential", "MathNet eigen"];
         CbedBeamSelectionDetail = $"dressed tail {CbedDressedTailSettings.Version}: N {set.N}, pool {pool.Count} within {set.PoolRadiusNm} nm⁻¹, eta {set.Eta}" +
             (double.IsNaN(set.NeighborRadiusNm) ? "" : $", core {set.CoreRadiusNm} + neighbours {set.NeighborRadiusNm} nm⁻¹") + (set.OneProduct ? ", one product" : "") + "; " +
-            (adaptive ? $"adaptive patches (radius {set.AdaptiveMaxRadiusMrad} down to {set.PatchRadiusMrad} mrad, indicator limit {set.AdaptiveIndicatorLimit}): {nSolvedPatches} solved, {nSplit} split, {nLevels} rounds" : $"{nSolvedPatches} patches (radius {set.PatchRadiusMrad} mrad)") + $" for {nDir} directions, {nBackward} re-solved alone; explicit {minS}-{maxS} (mean {(nPatchesDone > 0 ? sumS / nPatchesDone : 0)}), tail mean {(nPatchesDone > 0 ? sumQ / nPatchesDone : 0)}, dressed modes mean {(nPatchesDone > 0 ? sumNb / nPatchesDone : 0)}, basis mean {(nPatchesDone > 0 ? sumB / nPatchesDone : 0)} (mode tau {set.ModeTau}{(double.IsFinite(set.ModeReduceTau) ? $", reduced by {set.ModeReduceTau}" : "")}), indicator {etaMin:e2}-{etaMax:e2}{(set.PromoteOverPatch ? ", promoted over patch edges" : "")}, reduction skipped in {nReduceSkipped} patches, modes kept for crossings {nCrossKept}, probe check max |dI| {maxProbeDiff:e1}, directions re-solved by the guard {nGuardResolved}; " +
+            (adaptive ? $"adaptive patches (radius {set.AdaptiveMaxRadiusMrad} down to {set.PatchRadiusMrad} mrad, indicator limit {set.AdaptiveIndicatorLimit}): {nSolvedPatches} solved, {nSplit} split, {nLevels} rounds" : $"{nSolvedPatches} patches (radius {set.PatchRadiusMrad} mrad)") + $" for {nDir} directions, {nBackward} re-solved alone; explicit {minS}-{maxS} (mean {(nPatchesDone > 0 ? sumS / nPatchesDone : 0)}), tail mean {(nPatchesDone > 0 ? sumQ / nPatchesDone : 0)}, dressed modes mean {(nPatchesDone > 0 ? sumNb / nPatchesDone : 0)}, basis mean {(nPatchesDone > 0 ? sumB / nPatchesDone : 0)} (mode tau {set.ModeTau}{(double.IsFinite(set.ModeReduceTau) ? $", reduced by {set.ModeReduceTau}" : "")}), indicator {etaMin:e2}-{etaMax:e2}{(set.PromoteOverPatch ? ", promoted over patch edges" : "")}, reduction skipped in {nReduceSkipped} patches, modes kept for crossings {nCrossKept}, modes kept for slow beams {nSlowKept}, probe check max |dI| {maxProbeDiff:e1}, directions re-solved by the guard {nGuardResolved}; " +
             $"output beams {nOut}; propagation {propName[prop]}, dense products {(MathNetProviderManager.MklActive ? "MKL" : "managed (MKL not loaded: about 4 times slower)")}; time (patch-s = sum of patch wall times, includes inner parallel work): tables {stage[0]:f1} s, output-beam selection {stage[1]:f1} s, dressing {stage[2]:f1} patch-s (select {stage[11]:f1}, blocks {stage[12]:f1}, X0 {stage[13]:f1}, eig {stage[14]:f1}, rest {stage[15]:f1}, spmm {stage[16]:f1}+{stage[17]:f1}), basis {stage[3]:f1} patch-s (Gram {stage[8]:f1}, pencil {stage[9]:f1}, reduction {stage[10]:f1}), " +
-            $"per direction form {stage[4]:f1} / propagate {stage[5]:f1} / output {stage[6]:f1} patch-s, total {stage[7]:f1} s; parallel {outer} patches × {inner}";
+            $"per direction form {stage[4]:f1} / propagate {stage[5]:f1} / output {stage[6]:f1} patch-s, total {stage[7]:f1} s; parallel {outer} patches × {inner}" +
+            (symOps.Length > 0 ? $"; symmetry {string.Join(" ", symOps.Select(o => o.Name))}: {nDir} of {nAll} directions solved" : "; symmetry not used"); // 261111Cl 追加
         return (beams, amplitudes);
+    }
+
+    /// <summary>261111Cl 追加: CBED の円盤の対称の操作 (晶帯軸)。ビーム軸 (実験室の z) まわりの 2 回・4 回の回転と、x・y・対角の鏡映 (画面の方向の正方格子を正確に移す 7 つ) のうち、
+    /// 表面の法線を保ち、方向の組と候補のビームの組を移し (結晶の向きのずれ 1e−9 以内)、ポテンシャルが並進の位相つきで移る
+    /// (U_{Tg} = U_g exp(−2πi h_{Tg}·w)、U' も同じ。w (分率) を 1/48 刻みで探し、|g| ≤ 25 nm⁻¹ の全部で 1e−7 の精度で照合) ものを返す。
+    /// 振幅は共役の位相で移る: ψ_{Tg}(Td) = ψ_g(d) exp(+2πi h_{Tg}·w) (Bloch の方程式が対角の位相の相似変換で移るため。行列の (g, h) 成分が U_{h−g} の規約で共役になる)。群として閉じていなければ何も返さない。</summary>
+    private (string Name, int[] DirMap, int[] BeamMap, (double, double, double) W)[] CbedSymmetryOps(BeamSelectionPool pool, IReadOnlyList<Vector3DBase> directions, Vector3DBase n)
+    {
+        var cands = new (string name, int a, int b, int c, int d)[] { ("2", -1, 0, 0, -1), ("4", 0, -1, 1, 0), ("4^3", 0, 1, -1, 0), ("m(x)", -1, 0, 0, 1), ("m(y)", 1, 0, 0, -1), ("m(x=y)", 0, 1, 1, 0), ("m(x=-y)", 0, -1, -1, 0) };
+        var found = new List<(string, int[], int[], (double, double, double), (int, int, int, int))>();
+        int nDir = directions.Count;
+        static long Key(double v) => (long)Math.Round(v * 1e12);
+        var dirKey = new Dictionary<(long, long), int>(nDir);
+        for (int i = 0; i < nDir; i++) dirKey.TryAdd((Key(directions[i].X), Key(directions[i].Y)), i);
+        var (m11, m12, m13, m21, m22, m23, m31, m32, m33) = pool.Mat; // 実験室の g = Mat · hkl
+        var M = new Matrix3D(m11, m21, m31, m12, m22, m32, m13, m23, m33);
+        var Minv = M.Inverse();
+        double gChk = Math.Min(25, 0.999 * pool.RadiusNm);
+        var chk = Enumerable.Range(1, pool.Count - 1).Where(i => pool.GX[i] * pool.GX[i] + pool.GY[i] * pool.GY[i] + pool.GZ[i] * pool.GZ[i] <= gChk * gChk).ToArray();
+        var uCache = new Dictionary<int, (Complex Real, Complex Imag)>();
+        (Complex Real, Complex Imag) U(int i)
+        {
+            if (!uCache.TryGetValue(i, out var u)) uCache[i] = u = getU(AccVoltage, pool.Hkl[i], new Vector3DBase(pool.GX[i], pool.GY[i], pool.GZ[i]));
+            return u;
+        }
+        foreach (var (name, a, b, c, d) in cands)
+        {
+            if (Math.Abs(a * n.X + b * n.Y - n.X) + Math.Abs(c * n.X + d * n.Y - n.Y) > 1e-12) continue; // 表面の法線
+            // 方向の組
+            var dm = new int[nDir]; bool ok = true;
+            for (int i = 0; i < nDir && ok; i++)
+            {
+                var v = directions[i]; double x = a * v.X + b * v.Y, y = c * v.X + d * v.Y;
+                if (!dirKey.TryGetValue((Key(x), Key(y)), out var j) || Math.Abs(directions[j].X - x) + Math.Abs(directions[j].Y - y) + Math.Abs(directions[j].Z - v.Z) > 1e-12) ok = false;
+                else dm[i] = j;
+            }
+            if (!ok) continue;
+            // 候補のビーム (hkl の整数の行列 K = Mat⁻¹ T Mat)
+            var K = Minv * new Matrix3D(a, c, 0, b, d, 0, 0, 0, 1) * M;
+            var kt = K.Tuple; var ke = new[] { kt.E11, kt.E12, kt.E13, kt.E21, kt.E22, kt.E23, kt.E31, kt.E32, kt.E33 };
+            if (ke.Any(e => Math.Abs(e - Math.Round(e)) > 1e-6)) continue;
+            var ki = ke.Select(e => (int)Math.Round(e)).ToArray();
+            var bm = new int[pool.Count];
+            for (int i = 0; i < pool.Count && ok; i++)
+            {
+                var (h, k, l) = pool.Hkl[i];
+                int j = pool.IndexOf((ki[0] * h + ki[1] * k + ki[2] * l, ki[3] * h + ki[4] * k + ki[5] * l, ki[6] * h + ki[7] * k + ki[8] * l));
+                double gx = a * pool.GX[i] + b * pool.GY[i], gy = c * pool.GX[i] + d * pool.GY[i], gz = pool.GZ[i];
+                if (j < 0 || Math.Abs(pool.GX[j] - gx) + Math.Abs(pool.GY[j] - gy) + Math.Abs(pool.GZ[j] - gz) > 1e-9 * (1 + Math.Abs(gx) + Math.Abs(gy) + Math.Abs(gz))) ok = false;
+                else bm[i] = j;
+            }
+            if (!ok || chk.Length < 3) continue;
+            // ポテンシャル: 並進 w の位相を、|U| の大きい 16 本の比 U_{Tg}/U_g から 1/48 刻みで探す
+            double uMax = chk.Max(i => U(i).Real.Magnitude), upMax = chk.Max(i => U(i).Imag.Magnitude);
+            if (!(uMax > 0)) continue;
+            var fit = chk.Where(i => U(i).Real.Magnitude >= 1e-3 * uMax).OrderByDescending(i => U(i).Real.Magnitude).Take(16).ToArray();
+            const int G = 48;
+            var rr = fit.Select(i => U(bm[i]).Real / U(i).Real).ToArray();
+            var eh = new Complex[fit.Length, 3, G];
+            for (int f = 0; f < fit.Length; f++)
+            {
+                var (h, k, l) = pool.Hkl[bm[fit[f]]]; var hk = new[] { h, k, l };
+                for (int ax = 0; ax < 3; ax++) for (int q = 0; q < G; q++) eh[f, ax, q] = Complex.Exp(new Complex(0, -2 * Math.PI * hk[ax] * q / (double)G));
+            }
+            double bestCost = double.PositiveInfinity; (int, int, int) bq = (0, 0, 0);
+            for (int q1 = 0; q1 < G; q1++) for (int q2 = 0; q2 < G; q2++) for (int q3 = 0; q3 < G; q3++)
+            {
+                double cost = 0;
+                for (int f = 0; f < fit.Length && cost < bestCost; f++) cost += (rr[f] - eh[f, 0, q1] * eh[f, 1, q2] * eh[f, 2, q3]).Magnitude;
+                if (cost < bestCost) { bestCost = cost; bq = (q1, q2, q3); }
+            }
+            var w = (bq.Item1 / (double)G, bq.Item2 / (double)G, bq.Item3 / (double)G);
+            foreach (var i in chk)
+            {
+                var (h, k, l) = pool.Hkl[bm[i]];
+                var ph = Complex.Exp(new Complex(0, -2 * Math.PI * (h * w.Item1 + k * w.Item2 + l * w.Item3)));
+                if ((U(bm[i]).Real - U(i).Real * ph).Magnitude > 1e-7 * uMax || (U(bm[i]).Imag - U(i).Imag * ph).Magnitude > 1e-7 * upMax) { ok = false; break; }
+            }
+            if (ok) found.Add((name, dm, bm, w, (a, b, c, d)));
+        }
+        // 群として閉じているか (2 つの合成が恒等か、見つけた操作のどれか)
+        foreach (var x in found)
+            foreach (var y in found)
+            {
+                var (a1, b1, c1, d1) = x.Item5; var (a2, b2, c2, d2) = y.Item5;
+                var z = (a1 * a2 + b1 * c2, a1 * b2 + b1 * d2, c1 * a2 + d1 * c2, c1 * b2 + d1 * d2);
+                if (z != (1, 0, 0, 1) && !found.Any(f => f.Item5 == z)) return [];
+            }
+        return [.. found.Select(f => (f.Item1, f.Item2, f.Item3, f.Item4))];
     }
 
     /// <summary>261110Cl 追加: 区画の基底の行列。物理振幅の基底 W = D_c [A_S; A_Q] (A_S = V_b、A_Q = X̃ = 着衣のモードの基底。張る空間は [I; X] と同じ) の上で
