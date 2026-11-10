@@ -29,6 +29,28 @@ Ga1 Ga 0 0 0 0.6
 As1 As 0.25 0.25 0.25 0.5
 """;
 
+    /// <summary>Si (Fd−3m の原点の選択 1、原子が 0,0,0)。[110] の操作の並進の位相が ±i になり、写しの位相の符号の誤りが振幅に出る (原点の選択 2 では ±1 で見えない)</summary>
+    private const string SiOrigin1Cif = """
+data_Si
+_chemical_name_common Si
+_cell_length_a 5.4309
+_cell_length_b 5.4309
+_cell_length_c 5.4309
+_cell_angle_alpha 90
+_cell_angle_beta 90
+_cell_angle_gamma 90
+_symmetry_space_group_name_H-M 'F d -3 m :1'
+_symmetry_Int_Tables_number 227
+loop_
+_atom_site_label
+_atom_site_type_symbol
+_atom_site_fract_x
+_atom_site_fract_y
+_atom_site_fract_z
+_atom_site_B_iso_or_equiv
+Si1 Si 0 0 0 0.46
+""";
+
     /// <summary>晶帯軸 [uvw] を実験室の +z へ向ける回転 (CBED の入射は −z)</summary>
     private static Matrix3D ZoneToZ(Crystal crystal, int u, int v, int w)
     {
@@ -119,5 +141,43 @@ As1 As 0.25 0.25 0.25 0.5
         var (crystal, rot) = BetheEigenReuseTests.TiltedSi();
         var sym = RunLegacy(crystal, rot, Grid(6, 1e-3), [30], true, 32);
         Assert.Equal("", sym.CbedSymmetryDetail);
+    }
+
+    /// <summary>新方式 (着衣の裾) の対称の写し: 各方向を自分の区画で解く設定 (区画 1e−6 mrad) なら、写した振幅は全方向を解いた振幅と単精度の裾の積の丸め (1e−6) の範囲で一致する。
+    /// 軽い設定 (N60・候補の半径 20 nm⁻¹・裾は全部) で、Si [110] 200 kV は 2 回回転と 2 つの鏡映を使う</summary>
+    [Fact]
+    public void DressedTailCbed_WithSymmetry_MatchesFullSolve()
+    {
+        var crystal = ConvertCrystalData.ConvertFromCifText(SiOrigin1Cif).ToCrystal();
+        Assert.Equal(8, crystal.Atoms.Sum(a => a.Atom.Count())); // 単位胞の 8 原子 (原点の選択 1 が読めている)
+        var rot = ZoneToZ(crystal, 1, 1, 0);
+        var dirs = Grid(6, 0.3e-3);
+        double[] thick = [40, 80];
+        BetheMethod Run(bool sym)
+        {
+            var bethe = new BetheMethod(crystal) { CbedBeamSelection = BetheMethod.CbedBeamSelectionMethod.DressedTail };
+            bethe.CbedDressedTail = BetheMethod.CbedDressedTailDefaults with { N = 60, PoolRadiusNm = 20, CoreRadiusNm = double.NaN, NeighborRadiusNm = double.NaN, PatchRadiusMrad = 1e-6, UseSymmetry = sym };
+            using var done = new ManualResetEventSlim();
+            Exception error = null;
+            bethe.CBED_Completed += (s, e) => { error = e.Error; done.Set(); };
+            bethe.RunCBED(64, 200, rot, thick, dirs, false, BetheMethod.Solver.Auto, 4);
+            Assert.True(done.Wait(TimeSpan.FromMinutes(10)), "CBED did not finish");
+            Assert.Null(error);
+            Assert.Equal(BetheMethod.CbedBeamSelectionMethod.DressedTail, bethe.CbedBeamSelectionUsed);
+            return bethe;
+        }
+        var full = Run(false);
+        var sym = Run(true);
+        Assert.Equal("", full.CbedSymmetryDetail);
+        Assert.StartsWith("symmetry 2 ", sym.CbedSymmetryDetail);
+        var idx = sym.Beams.Select((b, i) => (b.Index, i)).ToDictionary(x => x.Index, x => x.i);
+        for (int t = 0; t < thick.Length; t++)
+            for (int g = 0; g < full.Beams.Length; g++)
+            {
+                Assert.True(idx.TryGetValue(full.Beams[g].Index, out var g1), $"beam {full.Beams[g].Index} missing");
+                var a = full.Disks[t][g].RawAmplitudes; var b = sym.Disks[t][g1].RawAmplitudes;
+                for (int r = 0; r < a.Length; r++)
+                    Assert.True((a[r] - b[r]).Magnitude <= 1e-5, $"beam {full.Beams[g].Index}, pixel {r}, t {thick[t]}: {a[r]} vs {b[r]}");
+            }
     }
 }
