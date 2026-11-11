@@ -29,6 +29,7 @@ public class Crystal : IEquatable<Crystal>, ICloneable, IComparable<Crystal>
         //crystal.EOSCondition = this.EOSCondition.Clone();
         crystal.ElasticStiffnessArray = this.ElasticStiffnessArray;
         crystal.ElementValences = ElementValences?.ToArray() ?? []; // 261025Cl 追加: MemberwiseClone だと配列を共有するので、コピー先の価数を変えても元が変わらないよう複製
+        crystal.bethe = null; // 261111Cl 追加: MemberwiseClone だと元の結晶の BetheMethod (中の結晶は元の結晶) を共有していた。複製は必要になったときに自分用を作る (Bethe プロパティ)
 
         return crystal;
     }
@@ -161,10 +162,32 @@ public class Crystal : IEquatable<Crystal>, ICloneable, IComparable<Crystal>
     #endregion
 
     #region ベーテ法
-    /// <summary>ベーテ法による動力学回折を提供するフィールド</summary>
+    ///// <summary>ベーテ法による動力学回折を提供するフィールド</summary>
+    //[NonSerialized]
+    //[XmlIgnore]
+    //public BetheMethod Bethe; // 261111Cl 変更前: 結晶を作るたびにコンストラクタで BetheMethod (BackgroundWorker を含む) を作っていた
+
+    // 261111Cl 追加: Bethe の裏のフィールド。初回アクセスまで null。Clone でも null に戻す
     [NonSerialized]
+    private BetheMethod bethe;
+
+    /// <summary>ベーテ法による動力学回折を提供する。
+    /// 261111Cl 変更: フィールドから遅延生成のプロパティへ。初回アクセスで作る (DB の読み込みなどで大量の結晶を作っても、使わない結晶には作らない)。
+    /// 並列の初回アクセスでも CompareExchange で 1 個に定まる (競争に負けて作った分は捨てる。実行はしていない)。
+    /// BetheMethod のコンストラクタは結晶の参照を持つだけで、格子や原子は計算のたびに読むので、作る時点が遅れても結果は変わらない。
+    /// null を代入すると、次のアクセスで作り直す。</summary>
     [XmlIgnore]
-    public BetheMethod Bethe;
+    public BetheMethod Bethe
+    {
+        get
+        {
+            var b = Volatile.Read(ref bethe);
+            if (b != null) return b;
+            b = new BetheMethod(this);
+            return Interlocked.CompareExchange(ref bethe, b, null) ?? b;
+        }
+        set => Volatile.Write(ref bethe, value);
+    }
     #endregion
 
     #region 格子定数関係
@@ -510,7 +533,7 @@ public class Crystal : IEquatable<Crystal>, ICloneable, IComparable<Crystal>
         Plane = [];
         Atoms = [];
         //ElasticStiffnessArray = new double[21]; // 261111Cl 変更前: フィールドの初期化子 (new double[21]) と二重に確保していた
-        Bethe = new BetheMethod(this);
+        //Bethe = new BetheMethod(this); // 261111Cl 変更前: Bethe は初回アクセスで作る (Bethe プロパティ)
         A = B = C = Alpha = Beta = Gamma = 0;
         Name = "";
         Argb = Color.Black.ToArgb();
@@ -615,7 +638,8 @@ public class Crystal : IEquatable<Crystal>, ICloneable, IComparable<Crystal>
         // 261105Cl 変更: 原子 (温度因子を含む) を複製して持つ。以前は元の結晶と同じ Atoms を共有していたため、複製側の編集や格子の同期が元の結晶を書き換えた
         Atoms = [.. cry.Atoms.Select(a => (Atoms)a.Clone())];
         SyncDsfCell();
-        Bethe = new BetheMethod(this); // 261105Cl 追加: 通常のコンストラクタ (this()) を通らないので Bethe が null のままで、複製した結晶の動力学計算・CBED が例外になっていた
+        //Bethe = new BetheMethod(this); // 261105Cl 追加: 通常のコンストラクタ (this()) を通らないので Bethe が null のままで、複製した結晶の動力学計算・CBED が例外になっていた
+        // 261111Cl 変更: 上の行は不要になった。Bethe は初回アクセスでこの結晶用に作るので、複製した結晶でも動力学計算・CBED は動く (null にはならない)
 
         PublAuthorName = cry.PublAuthorName;
         Journal = cry.Journal;
