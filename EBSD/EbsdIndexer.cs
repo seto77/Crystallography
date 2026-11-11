@@ -60,7 +60,8 @@ public static class EbsdIndexer
     static readonly double MinPairAngle = 8 * Math.PI / 180, MaxPairAngle = 85 * Math.PI / 180;
 
     #region PlaneCatalog
-    sealed class PlaneNode
+    //sealed class PlaneNode //261111Cl 変更前 (private)
+    internal sealed class PlaneNode //261111Cl: PreparedCatalog (internal) のフィールド型にするため internal 化
     {
         public V3 Direction;                 //結晶直交座標系の単位ベクトル (±は辞書順で正規化)
         public (int H, int K, int L)[] Indices = [];  //この方向の反射 (低次から)
@@ -91,6 +92,32 @@ public static class EbsdIndexer
             node.BestIntensity = Math.Max(node.BestIntensity, g.RelativeIntensity);
         }
         return [.. nodes.OrderByDescending(n => n.BestIntensity).Take(maxNodes)];
+    }
+
+    /// <summary>261111Cl 追加: 幾何に依らない前処理 (方向ノードのカタログと理論 pair-angle 表)。
+    /// 同じ反射で幾何だけ変えて何度も指数付けするとき (EbsdRadonIndexer の検出器 X・Z 格子) に 1 回だけ作って使い回す。作成後は読むだけ (スレッド間で共有してよい)</summary>
+    internal sealed class PreparedCatalog
+    {
+        internal List<PlaneNode> Catalog;
+        internal (int P, int Q, double Angle)[] PairAngles;
+        internal double[] AngleKeys;
+    }
+
+    /// <summary>261111Cl 追加: <see cref="PreparedCatalog"/> を作る (旧 Index 内の BuildCatalog と理論 pair-angle 表の構築をそのまま移したもの)</summary>
+    internal static PreparedCatalog PrepareCatalog(IEnumerable<Vector3D> kikuchiReflections, int maxCatalogNodes = 120)
+    {
+        var catalog = BuildCatalog(kikuchiReflections, maxCatalogNodes);
+        //理論 pair-angle テーブル (角度昇順ソート)
+        var pairs = new List<(int P, int Q, double Angle)>();
+        for (int p = 0; p < catalog.Count; p++)
+            for (int q = p + 1; q < catalog.Count; q++)
+            {
+                double ang = Math.Acos(Math.Clamp(Math.Abs(V3.Dot(catalog[p].Direction, catalog[q].Direction)), 0, 1));
+                if (ang > MinPairAngle && ang < MaxPairAngle)
+                    pairs.Add((p, q, ang));
+            }
+        var pairAngles = pairs.OrderBy(p => p.Angle).ToArray();
+        return new PreparedCatalog { Catalog = catalog, PairAngles = pairAngles, AngleKeys = [.. pairAngles.Select(p => p.Angle)] };
     }
     #endregion
 
@@ -155,7 +182,28 @@ public static class EbsdIndexer
         if (!(pairTolDeg > 0) || !double.IsFinite(pairTolDeg)) throw new ArgumentOutOfRangeException(nameof(pairTolDeg));
         if (!(assignTolDeg > 0) || !double.IsFinite(assignTolDeg)) throw new ArgumentOutOfRangeException(nameof(assignTolDeg));
 
-        var catalog = BuildCatalog(kikuchiReflections, maxCatalogNodes);
+        //261111Cl 変更: 幾何に依らない前処理 (カタログ・理論 pair-angle 表) を PrepareCatalog へ、本体を IndexWithCatalog へ分けた。
+        //  演算と順序は旧実装と同一 (EbsdRadonIndexer が検出器の格子点ごとに同じカタログを作り直していたのを 1 回にするため)
+        return IndexWithCatalog(bands, geometry, PrepareCatalog(kikuchiReflections, maxCatalogNodes), waveLength, maxCandidates, pairTolDeg, assignTolDeg, cancel);
+    }
+
+    /// <summary>261111Cl 追加: 前処理済みカタログ (<see cref="PrepareCatalog"/>) で <see cref="Index"/> の本体を実行する。
+    /// 同じ prepared を複数スレッドから同時に渡してよい (prepared は読むだけ、作業バッファは呼び出しごとに確保)</summary>
+    internal static List<EbsdOrientationCandidate> IndexWithCatalog(IReadOnlyList<EbsdBand> bands, EbsdDetectorGeometry geometry,
+        PreparedCatalog prepared, double waveLength,
+        int maxCandidates = 10, double pairTolDeg = 1.5, double assignTolDeg = 2.5,
+        System.Threading.CancellationToken cancel = default)
+    {
+        ArgumentNullException.ThrowIfNull(bands);
+        ArgumentNullException.ThrowIfNull(geometry);
+        ArgumentNullException.ThrowIfNull(prepared);
+        if (!(waveLength > 0) || !double.IsFinite(waveLength)) throw new ArgumentOutOfRangeException(nameof(waveLength));
+        if (maxCandidates <= 0) throw new ArgumentOutOfRangeException(nameof(maxCandidates));
+        if (!(pairTolDeg > 0) || !double.IsFinite(pairTolDeg)) throw new ArgumentOutOfRangeException(nameof(pairTolDeg));
+        if (!(assignTolDeg > 0) || !double.IsFinite(assignTolDeg)) throw new ArgumentOutOfRangeException(nameof(assignTolDeg));
+
+        //var catalog = BuildCatalog(kikuchiReflections, maxCatalogNodes); //261111Cl 変更前 (PrepareCatalog へ移動)
+        var catalog = prepared.Catalog; //261111Cl
         var obs = BuildObservations(bands, geometry);
         if (catalog.Count < 2 || obs.Count < 2) return [];
 
@@ -164,18 +212,22 @@ public static class EbsdIndexer
         var usedObsBuf = new bool[obs.Count];
         var usedNodeBuf = new bool[catalog.Count];
         var assignPairBuf = new List<(int ObsIdx, int NodeIdx, double Ang)>(); //260725Ch: seed ごとの候補ペア List 確保を再利用
+        var assignedBuf = new List<(int BandIndex, (int H, int K, int L) Hkl)>(); //261111Cl 追加: 割当の一時記録 (候補と辞書は割当数が足りると決まってから作る)
 
         #region 理論 pair-angle テーブル (角度昇順ソート)
-        var pairs = new List<(int P, int Q, double Angle)>();
-        for (int p = 0; p < catalog.Count; p++)
-            for (int q = p + 1; q < catalog.Count; q++)
-            {
-                double ang = Math.Acos(Math.Clamp(Math.Abs(V3.Dot(catalog[p].Direction, catalog[q].Direction)), 0, 1));
-                if (ang > MinPairAngle && ang < MaxPairAngle)
-                    pairs.Add((p, q, ang));
-            }
-        var pairAngles = pairs.OrderBy(p => p.Angle).ToArray();
-        var angleKeys = pairAngles.Select(p => p.Angle).ToArray();
+        //261111Cl 変更前 (PrepareCatalog へ移動。式・順序は同一):
+        //var pairs = new List<(int P, int Q, double Angle)>();
+        //for (int p = 0; p < catalog.Count; p++)
+        //    for (int q = p + 1; q < catalog.Count; q++)
+        //    {
+        //        double ang = Math.Acos(Math.Clamp(Math.Abs(V3.Dot(catalog[p].Direction, catalog[q].Direction)), 0, 1));
+        //        if (ang > MinPairAngle && ang < MaxPairAngle)
+        //            pairs.Add((p, q, ang));
+        //    }
+        //var pairAngles = pairs.OrderBy(p => p.Angle).ToArray();
+        //var angleKeys = pairAngles.Select(p => p.Angle).ToArray();
+        var pairAngles = prepared.PairAngles; //261111Cl
+        var angleKeys = prepared.AngleKeys; //261111Cl
         #endregion
 
         #region 観測ペア → 理論ペア対応 → seed 回転 → 全バンド割当スコア
@@ -219,7 +271,9 @@ public static class EbsdIndexer
                             double sj = (signMask & 1) == 0 ? 1.0 : -1.0;
                             var r = SolveWahba([(si * oi.NormalSample, catalog[np].Direction, oi.Weight), (sj * oj.NormalSample, catalog[nq].Direction, oj.Weight)]);
                             if (r == null) continue;
-                            var cand = ScoreAndAssign(r, obs, catalog, waveLength, assignTol, predictedBuf, usedObsBuf, usedNodeBuf, assignPairBuf);
+                            //var cand = ScoreAndAssign(r, obs, catalog, waveLength, assignTol, predictedBuf, usedObsBuf, usedNodeBuf, assignPairBuf); //261111Cl 変更前
+                            //261111Cl: 割当 3 本未満の seed は捨てるので、ScoreAndAssign 側で候補を作らずに null を返させる (判定は従来と同じ)
+                            var cand = ScoreAndAssign(r, obs, catalog, waveLength, assignTol, predictedBuf, usedObsBuf, usedNodeBuf, assignPairBuf, assignedBuf, minAssigned: 3);
                             if (cand != null && cand.AssignedBands >= 3)
                                 candidates.Add(cand);
                         }
@@ -250,7 +304,8 @@ public static class EbsdIndexer
                 var r = SolveWahba([.. eqs]);
                 if (r == null) break;
                 //var next = ScoreAndAssign(r, obs, catalog, waveLength, assignTol, predictedBuf, usedObsBuf, usedNodeBuf); //260725Ch 変更前
-                var next = ScoreAndAssign(r, obs, catalog, waveLength, assignTol, predictedBuf, usedObsBuf, usedNodeBuf, assignPairBuf); //260725Ch
+                //var next = ScoreAndAssign(r, obs, catalog, waveLength, assignTol, predictedBuf, usedObsBuf, usedNodeBuf, assignPairBuf); //260725Ch //261111Cl 変更前
+                var next = ScoreAndAssign(r, obs, catalog, waveLength, assignTol, predictedBuf, usedObsBuf, usedNodeBuf, assignPairBuf, assignedBuf); //261111Cl: 精緻化は割当 1 本以上で従来どおり候補を返す
                 if (next == null || next.Score <= current.Score) break;
                 current = next;
             }
@@ -266,8 +321,14 @@ public static class EbsdIndexer
     /// 260724Cl: 残差昇順の greedy 一対一 (複数バンドが同一理論面へ重複割当されて AssignedBands が水増しされるのを防ぐ。Codex 指摘)
     /// 260724Cl (/simplify) シグネチャ変更: predicted/usedObs/usedNode を呼び出し元バッファ受け取りに (旧: 呼び出し毎に new。数千回×catalog 長の GC churn)</summary>
     //260725Ch シグネチャ変更: pairs を呼び出し元で再利用する。旧: (..., V3[] predicted, bool[] usedObs, bool[] usedNode)
+    //261111Cl シグネチャ変更 (assigned・minAssigned 追加)。旧:
+    //static EbsdOrientationCandidate ScoreAndAssign(Matrix3D rot, List<BandObservation> obs, List<PlaneNode> catalog, double waveLength, double assignTol,
+    //    V3[] predicted, bool[] usedObs, bool[] usedNode, List<(int ObsIdx, int NodeIdx, double Ang)> pairs)
+    /// <param name="assigned">261111Cl 追加: 割当を一時記録する作業バッファ (呼び出し元で再利用)</param>
+    /// <param name="minAssigned">261111Cl 追加: 割当数がこれ未満なら候補を作らずに null を返す (既定 1 = 従来どおり割当 0 本のときだけ null)</param>
     static EbsdOrientationCandidate ScoreAndAssign(Matrix3D rot, List<BandObservation> obs, List<PlaneNode> catalog, double waveLength, double assignTol,
-        V3[] predicted, bool[] usedObs, bool[] usedNode, List<(int ObsIdx, int NodeIdx, double Ang)> pairs)
+        V3[] predicted, bool[] usedObs, bool[] usedNode, List<(int ObsIdx, int NodeIdx, double Ang)> pairs,
+        List<(int BandIndex, (int H, int K, int L) Hkl)> assigned, int minAssigned = 1)
     {
         //角度残差 < assignTol の全 (バンド, ノード) ペアを列挙
         //260724Cl (/simplify): cos は単調なので dot 比較でゲートし、Acos は通過ペア (通常数個) のみに遅延 (旧: obs×catalog 全ペアで Acos → 指数付け時間の主因)
@@ -282,10 +343,21 @@ public static class EbsdIndexer
                 if (d > cosAssignTol) pairs.Add((oi, ni, Math.Acos(Math.Min(d, 1))));
             }
 
-        var cand = new EbsdOrientationCandidate { Rotation = rot, TotalBands = obs.Count };
+        //var cand = new EbsdOrientationCandidate { Rotation = rot, TotalBands = obs.Count }; //261111Cl 変更前: 捨てる seed でも候補と辞書を確保していた
+        assigned.Clear(); //261111Cl
         Array.Clear(usedObs); Array.Clear(usedNode);
         double score = 0, sqSum = 0; int n = 0;
-        foreach (var (oi, ni, ang) in pairs.OrderBy(p => p.Ang))
+        //foreach (var (oi, ni, ang) in pairs.OrderBy(p => p.Ang)) //261111Cl 変更前
+        //261111Cl 変更: その場で並べ替える。(oi, ni) の組は一意で、pairs は (oi, ni) の辞書順に積んであるので、
+        //  キー (Ang, oi, ni) の全順序の並べ替えは安定な OrderBy(Ang) と同じ並びになる (同点は積んだ順)
+        System.Runtime.InteropServices.CollectionsMarshal.AsSpan(pairs).Sort(static (a, b) =>
+        {
+            int c = a.Ang.CompareTo(b.Ang);
+            if (c != 0) return c;
+            c = a.ObsIdx.CompareTo(b.ObsIdx);
+            return c != 0 ? c : a.NodeIdx.CompareTo(b.NodeIdx);
+        });
+        foreach (var (oi, ni, ang) in pairs)
         {
             if (usedObs[oi] || usedNode[ni]) continue;
             usedObs[oi] = true; usedNode[ni] = true;
@@ -308,9 +380,13 @@ public static class EbsdIndexer
             double angFactor = 1 - ang / assignTol; //0..1
             score += o.Weight * angFactor * widthFactor;
             sqSum += ang * ang; n++;
-            cand.Assignments[o.BandIndex] = hkl;
+            //cand.Assignments[o.BandIndex] = hkl; //261111Cl 変更前
+            assigned.Add((o.BandIndex, hkl)); //261111Cl: 割当順に記録 (辞書へは同じ順で入れるので列挙順も同じ)
         }
         if (n == 0) return null;
+        if (n < minAssigned) return null; //261111Cl 追加
+        var cand = new EbsdOrientationCandidate { Rotation = rot, TotalBands = obs.Count }; //261111Cl: 割当数が足りると決まってから作る
+        foreach (var (bandIndex, h) in assigned) cand.Assignments[bandIndex] = h; //261111Cl
         cand.AssignedBands = n;
         cand.AngularRmsDeg = Math.Sqrt(sqSum / n) * 180 / Math.PI;
         cand.Score = score;

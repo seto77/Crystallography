@@ -318,7 +318,10 @@ public static class EbsdBandDetector
         System.Threading.Tasks.Parallel.For(0, picked.Count, pi =>
         {
             var p = picked[pi];
-            var kernel = ButterflyKernel(p.bw);
+            //var kernel = ButterflyKernel(p.bw); //261111Cl 変更前 (lock 付きキャッシュを引いていた)
+            //261111Cl: p.bw は bestWidth = WidthBank の値そのもの (ピークは応答が 0 でない = いずれかの幅で更新済み) なので、添字でバンクのカーネルを直接引く
+            int wi = Array.IndexOf(WidthBank, p.bw);
+            var kernel = wi >= 0 ? WidthKernels[wi] : ButterflyKernel(p.bw); //バンク外の幅は来ないが、来ても旧実装と同じカーネルを作る
             int half = kernel.Length / 2;
             int nProf = 10 * half + 21; //ρ オフセット -2-half .. 2+half (0.2 刻み)。drho + k = -2 - half + 0.2m と一対一
             var prof = new double[nProf];
@@ -406,11 +409,44 @@ public static class EbsdBandDetector
     static (double Median, double Mad) MedianAndMad(double[] values)
     {
         var scratch = (double[])values.Clone();
-        Array.Sort(scratch);
-        double median = scratch[scratch.Length / 2];
+        //Array.Sort(scratch); //261111Cl 変更前: 18〜23 万要素の全ソートを 2 回 (欲しいのは n/2 番目の値だけ)
+        //double median = scratch[scratch.Length / 2];
+        double median = SelectKth(scratch, scratch.Length / 2); //261111Cl: 全ソートの [n/2] と同じ値 (偶数長でも上側の中央 = 平均しない、を保つ)
         for (int i = 0; i < scratch.Length; i++) scratch[i] = Math.Abs(values[i] - median);
-        Array.Sort(scratch);
-        return (median, scratch[scratch.Length / 2]);
+        //Array.Sort(scratch); //261111Cl 変更前
+        //return (median, scratch[scratch.Length / 2]);
+        return (median, SelectKth(scratch, scratch.Length / 2)); //261111Cl
+    }
+
+    /// <summary>261111Cl 追加: 昇順に並べたときの k 番目の値 (a は並べ替えられる)。全ソートの a[k] と同じ値を返す。
+    /// 既存の QuickSelect (NthItemUtils) は同値が多いと二乗時間になる (Radon の |応答| は検出器外の 0 が多く、MAD では 0 の画素が全部 |0 − median| の同値になる。
+    /// 18 万要素で 0 が過半だと 2 分以上掛かることを実測) ので、3 分割 (未満・同値・超) で同値の塊を一度に外す。
+    /// 分割の回数が 2·log₂n + 4 を超えたら残りを全ソートに切り替える (最悪でも O(n log n))。比較は double.CompareTo (NaN は最小、Array.Sort と同じ順)</summary>
+    static double SelectKth(double[] a, int k)
+    {
+        int lo = 0, hi = a.Length - 1, budget = 2 * System.Numerics.BitOperations.Log2((uint)Math.Max(a.Length, 1)) + 4;
+        while (lo < hi)
+        {
+            if (--budget < 0) { Array.Sort(a, lo, hi - lo + 1); break; }
+            //ピボット = 先頭・中央・末尾の中央値 (値をコピーで持つ)
+            double p0 = a[lo], p1 = a[lo + (hi - lo) / 2], p2 = a[hi];
+            double pivot = p0.CompareTo(p1) < 0
+                ? (p1.CompareTo(p2) < 0 ? p1 : p0.CompareTo(p2) < 0 ? p2 : p0)
+                : (p0.CompareTo(p2) < 0 ? p0 : p1.CompareTo(p2) < 0 ? p2 : p1);
+            //3 分割 (Dijkstra): [lo, lt) < pivot、[lt, gt] = pivot、(gt, hi] > pivot
+            int lt = lo, i = lo, gt = hi;
+            while (i <= gt)
+            {
+                int c = a[i].CompareTo(pivot);
+                if (c < 0) { (a[lt], a[i]) = (a[i], a[lt]); lt++; i++; }
+                else if (c > 0) { (a[i], a[gt]) = (a[gt], a[i]); gt--; }
+                else i++;
+            }
+            if (k < lt) hi = lt - 1;
+            else if (k > gt) lo = gt + 1;
+            else break; //k は同値の塊の中 (a[k] = pivot)
+        }
+        return a[k];
     }
 
     /// <summary>直線 (法線角 θ、距離 ρ、画像中心基準) に沿った線積分 sum/√N (bilinear、1px ステップ)</summary>
@@ -496,25 +532,33 @@ public static class EbsdBandDetector
     }
 
     /// <summary>butterfly 1D カーネル K_w(t)=G_σ(t) − ½G_σ(t−w/2) − ½G_σ(t+w/2)、σ=max(0.75, 0.12w)。平均0・L2=1 に正規化</summary>
-    static readonly Dictionary<double, double[]> kernelCache = [];
-    static readonly double[][] WidthKernels = [.. WidthBank.Select(ButterflyKernel)]; //260725Ch: kernelCache初期化後に固定バンクを一括解決
+    //static readonly Dictionary<double, double[]> kernelCache = []; //261111Cl 変更前: 実際に引かれる幅は常に WidthBank の値なので、lock 付きの辞書は不要
+    //static readonly double[][] WidthKernels = [.. WidthBank.Select(ButterflyKernel)]; //260725Ch: kernelCache初期化後に固定バンクを一括解決 //261111Cl 変更前
+    static readonly double[][] WidthKernels = [.. WidthBank.Select(ButterflyKernel)]; //261111Cl: 固定バンクのカーネルを型初期化時に 1 回だけ作る (WidthBank の後に宣言 = 初期化順も同じ)
+    //261111Cl 変更前 (lock 付きキャッシュ):
+    //static double[] ButterflyKernel(double w)
+    //{
+    //    lock (kernelCache)
+    //    {
+    //        if (kernelCache.TryGetValue(w, out var cached)) return cached;
+    //        (下と同じ本体)
+    //        kernelCache[w] = k;
+    //        return k;
+    //    }
+    //}
+    //261111Cl 変更: キャッシュを持たない純関数にした (呼ぶのは WidthKernels の初期化と、バンク外の幅の退避だけ)
     static double[] ButterflyKernel(double w)
     {
-        lock (kernelCache)
-        {
-            if (kernelCache.TryGetValue(w, out var cached)) return cached;
-            double sigma = Math.Max(0.75, 0.12 * w);
-            int half = (int)Math.Ceiling(w / 2 + 3 * sigma);
-            var k = new double[2 * half + 1];
-            for (int i = -half; i <= half; i++)
-                k[i + half] = Gauss(i, sigma) - 0.5 * Gauss(i - w / 2, sigma) - 0.5 * Gauss(i + w / 2, sigma);
-            double mean = k.Average();
-            for (int i = 0; i < k.Length; i++) k[i] -= mean;
-            double norm = Math.Sqrt(k.Sum(v => v * v));
-            for (int i = 0; i < k.Length; i++) k[i] /= norm;
-            kernelCache[w] = k;
-            return k;
-        }
+        double sigma = Math.Max(0.75, 0.12 * w);
+        int half = (int)Math.Ceiling(w / 2 + 3 * sigma);
+        var k = new double[2 * half + 1];
+        for (int i = -half; i <= half; i++)
+            k[i + half] = Gauss(i, sigma) - 0.5 * Gauss(i - w / 2, sigma) - 0.5 * Gauss(i + w / 2, sigma);
+        double mean = k.Average();
+        for (int i = 0; i < k.Length; i++) k[i] -= mean;
+        double norm = Math.Sqrt(k.Sum(v => v * v));
+        for (int i = 0; i < k.Length; i++) k[i] /= norm;
+        return k;
     }
 
     static double Gauss(double x, double sigma) => Math.Exp(-x * x / (2 * sigma * sigma));
@@ -915,20 +959,51 @@ public static class EbsdBandDetector
                 }
             });
             var dst = new double[length];
-            System.Threading.Tasks.Parallel.For(0, h, y =>
+            //261111Cl 変更前: 縦パスを列方向のストライド (w) でスカラーに回していた
+            //System.Threading.Tasks.Parallel.For(0, h, y =>
+            //{
+            //    for (int x = 0; x < w; x++)
+            //    {
+            //        double s = 0, wsum = 0;
+            //        for (int k = -half; k <= half; k++)
+            //        {
+            //            int yy = y + k;
+            //            if ((uint)yy >= (uint)h) continue;
+            //            s += tmp[yy * w + x] * kernel[k + half]; wsum += tmpW[yy * w + x] * kernel[k + half];
+            //        }
+            //        dst[y * w + x] = wsum > 1E-12 ? s / wsum : 0;
+            //    }
+            //});
+            //261111Cl 変更: 出力行ごとに「出力行 += k·tmp 行」を k の昇順に積む行アキュムレータ (行は連続なので Vector<double> で回せる)。
+            //  各要素に足す項と順序 (0 から k = −half..half の昇順に s += tmp·kernel) は旧実装と同じで、FMA も使わないのでビット一致
+            System.Threading.Tasks.Parallel.For(0, h, () => new double[w], (y, _, wAcc) =>
             {
-                for (int x = 0; x < w; x++)
+                var sRow = dst.AsSpan(y * w, w); //new double[] なので 0 から積み始める (旧実装の s = 0 と同じ)
+                var wRow = wAcc.AsSpan(0, w);
+                wRow.Clear();
+                for (int k = -half; k <= half; k++)
                 {
-                    double s = 0, wsum = 0;
-                    for (int k = -half; k <= half; k++)
+                    int yy = y + k;
+                    if ((uint)yy >= (uint)h) continue;
+                    double kk = kernel[k + half];
+                    var tRow = new ReadOnlySpan<double>(tmp, yy * w, w);
+                    var twRow = new ReadOnlySpan<double>(tmpW, yy * w, w);
+                    int x = 0;
+                    if (System.Numerics.Vector.IsHardwareAccelerated)
                     {
-                        int yy = y + k;
-                        if ((uint)yy >= (uint)h) continue;
-                        s += tmp[yy * w + x] * kernel[k + half]; wsum += tmpW[yy * w + x] * kernel[k + half];
+                        var kv = new System.Numerics.Vector<double>(kk);
+                        int vn = System.Numerics.Vector<double>.Count;
+                        for (; x <= w - vn; x += vn)
+                        {
+                            (new System.Numerics.Vector<double>(sRow[x..]) + new System.Numerics.Vector<double>(tRow[x..]) * kv).CopyTo(sRow[x..]);
+                            (new System.Numerics.Vector<double>(wRow[x..]) + new System.Numerics.Vector<double>(twRow[x..]) * kv).CopyTo(wRow[x..]);
+                        }
                     }
-                    dst[y * w + x] = wsum > 1E-12 ? s / wsum : 0;
+                    for (; x < w; x++) { sRow[x] += tRow[x] * kk; wRow[x] += twRow[x] * kk; }
                 }
-            });
+                for (int x = 0; x < w; x++) sRow[x] = wRow[x] > 1E-12 ? sRow[x] / wRow[x] : 0;
+                return wAcc;
+            }, _ => { });
             return dst;
         }
         finally

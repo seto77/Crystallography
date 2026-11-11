@@ -411,7 +411,8 @@ public static class BoteSalvat
     }
 
     private static volatile Element[] _elements; // [z-1]、非 null になった時点で全構築済み (NistElastic と同じ volatile+lock 公開)
-    private static readonly object _sync = new();
+    //private static readonly object _sync = new(); //261111Cl 変更前
+    private static readonly System.Threading.Lock _sync = new(); //261111Cl: 専用のロック型 (lock 文の意味は同じ)
 
     private static Element[] Load()
     {
@@ -469,7 +470,13 @@ public static class BoteSalvat
     private static double[] ReadDoubles(BinaryReader r, int count)
     {
         var a = new double[count];
-        for (int i = 0; i < count; i++) a[i] = r.ReadDouble();
+        //for (int i = 0; i < count; i++) a[i] = r.ReadDouble(); //261111Cl 変更前
+        //261111Cl 変更: 一括で読む。BinaryReader.ReadDouble はリトルエンディアン固定なので、同じエンディアンの機械ではバイト列をそのまま double[] に詰めれば同じ値
+        //  (BinaryReader は基底ストリームを先読みしないので、基底ストリームから直接読んでも以後の ReadInt32 等の位置はずれない)
+        if (BitConverter.IsLittleEndian)
+            r.BaseStream.ReadExactly(System.Runtime.InteropServices.MemoryMarshal.AsBytes(a.AsSpan()));
+        else
+            for (int i = 0; i < count; i++) a[i] = r.ReadDouble();
         return a;
     }
 
@@ -596,11 +603,13 @@ public sealed class IonizationFsTable
     private readonly int _formatVersion;
     private readonly Dictionary<(int ShellCode, int Z), (int Offset, int Length)> _index = [];
     private readonly Dictionary<(int ShellCode, int Z), IonizationChannelTable> _cache = [];
-    private readonly object _sync = new();
+    //private readonly object _sync = new(); //261111Cl 変更前
+    private readonly System.Threading.Lock _sync = new(); //261111Cl: 専用のロック型 (lock 文の意味は同じ)
     internal readonly double[] SGrid;
 
     private static volatile IonizationFsTable _default;
-    private static readonly object _defaultSync = new();
+    //private static readonly object _defaultSync = new(); //261111Cl 変更前
+    private static readonly System.Threading.Lock _defaultSync = new(); //261111Cl
 
     /// <summary>埋め込みリソースから構築される既定インスタンス。</summary>
     public static IonizationFsTable Default

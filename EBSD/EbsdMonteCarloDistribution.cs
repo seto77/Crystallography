@@ -714,6 +714,11 @@ public sealed class EbsdMonteCarloDistribution
         int eLen = energies.Length, nBins = BinCount * BinCount;
         double eMax = double.NegativeInfinity; foreach (var e in energies) eMax = Math.Max(eMax, e);
         double e0 = e0KeV > 0 && double.IsFinite(e0KeV) ? e0KeV : eMax; //EbsdPatternComposer.CoherenceFactors と同じ E0 の規約
+        //261111Cl 追加: (確定した E0, E_c) が前回と同じなら前回の G_A をそのまま使う (描画のたびに全電子 (数百万) のヒストグラムを作り直していた)。
+        //  ほかの入力 (BinElectronEnergies・BinElectronStart・BinMeasured・Energies・重みの設定・FlatEnergyDistribution) は ctor で決まり以後変わらない。
+        //  G_A は読むだけで使われる (EbsdPatternComposer) ので同じ配列を返してよい。memo は 1 つの参照で持つ (並行に呼ばれても組が崩れない)
+        var memo = _electronWiseMemo;
+        if (memo != null && memo.E0 == e0 && memo.Ec == ecKeV) { FlatEnergyDistributionA = memo.Flat; return; }
         var globalG = ComputeEnergyHistogram(BinElectronEnergies, energies, EnergyWeightDeadKeV, EnergyFilterMinKeV);
         var globalA = ComputeEnergyHistogram(BinElectronEnergies, energies, EnergyWeightDeadKeV, EnergyFilterMinKeV, e0, ecKeV);
         var flat = new double[nBins * eLen];
@@ -740,7 +745,12 @@ public sealed class EbsdMonteCarloDistribution
             if (flat[k] < -1E-15 || flat[k] > flatG[k] * (1 + 1E-9) + 1E-15)
                 throw new InvalidOperationException($"G_A の範囲 0 ≤ G_A ≤ G に違反 (ビン {k / eLen}, 節点 {k % eLen}: G_A {flat[k]}, G {flatG[k]})");
         FlatEnergyDistributionA = flat;
+        _electronWiseMemo = new ElectronWiseMemo(e0, ecKeV, flat); //261111Cl 追加: 検査に通った結果だけを覚える
     }
+
+    /// <summary>261111Cl 追加: <see cref="ComputeElectronWiseCoherence"/> の前回の結果 (キー = 確定した E0 と E_c)</summary>
+    private sealed record ElectronWiseMemo(double E0, double Ec, double[] Flat);
+    private ElectronWiseMemo _electronWiseMemo; //261111Cl 追加
 
     /// <summary>260921Cl 追加: 総和 1 に正規化した新しい配列を返す (総和が 0 なら一様)。</summary>
     static double[] NormalizeToUnitSum(double[] v)

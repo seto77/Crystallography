@@ -40,6 +40,9 @@ public sealed class EbsdRadonMap
     /// <summary>証拠マップの bilinear 補間値。マップ外の ρ は 0 (=無証拠)</summary>
     public double Sample(double thetaDeg, double rhoWork)
     {
+        //261111Cl 追加: 非有限の入力は無証拠 (0)。NaN は下の範囲判定をすり抜け、.NET 9 以降の飽和変換 (int)NaN = 0 で
+        //  無関係なセルを読み (しかも fr = NaN で結果が NaN になる)、採点を黙って壊していた
+        if (!double.IsFinite(thetaDeg) || !double.IsFinite(rhoWork)) return 0;
         (thetaDeg, rhoWork) = Fold(thetaDeg, rhoWork);
         double tb = thetaDeg / ThetaStepDeg, rb = rhoWork + RhoOffset;
         int t0 = (int)Math.Floor(tb);
@@ -116,6 +119,7 @@ public sealed class EbsdDilatedRadonMap
     readonly double[] values;
     readonly int nTheta, nRho, rhoOffset;
     readonly double thetaStepDeg;
+    readonly double outside; //261111Cl 追加: マップ外 (検出器と交差しない ρ) の値。BuildDilated の膨張マップは 0 (= 無証拠)、Map で作った表は f(0)
 
     internal EbsdDilatedRadonMap(double[] values, EbsdRadonMap source)
     {
@@ -123,9 +127,38 @@ public sealed class EbsdDilatedRadonMap
         nTheta = source.NTheta; nRho = source.NRho; rhoOffset = source.RhoOffset; thetaStepDeg = source.ThetaStepDeg;
     }
 
+    /// <summary>261111Cl 追加: 格子定義を grid から写し、値と範囲外の値だけ差し替える (<see cref="Map"/> 用)</summary>
+    EbsdDilatedRadonMap(double[] values, EbsdDilatedRadonMap grid, double outside)
+    {
+        this.values = values; this.outside = outside;
+        nTheta = grid.nTheta; nRho = grid.nRho; rhoOffset = grid.rhoOffset; thetaStepDeg = grid.thetaStepDeg;
+    }
+
+    /// <summary>261111Cl 追加: 各セルに f を掛けた表を作る (範囲外の値は f(0))。粗探索が標本ごとに計算していた
+    /// 証拠飽和 ψ(v − μ₀) をセルごとに 1 回だけ前計算するため。f は純関数であること (同じ入力に同じ値 → 標本ごとの計算とビット一致)</summary>
+    internal EbsdDilatedRadonMap Map(Func<double, double> f)
+    {
+        var v = new double[values.Length];
+        for (int i = 0; i < v.Length; i++) v[i] = f(values[i]);
+        return new EbsdDilatedRadonMap(v, this, f(0));
+    }
+
+    /// <summary>261111Cl 追加: 折り返し済み (θ∈[0,180)、ρ は反転済み) の入力に対する <see cref="SampleNearest"/>。
+    /// Fold は [0,180) で冪等なので、Fold を省いても同じセルを読む。範囲外は <see cref="outside"/>。
+    /// 非有限の ρ は呼び出し側で除くこと (粗探索のホットループ用なので検査しない)</summary>
+    internal double SampleNearestFolded(double thetaDeg, double rhoWork)
+    {
+        int t = (int)Math.Round(thetaDeg / thetaStepDeg);
+        int r = (int)Math.Round(rhoWork) + rhoOffset;
+        if (t >= nTheta) { t -= nTheta; r = nRho - 1 - r; } //θ=180° の継ぎ目 (SampleNearest と同じ)
+        return (uint)r < (uint)nRho ? values[t * nRho + r] : outside;
+    }
+
     /// <summary>膨張マップの最近傍値 (粗探索用。bilinear 不要)</summary>
     public double SampleNearest(double thetaDeg, double rhoWork)
     {
+        //261111Cl 追加: 非有限の入力は無証拠 (0)。NaN は範囲判定をすり抜け、(int)Math.Round(NaN) = 0 (.NET 9 以降の飽和変換) で無関係なセルを返していた
+        if (!double.IsFinite(thetaDeg) || !double.IsFinite(rhoWork)) return 0;
         (thetaDeg, rhoWork) = EbsdRadonMap.Fold(thetaDeg, rhoWork);
         int t = (int)Math.Round(thetaDeg / thetaStepDeg);
         int r = (int)Math.Round(rhoWork) + rhoOffset;
@@ -184,6 +217,18 @@ public static class EbsdRadonIndexer
     }
     #endregion
 
+    /// <summary>261111Cl 追加: 粗探索 (Index) のワーカーごとの状態。候補リスト、上位へ切り詰めたときの閾値、
+    /// 球点ごとに確保していた長さ nc の作業配列 (どれも読む前に必ず書くので使い回してよい)</summary>
+    sealed class CoarseWorker(int nc)
+    {
+        public readonly List<(double S, int Di, int Pi, int Zi)> List = [];
+        /// <summary>最後に上位 keepPerMerge 件へ切り詰めたときの最下位のスコア (切り詰め前は −∞)</summary>
+        public double Threshold = double.NegativeInfinity;
+        public readonly double[] AccTh = new double[nc], AccRho = new double[nc];
+        public readonly double[] NLx = new double[nc], NLy = new double[nc], NLz = new double[nc], NNorm = new double[nc], FoldTh = new double[nc];
+        public readonly bool[] Flip = new bool[nc];
+    }
+
     /// <summary>反射カタログの既定サイズ。260725Cl 追加 (/simplify): Index と ScoreOrientation で別々のリテラル 90 だったため、
     /// 片方だけ変えると探索とガードが別カタログで採点する脆さがあった</summary>
     public const int DefaultMaxNodes = 90;
@@ -236,6 +281,7 @@ public static class EbsdRadonIndexer
             double norm = Math.Sqrt(aMm * aMm + bMm * bMm);
             if (norm < 1E-9) continue;
             double rhoWork = -cMm / (pix * norm) * map.Scale;
+            if (!double.IsFinite(rhoWork)) continue; //261111Cl 追加: NaN は下の範囲判定をすり抜け、Sample が NaN を返して採点全体を NaN にしていた
             if (Math.Abs(rhoWork) > rhoLimit) continue;
             var (thF, rhoF) = FoldLine(Math.Atan2(bMm, aMm) * 180 / Math.PI, rhoWork);
             bool dup = false;
@@ -438,11 +484,15 @@ public static class EbsdRadonIndexer
         int coarseDone = 0; //260725Cl: 進捗通知用 (粗探索が総時間の大半)
         const int keepPerMerge = 600;
         var parallelOptions = new System.Threading.Tasks.ParallelOptions { CancellationToken = cancel }; //260725Ch: 無効化された探索を全ワーカーで停止し、OCEをそのまま呼び出し側へ返す
+        //261111Cl 追加: 証拠飽和 ψ(v − μ₀) を膨張マップのセルごとに 1 回だけ前計算した表 (範囲外は ψ(0 − μ₀))。
+        //  旧実装は標本ごとに Saturate (cap > 0 なら tanh) を計算していた。Saturate は純関数なのでビット一致
+        var saturatedMap = dilatedMap.Map(v => Saturate(v - mu0, sigma0, saturateCap));
 
         //System.Threading.Tasks.Parallel.For(0, nSphere, //260725Ch 変更前
         System.Threading.Tasks.Parallel.For(0, nSphere, parallelOptions, //260725Ch
             //() => new List<(double S, int Di, int Pi)>(), //260922Cl 変更前
-            () => new List<(double S, int Di, int Pi, int Zi)>(),
+            //() => new List<(double S, int Di, int Pi, int Zi)>(), //261111Cl 変更前
+            () => new CoarseWorker(nc), //261111Cl: 候補リスト + 切り詰めの閾値 + 作業配列をワーカーごとに 1 組
             (di, _, local) =>
             {
                 cancel.ThrowIfCancellationRequested();
@@ -472,8 +522,12 @@ public static class EbsdRadonIndexer
                 //260922Cl 変更: 検出器 Z の格子 (zGeoms) を内側に回す。面法線の検出器上の向き (a, b, θ) は Z に依らないので方位ごとに 1 回だけ計算し、
                 //  Z ごとに変わるのは中心との内積 c (= ρ) だけ。nZ = 1 (Z 探索なし) では旧実装と同じ演算順で同じ値になる。
                 //  旧実装 (geometry.Center 1 つ) は下にコメントで残す
-                var accTh = new double[nc]; var accRho = new double[nc]; //260724Cl: 同一評価内の予測線排他バッファ (強度降順に採用)
-                var nLx = new double[nc]; var nLy = new double[nc]; var nLz = new double[nc]; var nNorm = new double[nc]; var nTh = new double[nc];
+                //var accTh = new double[nc]; var accRho = new double[nc]; //260724Cl: 同一評価内の予測線排他バッファ (強度降順に採用) //261111Cl 変更前
+                //var nLx = new double[nc]; var nLy = new double[nc]; var nLz = new double[nc]; var nNorm = new double[nc]; var nTh = new double[nc]; //261111Cl 変更前
+                //261111Cl: 球点ごとの確保 (長さ nc × 7 本) をやめ、ワーカーの作業配列を使い回す (どれも読む前に必ず書くので初期化は不要)
+                var accTh = local.AccTh; var accRho = local.AccRho;
+                var nLx = local.NLx; var nLy = local.NLy; var nLz = local.NLz; var nNorm = local.NNorm;
+                var foldTh = local.FoldTh; var flip = local.Flip; //261111Cl: nTh の代わりに折り返し済みの θ と ρ 反転の有無 (θ だけで決まる)
                 for (int pi = 0; pi < nPhi; pi++)
                 {
                     double sinP = sinPhi[pi], cosP = cosPhi[pi]; //260725Ch
@@ -489,7 +543,10 @@ public static class EbsdRadonIndexer
                         double aMm = xm * lx, bMm = ly * ey.Y + lz * ey.Z;
                         nLx[k] = lx; nLy[k] = ly; nLz[k] = lz;
                         nNorm[k] = Math.Sqrt(aMm * aMm + bMm * bMm);
-                        nTh[k] = Math.Atan2(bMm, aMm) * 180 / Math.PI;
+                        //nTh[k] = Math.Atan2(bMm, aMm) * 180 / Math.PI; //261111Cl 変更前
+                        //261111Cl: θ の折り返し (θ+180 は ρ 反転) は θ だけで決まるので、Z の格子点ごと・標本ごとにやらずここで 1 回
+                        var (thFold, sign) = FoldLine(Math.Atan2(bMm, aMm) * 180 / Math.PI, 1.0);
+                        foldTh[k] = thFold; flip[k] = sign < 0;
                     }
                     for (int zi = 0; zi < nZ; zi++)
                     {
@@ -502,22 +559,29 @@ public static class EbsdRadonIndexer
                             if (norm < 1E-9) continue; //バンド面がほぼ視軸に垂直 (線が無限遠)
                             double cMm = nLx[k] * zc.X + nLy[k] * zc.Y + nLz[k] * zc.Z;
                             double rhoWork = -cMm / (pix * norm) * map.Scale;
+                            if (!double.IsFinite(rhoWork)) continue; //261111Cl 追加: NaN は下の範囲判定をすり抜けて (int)Round(NaN) = 0 の無関係なセルを読んでいた
                             if (Math.Abs(rhoWork) > rhoLimit) continue; //検出器と交差しない
-                            var (thF, rhoF) = FoldLine(nTh[k], rhoWork);
+                            //var (thF, rhoF) = FoldLine(nTh[k], rhoWork); //261111Cl 変更前
+                            double thF = foldTh[k], rhoF = flip[k] ? -rhoWork : rhoWork; //261111Cl: 前計算した折り返し (FoldLine と同じ値)
                             bool dup = false;
                             for (int j = 0; j < nAcc; j++)
                                 if (SameLine(thF, rhoF, accTh[j], accRho[j], 2, 5)) { dup = true; break; }
                             if (dup) continue;
                             accTh[nAcc] = thF; accRho[nAcc] = rhoF; nAcc++;
                             double w = nw[k];
-                            num += w * Saturate(dilatedMap.SampleNearest(thF, rhoF) - mu0, sigma0, saturateCap);
+                            //num += w * Saturate(dilatedMap.SampleNearest(thF, rhoF) - mu0, sigma0, saturateCap); //261111Cl 変更前
+                            num += w * saturatedMap.SampleNearestFolded(thF, rhoF); //261111Cl: 飽和済みの表を折り返し済みの (θ, ρ) で引く
                             wSum += w; w2Sum += w * w;
                         }
                         if (w2Sum <= 0) continue;
                         double nEff = wSum * wSum / w2Sum;
                         if (nEff < 4) continue; //有効バンド数下限 (少数バンド方位の上振れ防止、Codex 裁定 Q1)
                         den = Math.Sqrt(w2Sum) * (saturateCap > 0 ? 1 : sigma0);
-                        local.Add((num / den, di, pi, zi));
+                        //local.Add((num / den, di, pi, zi)); //261111Cl 変更前
+                        //261111Cl: 一度切り詰めたあとは、その時点の 600 位より厳密に小さいスコアは最終の上位 600 に残り得ない
+                        //  (このワーカーだけで 600 件がそれ以上) ので足さない。同点は足す (従来と同じく後段の並べ替えに任せる)。NaN も従来どおり足す
+                        double score = num / den;
+                        if (!(score < local.Threshold)) local.List.Add((score, di, pi, zi));
                     }
                 }
                 //旧: var accTh = new double[nc]; var accRho = new double[nc]; //260724Cl: 同一評価内の予測線排他バッファ (強度降順に採用)
@@ -562,17 +626,25 @@ public static class EbsdRadonIndexer
                 //旧: double score = num / den;
                 //旧: local.Add((score, di, pi));
                 //旧: }
-                if (local.Count > keepPerMerge * 4)
+                //261111Cl 変更前 (local は List そのもの):
+                //if (local.Count > keepPerMerge * 4)
+                //{
+                //    local.Sort((a, b) => b.S.CompareTo(a.S));
+                //    local.RemoveRange(keepPerMerge, local.Count - keepPerMerge);
+                //}
+                if (local.List.Count > keepPerMerge * 4)
                 {
-                    local.Sort((a, b) => b.S.CompareTo(a.S));
-                    local.RemoveRange(keepPerMerge, local.Count - keepPerMerge);
+                    local.List.Sort((a, b) => b.S.CompareTo(a.S));
+                    local.List.RemoveRange(keepPerMerge, local.List.Count - keepPerMerge);
+                    local.Threshold = local.List[keepPerMerge - 1].S; //261111Cl 追加: 以後これより小さいスコアは足さない (上の Add の条件)
                 }
                 //260725Cl 追加: 進捗通知 (64 球点ごと。粗探索を 0-0.9 に割り当て、残りは精密化)
                 if (progress != null && (System.Threading.Interlocked.Increment(ref coarseDone) & 63) == 0)
                     progress(0.9 * coarseDone / nSphere);
                 return local;
             },
-            local => { lock (lockObj) survivors.AddRange(local); });
+            //local => { lock (lockObj) survivors.AddRange(local); }); //261111Cl 変更前
+            local => { lock (lockObj) survivors.AddRange(local.List); }); //261111Cl
 
         survivors.Sort((a, b) => b.S.CompareTo(a.S));
         if (survivors.Count > keepPerMerge) survivors.RemoveRange(keepPerMerge, survivors.Count - keepPerMerge);
@@ -603,8 +675,18 @@ public static class EbsdRadonIndexer
             //foreach (var c in EbsdIndexer.Index(pseudo, geometry, refl, waveLength, maxCandidates: 12, cancel: cancel))
             //    seeds.Add((double.MaxValue, c.Rotation)); //260922Cl 変更前
             //260922Cl 変更: 線 → 面法線の変換はパターン中心に依るので、Z の格子点ごとに掛ける (ピーク線そのものは幾何に依らない)
+            //261111Cl 変更前 (格子点ごとに逐次。カタログも毎回作り直していた):
+            //for (int zi = 0; zi < nZ; zi++)
+            //    foreach (var c in EbsdIndexer.Index(pseudo, zGeoms[zi], refl, waveLength, maxCandidates: 12, cancel: cancel))
+            //        seeds.Add((double.MaxValue, c.Rotation, gOffsets[zi].X, gOffsets[zi].Z));
+            //261111Cl 変更: 幾何に依らないカタログは 1 回だけ作り、格子点ごとの指数付けは並列に回す。
+            //  結果は perZ[zi] に置いて zi 順に連結するので、seeds の並びは逐次版と同じ
+            var prepared = EbsdIndexer.PrepareCatalog(refl);
+            var perZ = new List<EbsdOrientationCandidate>[nZ];
+            System.Threading.Tasks.Parallel.For(0, nZ, parallelOptions,
+                zi => perZ[zi] = EbsdIndexer.IndexWithCatalog(pseudo, zGeoms[zi], prepared, waveLength, maxCandidates: 12, cancel: cancel));
             for (int zi = 0; zi < nZ; zi++)
-                foreach (var c in EbsdIndexer.Index(pseudo, zGeoms[zi], refl, waveLength, maxCandidates: 12, cancel: cancel))
+                foreach (var c in perZ[zi])
                     seeds.Add((double.MaxValue, c.Rotation, gOffsets[zi].X, gOffsets[zi].Z));
         }
 
@@ -731,6 +813,7 @@ public static class EbsdRadonIndexer
                 double norm = Math.Sqrt(aMm * aMm + bMm * bMm);
                 if (norm < 1E-9) continue;
                 double rhoWork = -cMm / (pix * norm) * map.Scale;
+                if (!double.IsFinite(rhoWork)) continue; //261111Cl 追加 (粗探索・ScoreExactCore と同じ NaN の除外)
                 if (Math.Abs(rhoWork) > rhoLimit) continue;
                 var (thF, rhoF) = FoldLine(Math.Atan2(bMm, aMm) * 180 / Math.PI, rhoWork);
                 bool dup = false;

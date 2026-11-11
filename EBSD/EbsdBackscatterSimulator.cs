@@ -84,6 +84,19 @@ public static class EbsdBackscatterSimulator
                     bseLists.Add(local.list);
             });
 
-        return [.. bseLists.SelectMany(localList => localList)];
+        //return [.. bseLists.SelectMany(localList => localList)]; //261111Cl 変更前: 数百万件 (1 件 136 B) を長さ不明の列挙から倍々に伸ばして詰め直していた
+        //261111Cl 変更: 合計件数で 1 回だけ確保し、ワーカーのリストを並び順のまま詰める。
+        //  ConcurrentBag の列挙は ToArray() のスナップショット順なので、旧 SelectMany と同じリスト順・同じ要素順になる
+        var lists = bseLists.ToArray();
+        long total = 0;
+        foreach (var list in lists) total += list.Count;
+        var result = GC.AllocateUninitializedArray<EbsdBackscatteredElectron>(checked((int)total));
+        int offset = 0;
+        foreach (var list in lists)
+        {
+            System.Runtime.InteropServices.CollectionsMarshal.AsSpan(list).CopyTo(result.AsSpan(offset));
+            offset += list.Count;
+        }
+        return result;
     }
 }

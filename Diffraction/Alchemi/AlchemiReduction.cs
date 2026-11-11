@@ -75,6 +75,7 @@ public sealed class AlchemiReduction
     private readonly double[] _t;
     private readonly AbsorptionSource _absorption;// 虚部の出所 (再注入してよいのは TDS だけ)
     private readonly double[] _pOverP0;     // 260829Cl 追加: L_coh の流束重み P_g/P_0 (null = 重みなし)
+    private readonly bool _useNative;       // 261111Cl 追加: S = D†μD の行列積を native (Eigen) で組むか
     private double[] _lcoh;                 // L_coh(t) の遅延キャッシュ (方位ごとに 1 回で足りる)
 
     /// <summary>厚み一覧 [nm] (構築時に渡したもの)。</summary>
@@ -95,8 +96,14 @@ public sealed class AlchemiReduction
     /// <param name="pOverP0">260829Cl 追加: 各ビームの P_g/P_0 (P_g = 2n̂·(k₀+g))。L_coh の生存流束を
     /// Σ_g (P_g/P_0)|ψ_g|² (表面法線方向の全電流。無吸収で厳密に 1) で数えるための重み。
     /// null なら従来どおり Σ_g|ψ_g|² (P_g ≈ P_0 の近似。系統列 ALCHEMI では差は ~10⁻³ 以下)</param>
+    /// <param name="useNative">261111Cl 追加: S = D†μD (と L_coh の D†diag(P/P0)D) の行列積を native (Eigen) で組むか。
+    /// null なら <see cref="NativeWrapper.Enabled"/> に従う。false で従来の managed 三重ループ (検証用の基準)。
+    /// true でも native が無効なら managed へ落ちる。結果は丸め誤差の範囲で一致する (積の結合順だけが違う)</param>
+    //261111Cl シグネチャ変更 (useNative 追加)。旧:
+    //public AlchemiReduction(int bLen, Complex[] eigenValues, Complex[] eigenVectors, Complex[] alpha, double[] thicknessesNm,
+    //    AbsorptionSource absorption = AbsorptionSource.TdsRedistributable, double[] pOverP0 = null)
     public AlchemiReduction(int bLen, Complex[] eigenValues, Complex[] eigenVectors, Complex[] alpha, double[] thicknessesNm,
-        AbsorptionSource absorption = AbsorptionSource.TdsRedistributable, double[] pOverP0 = null)
+        AbsorptionSource absorption = AbsorptionSource.TdsRedistributable, double[] pOverP0 = null, bool? useNative = null)
     {
         ArgumentNullException.ThrowIfNull(eigenValues);
         ArgumentNullException.ThrowIfNull(eigenVectors);
@@ -111,6 +118,7 @@ public sealed class AlchemiReduction
         if (pOverP0 is not null && pOverP0.Length < bLen)
             throw new ArgumentException($"AlchemiReduction: pOverP0 is smaller than bLen = {bLen}");
         _pOverP0 = pOverP0; // 260829Cl 追加
+        _useNative = (useNative ?? true) && NativeWrapper.Enabled; // 261111Cl 追加: native が無ければ常に managed
 
         _d = GC.AllocateUninitializedArray<Complex>(bLen * bLen);
         for (int j = 0; j < bLen; j++)
@@ -158,6 +166,22 @@ public sealed class AlchemiReduction
     {
         //競合しても同じ値を 2 度作るだけ (決定的計算 + 参照代入) なので lock を張らない
         if (_lcoh is not null) return _lcoh;
+        //261111Cl 追加: native では S = D†·(diag(P/P0)·D) を 1 回の行列積で組む (Eigen は column-major、D と同じ並び)
+        if (_useNative)
+        {
+            var sN = new Complex[_b * _b];
+            if (_pOverP0 is null)
+                NativeWrapper.AdjointAndMultiply(_b, _d, _d, ref sN);
+            else
+            {
+                var pd = GC.AllocateUninitializedArray<Complex>(_b * _b);
+                for (int j = 0; j < _b; j++)
+                    for (int g = 0; g < _b; g++)
+                        pd[g + j * _b] = _pOverP0[g] * _d[g + j * _b];
+                NativeWrapper.AdjointAndMultiply(_b, _d, pd, ref sN);
+            }
+            return _lcoh = ContractCore(sN);
+        }
         //μ = diag(P_g/P_0) (null なら I) なので S = D†μD。μ を実体化せずに直接組む (b² の一時行列を作らない)
         var s = new Complex[_b * _b];
         for (int j = 0; j < _b; j++)
@@ -224,6 +248,15 @@ public sealed class AlchemiReduction
     private Complex[] BuildS(Complex[] mu)
     {
         int b = _b;
+        //261111Cl 追加: native (Eigen MatrixXcd = column-major で D・μ・S と同じ並び) で S = D†·μ·D。
+        //EigenFuncs.cpp は EIGEN_DONT_PARALLELIZE なので、方位ごとの Parallel.For の中から呼んでも内部スレッドと競合しない。
+        //managed の三重ループ (下) とは積の結合順 ((D†μ)D と D†(μD)) だけが違い、差は丸め誤差の範囲
+        if (_useNative)
+        {
+            var sN = new Complex[b * b];
+            NativeWrapper.AdjointMul_Mul_Mul(b, _d, mu, _d, ref sN);
+            return sN;
+        }
         //T = μD : T[h + j*b] = Σ_g μ[h + g*b] · D[g + j*b]
         var t = new Complex[b * b];
         for (int j = 0; j < b; j++)
