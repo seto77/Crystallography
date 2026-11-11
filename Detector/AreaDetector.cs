@@ -68,6 +68,25 @@ namespace Crystallography
         /// <returns></returns>
         public Vector3DBase convertClientToReciprocalSpace(double x, double y)
         {
+            #region 261111Cl 変更前 (本体は下のタプル版へ移した。計算式は同一)
+            ////まずフィルム上の位置を取得
+            //double px = (x - Center.X) * Resolution, py = -(y - Center.Y) * Resolution, len = Math.Sqrt(px * px + py * py);
+            ////次に、それを逆空間上の点に変換
+            ////まず、sinθを求める
+            //double theta = Math.Atan(len / CameraLength) / 2;
+            //double sin = Math.Sin(theta);
+            ////var Z = (1 - Math.Cos(twoTheta)) / WaveLength;
+            //var Z = 2 * sin * sin / WaveLength;
+            ////var temp = 1 / pLen * Math.Sqrt((4 * sinTheta * sinTheta / WaveLength / WaveLength) - Z * Z);
+            //var temp = Z / len * Math.Sqrt(1 / (sin * sin) - 1);
+            //return new Vector3DBase(px * temp, py * temp, Z);
+            #endregion
+            return new Vector3DBase(convertClientToReciprocalSpaceTuple(x, y)); // 261111Cl
+        }
+
+        /// <summary>ピクセル位置X,Yが相当する逆空間ベクトルを返す (内部用のタプル版。割り当てなし)</summary>
+        private (double X, double Y, double Z) convertClientToReciprocalSpaceTuple(double x, double y) // 261111Cl 追加
+        {
             //まずフィルム上の位置を取得
             double px = (x - Center.X) * Resolution, py = -(y - Center.Y) * Resolution, len = Math.Sqrt(px * px + py * py);
             //次に、それを逆空間上の点に変換
@@ -78,7 +97,7 @@ namespace Crystallography
             var Z = 2 * sin * sin / WaveLength;
             //var temp = 1 / pLen * Math.Sqrt((4 * sinTheta * sinTheta / WaveLength / WaveLength) - Z * Z);
             var temp = Z / len * Math.Sqrt(1 / (sin * sin) - 1);
-            return new Vector3DBase(px * temp, py * temp, Z);
+            return (px * temp, py * temp, Z);
         }
 
 
@@ -127,13 +146,24 @@ namespace Crystallography
             {
                 for (int x = 0; x < ImageWidth; x++)
                 {
-                    var right = convertClientToReciprocalSpace(x + 0.5, y);
-                    var left = convertClientToReciprocalSpace(x - 0.5, y);
-                    var bottom = convertClientToReciprocalSpace(x, y + 0.5);
-                    var top = convertClientToReciprocalSpace(x, y - 0.5);
+                    #region 261111Cl 変更前 (画素ごとに Vector3DBase を 8 個割り当てていた)
+                    //var right = convertClientToReciprocalSpace(x + 0.5, y);
+                    //var left = convertClientToReciprocalSpace(x - 0.5, y);
+                    //var bottom = convertClientToReciprocalSpace(x, y + 0.5);
+                    //var top = convertClientToReciprocalSpace(x, y - 0.5);
 
-                    Reciprocal[y * ImageWidth + x] = (convertClientToReciprocalSpace(x, y).Tuple, Vector3DBase.VectorProduct(right - left, top - bottom).Length);
+                    //Reciprocal[y * ImageWidth + x] = (convertClientToReciprocalSpace(x, y).Tuple, Vector3DBase.VectorProduct(right - left, top - bottom).Length);
+                    #endregion
+                    // 261111Cl タプル版でスカラー計算。引き算・外積 (VectorProduct)・長さ (Length) の式と順序は同一
+                    var right = convertClientToReciprocalSpaceTuple(x + 0.5, y);
+                    var left = convertClientToReciprocalSpaceTuple(x - 0.5, y);
+                    var bottom = convertClientToReciprocalSpaceTuple(x, y + 0.5);
+                    var top = convertClientToReciprocalSpaceTuple(x, y - 0.5);
+                    double ax = right.X - left.X, ay = right.Y - left.Y, az = right.Z - left.Z;
+                    double bx = top.X - bottom.X, by = top.Y - bottom.Y, bz = top.Z - bottom.Z;
+                    double cx = ay * bz - az * by, cy = az * bx - ax * bz, cz = ax * by - ay * bx;
 
+                    Reciprocal[y * ImageWidth + x] = (convertClientToReciprocalSpaceTuple(x, y), Math.Sqrt(cx * cx + cy * cy + cz * cz));
                 }
             });
         }

@@ -279,40 +279,67 @@ public static class Ring
         double unit = 1.2;
         var thread = Environment.ProcessorCount;
 
+        #region 261111Cl 変更前 (画素ごとに Math.Pow と SortedList の二分探索をしていた)
+        //Parallel.For(0, thread, i =>
+        //{
+        //    int start = Intensity.Length / thread * i;
+        //    //260712Cl 末尾チャンクは Length まで処理 (旧: Length/thread*(i+1) は切り捨てで余り Length%thread 個が未集計だった)
+        //    int end = i == thread - 1 ? Intensity.Length : Intensity.Length / thread * (i + 1);
+        //    var freq = new SortedList<uint, int>();
+        //    for (int j = start; j < end; j++)
+        //    {
+        //        uint value = (uint)Math.Pow(unit, (uint)Math.Log(Intensity[j], unit));
+
+        //        //260317Cl 変更: ContainsKey+indexer → TryGetValue
+        //        //if (freq.ContainsKey(value))
+        //        //    freq[value] += 1;
+        //        //else
+        //        //    freq.Add(value, 1);
+        //        if (freq.TryGetValue(value, out var cnt))
+        //            freq[value] = cnt + 1;
+        //        else
+        //            freq.Add(value, 1);
+        //    }
+        //    //260317Cl 変更: ContainsKey+indexer → TryGetValue
+        //    lock (lockObj)
+        //    {
+        //        foreach (uint j in freq.Keys)
+        //            //if (Frequency.ContainsKey(j))
+        //            //    Frequency[j] += freq[j];
+        //            //else
+        //            //    Frequency.Add(j, freq[j]);
+        //            if (Frequency.TryGetValue(j, out var fv))
+        //                Frequency[j] = fv + freq[j];
+        //            else
+        //                Frequency.Add(j, freq[j]);
+        //    }
+        //});
+        #endregion
+
+        // 261111Cl 画素ごとには指数 k = (uint)Math.Log(I, 1.2) (旧式と同じ式) だけを求め、スレッドごとの int[] で数える。
+        //          キー (uint)Math.Pow(1.2, k) は最後に k ごとに 1 回だけ計算し、同じキーになる k は合算する (旧実装と同じ集計結果)。
+        //          .NET 9 以降の飽和変換により: NaN・負・0・0<I<1 → k=0 → キー 1、+∞ → k=uint.MaxValue → キー uint.MaxValue。
+        //          1.2^k は k≥122 で uint の範囲を超え、キーは uint.MaxValue に飽和する。よって k≥kMax(=255) は 1 つのビンにまとめても結果は同じ。
+        const int kMax = 255;
+        var intensity = Intensity;
+        var total = new int[kMax + 1];
         Parallel.For(0, thread, i =>
         {
-            int start = Intensity.Length / thread * i;
-            //260712Cl 末尾チャンクは Length まで処理 (旧: Length/thread*(i+1) は切り捨てで余り Length%thread 個が未集計だった)
-            int end = i == thread - 1 ? Intensity.Length : Intensity.Length / thread * (i + 1);
-            var freq = new SortedList<uint, int>();
+            int start = intensity.Length / thread * i;
+            int end = i == thread - 1 ? intensity.Length : intensity.Length / thread * (i + 1);
+            var counts = new int[kMax + 1];
             for (int j = start; j < end; j++)
-            {
-                uint value = (uint)Math.Pow(unit, (uint)Math.Log(Intensity[j], unit));
-
-                //260317Cl 変更: ContainsKey+indexer → TryGetValue
-                //if (freq.ContainsKey(value))
-                //    freq[value] += 1;
-                //else
-                //    freq.Add(value, 1);
-                if (freq.TryGetValue(value, out var cnt))
-                    freq[value] = cnt + 1;
-                else
-                    freq.Add(value, 1);
-            }
-            //260317Cl 変更: ContainsKey+indexer → TryGetValue
+                counts[Math.Min((uint)Math.Log(intensity[j], unit), (uint)kMax)]++;
             lock (lockObj)
-            {
-                foreach (uint j in freq.Keys)
-                    //if (Frequency.ContainsKey(j))
-                    //    Frequency[j] += freq[j];
-                    //else
-                    //    Frequency.Add(j, freq[j]);
-                    if (Frequency.TryGetValue(j, out var fv))
-                        Frequency[j] = fv + freq[j];
-                    else
-                        Frequency.Add(j, freq[j]);
-            }
+                for (int k = 0; k <= kMax; k++)
+                    total[k] += counts[k];
         });
+        for (int k = 0; k <= kMax; k++)
+            if (total[k] > 0)
+            {
+                uint value = (uint)Math.Pow(unit, k);
+                Frequency[value] = Frequency.TryGetValue(value, out var fv) ? fv + total[k] : total[k];
+            }
     }
     #endregion
 
@@ -422,7 +449,8 @@ public static class Ring
         int maskArea = 3;
         for (int p = 0; p < total; p++)
         {
-            if (!IsSpots[n] && !IsOutsideOfIntegralRegion[n])
+            //if (!IsSpots[n] && !IsOutsideOfIntegralRegion[n]) // 261111Cl 変更前
+            if (!IsSpots[n] && !IsOutsideOfIntegralRegion[n] && r[n] >= 0) // 261111Cl 番兵 -1 (半径が有限でない画素) は除く
                 if (Intensity[n] > OverLimit[r[n]])
                 {
                     IsSpots[n] = true;
@@ -469,7 +497,11 @@ public static class Ring
                 X = tempY2numer1 * numer4 + tempX * Numer2 * numer4;
                 Y = tempX * Numer1 * numer4 + tempY2numer3 * numer4;
 
-                r[n] = (ushort)(Math.Sqrt(X * X + Y * Y) / pixX + 0.5);
+                //r[n] = (ushort)(Math.Sqrt(X * X + Y * Y) / pixX + 0.5); // 261111Cl 変更前
+                // 261111Cl NaN ガード: 半径が有限でない画素は番兵 -1 にして、統計 (FindSpotsThread1) とスポット判定から外す
+                //          (旧: (ushort)NaN は 0 になり、中心のビン 0 に黙って入っていた)
+                double rr = Math.Sqrt(X * X + Y * Y) / pixX + 0.5;
+                r[n] = double.IsFinite(rr) ? (ushort)rr : -1;
                 if (rMax < r[n])
                     rMax = r[n];
                 n++;
@@ -488,7 +520,8 @@ public static class Ring
         for (j = yMin; j < yMax; j++)
             for (i = 0; i < w; i++)
             {
-                if (!IsSpots[n] && !IsOutsideOfIntegralRegion[n])
+                //if (!IsSpots[n] && !IsOutsideOfIntegralRegion[n]) // 261111Cl 変更前
+                if (!IsSpots[n] && !IsOutsideOfIntegralRegion[n] && r[n] >= 0) // 261111Cl 番兵 -1 (半径が有限でない画素) は除く
                 {
                     SumOfIntensity[r[n]] += Intensity[n];
                     SumOfIntensitySquare[r[n]] += Intensity[n] * Intensity[n];
@@ -515,28 +548,67 @@ public static class Ring
             return [.. src];
         else
         {
-            Func<int, int, (int x, int y)> convertIndexFlip = flag switch
-            {
-                0 => (w, h) => (w, h),
-                1 => (w, h) => (width - w - 1, h),
-                2 => (w, h) => (w, height - h - 1),
-                _ => (w, h) => (width - w - 1, height - h - 1)
-            };
+            #region 261111Cl 変更前 (画素ごとに Func を 2 回呼び、タプルを経由していた)
+            //Func<int, int, (int x, int y)> convertIndexFlip = flag switch
+            //{
+            //    0 => (w, h) => (w, h),
+            //    1 => (w, h) => (width - w - 1, h),
+            //    2 => (w, h) => (w, height - h - 1),
+            //    _ => (w, h) => (width - w - 1, height - h - 1)
+            //};
 
-            Func<(int x, int y), int> convertIndexRotate = rotate switch
-            {
-                0 => p => width * p.y + p.x,
-                1 => p => height * p.x + height - p.y - 1,
-                2 => new Func<(int x, int y), int>(p => (height - p.y - 1) * width + (width - p.x - 1)),
-                _ => p => height * (width - p.x - 1) + p.y
-            };
+            //Func<(int x, int y), int> convertIndexRotate = rotate switch
+            //{
+            //    0 => p => width * p.y + p.x,
+            //    1 => p => height * p.x + height - p.y - 1,
+            //    2 => new Func<(int x, int y), int>(p => (height - p.y - 1) * width + (width - p.x - 1)),
+            //    _ => p => height * (width - p.x - 1) + p.y
+            //};
 
 
+            //var result = GC.AllocateUninitializedArray<double>(src.Length);
+            //if (flag != 0 || rotate != 0)
+            //    for (int h = 0; h < height; h++)
+            //        for (int w = 0; w < width; w++)
+            //            result[convertIndexRotate(convertIndexFlip(w, h))] = src[h * width + w];
+            //return result;
+            #endregion
+
+            // 261111Cl 反転・回転の 8 通りとも、転送先の添字は dest = base + sx*x + sy*y の線形式になる。
+            //          反転後の座標を fx = fx0 + ax*x, fy = fy0 + ay*y と置き、旧 convertIndexRotate の式へ代入して base/sx/sy を求める。
             var result = GC.AllocateUninitializedArray<double>(src.Length);
-            if (flag != 0 || rotate != 0)
-                for (int h = 0; h < height; h++)
+            if (width <= 0 || height <= 0)
+            {
+                result.AsSpan().Clear(); // 旧実装は書き込みなし (未初期化のまま) だった
+                return result;
+            }
+            var (fx0, ax) = (flag & 1) != 0 ? (width - 1, -1) : (0, 1); // 左右反転 (flipH)
+            var (fy0, ay) = (flag & 2) != 0 ? (height - 1, -1) : (0, 1); // 上下反転 (flipV)
+            var (baseIndex, sx, sy) = rotate switch
+            {
+                0 => (width * fy0 + fx0, ax, width * ay),                                  // width * fy + fx
+                1 => (height * fx0 + height - fy0 - 1, height * ax, -ay),                  // height * fx + height - fy - 1
+                2 => ((height - fy0 - 1) * width + (width - fx0 - 1), -ax, -width * ay),   // (height - fy - 1) * width + (width - fx - 1)
+                _ => (height * (width - fx0 - 1) + fy0, -height * ax, ay)                  // height * (width - fx - 1) + fy
+            };
+            Parallel.For(0, height, h =>
+            {
+                var srcRow = src.AsSpan(h * width, width);
+                int d = baseIndex + sy * h;
+                if (sx == 1)
+                    srcRow.CopyTo(result.AsSpan(d, width));
+                else if (sx == -1)
+                {
+                    var dst = result.AsSpan(d - width + 1, width);
+                    srcRow.CopyTo(dst);
+                    dst.Reverse();
+                }
+                else
                     for (int w = 0; w < width; w++)
-                        result[convertIndexRotate(convertIndexFlip(w, h))] = src[h * width + w];
+                        result[d + sx * w] = srcRow[w];
+            });
+            // src.Length が width で割り切れないとき、末尾の余りは旧実装では未初期化のまま返っていた。ゼロで埋める。
+            result.AsSpan(width * height).Clear();
             return result;
         }
     }
@@ -639,6 +711,37 @@ public static class Ring
         //    for (int i = 0; i < len; i++)
         //        if (IsThresholdOver[i])
         //            IsValid[i] = false;
+        // 261111Cl 参照する配列がすべて len 以上あるときは、IsValid (長さは上で一致を確認済み) をその場で書き換え、
+        //          Vector<byte> で論理和をとる。どれかが短い・null のときは、旧来のスカラー版 (下) で例外の出方まで旧来どおりにする。
+        //          bool の中身は 0/1 を仮定しない (0 以外を true とみなす C# の bool 演算と同じ)。出力は 0/1。
+        if (IsOutsideOfIntegralRegion is { } region && IsOutsideOfIntegralProperty is { } property && property.Length >= len
+            && (!OmitSpots || IsSpots is { } s0 && s0.Length >= len)
+            && (!OmitTheresholdMin || IsThresholdUnder is { } u0 && u0.Length >= len)
+            && (!OmitTheresholdMax || IsThresholdOver is { } o0 && o0.Length >= len))
+        {
+            var dst = System.Runtime.InteropServices.MemoryMarshal.Cast<bool, byte>(IsValid.AsSpan(0, len));
+            var r = System.Runtime.InteropServices.MemoryMarshal.Cast<bool, byte>(region.AsSpan(0, len));
+            var p = System.Runtime.InteropServices.MemoryMarshal.Cast<bool, byte>(property.AsSpan(0, len));
+            var s = OmitSpots ? System.Runtime.InteropServices.MemoryMarshal.Cast<bool, byte>(IsSpots.AsSpan(0, len)) : default;
+            var u = OmitTheresholdMin ? System.Runtime.InteropServices.MemoryMarshal.Cast<bool, byte>(IsThresholdUnder.AsSpan(0, len)) : default;
+            var o = OmitTheresholdMax ? System.Runtime.InteropServices.MemoryMarshal.Cast<bool, byte>(IsThresholdOver.AsSpan(0, len)) : default;
+            int i = 0;
+            if (System.Numerics.Vector.IsHardwareAccelerated)
+            {
+                int vc = System.Numerics.Vector<byte>.Count;
+                for (; i <= len - vc; i += vc)
+                {
+                    var v = new System.Numerics.Vector<byte>(r[i..]) | new System.Numerics.Vector<byte>(p[i..]);
+                    if (OmitSpots) v |= new System.Numerics.Vector<byte>(s[i..]);
+                    if (OmitTheresholdMin) v |= new System.Numerics.Vector<byte>(u[i..]);
+                    if (OmitTheresholdMax) v |= new System.Numerics.Vector<byte>(o[i..]);
+                    (System.Numerics.Vector.Equals(v, System.Numerics.Vector<byte>.Zero) & System.Numerics.Vector<byte>.One).CopyTo(dst[i..]);
+                }
+            }
+            for (; i < len; i++)
+                dst[i] = (r[i] | p[i] | (OmitSpots ? s[i] : 0) | (OmitTheresholdMin ? u[i] : 0) | (OmitTheresholdMax ? o[i] : 0)) == 0 ? (byte)1 : (byte)0;
+            return;
+        }
         var valid = new bool[len];
         for (int i = 0; i < len; i++)
             valid[i] = !(IsOutsideOfIntegralRegion[i] || IsOutsideOfIntegralProperty[i]
@@ -1598,6 +1701,11 @@ public static class Ring
         double[] tempProfileIntensity = new double[length * 2]; //260712Cl new double[] はゼロ初期化済みのため冗長な初期化ループを削除
         //このとき、tempProfileIntensity[i]は (i-0.5)*stepから(i+0.5)*stepの角度範囲内の強度を意味する
 
+        // 261111Cl 4 隅の点の配列はループの外で 1 回だけ確保して使い回す (毎画素 4 要素とも上書きする。
+        //          Geometry.GetPolygonDividedByLine/GetPolygonalArea は読むだけで、新しい配列を返す)。4 角度は stackalloc
+        PointD[] pixelVertex = new PointD[4];
+        Span<double> angles = stackalloc double[4];
+
         for (int j = 0; j < IP.SrcHeight; j++)
         {
             for (int i = 0; i < IP.SrcWidth; i++)
@@ -1606,7 +1714,7 @@ public static class Ring
                     double intensity = Intensity[j * IP.SrcWidth + i];
 
                     //4隅の点を計算
-                    PointD[] pixelVertex = new PointD[4];
+                    //PointD[] pixelVertex = new PointD[4]; // 261111Cl 変更前 (ループの外へ)
                     int n = 0;
                     for (double yshift = -0.5; yshift < 0.6; yshift++)
                     {
@@ -1626,20 +1734,30 @@ public static class Ring
                     double totalArea = Geometry.GetPolygonalArea(pixelVertex);
 
                     //求めた4隅の点から、ステップの指数の上限、下限を設定
-                    List<double> angles = [];
-                    foreach (PointD pt in pixelVertex)
-                        angles.Add(Math.Atan2(pt.Y, pt.X));
+                    //List<double> angles = []; // 261111Cl 変更前 (画素ごとに List を確保していた。Span.Sort は List.Sort と同じ ArraySortHelper で並びは同一)
+                    //foreach (PointD pt in pixelVertex)
+                    //    angles.Add(Math.Atan2(pt.Y, pt.X));
+                    for (int k = 0; k < 4; k++) // 261111Cl
+                        angles[k] = Math.Atan2(pixelVertex[k].Y, pixelVertex[k].X);
                     angles.Sort();
                     if (angles[3] - angles[0] > Math.PI * 1.5)
                     {
-                        for (int k = 0; k < angles.Count; k++)
+                        //for (int k = 0; k < angles.Count; k++) // 261111Cl 変更前
+                        for (int k = 0; k < angles.Length; k++)
                             if (angles[k] < 0)
                                 angles[k] += Math.PI * 2;
                         angles.Sort();
                     }
 
-                    int startIndex = (int)((angles[0] + Math.PI * 2) / step - 1);
-                    int endIndex = (int)((angles[3] + Math.PI * 2) / step + 2);
+                    //int startIndex = (int)((angles[0] + Math.PI * 2) / step - 1); // 261111Cl 変更前
+                    //int endIndex = (int)((angles[3] + Math.PI * 2) / step + 2);
+                    // 261111Cl NaN ガード: 旧 (.NET 8 以前) は (int)NaN = int.MinValue で配列外の例外になっていたが、.NET 9 以降は 0 に飽和して
+                    //          添字 0 付近へ黙って加算してしまう。NaN (4 隅の座標が NaN) の画素はスキップする。
+                    double startPos = (angles[0] + Math.PI * 2) / step - 1, endPos = (angles[3] + Math.PI * 2) / step + 2;
+                    if (!double.IsFinite(startPos) || !double.IsFinite(endPos))
+                        continue;
+                    int startIndex = (int)startPos;
+                    int endIndex = (int)endPos;
                     for (int index = startIndex; index <= endIndex; index++)
                     {
                         PointD[] tempPixelVertex;
@@ -1723,6 +1841,21 @@ public static class Ring
 
         //積分領域全体のx上限,x下限, y上限、y下限を決める
         int xMin = int.MaxValue, yMin = int.MaxValue, xMax = int.MinValue, yMax = int.MinValue;
+        // 261111Cl 画素ごとの % と / をやめ、行ごとに IndexOf(true)/LastIndexOf(true) で端を求める (結果は同一)
+        if (IP.SrcWidth > 0)
+        {
+            for (int start = 0, row = 0; start < IsValid.Length; start += IP.SrcWidth, row++)
+            {
+                var span = IsValid.AsSpan(start, Math.Min(IP.SrcWidth, IsValid.Length - start));
+                int first = span.IndexOf(true);
+                if (first < 0) continue;
+                xMin = Math.Min(first, xMin);
+                yMin = Math.Min(row, yMin);
+                xMax = Math.Max(span.LastIndexOf(true), xMax);
+                yMax = Math.Max(row, yMax);
+            }
+        }
+        else // 261111Cl 幅が 0 以下のときは旧来のループのまま (0 除算の例外も旧来どおり)
         for (int i = 0; i < IsValid.Length; i++)
             if (IsValid[i])
             {
@@ -1854,7 +1987,8 @@ public static class Ring
         {
             int[] xThreadMin = new int[thread], xThreadMax = new int[thread];
             //まず、IsValidなピクセル数をカウント
-            int average = IsValid.Count(b => b) / thread;
+            //int average = IsValid.Count(b => b) / thread; // 261111Cl 変更前
+            int average = MemoryExtensions.Count(IsValid.AsSpan(), true) / thread; // 261111Cl 要素ごとのデリゲート呼び出しをやめ、ベクトル化された Span.Count に
             int y = 0;
             for (int i = 0; i < thread; i++)
             {
@@ -2045,15 +2179,25 @@ public static class Ring
 
         //角度ステップの区切り位置を設定する
         int length = (int)((IP.EndAngle - IP.StartAngle) / IP.StepAngle) + 1;
-        var divisions = new List<double>();
+        //var divisions = new List<double>(); // 261111Cl 変更前
+        var divisions = new double[length]; // 261111Cl 二分探索のため配列で持つ
         var tan = new double[length];
         var sec = new double[length];
         for (int i = 0; i < length; i++)
         {
-            divisions.Add((i - 0.5) * IP.StepAngle + IP.StartAngle);
+            //divisions.Add((i - 0.5) * IP.StepAngle + IP.StartAngle); // 261111Cl 変更前
+            divisions[i] = (i - 0.5) * IP.StepAngle + IP.StartAngle;
             tan[i] = Math.Tan(divisions[i]) * Math.Tan(divisions[i]);
             sec[i] = 1 / Math.Cos(divisions[i]) / Math.Cos(divisions[i]);
         }
+        // 261111Cl divisions が狭義単調増加 (NaN なし) のときだけ二分探索を使う。そうでなければ旧来の線形探索。
+        bool divisionsIncreasing = true;
+        for (int i = 1; i < length; i++)
+            if (!(divisions[i - 1] < divisions[i])) { divisionsIncreasing = false; break; }
+
+        // 261111Cl 追加: Matrix3D の乗算と同じ a1*b1 + a2*b2 + a3*b3 (FMA の入れ子)。下の m2 をスカラーで書き下すのに使う
+        static double dot3(double a1, double b1, double a2, double b2, double a3, double b3)
+            => Math.FusedMultiplyAdd(a1, b1, Math.FusedMultiplyAdd(a2, b2, a3 * b3));
 
         //ピクセル座標=>実空間の変換と、実空間＝＞2Θの変換を先にやっておく
         var realCenter = new Vector3DBase[(xMax - xMin) * (yMax - yMin)];
@@ -2092,21 +2236,53 @@ public static class Ring
                     // x, yピクセル座標を実空間に変換
 
                     //四隅の2Θを求める
-                    var twoTheta = new[] {
-                        twoThetaVertex[x - xMin + (y - yMin) * (xMax - xMin + 1)],
-                        twoThetaVertex[x - xMin + 1 + (y - yMin) * (xMax - xMin + 1)],
-                        twoThetaVertex[x - xMin + 1 + (y - yMin + 1) * (xMax - xMin + 1)],
-                        twoThetaVertex[x - xMin + (y - yMin + 1) * (xMax - xMin + 1)]
-                    };
+                    #region 261111Cl 変更前 (画素ごとに 4 要素の配列を確保して MinMax)
+                    //var twoTheta = new[] {
+                    //    twoThetaVertex[x - xMin + (y - yMin) * (xMax - xMin + 1)],
+                    //    twoThetaVertex[x - xMin + 1 + (y - yMin) * (xMax - xMin + 1)],
+                    //    twoThetaVertex[x - xMin + 1 + (y - yMin + 1) * (xMax - xMin + 1)],
+                    //    twoThetaVertex[x - xMin + (y - yMin + 1) * (xMax - xMin + 1)]
+                    //};
 
-                    var (minTwoTheta, maxTwoTheta) = twoTheta.MinMax();
-                    //double maxTwoTheta = twoTheta.Max(), minTwoTheta = twoTheta.Min();
+                    //var (minTwoTheta, maxTwoTheta) = twoTheta.MinMax();
+                    ////double maxTwoTheta = twoTheta.Max(), minTwoTheta = twoTheta.Min();
+                    #endregion
+                    // 261111Cl 4 値の最小・最大を Math.Min/Max で求める (2θ = Acos は -0 を返さないので順序に依らず同値)。
+                    //          NaN を含むときだけ旧来の MinMax (SimdLinq) を使い、NaN の扱いを旧来どおりにする。
+                    double tt0 = twoThetaVertex[x - xMin + (y - yMin) * (xMax - xMin + 1)],
+                        tt1 = twoThetaVertex[x - xMin + 1 + (y - yMin) * (xMax - xMin + 1)],
+                        tt2 = twoThetaVertex[x - xMin + 1 + (y - yMin + 1) * (xMax - xMin + 1)],
+                        tt3 = twoThetaVertex[x - xMin + (y - yMin + 1) * (xMax - xMin + 1)];
+                    double minTwoTheta, maxTwoTheta;
+                    if (double.IsNaN(tt0) || double.IsNaN(tt1) || double.IsNaN(tt2) || double.IsNaN(tt3))
+                        (minTwoTheta, maxTwoTheta) = new[] { tt0, tt1, tt2, tt3 }.MinMax();
+                    else
+                    {
+                        minTwoTheta = Math.Min(Math.Min(tt0, tt1), Math.Min(tt2, tt3));
+                        maxTwoTheta = Math.Max(Math.Max(tt0, tt1), Math.Max(tt2, tt3));
+                    }
 
                     if (maxTwoTheta > divisions[0] && minTwoTheta < divisions[length - 1])//全区切り内にピクセルが(一部でも)収まっている場合（完全に範囲外の時は除外）
                     {
                         //最小インデックスと最大インデックスを求める
-                        int minIndex = Math.Max(0, divisions.FindLastIndex(d => d < minTwoTheta));
-                        int maxIndex = Math.Min(length - 1, divisions.FindIndex(d => d > maxTwoTheta));
+                        //int minIndex = Math.Max(0, divisions.FindLastIndex(d => d < minTwoTheta)); // 261111Cl 変更前
+                        //int maxIndex = Math.Min(length - 1, divisions.FindIndex(d => d > maxTwoTheta)); // 261111Cl 変更前
+                        // 261111Cl List の線形走査をやめ、二分探索で同じ添字を求める。ここでは min/max は NaN でない (上の比較が true)。
+                        //          FindLastIndex(d < min) = (min 未満の個数) - 1、FindIndex(d > max) = (max 以下の個数) (全要素が max 以下なら -1)。
+                        int minIndex, maxIndex;
+                        if (divisionsIncreasing)
+                        {
+                            int bsMin = divisions.AsSpan().BinarySearch(minTwoTheta);
+                            minIndex = Math.Max(0, (bsMin >= 0 ? bsMin : ~bsMin) - 1);
+                            int bsMax = divisions.AsSpan().BinarySearch(maxTwoTheta);
+                            int firstOver = bsMax >= 0 ? bsMax + 1 : ~bsMax;
+                            maxIndex = Math.Min(length - 1, firstOver < length ? firstOver : -1);
+                        }
+                        else
+                        {
+                            minIndex = Math.Max(0, Array.FindLastIndex(divisions, d => d < minTwoTheta));
+                            maxIndex = Math.Min(length - 1, Array.FindIndex(divisions, d => d > maxTwoTheta));
+                        }
 
                         //最大インデックスと最小インデックスの差が1の場合(ピクセルがすっぽり一つの区切り内に収まるとき)
                         if (maxIndex - minIndex == 1 && divisions[minIndex] < minTwoTheta && divisions[maxIndex] > maxTwoTheta)
@@ -2133,20 +2309,59 @@ public static class Ring
                             cosAlpha /= temp;
                             sinAlpha /= temp;
 
-                            Matrix3D m2 = new Matrix3D(-cosAlpha, sinAlpha, 0, -sinAlpha, -cosAlpha, 0, 0, 0, 1) *
-                                new Matrix3D(sinGamma, cosGamma * SinPhi, cosGamma * CosPhi, 0, CosPhi, -SinPhi, -cosGamma, sinGamma * SinPhi, sinGamma * CosPhi).Inverse();
+                            #region 261111Cl 変更前 (画素ごとに Matrix3D ×4 (Inverse・積を含む) と Vector3DBase ×9 を割り当てていた)
+                            //Matrix3D m2 = new Matrix3D(-cosAlpha, sinAlpha, 0, -sinAlpha, -cosAlpha, 0, 0, 0, 1) *
+                            //    new Matrix3D(sinGamma, cosGamma * SinPhi, cosGamma * CosPhi, 0, CosPhi, -SinPhi, -cosGamma, sinGamma * SinPhi, sinGamma * CosPhi).Inverse();
 
-                            //var p = new PointD[] { (m2 * (v1 - v)).ToPointD(), (m2 * (v2 - v)).ToPointD(), (m2 * (v3 - v)).ToPointD(), (m2 * (v4 - v)).ToPointD() };
-                            var p1 = (m2 * (v1 - v)).ToPointD;
-                            var p2 = (m2 * (v2 - v)).ToPointD;
+                            ////var p = new PointD[] { (m2 * (v1 - v)).ToPointD(), (m2 * (v2 - v)).ToPointD(), (m2 * (v3 - v)).ToPointD(), (m2 * (v4 - v)).ToPointD() };
+                            //var p1 = (m2 * (v1 - v)).ToPointD;
+                            //var p2 = (m2 * (v2 - v)).ToPointD;
+                            //var p = new PointD[] { p1, p2, -p1, -p2 };
+
+                            ////var vh = new Vector3DBase(sinGamma, cosGamma * SinPhi, cosGamma * CosPhi);
+                            ////var vv = new Vector3DBase(0, CosPhi, -SinPhi);
+                            //var vq = sinAlpha * new Vector3DBase(sinGamma, cosGamma * SinPhi, cosGamma * CosPhi) - cosAlpha * new Vector3DBase(0, CosPhi, -SinPhi);
+
+                            //double vqZY2 = vq.X * v.X + vq.Y * v.Y;
+                            //double vqZ2 = vq.Z * vq.Z;
+                            #endregion
+                            // 261111Cl 上の行列演算を、Matrix3D.Inverse と operator * (dot3 = FMA の入れ子) と同じ式・同じ順序のスカラー計算で書き下す (ビット一致)。
+                            //          b = new Matrix3D(e11, e21, e31, e12, e22, e32, e13, e23, e33) の各要素
+                            double b11 = sinGamma, b21 = cosGamma * SinPhi, b31 = cosGamma * CosPhi,
+                                b12 = 0, b22 = CosPhi, b32 = -SinPhi,
+                                b13 = -cosGamma, b23 = sinGamma * SinPhi, b33 = sinGamma * CosPhi;
+                            // b.Inverse() (det == 0 なら単位行列)
+                            double det = -b13 * b22 * b31 + b12 * b23 * b31 + b13 * b21 * b32 - b11 * b23 * b32 - b12 * b21 * b33 + b11 * b22 * b33;
+                            double i11 = 1, i12 = 0, i13 = 0, i21 = 0, i22 = 1, i23 = 0, i31 = 0, i32 = 0, i33 = 1;
+                            if (det != 0)
+                            {
+                                i11 = (-b23 * b32 + b22 * b33) / det;
+                                i12 = (b13 * b32 - b12 * b33) / det;
+                                i13 = (-b13 * b22 + b12 * b23) / det;
+                                i21 = (b23 * b31 - b21 * b33) / det;
+                                i22 = (-b13 * b31 + b11 * b33) / det;
+                                i23 = (b13 * b21 - b11 * b23) / det;
+                                i31 = (-b22 * b31 + b21 * b32) / det;
+                                i32 = (b12 * b31 - b11 * b32) / det;
+                                i33 = (-b12 * b21 + b11 * b22) / det;
+                            }
+                            // m2 = a * b.Inverse() の 1・2 行目 (a: E11=-cosα, E12=-sinα, E13=0, E21=sinα, E22=-cosα, E23=0)。3 行目は ToPointD で捨てるので不要
+                            double m11 = dot3(-cosAlpha, i11, -sinAlpha, i21, 0.0, i31), m12 = dot3(-cosAlpha, i12, -sinAlpha, i22, 0.0, i32), m13 = dot3(-cosAlpha, i13, -sinAlpha, i23, 0.0, i33);
+                            double m21 = dot3(sinAlpha, i11, -cosAlpha, i21, 0.0, i31), m22 = dot3(sinAlpha, i12, -cosAlpha, i22, 0.0, i32), m23 = dot3(sinAlpha, i13, -cosAlpha, i23, 0.0, i33);
+                            // (m2 * (v1 - v)).ToPointD, (m2 * (v2 - v)).ToPointD
+                            double d1x = v1.X - v.X, d1y = v1.Y - v.Y, d1z = v1.Z - v.Z;
+                            double d2x = v2.X - v.X, d2y = v2.Y - v.Y, d2z = v2.Z - v.Z;
+                            var p1 = new PointD(dot3(m11, d1x, m12, d1y, m13, d1z), dot3(m21, d1x, m22, d1y, m23, d1z));
+                            var p2 = new PointD(dot3(m11, d2x, m12, d2y, m13, d2z), dot3(m21, d2x, m22, d2y, m23, d2z));
                             var p = new PointD[] { p1, p2, -p1, -p2 };
 
-                            //var vh = new Vector3DBase(sinGamma, cosGamma * SinPhi, cosGamma * CosPhi);
-                            //var vv = new Vector3DBase(0, CosPhi, -SinPhi);
-                            var vq = sinAlpha * new Vector3DBase(sinGamma, cosGamma * SinPhi, cosGamma * CosPhi) - cosAlpha * new Vector3DBase(0, CosPhi, -SinPhi);
+                            // vq = sinα * (sinγ, cosγ sinφ, cosγ cosφ) - cosα * (0, cosφ, -sinφ)
+                            double vqX = sinAlpha * sinGamma - cosAlpha * 0.0,
+                                vqY = sinAlpha * (cosGamma * SinPhi) - cosAlpha * CosPhi,
+                                vqZ = sinAlpha * (cosGamma * CosPhi) - cosAlpha * -SinPhi;
 
-                            double vqZY2 = vq.X * v.X + vq.Y * v.Y;
-                            double vqZ2 = vq.Z * vq.Z;
+                            double vqZY2 = vqX * v.X + vqY * v.Y;
+                            double vqZ2 = vqZ * vqZ;
                             double totalArea = Geometry.GetPolygonalArea(p), residualArea = totalArea;
                             for (int i = minIndex; i <= maxIndex; i++)
                             {
@@ -2159,7 +2374,8 @@ public static class Ring
                                 }
                                 else
                                 {
-                                    double d1 = vqZY2 - tan[i] * vq.Z * CLplusZ;
+                                    //double d1 = vqZY2 - tan[i] * vq.Z * CLplusZ; // 261111Cl 変更前
+                                    double d1 = vqZY2 - tan[i] * vqZ * CLplusZ; // 261111Cl vq をスカラー化
                                     double d3 = sec[i] * vqZ2 - 1;
                                     double d2 = Math.Sqrt(d1 * d1 + d3 * (C - tan[i] * CLplusZ * CLplusZ));
 
@@ -2585,6 +2801,12 @@ public static class Ring
         Span<(double X, double Y)> pt3 = stackalloc (double X, double Y)[8];
         Span<(double X, double Y)> pt4 = stackalloc (double X, double Y)[8];
 
+        // 261111Cl d 値モードの startIndex を二分探索で求めるための準備。R2[1..] の先頭から、狭義単調増加で NaN を含まない区間の長さ r2Increasing を求める
+        //          (d 値モードでは λ/2d > 1 の上端が NaN になりうる)。この区間を越える分は旧来どおり線形探索で続ける。
+        int r2Increasing = 0;
+        if (R2.Length > 1 && !double.IsNaN(R2[1]))
+            for (r2Increasing = 1; 1 + r2Increasing < R2.Length && R2[r2Increasing] < R2[1 + r2Increasing]; r2Increasing++) ;
+
         //ここから積分開始
         for (int j = yMin; j < yMax; j++)
         {
@@ -2653,9 +2875,23 @@ public static class Ring
                     }
                     else
                     {
-                        for (startIndex = 0; startIndex < R2.Length - 1; startIndex++)
-                            if (R2[startIndex + 1] > twoTheta)
-                                break;
+                        //for (startIndex = 0; startIndex < R2.Length - 1; startIndex++) // 261111Cl 変更前
+                        //    if (R2[startIndex + 1] > twoTheta)
+                        //        break;
+                        // 261111Cl 旧来の線形探索 (R2[s+1] > twoTheta となる最初の s。無ければ R2.Length-1) と同じ値を二分探索で求める。
+                        //          単調区間 R2[1..1+r2Increasing) の中で twoTheta 以下の個数 = startIndex。区間を使い切ったら残りを線形探索で続ける。
+                        //          twoTheta が NaN のときは比較がすべて false なので、区間を飛ばして線形探索 (結果は R2.Length-1) に回す。区間が空 (R2.Length<=1 など) も線形探索。
+                        if (double.IsNaN(twoTheta) || r2Increasing == 0)
+                            startIndex = r2Increasing;
+                        else
+                        {
+                            int bs = R2.AsSpan(1, r2Increasing).BinarySearch(twoTheta);
+                            startIndex = bs >= 0 ? bs + 1 : ~bs;
+                        }
+                        if (startIndex >= r2Increasing)
+                            for (startIndex = r2Increasing; startIndex < R2.Length - 1; startIndex++)
+                                if (R2[startIndex + 1] > twoTheta)
+                                    break;
                     }
                     var intensityPerArea = Intensity[i + jWidth] / getArea(4, pt0);
 
@@ -2804,6 +3040,10 @@ public static class Ring
         if (iP.CenterY < radius + 2 || iP.CenterY > iP.SrcHeight - radius - 2 || iP.CenterX < radius + 2 || iP.CenterX > iP.SrcWidth - radius - 2)
             return new PointD(iP.CenterX, iP.CenterY);
 
+        // 261111Cl NaN ガード: 中心が NaN だと上の範囲判定をすべてすり抜ける。旧 (.NET 8 以前) は (int)NaN = int.MinValue で配列外の例外、
+        //          .NET 9 以降は 0 に飽和して左上の画素を黙って使ってしまう。例外にはせず、上の範囲外と同じく現在の中心をそのまま返す。
+        if (!double.IsFinite(iP.CenterX - radius) || !double.IsFinite(iP.CenterY - radius))
+            return new PointD(iP.CenterX, iP.CenterY);
         int xStart = (int)(iP.CenterX - radius);
         int yStart = (int)(iP.CenterY - radius);
 
@@ -2842,38 +3082,62 @@ public static class Ring
         //積分領域全体のy上限、y下限を決める
         int YMin, YMax;
         YMin = YMax = 0;
-        for (i = 0; i < IsValid.Length; i++)
-            if (IsValid[i])
-            {//マスクされていないポイントが見つかったら
-                YMin = i / w;
-                break;
-            }
-        for (i = IsValid.Length - 1; i > -1; i--)
-            if (IsValid[i])
-            {//マスクされていないポイントが見つかったら
-                YMax = i / w + 1;
-                break;
-            }
+        #region 261111Cl 変更前 (画素ごと・列ごとのスカラー走査)
+        //for (i = 0; i < IsValid.Length; i++)
+        //    if (IsValid[i])
+        //    {//マスクされていないポイントが見つかったら
+        //        YMin = i / w;
+        //        break;
+        //    }
+        //for (i = IsValid.Length - 1; i > -1; i--)
+        //    if (IsValid[i])
+        //    {//マスクされていないポイントが見つかったら
+        //        YMax = i / w + 1;
+        //        break;
+        //    }
+
+        //xMax = xMin = 0;
+        //bool flag = true;
+        //for (i = 0; i < w && flag; i++)
+        //    for (j = YMin; j < YMax; j++)
+        //        if (IsValid[i + j * w])
+        //        {
+        //            xMin = i;
+        //            flag = false;
+        //            break;
+        //        }
+        //flag = true;
+        //for (i = w - 1; i > -1 && flag; i--)
+        //    for (j = YMin; j < YMax; j++)
+        //        if (IsValid[i + j * w])
+        //        {
+        //            xMax = i + 1;
+        //            flag = false;
+        //            break;
+        //        }
+        #endregion
+        // 261111Cl Span の IndexOf/LastIndexOf (ベクトル化) で求める。xMin は [YMin,YMax) の各行の最初の true の列の最小値、
+        //          xMax は各行の最後の true の列の最大値 + 1。見つからなければ旧来どおり 0 のまま (結果は同一)
+        if ((i = IsValid.AsSpan().IndexOf(true)) >= 0)
+            YMin = i / w;//マスクされていないポイントが見つかったら
+        if ((i = IsValid.AsSpan().LastIndexOf(true)) >= 0)
+            YMax = i / w + 1;//マスクされていないポイントが見つかったら
 
         xMax = xMin = 0;
-        bool flag = true;
-        for (i = 0; i < w && flag; i++)
-            for (j = YMin; j < YMax; j++)
-                if (IsValid[i + j * w])
-                {
-                    xMin = i;
-                    flag = false;
-                    break;
-                }
-        flag = true;
-        for (i = w - 1; i > -1 && flag; i--)
-            for (j = YMin; j < YMax; j++)
-                if (IsValid[i + j * w])
-                {
-                    xMax = i + 1;
-                    flag = false;
-                    break;
-                }
+        int xFirst = int.MaxValue, xLast = -1;
+        for (j = YMin; j < YMax; j++)
+        {
+            var row = IsValid.AsSpan(j * w, Math.Min(w, IsValid.Length - j * w));
+            int first = row.IndexOf(true);
+            if (first < 0) continue;
+            xFirst = Math.Min(xFirst, first);
+            xLast = Math.Max(xLast, row.LastIndexOf(true));
+        }
+        if (xLast >= 0)
+        {
+            xMin = xFirst;
+            xMax = xLast + 1;
+        }
 
         //各スレッドの上限と下限を決める
         yThreadMin = new int[thread];
@@ -2980,7 +3244,14 @@ public static class Ring
         if (srcArray.Length != bgArray.Length)
             return [..srcArray];
         else
-            return [.. srcArray.Select((s, i) => s - bgArray[i] * coeff)];
+        {
+            //return [.. srcArray.Select((s, i) => s - bgArray[i] * coeff)]; // 261111Cl 変更前
+            // 261111Cl 要素ごとのデリゲート呼び出しをやめ、未初期化確保 + 素の for ループに (式 s - b*c は同一・FMA 不使用でビット一致)
+            var result = GC.AllocateUninitializedArray<double>(srcArray.Length);
+            for (int i = 0; i < result.Length; i++)
+                result[i] = srcArray[i] - bgArray[i] * coeff;
+            return result;
+        }
     }
     #endregion
 

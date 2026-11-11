@@ -13,23 +13,33 @@ public class Statistics
     /// <returns></returns>
     public static double[] Normarize(params double[] values)
     {
-        try
-        {
-            double[] newValues = new double[values.Length];
-            double sum = 0;
-            Array.Copy(values, newValues, values.Length);
-            Array.Sort(newValues);
-            Array.Reverse(newValues);
-            foreach (double value in newValues)
-                sum += value;
-            for (int i = 0; i < values.Length; i++)
-                newValues[i] = values[i] / sum;
-            return newValues;
-        }
-        catch
-        {
-            return new double[values.Length];
-        }
+        #region 261111Cl 変更前 (和を取るためだけにコピー・Sort・Reverse していた。try/catch は values==null のとき catch 内でも NullReferenceException になり意味がなかった)
+        //try
+        //{
+        //    double[] newValues = new double[values.Length];
+        //    double sum = 0;
+        //    Array.Copy(values, newValues, values.Length);
+        //    Array.Sort(newValues);
+        //    Array.Reverse(newValues);
+        //    foreach (double value in newValues)
+        //        sum += value;
+        //    for (int i = 0; i < values.Length; i++)
+        //        newValues[i] = values[i] / sum;
+        //    return newValues;
+        //}
+        //catch
+        //{
+        //    return new double[values.Length];
+        //}
+        #endregion
+        // 261111Cl 元の順序のまま単純に和をとる (和の順序が変わるので、旧版 (降順の和) とは丸め誤差の範囲で異なりうる)
+        double sum = 0;
+        foreach (double value in values)
+            sum += value;
+        var newValues = new double[values.Length];
+        for (int i = 0; i < values.Length; i++)
+            newValues[i] = values[i] / sum;
+        return newValues;
     }
 
     /// <summary>標本標準分散を求めます</summary>
@@ -262,11 +272,49 @@ public class Statistics
         if (values == null || values.Length == 0) return null;
 
         int partition = 100;//分割数
-        int range = values.Length / partition;//一つ当たりの個数
+        //int range = values.Length / partition;//一つ当たりの個数 // 261111Cl 変更前
+        // 261111Cl 不具合修正: 切り捨てだと末尾の Length % 100 個 (Length >= 100 のとき) が数えられていなかった。切り上げにする
+        int range = (values.Length + partition - 1) / partition;//一つ当たりの個数
         if (range <= 0) range = 1;
 
         var max = values.Max();
         var min = values.Min();
+
+        // 261111Cl divisions > 0 のとき、丸め後の値は idx*(max-min)/divisions+min (idx = 0..divisions) に限られるので、
+        //          画素ごとの SortedList 操作をやめて int[divisions+1] のビンで数える。キーは旧来と同じ式で作るのでビット一致し、
+        //          同じキーになる idx は合算する (旧来の SortedList の集計と同じ)。idx が範囲外になる場合 (Min/Max が NaN の影響を受けたとき等) は旧来の処理に戻す。
+        const int maxBinDivisions = 1 << 16;
+        if (divisions > 0 && divisions <= maxBinDivisions)
+        {
+            var total = new int[divisions + 1];
+            bool outOfRange = false;
+            Parallel.For(0, partition, () => new int[divisions + 1], (n, _, bins) =>
+            {
+                for (int i = n * range; i < Math.Min((n + 1) * range, values.Length); i++)
+                {
+                    int idx = (int)((values[i] - min) / (max - min) * divisions + 0.5);
+                    if ((uint)idx > (uint)divisions) { outOfRange = true; break; }
+                    bins[idx]++;
+                }
+                return bins;
+            }, bins =>
+            {
+                lock (total)
+                    for (int k = 0; k <= divisions; k++)
+                        total[k] += bins[k];
+            });
+            if (!outOfRange)
+            {
+                var result = new SortedList<double, int>();
+                for (int idx = 0; idx <= divisions; idx++)
+                    if (total[idx] > 0)
+                    {
+                        double key = idx * (max - min) / divisions + min;
+                        result[key] = result.TryGetValue(key, out var c) ? c + total[idx] : total[idx];
+                    }
+                return result;
+            }
+        }
 
         var frequency = new SortedList<double, int>[partition];
         Parallel.For(0, partition, n =>
