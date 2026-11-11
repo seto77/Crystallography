@@ -41,23 +41,29 @@ public class Atoms : System.IEquatable<Atoms>, ICloneable
 
     public override int GetHashCode()
     {
-        // (260320Ch) 匿名型依存をやめ、配列要素も含めて明示的にハッシュ化する
-        var hash = new HashCode();
-        hash.Add(X);
-        hash.Add(Y);
-        hash.Add(Z);
-        hash.Add(Occ);
-        hash.Add(Label);
-        hash.Add(WyckoffNumber);
-        hash.Add(SymmetrySeriesNumber);
-        hash.Add(Dsf);
-        hash.Add(Texture);
-
-        if (Atom != null)
-            foreach (var atom in Atom)
-                hash.Add(atom);
-
-        return hash.ToHashCode();
+        #region 261111Cl 変更前: Equals で比べない項目 (WyckoffNumber・SymmetrySeriesNumber・Dsf・Texture・Atom) も混ぜていたため、
+        // Equals で等しい 2 つの原子が違うハッシュ値になり得た (HashSet・Dictionary の約束に反する)
+        //// (260320Ch) 匿名型依存をやめ、配列要素も含めて明示的にハッシュ化する
+        //var hash = new HashCode();
+        //hash.Add(X);
+        //hash.Add(Y);
+        //hash.Add(Z);
+        //hash.Add(Occ);
+        //hash.Add(Label);
+        //hash.Add(WyckoffNumber);
+        //hash.Add(SymmetrySeriesNumber);
+        //hash.Add(Dsf);
+        //hash.Add(Texture);
+        //
+        //if (Atom != null)
+        //    foreach (var atom in Atom)
+        //        hash.Add(atom);
+        //
+        //return hash.ToHashCode();
+        #endregion
+        // 261111Cl 変更: Equals と同じ項目だけにする。Equals は double を == で比べる (0.0 と -0.0 は等しい) が、double.GetHashCode は
+        // ±0 を同じ値にするので食い違わない (NaN は Equals で等しくならないので問題ない)
+        return HashCode.Combine(Label, X, Y, Z, Occ);
     }
     #endregion
 

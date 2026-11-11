@@ -69,7 +69,8 @@ public static class Localization
     //   フォームの訳を持てる (共有 Crystallography repo に app 固有フォームを混ぜない)。
     //   後方互換: プロバイダ未登録なら従来どおり LocalizationData だけ。キーは FullName 推奨 (同名衝突回避)。
     private static readonly System.Collections.Generic.List<System.Action<System.Collections.Generic.Dictionary<string, Entry[]>>> _providers = new();
-    private static readonly object _sync = new();
+    //private static readonly object _sync = new(); // 261111Cl 変更前
+    private static readonly System.Threading.Lock _sync = new(); // 261111Cl 変更: System.Threading.Lock (Monitor.Wait/Pulse は使っていない)
 
     /// <summary>アプリ固有のローカライズ訳テーブルを登録する。フォーム生成前に1回呼ぶこと。次回 Get で再構築される。</summary>
     public static void AddProvider(System.Action<System.Collections.Generic.Dictionary<string, Entry[]>> provider)
@@ -82,24 +83,33 @@ public static class Localization
         }
     }
 
-    private static void EnsureRegistry()
+    //private static void EnsureRegistry() // 261111Cl 変更前 (シグネチャ)
+    // 261111Cl 変更: 作った (または読んだ) 表を返す。旧は Get が EnsureRegistry の後で _registry を読み直していたため、その間に
+    // 別スレッドの AddProvider が null に戻すと NullReferenceException になり得た。_registry はローカル変数に 1 回だけ読む
+    private static System.Collections.Generic.Dictionary<string, Entry[]> EnsureRegistry()
     {
-        if (_registry != null) return;
+        //if (_registry != null) return; // 261111Cl 変更前
+        var current = _registry; // 261111Cl
+        if (current != null) return current; // 261111Cl
         lock (_sync)
         {
-            if (_registry != null) return;
+            //if (_registry != null) return; // 261111Cl 変更前
+            if (_registry != null) return _registry; // 261111Cl
             var reg = new System.Collections.Generic.Dictionary<string, Entry[]>(System.StringComparer.Ordinal);
             LocalizationData.Populate(reg);     // 共有 (自動生成)
             foreach (var p in _providers)
                 p(reg);                          // アプリ固有 (後勝ち)
             _registry = reg;
+            return reg; // 261111Cl 追加
         }
     }
 
     /// <summary>型名 (root.GetType().FullName または Name) に対応するローカライズ項目を返す。未登録なら null。</summary>
     public static Entry[] Get(string typeName)
     {
-        EnsureRegistry();
-        return typeName != null && _registry.TryGetValue(typeName, out var e) ? e : null;
+        //EnsureRegistry(); // 261111Cl 変更前 (2 行)
+        //return typeName != null && _registry.TryGetValue(typeName, out var e) ? e : null;
+        var registry = EnsureRegistry(); // 261111Cl 変更: 返された表を使う (読み直さない)
+        return typeName != null && registry.TryGetValue(typeName, out var e) ? e : null;
     }
 }

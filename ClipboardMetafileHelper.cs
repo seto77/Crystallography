@@ -6,25 +6,50 @@ using System.Runtime.InteropServices;
 
 namespace Crystallography
 {
-    public class ClipboardMetafileHelper
+    //public class ClipboardMetafileHelper // 261111Cl 変更前
+    public partial class ClipboardMetafileHelper // 261111Cl 変更: LibraryImport のため partial
     {
-        [DllImport("user32.dll")]
-        private static extern bool OpenClipboard(IntPtr hWndNewOwner);
+        #region 261111Cl 変更前: DllImport (bool の戻り値は既定で Win32 の BOOL (4 バイト) として受けていた)
+        //[DllImport("user32.dll")]
+        //private static extern bool OpenClipboard(IntPtr hWndNewOwner);
+        //
+        //[DllImport("user32.dll")]
+        //private static extern bool EmptyClipboard();
+        //
+        //[DllImport("user32.dll")]
+        //private static extern IntPtr SetClipboardData(uint uFormat, IntPtr hMem);
+        //
+        //[DllImport("user32.dll")]
+        //private static extern bool CloseClipboard();
+        //
+        //[DllImport("gdi32.dll")]
+        //private static extern IntPtr CopyEnhMetaFile(IntPtr hemfSrc, IntPtr hNULL);
+        //
+        //[DllImport("gdi32.dll")]
+        //private static extern bool DeleteEnhMetaFile(IntPtr hemf);
+        #endregion
+        // 261111Cl 変更: LibraryImport。bool の戻り値は旧と同じく BOOL (UnmanagedType.Bool) と明示する
+        [LibraryImport("user32.dll")]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static partial bool OpenClipboard(IntPtr hWndNewOwner);
 
-        [DllImport("user32.dll")]
-        private static extern bool EmptyClipboard();
+        [LibraryImport("user32.dll")]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static partial bool EmptyClipboard();
 
-        [DllImport("user32.dll")]
-        private static extern IntPtr SetClipboardData(uint uFormat, IntPtr hMem);
+        [LibraryImport("user32.dll")]
+        private static partial IntPtr SetClipboardData(uint uFormat, IntPtr hMem);
 
-        [DllImport("user32.dll")]
-        private static extern bool CloseClipboard();
+        [LibraryImport("user32.dll")]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static partial bool CloseClipboard();
 
-        [DllImport("gdi32.dll")]
-        private static extern IntPtr CopyEnhMetaFile(IntPtr hemfSrc, IntPtr hNULL);
+        [LibraryImport("gdi32.dll")]
+        private static partial IntPtr CopyEnhMetaFile(IntPtr hemfSrc, IntPtr hNULL);
 
-        [DllImport("gdi32.dll")]
-        private static extern bool DeleteEnhMetaFile(IntPtr hemf);
+        [LibraryImport("gdi32.dll")]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static partial bool DeleteEnhMetaFile(IntPtr hemf);
 
         // Metafile mf is set to an invalid state inside this function
         static public bool PutEnhMetafileOnClipboard(IntPtr hWnd, Metafile mf)
@@ -97,7 +122,8 @@ namespace Crystallography
                 if (string.IsNullOrEmpty(filename))
                     return PutEnhMetafileOnClipboard(hWnd, mf);
                 using var fsm = new FileStream(filename, FileMode.Create, FileAccess.Write); // 260716Cl EMF 内容確定後にファイルへ書き出す
-                fsm.Write(ms.GetBuffer(), 0, (int)ms.Length);
+                //fsm.Write(ms.GetBuffer(), 0, (int)ms.Length); // 261111Cl 変更前
+                ms.WriteTo(fsm); // 261111Cl 変更: 同じく 0〜Length の全体を書く (内部バッファを直接触らない)
                 return true;
             }
         }

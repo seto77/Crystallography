@@ -49,7 +49,8 @@ public static class SymmetryStatic
         return [.. fields];
     }
     // 260604Cl 型のみ異なっていた LoadUshortJagged2/LoadByteJagged2 を 1 つに集約 (要素変換は parse デリゲートで注入)。値は不変。
-    private static T[][] LoadJagged2<T>(string name, System.Func<string, T> parse)
+    //private static T[][] LoadJagged2<T>(string name, System.Func<string, T> parse) // 261111Cl 変更前 (引数 parse は string を受けていた)
+    private static T[][] LoadJagged2<T>(string name, System.Func<ReadOnlySpan<char>, T> parse) // 261111Cl 変更: parse は span を受ける (呼び出し側のラムダの文面はそのまま、span 版の Parse に結び付く)
     {
         using var r = OpenSymCsv(name);
         var rows = new System.Collections.Generic.List<T[]>();
@@ -57,12 +58,31 @@ public static class SymmetryStatic
         {
             if (line.StartsWith('#')) continue;
             if (line.Length == 0) { rows.Add([]); continue; }
-            var p = ParseCsvLine(line);
-            var row = new T[p.Length];
-            for (int i = 0; i < p.Length; i++) row[i] = parse(p[i]);
-            rows.Add(row);
+            //var p = ParseCsvLine(line); // 261111Cl 変更前 (3 行)
+            //var row = new T[p.Length];
+            //for (int i = 0; i < p.Length; i++) row[i] = parse(p[i]);
+            rows.Add(ParseNumericCsvLine(line, parse)); // 261111Cl 変更
         }
         return [.. rows];
+    }
+
+    /// <summary>261111Cl 追加: 数値の列の 1 行を、文字列を作らずに span の Split と span 版の Parse で読む。引用符を含む行だけは従来の
+    /// ParseCsvLine で列に分ける (引用符の無い行では ParseCsvLine も ',' ごとに切るだけなので、列 (空の列も含む) は同じ)</summary>
+    private static T[] ParseNumericCsvLine<T>(string line, System.Func<ReadOnlySpan<char>, T> parse)
+    {
+        if (line.Contains('"'))
+        {
+            var p = ParseCsvLine(line);
+            var quoted = new T[p.Length];
+            for (int i = 0; i < p.Length; i++) quoted[i] = parse(p[i]);
+            return quoted;
+        }
+        var span = line.AsSpan();
+        var row = new T[span.Count(',') + 1];
+        int k = 0;
+        foreach (var range in span.Split(','))
+            row[k++] = parse(span[range]);
+        return row;
     }
     private static ushort[][][] LoadUshortJagged3(string name)
     {
@@ -71,13 +91,15 @@ public static class SymmetryStatic
         System.Collections.Generic.List<ushort[]> cur = null;
         for (string line; (line = r.ReadLine()) != null;)
         {
-            if (line.StartsWith("##")) continue;
+            //if (line.StartsWith("##")) continue; // 261111Cl 変更前 (現在のカルチャで比べていた)
+            if (line.StartsWith("##", StringComparison.Ordinal)) continue; // 261111Cl 変更: Ordinal
             if (line.StartsWith('#')) { if (cur != null) outers.Add([.. cur]); cur = []; continue; }
             if (line.Length == 0) { cur.Add([]); continue; }
-            var p = ParseCsvLine(line);
-            var row = new ushort[p.Length];
-            for (int i = 0; i < p.Length; i++) row[i] = ushort.Parse(p[i], System.Globalization.CultureInfo.InvariantCulture);
-            cur.Add(row);
+            //var p = ParseCsvLine(line); // 261111Cl 変更前 (4 行)
+            //var row = new ushort[p.Length];
+            //for (int i = 0; i < p.Length; i++) row[i] = ushort.Parse(p[i], System.Globalization.CultureInfo.InvariantCulture);
+            //cur.Add(row);
+            cur.Add(ParseNumericCsvLine(line, static s => ushort.Parse(s, System.Globalization.CultureInfo.InvariantCulture))); // 261111Cl 変更: span で読む (値は同じ)
         }
         if (cur != null) outers.Add([.. cur]);
         return [.. outers];
@@ -742,6 +764,10 @@ new(-4,-1,(0,1,0),((3.0/8.0),(1.0/8.0),(3.0/8.0)),(0,0,0)),//487
     /// <see cref="SymmetryOperation.ApplyMatrix"/> や <see cref="SymmetryOperation.ConvertPlaneIndex(int,int,int)"/>
     /// の hot path から jagged-array ルックアップ <c>NumArray[i][5]/[2]</c> を排除する。</summary>
     public static readonly bool[] IsHexBySeries;
+
+    /// <summary>261111Cl 追加: 各 series number について「三方晶・六方晶か」(NumArray[i][5] が 5 か 6。菱面体の設定も含む) を事前計算したテーブル。
+    /// <see cref="SymmetryOperation.ConvertPlaneIndex(int,int,int)"/> が呼ぶたびに NumArray を 2 回引いていたのを 1 回の配列参照にする。</summary>
+    public static readonly bool[] IsTrigOrHexBySeries;
     #endregion
 
     #region static コンストラクタ
@@ -754,6 +780,11 @@ new(-4,-1,(0,1,0),((3.0/8.0),(1.0/8.0),(3.0/8.0)),(0,0,0)),//487
         IsHexBySeries = new bool[NumArray.Length];
         for (int i = 0; i < NumArray.Length; i++)
             IsHexBySeries[i] = (NumArray[i][5] == 5 || NumArray[i][5] == 6) && NumArray[i][2] == 1;
+
+        // 261111Cl 追加: 三方晶・六方晶の判定の事前計算 (SymmetryOperation.ConvertPlaneIndex の旧式と同じ条件)
+        IsTrigOrHexBySeries = new bool[NumArray.Length];
+        for (int i = 0; i < NumArray.Length; i++)
+            IsTrigOrHexBySeries[i] = NumArray[i][5] == 5 || NumArray[i][5] == 6;
 
         #region PositionGeneratorListの仲間たちを初期化
         // 260604Cl: 格子センタリングは AffineGen.AddTranslation で後置併進(base 適用後に最後に加算=旧 f(x,y,z) 後に +併進 の結合順と一致 → bit-exact)。
@@ -876,16 +907,32 @@ new(-4,-1,(0,1,0),((3.0/8.0),(1.0/8.0),(3.0/8.0)),(0,0,0)),//487
     public static bool IsRootPlane((int h, int k, int l) index, Symmetry sym, out (int h, int k, int l)[] indices, bool addInversion = false)
         => index == (indices = GenerateEquivalentPlanes(index, sym, addInversion, true))[0];
 
-    /// <summary>対称性 sym に従って(hkl)と等価な結晶面を生成する</summary>
-    /// <param name="addInversionCenter"> 対称心を加えるか。デフォルトはfalse. </param>
-    /// <param name="sort"> Trueの場合は先頭が基底の指数になるように並び替えを行う </param>
-    /// <returns></returns>
-    public static (int H, int K, int L)[] GenerateEquivalentPlanes((int H, int K, int L) index, Symmetry sym, bool addInversionCenter = false, bool sort = true)
+    /// <summary>261111Cl 追加: 面指数が基底であるかどうかを、配列を作らずに判定する (SetPlanes など、面ごとに大量に呼ぶ所向け)。
+    /// 戻り値と multiplicity は IsRootPlane(index, sym, out indices, addInversion) の (戻り値, indices.Length) と同じ。
+    /// 判定は「並べ替えと同じ比較子で、index より前に並ぶ等価面が無いか」を 1 パスで見る (比較子は異なる面どうしの全順序なので、
+    /// 並べ替えた先頭が index であることと同値)。</summary>
+    /// <param name="index">面指数</param>
+    /// <param name="sym">対称性</param>
+    /// <param name="multiplicity">等価な面指数の数 (多重度)</param>
+    /// <param name="addInversion">対称心を付与するか。デフォルトはfalse。</param>
+    /// <returns>基底のときは true</returns>
+    public static bool IsRootPlane((int h, int k, int l) index, in Symmetry sym, out int multiplicity, bool addInversion = false)
     {
-        if (index == (0, 0, 0)) return [(0, 0, 0)];
+        if (index == (0, 0, 0)) { multiplicity = 1; return true; } // 旧と同じく [(0,0,0)] の 1 個
+        var pgNum = EquivalentPlanePointGroup(sym, addInversion);
+        Span<(int H, int K, int L)> buf = stackalloc (int H, int K, int L)[48];
+        var planes = buf[..FillEquivalentPlanes(index, sym, pgNum, buf)];
+        multiplicity = planes.Length;
+        if (planes[0] != index && !planes.Contains(index)) return false; // 等価面が 0 個なら planes[0] で旧 ([0]) と同じ IndexOutOfRangeException
+        var cmp = GetPlaneComparison(pgNum, sym);
+        foreach (var p in planes)
+            if (cmp(p, index) < 0) return false;
+        return true;
+    }
 
-        #region addInversion がtrueであれば対称心を付与した点群に変換する
-        var pgNum = addInversionCenter ? sym.PointGroupNumber switch
+    /// <summary>261111Cl 追加: addInversion が true のとき、対称心を付与した点群の番号に変換する (旧 GenerateEquivalentPlanes 冒頭の switch を移した。値は不変)</summary>
+    private static int EquivalentPlanePointGroup(in Symmetry sym, bool addInversionCenter)
+        => addInversionCenter ? sym.PointGroupNumber switch
         {
 
             0 or 1 or 2 => 2,//　unknown, 1, -1 => -1
@@ -902,19 +949,79 @@ new(-4,-1,(0,1,0),((3.0/8.0),(1.0/8.0),(3.0/8.0)),(0,0,0)),//487
             _ => 2
 
         } : sym.PointGroupNumber;
+
+    /// <summary>対称性 sym に従って(hkl)と等価な結晶面を生成する</summary>
+    /// <param name="addInversionCenter"> 対称心を加えるか。デフォルトはfalse. </param>
+    /// <param name="sort"> Trueの場合は先頭が基底の指数になるように並び替えを行う </param>
+    /// <returns></returns>
+    public static (int H, int K, int L)[] GenerateEquivalentPlanes((int H, int K, int L) index, Symmetry sym, bool addInversionCenter = false, bool sort = true)
+    {
+        if (index == (0, 0, 0)) return [(0, 0, 0)];
+
+        #region addInversion がtrueであれば対称心を付与した点群に変換する
+        // 261111Cl 変更: switch を EquivalentPlanePointGroup へ移した (新しい IsRootPlane と共用)。変更前は下のコメント
+        //var pgNum = addInversionCenter ? sym.PointGroupNumber switch
+        //{
+        //
+        //    0 or 1 or 2 => 2,//　unknown, 1, -1 => -1
+        //    3 or 4 or 5 => 5,// 2, m, 2/m => 2/m
+        //    6 or 7 or 8 => 8,// 222, mm2, mmm => mmm
+        //    9 or 10 or 11 => 11,// 4, -4, 4/m => 4/m
+        //    12 or 13 or 14 or 15 => 15, // 422, 4mm, -42m, 4/mmm => 4/mmm
+        //    16 or 17 => 17,// 3, -3 => -3
+        //    18 or 19 or 20 => 20,// 3m, -3m1, -3m2 => -3m1
+        //    21 or 22 or 23 => 23,// 6, -6, 6/m => 6/m
+        //    24 or 25 or 26 or 27 => 27,// 622, 6mm, -6m2, 6/mmm => 6/mmm
+        //    28 or 29 => 29,// 23, m3 => m3
+        //    30 or 31 or 32 => 32,// 432, -43m, m3m => m3m
+        //    _ => 2
+        //
+        //} : sym.PointGroupNumber;
+        var pgNum = EquivalentPlanePointGroup(sym, addInversionCenter);
         #endregion
 
+        // 261111Cl 変更: 生成を FillEquivalentPlanes (重複を除きながら Span へ書く) に、並べ替えの比較子を GetPlaneComparison に分けた。
+        // 旧は HashSet へ Add → ToArray → Array.Sort。削除の無い HashSet の列挙は挿入順なので、sort=false の並びも旧と同じ。
+        Span<(int H, int K, int L)> buf = stackalloc (int H, int K, int L)[48];
+        var array = buf[..FillEquivalentPlanes(index, sym, pgNum, buf)].ToArray();
+        if (sort)
+            Array.Sort(array, GetPlaneComparison(pgNum, sym));
+        return array;
+    }
+
+    /// <summary>261111Cl 追加: 重複を除きながら Span へ書き込む (旧 HashSet&lt;(int,int,int)&gt; の代わり。要素は最大 48 個なので線形探索で足りる)</summary>
+    private ref struct DistinctPlaneWriter(Span<(int H, int K, int L)> dst)
+    {
+        private readonly Span<(int H, int K, int L)> dst = dst;
+        public int Count;
+        public void Add((int H, int K, int L) x)
+        {
+            for (int j = 0; j < Count; j++)
+                if (dst[j] == x) return;
+            dst[Count++] = x;
+        }
+    }
+
+    /// <summary>261111Cl 追加: 点群 pgNum (対称心付与後の番号) に従って index と等価な面指数を、重複を除いて dst へ書き込み、個数を返す (並べ替えない)。
+    /// 書き込む順は旧 HashSet の挿入順と同じ。dst は 48 要素 (最大の点群 m-3m の位数) あれば足りる。中身は旧 GenerateEquivalentPlanes の switch そのまま。</summary>
+    private static int FillEquivalentPlanes((int H, int K, int L) index, in Symmetry sym, int pgNum, Span<(int H, int K, int L)> dst)
+    {
         #region 点群に従って等価な面指数を生成
-        var indices = new HashSet<(int H, int K, int L)>();
+        //var indices = new HashSet<(int H, int K, int L)>(); // 261111Cl 変更前
+        var indices = new DistinctPlaneWriter(dst); // 261111Cl 変更
         int i;
         var (h, k, l) = index;
         switch (pgNum)
         {
             case 0://unknown
-                return [(+h, +k, +l)];
+                //return [(+h, +k, +l)]; // 261111Cl 変更前
+                indices.Add((+h, +k, +l)); // 261111Cl 変更
+                break;
 
             case 1://1
-                return [(+h, +k, +l)];
+                //return [(+h, +k, +l)]; // 261111Cl 変更前
+                indices.Add((+h, +k, +l)); // 261111Cl 変更
+                break;
 
             case 2://-1
                 indices.Add((+h, +k, +l));
@@ -1638,82 +1745,121 @@ new(-4,-1,(0,1,0),((3.0/8.0),(1.0/8.0),(3.0/8.0)),(0,0,0)),//487
                 break;
         }
         #endregion
+        return indices.Count; // 261111Cl 追加
+    }
 
-        #region sort=trueの場合、面指数をソートする
-        if (!sort)
-            return [.. indices];
-        else
-        {
+    /// <summary>261111Cl 追加: 等価面の並べ替え (先頭が基底の指数になる) の比較子を返す。旧 GenerateEquivalentPlanes の sort 部の 5 つのラムダをそのまま移した。
+    /// どれも「並べ替えのキーの辞書式順 (降順)」で、キーの組から (H,K,L) が一意に決まるので、異なる面どうしの全順序になる。</summary>
+    private static Comparison<(int H, int K, int L)> GetPlaneComparison(int pgNum, in Symmetry sym)
+    {
+        #region 261111Cl 変更前 (旧 GenerateEquivalentPlanes の sort 部。比較子は下へそのまま移した)
+        //#region sort=trueの場合、面指数をソートする
+        //if (!sort)
+        //    return [.. indices];
+        //else
+        //{
+        //
+        //    var array = indices.ToArray();
+        //
+        //    if (pgNum >= 16 && pgNum <= 27 && sym.SpaceGroupHMsubStr != "R")//trigonal or hexagonalで、六方格子の場合
+        //    {
+        //        //h,k,iの中で、最も絶対値が大きいものをiに持ってくる
+        //        Array.Sort(array, static (a, b) =>
+        //        {
+        //            if (Math.Abs(a.H + a.K) != Math.Abs(b.H + b.K))
+        //                return Math.Abs(b.H + b.K).CompareTo(Math.Abs(a.H + a.K));
+        //            else if (a.L != b.L)
+        //                return b.L.CompareTo(a.L);
+        //            else if (a.H != b.H)
+        //                return b.H.CompareTo(a.H);
+        //            else
+        //                return b.K.CompareTo(a.K);
+        //        });
+        //    }
+        //    else if (pgNum >= 3 && pgNum <= 5)//monoclinicかorthorhombicの場合
+        //    {
+        //        // 主軸が第一ソートキーになるようにする
+        //        if (sym.MainAxis == "a")
+        //            Array.Sort(array, static (a, b) =>
+        //            {
+        //                if (a.H != b.H)
+        //                    return b.H.CompareTo(a.H);
+        //                else if (a.K != b.K)
+        //                    return b.K.CompareTo(a.K);
+        //                else
+        //                    return b.L.CompareTo(a.L);
+        //            });
+        //        else if (sym.MainAxis == "b")
+        //        {
+        //            Array.Sort(array, static (a, b) =>
+        //            {
+        //                if (a.K != b.K)
+        //                    return b.K.CompareTo(a.K);
+        //                else if (a.L != b.L)
+        //                    return b.L.CompareTo(a.L);
+        //                else
+        //                    return b.H.CompareTo(a.H);
+        //            });
+        //        }
+        //        else
+        //            Array.Sort(array, static (a, b) =>
+        //            {
+        //                if (a.L != b.L)
+        //                    return b.L.CompareTo(a.L);
+        //                else if (a.H != b.H)
+        //                    return b.H.CompareTo(a.H);
+        //                else
+        //                    return b.K.CompareTo(a.K);
+        //            });
+        //    }
+        //    else if (pgNum >= 9 && pgNum <= 15)//tetragonalの場合
+        //    {
+        //        Array.Sort(array, static (a, b) =>
+        //        {
+        //            if (a.L != b.L)
+        //                return b.L.CompareTo(a.L);
+        //            else if (a.H != b.H)
+        //                return b.H.CompareTo(a.H);
+        //            else
+        //                return b.K.CompareTo(a.K);
+        //        });
+        //    }
+        //
+        //    else//立方晶と三斜晶系の時
+        //    {
+        //        Array.Sort(array, static (a, b) =>
+        //        {
+        //            if (a.H != b.H)
+        //                return b.H.CompareTo(a.H);
+        //            else if (a.K != b.K)
+        //                return b.K.CompareTo(a.K);
+        //            else
+        //                return b.L.CompareTo(a.L);
+        //        });
+        //    }
+        //    return array;
+        //}
+        //#endregion
+        #endregion
 
-            var array = indices.ToArray();
-
-            if (pgNum >= 16 && pgNum <= 27 && sym.SpaceGroupHMsubStr != "R")//trigonal or hexagonalで、六方格子の場合
+        if (pgNum >= 16 && pgNum <= 27 && sym.SpaceGroupHMsubStr != "R")//trigonal or hexagonalで、六方格子の場合
+            //h,k,iの中で、最も絶対値が大きいものをiに持ってくる
+            return static (a, b) =>
             {
-                //h,k,iの中で、最も絶対値が大きいものをiに持ってくる
-                Array.Sort(array, static (a, b) =>
-                {
-                    if (Math.Abs(a.H + a.K) != Math.Abs(b.H + b.K))
-                        return Math.Abs(b.H + b.K).CompareTo(Math.Abs(a.H + a.K));
-                    else if (a.L != b.L)
-                        return b.L.CompareTo(a.L);
-                    else if (a.H != b.H)
-                        return b.H.CompareTo(a.H);
-                    else
-                        return b.K.CompareTo(a.K);
-                });
-            }
-            else if (pgNum >= 3 && pgNum <= 5)//monoclinicかorthorhombicの場合
-            {
-                // 主軸が第一ソートキーになるようにする
-                if (sym.MainAxis == "a")
-                    Array.Sort(array, static (a, b) =>
-                    {
-                        if (a.H != b.H)
-                            return b.H.CompareTo(a.H);
-                        else if (a.K != b.K)
-                            return b.K.CompareTo(a.K);
-                        else
-                            return b.L.CompareTo(a.L);
-                    });
-                else if (sym.MainAxis == "b")
-                {
-                    Array.Sort(array, static (a, b) =>
-                    {
-                        if (a.K != b.K)
-                            return b.K.CompareTo(a.K);
-                        else if (a.L != b.L)
-                            return b.L.CompareTo(a.L);
-                        else
-                            return b.H.CompareTo(a.H);
-                    });
-                }
+                if (Math.Abs(a.H + a.K) != Math.Abs(b.H + b.K))
+                    return Math.Abs(b.H + b.K).CompareTo(Math.Abs(a.H + a.K));
+                else if (a.L != b.L)
+                    return b.L.CompareTo(a.L);
+                else if (a.H != b.H)
+                    return b.H.CompareTo(a.H);
                 else
-                    Array.Sort(array, static (a, b) =>
-                    {
-                        if (a.L != b.L)
-                            return b.L.CompareTo(a.L);
-                        else if (a.H != b.H)
-                            return b.H.CompareTo(a.H);
-                        else
-                            return b.K.CompareTo(a.K);
-                    });
-            }
-            else if (pgNum >= 9 && pgNum <= 15)//tetragonalの場合
-            {
-                Array.Sort(array, static (a, b) =>
-                {
-                    if (a.L != b.L)
-                        return b.L.CompareTo(a.L);
-                    else if (a.H != b.H)
-                        return b.H.CompareTo(a.H);
-                    else
-                        return b.K.CompareTo(a.K);
-                });
-            }
-
-            else//立方晶と三斜晶系の時
-            {
-                Array.Sort(array, static (a, b) =>
+                    return b.K.CompareTo(a.K);
+            };
+        else if (pgNum >= 3 && pgNum <= 5)//monoclinicかorthorhombicの場合
+        {
+            // 主軸が第一ソートキーになるようにする
+            if (sym.MainAxis == "a")
+                return static (a, b) =>
                 {
                     if (a.H != b.H)
                         return b.H.CompareTo(a.H);
@@ -1721,11 +1867,48 @@ new(-4,-1,(0,1,0),((3.0/8.0),(1.0/8.0),(3.0/8.0)),(0,0,0)),//487
                         return b.K.CompareTo(a.K);
                     else
                         return b.L.CompareTo(a.L);
-                });
-            }
-            return array;
+                };
+            else if (sym.MainAxis == "b")
+                return static (a, b) =>
+                {
+                    if (a.K != b.K)
+                        return b.K.CompareTo(a.K);
+                    else if (a.L != b.L)
+                        return b.L.CompareTo(a.L);
+                    else
+                        return b.H.CompareTo(a.H);
+                };
+            else
+                return static (a, b) =>
+                {
+                    if (a.L != b.L)
+                        return b.L.CompareTo(a.L);
+                    else if (a.H != b.H)
+                        return b.H.CompareTo(a.H);
+                    else
+                        return b.K.CompareTo(a.K);
+                };
         }
-        #endregion
+        else if (pgNum >= 9 && pgNum <= 15)//tetragonalの場合
+            return static (a, b) =>
+            {
+                if (a.L != b.L)
+                    return b.L.CompareTo(a.L);
+                else if (a.H != b.H)
+                    return b.H.CompareTo(a.H);
+                else
+                    return b.K.CompareTo(a.K);
+            };
+        else//立方晶と三斜晶系の時
+            return static (a, b) =>
+            {
+                if (a.H != b.H)
+                    return b.H.CompareTo(a.H);
+                else if (a.K != b.K)
+                    return b.K.CompareTo(a.K);
+                else
+                    return b.L.CompareTo(a.L);
+            };
     }
 
     /// <summary>二つの面(index1), (index2)が等価かどうかを判定する</summary>

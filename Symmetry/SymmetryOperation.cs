@@ -174,7 +174,8 @@ public readonly struct SymmetryOperation
         if (Order == -1) return (-h, -k, -l);
 
         bool isHex = SymmetryStatic.IsHexBySeries[SeriesNumber];
-        bool isTrigOrHex = SymmetryStatic.NumArray[SeriesNumber][5] == 5 || SymmetryStatic.NumArray[SeriesNumber][5] == 6;
+        //bool isTrigOrHex = SymmetryStatic.NumArray[SeriesNumber][5] == 5 || SymmetryStatic.NumArray[SeriesNumber][5] == 6; // 261111Cl 変更前
+        bool isTrigOrHex = SymmetryStatic.IsTrigOrHexBySeries[SeriesNumber]; // 261111Cl 変更: 静的コンストラクタで作った表を引く (条件は同じ)
         int o = Math.Abs(Order);
         (int H, int K, int L) p = (0, 0, 0);
 
@@ -257,7 +258,8 @@ public readonly struct SymmetryOperation
         if (Order == -1) return (-h, -k, -l);
 
         bool isHex = SymmetryStatic.IsHexBySeries[SeriesNumber];
-        bool isTrigOrHex = SymmetryStatic.NumArray[SeriesNumber][5] == 5 || SymmetryStatic.NumArray[SeriesNumber][5] == 6;
+        //bool isTrigOrHex = SymmetryStatic.NumArray[SeriesNumber][5] == 5 || SymmetryStatic.NumArray[SeriesNumber][5] == 6; // 261111Cl 変更前
+        bool isTrigOrHex = SymmetryStatic.IsTrigOrHexBySeries[SeriesNumber]; // 261111Cl 変更: 静的コンストラクタで作った表を引く (条件は同じ)
         int o = Math.Abs(Order);
         (double H, double K, double L) p = (0, 0, 0);
 

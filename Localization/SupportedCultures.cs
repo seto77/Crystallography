@@ -67,6 +67,10 @@ public static class SupportedCultures
         new("ko",      "한국어",     "Malgun Gothic",         "ko",      true ), // 260617Cl 追加 / 260623Cl Released(作者判断: 非商用ゆえ完成度低めでも公開可・要ネイティブ校閲) / HelpCulture "en"→"ko"
     };
 
+    /// <summary>261111Cl 追加: 接頭辞を照合する順 (名前の長い順。同じ長さは All の順 = 旧 Resolve の OrderByDescending (安定な並べ替え) と同じ並び)。
+    /// All より後に書くこと (静的フィールドの初期化子は書いた順に実行される)</summary>
+    private static readonly UiCulture[] byNameLengthDesc = [.. All.OrderByDescending(c => c.Name.Length)];
+
     /// <summary>既定言語 (英語)。未知カルチャはここへ解決する。</summary>
     public static UiCulture Default => All[0];
 
@@ -79,10 +83,18 @@ public static class SupportedCultures
         if (string.IsNullOrWhiteSpace(cultureName)) return Default;
         var name = cultureName.Trim();
 
-        var exact = All.FirstOrDefault(c => string.Equals(c.Name, name, StringComparison.OrdinalIgnoreCase));
-        if (exact != null) return exact;
+        //var exact = All.FirstOrDefault(c => string.Equals(c.Name, name, StringComparison.OrdinalIgnoreCase)); // 261111Cl 変更前 (6 行)
+        //if (exact != null) return exact;
+        //
+        //foreach (var c in All.OrderByDescending(c => c.Name.Length))
+        //    if (name.StartsWith(c.Name, StringComparison.OrdinalIgnoreCase))
+        //        return c;
+        // 261111Cl 変更: UI の文字列を解決するたびに (Localization.Loc → Current) LINQ と並べ替えをしていたのを、ループと並べ替え済みの表にする (結果は同じ)
+        foreach (var c in All)
+            if (string.Equals(c.Name, name, StringComparison.OrdinalIgnoreCase))
+                return c;
 
-        foreach (var c in All.OrderByDescending(c => c.Name.Length))
+        foreach (var c in byNameLengthDesc)
             if (name.StartsWith(c.Name, StringComparison.OrdinalIgnoreCase))
                 return c;
 
@@ -93,8 +105,11 @@ public static class SupportedCultures
             for (var ci = System.Globalization.CultureInfo.GetCultureInfo(name).Parent;
                  !string.IsNullOrEmpty(ci.Name); ci = ci.Parent)
             {
-                var byParent = All.FirstOrDefault(c => string.Equals(c.Name, ci.Name, StringComparison.OrdinalIgnoreCase));
-                if (byParent != null) return byParent;
+                //var byParent = All.FirstOrDefault(c => string.Equals(c.Name, ci.Name, StringComparison.OrdinalIgnoreCase)); // 261111Cl 変更前 (2 行)
+                //if (byParent != null) return byParent;
+                foreach (var c in All) // 261111Cl 変更: ループにする (結果は同じ)
+                    if (string.Equals(c.Name, ci.Name, StringComparison.OrdinalIgnoreCase))
+                        return c;
             }
         }
         catch { /* 未知カルチャ名は GetCultureInfo が投げる → 既定へ */ }

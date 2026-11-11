@@ -218,7 +218,8 @@ internal static class NistElasticPchipResource
     private static volatile byte[] _blob; // 260718Cl: double-checked locking の publish フィールド。volatile なしでは弱メモリモデル (win-arm64) で _blob 非 null を観測しつつ _index 等の先行 store が未可視になり得るため volatile 化 (writer は _blob を最後に代入している)
     private static Dictionary<int, (int Offset, int Length)> _index;
     private static int _codec, _method, _energyCount, _knotCount, _payloadStart;
-    private static readonly object _sync = new();
+    //private static readonly object _sync = new(); // 261111Cl 変更前
+    private static readonly System.Threading.Lock _sync = new(); // 261111Cl 変更: System.Threading.Lock (Monitor.Wait/Pulse は使っていない)
 
     private static void EnsureLoaded()
     {
@@ -983,7 +984,8 @@ public static partial class AtomStatic
 {
     private static readonly Dictionary<int, NistElasticPchipElementData> GeneratedNistElasticPchipElements = []; // (260401Ch)
     private static readonly Dictionary<int, NistElasticPchipRuntimeElement> GeneratedNistElasticPchipRuntimeElements = []; // (260401Ch)
-    private static readonly object GeneratedNistElasticPchipRuntimeSync = new(); // (260401Ch)
+    //private static readonly object GeneratedNistElasticPchipRuntimeSync = new(); // (260401Ch) // 261111Cl 変更前
+    private static readonly System.Threading.Lock GeneratedNistElasticPchipRuntimeSync = new(); // (260401Ch) // 261111Cl 変更: System.Threading.Lock (Monitor.Wait/Pulse は使っていない)
 
     // 260604Cl: 旧 RegisterGeneratedNistElasticPchip(96 個の生成 .cs の静的配列を cctor で一括登録) を廃止。
     //           PCHIP データは埋め込みリソース NistElasticPchip.bin から元素単位で lazy decode + キャッシュする。

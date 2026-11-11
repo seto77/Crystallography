@@ -509,7 +509,7 @@ public class Crystal : IEquatable<Crystal>, ICloneable, IComparable<Crystal>
         Symmetry = SymmetryStatic.Symmetries[0];
         Plane = [];
         Atoms = [];
-        ElasticStiffnessArray = new double[21];
+        //ElasticStiffnessArray = new double[21]; // 261111Cl 変更前: フィールドの初期化子 (new double[21]) と二重に確保していた
         Bethe = new BetheMethod(this);
         A = B = C = Alpha = Beta = Gamma = 0;
         Name = "";
@@ -1040,7 +1040,15 @@ public class Crystal : IEquatable<Crystal>, ICloneable, IComparable<Crystal>
     }
 
 
-    readonly FrozenSet<(int h, int k, int l)> directions = [(1, 0, 0), (-1, 0, 0), (0, 1, 0), (0, -1, 0), (0, 0, 1), (0, 0, -1)];
+    /// <summary>261111Cl 追加: 要素数の見積もり count から HashSet / List の初期容量を決める。見積もりを 2 割増し + 64 とし、upper (従来の固定値) を上限にする。
+    /// double のまま比べてから int にするので、count が NaN・∞ のときは upper になる</summary>
+    private static int EstimateCapacity(double count, double upper) => (int)(count * 1.2 + 64 < upper ? count * 1.2 + 64 : upper);
+
+    //readonly FrozenSet<(int h, int k, int l)> directions = [(1, 0, 0), (-1, 0, 0), (0, 1, 0), (0, -1, 0), (0, 0, 1), (0, 0, -1)]; // 261111Cl 変更前
+    // 261111Cl 変更: 結晶ごとに FrozenSet を作らず static readonly 配列にする。foreach で回すだけなので、列挙順はこの並びに決まる (旧の FrozenSet も同じ順だった)
+    static readonly (int h, int k, int l)[] directions = [(1, 0, 0), (-1, 0, 0), (0, 1, 0), (0, -1, 0), (0, 0, 1), (0, 0, -1)];
+    /// <summary>261111Cl 追加: SetVectorOfG の探索方向 ((-1, 0, 0) を除いた 5 方向)。旧は呼ぶたびにローカルで ToFrozenSet していた</summary>
+    static readonly (int h, int k, int l)[] directionsWithoutMinusH = [(1, 0, 0), (0, 1, 0), (0, -1, 0), (0, 0, 1), (0, 0, -1)];
     /// <summary>面間隔d_limit以上の面を検索、ソートする。</summary>
     /// <param name="dMax">この値以上の面を検索する</param>
     /// <param name="dMin">この値以下の面を検索する</param>
@@ -1076,8 +1084,12 @@ public class Crystal : IEquatable<Crystal>, ICloneable, IComparable<Crystal>
         var maxNum = _maxNum;
         // (260322Ch) frontier は sorted List のまま使い、毎回の Min/FindLastIndex を避けて先頭から処理する
         var outer = new List<(int H, int K, int L, double len)>() { (0, 0, 0, 0) };
-        var whole = new HashSet<(int H, int K, int L)>((int)(maxNum * 8)) { (0, 0, 0) }; //全ての hkl を検索するため、composeを使えないことに注意
-        var listPlane = new List<Plane>((int)(maxNum * 1.5));
+        //var whole = new HashSet<(int H, int K, int L)>((int)(maxNum * 8)) { (0, 0, 0) }; //全ての hkl を検索するため、composeを使えないことに注意 // 261111Cl 変更前
+        //var listPlane = new List<Plane>((int)(maxNum * 1.5)); // 261111Cl 変更前
+        // 261111Cl 変更: 容量を球内の逆格子点数 ≈ 4π/3·r³·Volume から見積もる (従来値が上限)。毎回 LOH に 64000 / 12000 要素を確保していた。
+        // whole は半径 gMax + 3·shift (処理する点 < gMax + 2·shift、その隣 + shift) の球に、listPlane は半径 gMax の球に収まる。容量は結果に影響しない
+        var whole = new HashSet<(int H, int K, int L)>(EstimateCapacity(4.0 / 3.0 * Math.PI * Math.Pow(gMax + 3 * shift, 3) * Volume, maxNum * 8.0)) { (0, 0, 0) }; //全ての hkl を検索するため、composeを使えないことに注意
+        var listPlane = new List<Plane>(EstimateCapacity(4.0 / 3.0 * Math.PI * Math.Pow(gMax, 3) * Volume, maxNum * 1.5));
 
         while (listPlane.Count < maxNum && outer.Count > 0 && outer[0].len < gMax)
         {
@@ -1100,7 +1112,8 @@ public class Crystal : IEquatable<Crystal>, ICloneable, IComparable<Crystal>
                         outer.Add((h, k, l, len));
                         if (len < gMax && len > gMin)
                         {
-                            var root = SymmetryStatic.IsRootPlane((h, k, l), Symmetry, out var indices);
+                            //var root = SymmetryStatic.IsRootPlane((h, k, l), Symmetry, out var indices); // 261111Cl 変更前
+                            var root = SymmetryStatic.IsRootPlane((h, k, l), Symmetry, out int multiplicity); // 261111Cl 変更: 等価面の配列を作らない版 (root と多重度は旧と同じ)
                             // (260322Ch) 禁制面を除外しない場合は消滅則チェックを省略して割り当てを減らす
                             var hasExtinction = excludeForbiddenPlane && Symmetry.HasExtinction(h, k, l);//260605Cl 旧: CheckExtinctionRule(h,k,l).Length != 0 (bool判定のみなので割り当て無しのHasExtinctionへ)
                             if ((!excludeEquivalentPlane || root) && !hasExtinction)
@@ -1113,7 +1126,8 @@ public class Crystal : IEquatable<Crystal>, ICloneable, IComparable<Crystal>
                                     l = l,
                                     d = 1 / len,
                                     strHKL = $"{h} {k} {l}",
-                                    Multi = [indices.Length],
+                                    //Multi = [indices.Length], // 261111Cl 変更前
+                                    Multi = [multiplicity], // 261111Cl
                                 });
                             }
                         }
@@ -1157,14 +1171,24 @@ public class Crystal : IEquatable<Crystal>, ICloneable, IComparable<Crystal>
 
             if (metric != null)
             {
+                // 261111Cl 変更: 1 組結合するたびに全隣接対の metric (Asin など) を計算し直していたのを、各面の metric と隣接対の差を配列に 1 回だけ計算し、
+                // 結合した所 (結合後の面とその両隣の差) だけ更新する。差の式は旧と同じ Math.Abs(metric(d_i) - metric(d_{i+1})) なので値はビット一致。
+                // 最小の差の対は旧と同じく「minDif > dif」で先頭から探す (同じ差なら最初の対)。旧のループは下の #region にコメントで残す
+                var metricValues = new List<double>(listPlane.Count);
+                foreach (var p in listPlane)
+                    metricValues.Add(metric(p.d));
+                var difs = new List<double>(Math.Max(listPlane.Count - 1, 0));
+                for (int i = 0; i < listPlane.Count - 1; i++)
+                    difs.Add(Math.Abs(metricValues[i] - metricValues[i + 1]));
+
                 double minDif;
                 do
                 {
                     minDif = double.PositiveInfinity;
                     int k = 0;
-                    for (int i = 0; i < listPlane.Count - 1; i++)
+                    for (int i = 0; i < difs.Count; i++)
                     {
-                        var dif = Math.Abs(metric(listPlane[i].d) - metric(listPlane[i + 1].d));
+                        var dif = difs[i];
                         if (minDif > dif)
                         {
                             minDif = dif;
@@ -1181,8 +1205,46 @@ public class Crystal : IEquatable<Crystal>, ICloneable, IComparable<Crystal>
                         listPlane[k].Multi = multiplisity;
 
                         listPlane.RemoveAt(k + 1);
+
+                        // 結合した所だけ更新: 面 k の metric を計算し直し、面 k+1 を除く。差は (k, k+1) の対を除き、(k-1, k) と (k, k+1) を計算し直す
+                        metricValues[k] = metric(listPlane[k].d);
+                        metricValues.RemoveAt(k + 1);
+                        difs.RemoveAt(k);
+                        if (k < difs.Count)
+                            difs[k] = Math.Abs(metricValues[k] - metricValues[k + 1]);
+                        if (k > 0)
+                            difs[k - 1] = Math.Abs(metricValues[k - 1] - metricValues[k]);
                     }
                 } while (inclusive ? minDif <= horizontalThreshold : minDif < horizontalThreshold);
+
+                #region 261111Cl 変更前
+                //double minDif;
+                //do
+                //{
+                //    minDif = double.PositiveInfinity;
+                //    int k = 0;
+                //    for (int i = 0; i < listPlane.Count - 1; i++)
+                //    {
+                //        var dif = Math.Abs(metric(listPlane[i].d) - metric(listPlane[i + 1].d));
+                //        if (minDif > dif)
+                //        {
+                //            minDif = dif;
+                //            k = i;
+                //        }
+                //    }
+                //    if (inclusive ? minDif <= horizontalThreshold : minDif < horizontalThreshold)
+                //    {
+                //        listPlane[k].d = (listPlane[k].d + listPlane[k + 1].d) / 2.0;
+                //        listPlane[k].strHKL += " + " + listPlane[k + 1].strHKL;
+                //        int[] multiplisity = new int[listPlane[k].Multi.Length + listPlane[k + 1].Multi.Length];
+                //        listPlane[k].Multi.CopyTo(multiplisity, 0);
+                //        listPlane[k + 1].Multi.CopyTo(multiplisity, listPlane[k].Multi.Length);
+                //        listPlane[k].Multi = multiplisity;
+                //
+                //        listPlane.RemoveAt(k + 1);
+                //    }
+                //} while (inclusive ? minDif <= horizontalThreshold : minDif < horizontalThreshold);
+                #endregion
             }
         }
 
@@ -1257,7 +1319,8 @@ public class Crystal : IEquatable<Crystal>, ICloneable, IComparable<Crystal>
         double gMax = 1 / dMin, gMax2 = gMax * gMax;
 
         #region directionを初期化
-        var directions = new[] { (1, 0, 0), (0, 1, 0), (0, -1, 0), (0, 0, 1), (0, 0, -1) }.ToFrozenSet();//(-1, 0, 0)は除いておく
+        //var directions = new[] { (1, 0, 0), (0, 1, 0), (0, -1, 0), (0, 0, 1), (0, 0, -1) }.ToFrozenSet();//(-1, 0, 0)は除いておく // 261111Cl 変更前
+        var directions = directionsWithoutMinusH; //(-1, 0, 0)は除いておく // 261111Cl 変更: static readonly 配列 (同じ 5 方向・同じ順)
         #endregion
 
         //260605Cl 小さな LINQ 割り当てを避け、各方向を直接走査して最大シフトを求める(SetPlanes と同形・shift値は bit 一致)
@@ -1270,8 +1333,12 @@ public class Crystal : IEquatable<Crystal>, ICloneable, IComparable<Crystal>
         }
 
         var zeroKey = (255 << 20) + (255 << 10) + 255;
-        var gHash = new HashSet<int>((int)(maxNum * 1.5)) { zeroKey };
-        var gList = new List<(int key, double x, double y, double z, double len)>((int)(maxNum * 1.5)) { (zeroKey, 0, 0, 0, 0) };
+        //var gHash = new HashSet<int>((int)(maxNum * 1.5)) { zeroKey }; // 261111Cl 変更前
+        //var gList = new List<(int key, double x, double y, double z, double len)>((int)(maxNum * 1.5)) { (zeroKey, 0, 0, 0, 0) }; // 261111Cl 変更前
+        // 261111Cl 変更: 容量を半球内の逆格子点数 ≈ 4π/3·r³·Volume/2 から見積もる (従来値 37500 が上限。LOH を避ける)。gHash は半径 gMax + shift、gList は半径 gMax の半球に収まる。
+        // gList が途中で伸びても、走査中の outer (旧配列の Span) の値は変わらないので結果は同じ
+        var gHash = new HashSet<int>(EstimateCapacity(2.0 / 3.0 * Math.PI * Math.Pow(gMax + shift, 3) * Volume, maxNum * 1.5)) { zeroKey };
+        var gList = new List<(int key, double x, double y, double z, double len)>(EstimateCapacity(2.0 / 3.0 * Math.PI * Math.Pow(gMax, 3) * Volume, maxNum * 1.5)) { (zeroKey, 0, 0, 0, 0) };
         int start = 0, end = 1;
         var outer = CollectionsMarshal.AsSpan(gList)[start..end];
         while (gList.Count < maxNum && outer.Length > 0)
@@ -1355,6 +1422,13 @@ public class Crystal : IEquatable<Crystal>, ICloneable, IComparable<Crystal>
     public void SetVectorOfG_KikuchiLine(double d_limit, WaveSource wavesource)
     {
         if (A_Star == null) SetAxis();
+        // 261111Cl 追加: d_limit が 0 以下・NaN のときは空にして返す。.NET 9 以降は double → int の変換が飽和するので、0 のとき A / 0 = ∞ が
+        // int.MaxValue になり下のループが終わらなかった (.NET 8 までは int.MinValue になって 1 回も回らず、空のまま返っていた。その挙動と同じ)
+        if (!(d_limit > 0))
+        {
+            VectorOfG_KikuchiLine = [];
+            return;
+        }
         int hMax = (int)(A / d_limit);
         int kMax = (int)(B / d_limit);
         int lMax = (int)(C / d_limit);
@@ -1437,12 +1511,14 @@ public class Crystal : IEquatable<Crystal>, ICloneable, IComparable<Crystal>
                         //if (SymmetryStatic.IsRootPlane((h, k, l), Symmetry, out var indices)) // 261105Cl 変更前
                         // 261105Cl 変更: 粉末の X 線では h と −h の強度が等しい (Friedel 則) ので、対称心を足した群 (Laue 群) で同じ面とみなす
                         // (多重度もその群で数える)。以前は非中心対称の結晶で同じ d が 2 回ずつ並んでいた。2θ の上限より外は数えない
-                        if (gLen <= gMax && SymmetryStatic.IsRootPlane((h, k, l), Symmetry, out var indices, addInversion: true))
+                        //if (gLen <= gMax && SymmetryStatic.IsRootPlane((h, k, l), Symmetry, out var indices, addInversion: true)) // 261111Cl 変更前
+                        if (gLen <= gMax && SymmetryStatic.IsRootPlane((h, k, l), Symmetry, out int multiplicity, addInversion: true)) // 261111Cl 変更: 等価面の配列を作らない版
                             if (!Symmetry.HasExtinction(h, k, l))//260605Cl 旧: Symmetry.CheckExtinctionRule(h, k, l).Length == 0
                             {
                                 double sinTheta = waveLength / 2 * gLen, twoTheta = 2 * Math.Asin(sinTheta), cosTwoTheta = 1 - 2 * sinTheta * sinTheta, sinTwoTheta = Math.Sin(twoTheta);
                                 var F2 = GetStructureFactor(WaveSource.Xray, Atoms, (h, k, l), gLen2 / 4.0).MagnitudeSquared();
-                                var intensity = F2 * indices.Length  * (1 + cosTwoTheta * cosTwoTheta) / sinTwoTheta / sinTheta;  
+                                //var intensity = F2 * indices.Length  * (1 + cosTwoTheta * cosTwoTheta) / sinTwoTheta / sinTheta;  // 261111Cl 変更前
+                                var intensity = F2 * multiplicity * (1 + cosTwoTheta * cosTwoTheta) / sinTwoTheta / sinTheta; // 261111Cl
                                 list.Add((1 / gLen, intensity));
                             }
                     }
@@ -1787,26 +1863,44 @@ public class Crystal : IEquatable<Crystal>, ICloneable, IComparable<Crystal>
         var xrayDispFactors = IsXrayDispersionActive(waveSource, xrayEnergyKeV, anomalousDispersion)
             ? Atoms.Select(a => (fp: Xraylib.Fprime(a.AtomicNumber, xrayEnergyKeV), fpp: Xraylib.Fdoubleprime(a.AtomicNumber, xrayEnergyKeV))).ToArray() : null;
 
+        Span<Range> ranges = stackalloc Range[4]; // 261111Cl 追加: 結合した面の "h k l" を空白で切る範囲 (下のループで使い回す)
         for (int i = 0; i < Plane.Count; i++)
         {
             var sinTheta = ramda / 2 / Plane[i].d;
             var twoTheta = Plane[i].XCalc = 2 * Math.Asin(sinTheta);
             var (sinTwoTheta,cosTwoTheta)= Math.SinCos(twoTheta);
             
-            var s = Plane[i].strHKL.Split('+', true);
-            Plane[i].F2 = new double[s.Length];
-            Plane[i].F = new Complex[s.Length];
-            Plane[i].eachIntensity = new double[s.Length];
+            //var s = Plane[i].strHKL.Split('+', true); // 261111Cl 変更前 (4 行)
+            //Plane[i].F2 = new double[s.Length];
+            //Plane[i].F = new Complex[s.Length];
+            //Plane[i].eachIntensity = new double[s.Length];
+            // 261111Cl 変更: '+' を含まない (結合していない) 面は分割しない (s = null。数は空文字列なら 0、それ以外は 1 で旧の Split と同じ)
+            var strHKL = Plane[i].strHKL;
+            var s = strHKL.Contains('+') ? strHKL.Split('+', true) : null;
+            var sLength = s?.Length ?? (strHKL.Length == 0 ? 0 : 1);
+            Plane[i].F2 = new double[sLength];
+            Plane[i].F = new Complex[sLength];
+            Plane[i].eachIntensity = new double[sLength];
             var d2 = Plane[i].d * Plane[i].d;
 
-            for (int j = 0; j < s.Length; j++)
+            //for (int j = 0; j < s.Length; j++) // 261111Cl 変更前
+            for (int j = 0; j < sLength; j++) // 261111Cl
             {
-                if (s.Length == 1)
+                //if (s.Length == 1) // 261111Cl 変更前
+                if (sLength == 1) // 261111Cl
                     Plane[i].F[j] = GetStructureFactor(waveSource, Atoms, (Plane[i].h, Plane[i].k, Plane[i].l), 1 / d2 / 4.0, null, xrayEnergyKeV, xrayDispFactors, anomalousDispersion);//260606Cl 異常分散 f'/f'' を反映(既定ON)
                 else
                 {
-                    var hkl = s[j].Split(' ', true);
-                    int h = Convert.ToInt32(hkl[0]), k = Convert.ToInt32(hkl[1]), l = Convert.ToInt32(hkl[2]);
+                    //var hkl = s[j].Split(' ', true); // 261111Cl 変更前 (2 行)
+                    //int h = Convert.ToInt32(hkl[0]), k = Convert.ToInt32(hkl[1]), l = Convert.ToInt32(hkl[2]);
+                    // 261111Cl 変更: 空白で切るのは span で行う。strHKL は現在のカルチャで書いた "h k l" なので、旧 (Convert.ToInt32) と同じく現在のカルチャで読む
+                    var part = s[j].AsSpan();
+                    if (part.Split(ranges, ' ', StringSplitOptions.RemoveEmptyEntries) < 3)
+                        throw new IndexOutOfRangeException(); // 旧の hkl[2] と同じ例外
+                    var culture = System.Globalization.CultureInfo.CurrentCulture;
+                    int h = int.Parse(part[ranges[0]], System.Globalization.NumberStyles.Integer, culture),
+                        k = int.Parse(part[ranges[1]], System.Globalization.NumberStyles.Integer, culture),
+                        l = int.Parse(part[ranges[2]], System.Globalization.NumberStyles.Integer, culture);
                     Plane[i].F[j] = GetStructureFactor(waveSource, Atoms, (h, k, l), 1 / d2 / 4.0, null, xrayEnergyKeV, xrayDispFactors, anomalousDispersion);//260606Cl 異常分散 f'/f'' を反映(既定ON)
                 }
 
@@ -1833,7 +1927,8 @@ public class Crystal : IEquatable<Crystal>, ICloneable, IComparable<Crystal>
             }
 
             Plane[i].RawIntensity = 0;
-            for (int j = 0; j < s.Length; j++)
+            //for (int j = 0; j < s.Length; j++) // 261111Cl 変更前
+            for (int j = 0; j < sLength; j++) // 261111Cl
                 Plane[i].RawIntensity += Plane[i].eachIntensity[j];
         }
 
@@ -1858,18 +1953,21 @@ public class Crystal : IEquatable<Crystal>, ICloneable, IComparable<Crystal>
         {
             if (Symmetry.CrystalSystemStr == "hexagonal" || Symmetry.CrystalSystemStr == "trigonal")
             {
-                double value66667;
-                double value33333;
-                if (Miscellaneous.IsDecimalPointComma)
-                {
-                    _ = double.TryParse(",66667", out value66667);
-                    _ = double.TryParse(",33333", out value33333);
-                }
-                else
-                {
-                    _ = double.TryParse(".66667", out value66667);
-                    _ = double.TryParse(".33333", out value33333);
-                }
+                //double value66667; // 261111Cl 変更前 (12 行): 原子ごとに文字列を現在のカルチャで読んでいた
+                //double value33333;
+                //if (Miscellaneous.IsDecimalPointComma)
+                //{
+                //    _ = double.TryParse(",66667", out value66667);
+                //    _ = double.TryParse(",33333", out value33333);
+                //}
+                //else
+                //{
+                //    _ = double.TryParse(".66667", out value66667);
+                //    _ = double.TryParse(".33333", out value33333);
+                //}
+                // 261111Cl 変更: 定数にする (小数点が '.' か ',' のカルチャでは読んだ値とビット一致)。小数点がそのどちらでもないカルチャでは
+                // 旧は読めずに 0 になり、座標 0 の原子を 2/3 へ動かしていた
+                const double value66667 = 0.66667, value33333 = 0.33333;
 
                 if (Atoms[i].X == value66667) Atoms[i].X = 2.0 / 3.0;
                 if (Atoms[i].X == value33333) Atoms[i].X = 1.0 / 3.0;
@@ -1887,7 +1985,9 @@ public class Crystal : IEquatable<Crystal>, ICloneable, IComparable<Crystal>
     {
         if (Atoms == null || Atoms.Length == 0) return;
 
-        var dic = new Dictionary<string, double>();
+        //var dic = new Dictionary<string, double>(); // 261111Cl 変更前
+        // 261111Cl 変更: 元素の並び (= 組成式の並び) を最初に現れた順に保証する。Dictionary の列挙順は (削除が無ければ挿入順だが) 仕様では保証されない
+        var dic = new OrderedDictionary<string, double>();
 
         for (int i = 0; i < Atoms.Length; i++)
         {
@@ -1994,15 +2094,20 @@ public class Crystal : IEquatable<Crystal>, ICloneable, IComparable<Crystal>
                 denom /= (int)Num[k3]; // 261024Cl 変更: Num[k3] は 0 でない整数を約分したもの (割り切れる時だけ割る) なので 0 にならない
             }
 
-            ChemicalFormulaSum = "";
+            //ChemicalFormulaSum = ""; // 261111Cl 変更前 (8 行)
+            //for (int i = 0; i < Num.Length; i++)
+            //{
+            //    if (Num[i] == 1)
+            //        ChemicalFormulaSum += ElementName[i] + " ";
+            //    else
+            //        ChemicalFormulaSum += $"{ElementName[i]}{Num[i].Round(12)} ";
+            //}
+            //ChemicalFormulaSum = ChemicalFormulaSum[0..^1];
+            // 261111Cl 変更: 元素ごとに文字列をつなぎ直さず string.Join にする (各項の書式は同じ。旧の「項 + 空白」を並べて最後の空白を除いたものと同じ)
+            var terms = new string[Num.Length];
             for (int i = 0; i < Num.Length; i++)
-            {
-                if (Num[i] == 1)
-                    ChemicalFormulaSum += ElementName[i] + " ";
-                else
-                    ChemicalFormulaSum += $"{ElementName[i]}{Num[i].Round(12)} ";
-            }
-            ChemicalFormulaSum = ChemicalFormulaSum[0..^1];
+                terms[i] = Num[i] == 1 ? ElementName[i] : $"{ElementName[i]}{Num[i].Round(12)}";
+            ChemicalFormulaSum = string.Join(" ", terms);
 
             if (is3times && denom != 3)
                 ChemicalFormulaSum += $"  *{denom}/3";

@@ -3679,6 +3679,22 @@ new(4.86738014,0.319974401,4.58872425,
         return number;
     }
 
+    /// <summary>261111Cl 追加: 元素記号 symbol (文字列を切り出さない span 版) の原子番号 1〜maxZ を返す。見つからなければ 0。
+    /// caseSensitive が false のときは ASCII の英字だけ大文字小文字を区別しない (現在のカルチャに依らない。旧来の ToLower() どうしの比較は
+    /// tr-TR で "SI" を "sı" にして Si と読めず、短い "S" に落ちていた)。元素記号 AtomicName(1〜103) はどれも 1〜2 文字なので、それより長ければすぐ 0</summary>
+    /// <param name="symbol">元素記号の候補</param>
+    /// <param name="caseSensitive">大文字小文字を区別するか</param>
+    /// <param name="maxZ">探す原子番号の上限 (CIF・AMC の読込は従来どおり 96)</param>
+    public static int AtomicNumber(ReadOnlySpan<char> symbol, bool caseSensitive, int maxZ = 96)
+    {
+        if (symbol.Length is 0 or > 2)
+            return 0;
+        for (int z = 1; z <= maxZ; z++)
+            if (caseSensitive ? symbol.SequenceEqual(AtomicName(z)) : System.Text.Ascii.EqualsIgnoreCase(symbol, AtomicName(z)))
+                return z;
+        return 0;
+    }
+
     /// <summary>原子名を与えて、原子番号を返す</summary>
     /// <param name="atomicName"></param>
     /// <returns></returns>
@@ -7310,22 +7326,24 @@ new(4.86738014,0.319974401,4.58872425,
         return [.. pt];
     }
 
-    private static readonly Lock lockObjForMassAbsorption = new();
-
-    /// <summary>質量吸収係数を覚えておく</summary>
-    //private static readonly Dictionary<double, double>[] massAbsorption = new Dictionary<double, double>[100];
-    // (260320Ch) 並列参照時の安全性を上げるため ConcurrentDictionary を利用する
-    private static readonly ConcurrentDictionary<double, double>[] massAbsorption = new ConcurrentDictionary<double, double>[100];
-
-    // (260320Ch) キャッシュの初期化を一箇所にまとめる
-    private static ConcurrentDictionary<double, double> GetMassAbsorptionCache(int z)
-    {
-        if (massAbsorption[z] != null)
-            return massAbsorption[z];
-
-        lock (lockObjForMassAbsorption)
-            return massAbsorption[z] ??= new ConcurrentDictionary<double, double>();
-    }
+    #region 261111Cl 変更前: 質量吸収係数のキャッシュ (元素ごとに最大 1 万件)。補間を閉形式にして安くなったので使わない
+    //private static readonly Lock lockObjForMassAbsorption = new();
+    //
+    ///// <summary>質量吸収係数を覚えておく</summary>
+    ////private static readonly Dictionary<double, double>[] massAbsorption = new Dictionary<double, double>[100];
+    //// (260320Ch) 並列参照時の安全性を上げるため ConcurrentDictionary を利用する
+    //private static readonly ConcurrentDictionary<double, double>[] massAbsorption = new ConcurrentDictionary<double, double>[100];
+    //
+    //// (260320Ch) キャッシュの初期化を一箇所にまとめる
+    //private static ConcurrentDictionary<double, double> GetMassAbsorptionCache(int z)
+    //{
+    //    if (massAbsorption[z] != null)
+    //        return massAbsorption[z];
+    //
+    //    lock (lockObjForMassAbsorption)
+    //        return massAbsorption[z] ??= new ConcurrentDictionary<double, double>();
+    //}
+    #endregion
 
     /// <summary>エネルギー(keV)と吸収体元素を与えて、質量吸収係数 [cm^2/g] を返す
     /// <para>データ実体は AtomStaticSub.cs の MassAbsorptionCoefficient (区分対数補間)。出典: NIST FFAST (C. T. Chantler) を
@@ -7340,10 +7358,12 @@ new(4.86738014,0.319974401,4.58872425,
     {
         // (260320Ch) 境界チェックを修正し、ConcurrentDictionary 経由でキャッシュを参照する
         if (z < 1 || z >= AtomStaticSub.MassAbsorptionCoefficient.Length || energy <= 0) return double.NaN;
+        // 261111Cl 追加: NaN は返す値が無い。旧は点の位置が決まらず (position = int.MinValue のまま) 配列の外を読んで IndexOutOfRangeException になっていた
+        if (double.IsNaN(energy)) return double.NaN;
 
-        var cache = massAbsorption[z];
-        if (cache != null && cache.TryGetValue(energy, out double val))
-            return val;
+        //var cache = massAbsorption[z]; // 261111Cl 変更前 (3 行): キャッシュは使わない
+        //if (cache != null && cache.TryGetValue(energy, out double val))
+        //    return val;
 
         //どのセグメントに属するかを決める
         int segNo = 0;
@@ -7360,15 +7380,28 @@ new(4.86738014,0.319974401,4.58872425,
         else if (coef[^1].X < energy)
             position = coef.Length - 1;
         else
-            for (int i = 0; i < coef.Length && position == int.MinValue; i++)
-                if (energy == coef[i].X)
-                {
-                    // (260320Ch) 重複計算や競合時も例外にしない
-                    _ = GetMassAbsorptionCache(z).TryAdd(energy, coef[i].Y);
-                    return coef[i].Y;
-                }
-                else if (i < coef.Length - 1 && energy > coef[i].X && energy < coef[i + 1].X)
-                    position = i;
+        {
+            //for (int i = 0; i < coef.Length && position == int.MinValue; i++) // 261111Cl 変更前 (9 行): 先頭から線形に探していた
+            //    if (energy == coef[i].X)
+            //    {
+            //        // (260320Ch) 重複計算や競合時も例外にしない
+            //        _ = GetMassAbsorptionCache(z).TryAdd(energy, coef[i].Y);
+            //        return coef[i].Y;
+            //    }
+            //    else if (i < coef.Length - 1 && energy > coef[i].X && energy < coef[i + 1].X)
+            //        position = i;
+            // 261111Cl 変更: 二分探索で coef[i].X >= energy となる最初の i を求める (各セグメントの X は昇順)。等しければその点の値、
+            // そうでなければ coef[i - 1].X < energy < coef[i].X なので position = i - 1。線形探索と同じ点を選ぶ
+            int lower = 0, upper = coef.Length - 1;
+            while (lower < upper)
+            {
+                int mid = (lower + upper) >>> 1;
+                if (coef[mid].X < energy) lower = mid + 1; else upper = mid;
+            }
+            if (coef[lower].X == energy)
+                return coef[lower].Y;
+            position = lower - 1;
+        }
 
         int pointNum = 3, order = 2;
         // 260718Cl: 前後 pointNum 点を List<PointD> に集めて両端トリムしていた処理を coef 上の窓 [lo, hi) インデックスに置換。
@@ -7389,28 +7422,58 @@ new(4.86738014,0.319974401,4.58872425,
         double c1 = 1.0 / (coef[hi - 1].X - coef[lo].X);
         double c2 = 1 - coef[lo].X * c1;
 
-        var m = new DenseMatrix(pointNum, order + 1);
-        var y = new DenseMatrix(pointNum, 1);
+        #region 261111Cl 変更前: 正規方程式 (MathNet の行列 5 個と逆行列) で order 次の最小二乗多項式を求めていた
+        //var m = new DenseMatrix(pointNum, order + 1);
+        //var y = new DenseMatrix(pointNum, 1);
+        //for (int j = 0; j < pointNum; j++)
+        //{
+        //    y[j, 0] = coef[lo + j].Y;
+        //    for (int i = 0; i < order + 1; i++)
+        //        m[j, i] = Math.Pow(c1 * coef[lo + j].X + c2, i);
+        //}
+        //double value = 0;
+        //
+        //if (!(m.Transpose() * m).TryInverse(out Matrix inv))
+        //    return double.NaN;
+        //
+        //var a = inv * m.Transpose() * y;
+        //
+        //for (int j = 0; j < order + 1; j++)
+        //    value += a[j, 0] * Math.Pow(c1 * energy + c2, j);
+        #endregion
+        // 261111Cl 変更: 点の数 pointNum と未知数 order + 1 はいつも等しい (3 点 2 次、2 点 1 次、1 点 0 次) ので、最小二乗の解は点を通る補間多項式そのもの。
+        // Lagrange の形で直接求める (正規方程式は条件数が 2 乗になるので、旧は節点の近くでも相対 1e-9 程度ずれていた。新は節点の値を 1e-15 程度で再現)。
+        // 同じ X の点 (データに 1 か所: Z=60 の X=0.1175105 が 2 つ。Y も同じ) は 1 点にまとめ、次数を下げる
+        // (旧は正規方程式がほぼ特異になり、0.1175〜0.1182 keV で 4 割ずれた値を返していた)
+        double tEnergy = c1 * energy + c2, value = 0;
+        Span<double> ts = stackalloc double[3], ys = stackalloc double[3];
+        int distinct = 0;
         for (int j = 0; j < pointNum; j++)
         {
-            y[j, 0] = coef[lo + j].Y;
-            for (int i = 0; i < order + 1; i++)
-                m[j, i] = Math.Pow(c1 * coef[lo + j].X + c2, i);
+            double tj = c1 * coef[lo + j].X + c2;
+            bool seen = false;
+            for (int k = 0; k < distinct; k++)
+                seen |= ts[k] == tj;
+            if (!seen)
+            {
+                ts[distinct] = tj;
+                ys[distinct] = coef[lo + j].Y;
+                distinct++;
+            }
         }
-        double value = 0;
-
-        if (!(m.Transpose() * m).TryInverse(out Matrix inv))
-            return double.NaN;
-
-        var a = inv * m.Transpose() * y;
-
-        for (int j = 0; j < order + 1; j++)
-            value += a[j, 0] * Math.Pow(c1 * energy + c2, j);
+        for (int j = 0; j < distinct; j++)
+        {
+            double basis = 1;
+            for (int k = 0; k < distinct; k++)
+                if (k != j)
+                    basis *= (tEnergy - ts[k]) / (ts[j] - ts[k]);
+            value += ys[j] * basis;
+        }
 
         // (260320Ch) キャッシュ件数を抑えつつ、重複追加は TryAdd で吸収する
-        cache = GetMassAbsorptionCache(z);
-        if (cache.Count < 1E4)
-            _ = cache.TryAdd(energy, value);
+        //cache = GetMassAbsorptionCache(z); // 261111Cl 変更前 (3 行): キャッシュは使わない
+        //if (cache.Count < 1E4)
+        //    _ = cache.TryAdd(energy, value);
 
         return value;
     }
@@ -7942,7 +8005,8 @@ new(4.86738014,0.319974401,4.58872425,
     private static double temariStepFx, temariStepFe;
     private static double[] temariS, temariT;     // 契約の s 節点と t = s² (全元素で共通)
     private static readonly TemariFactor[] temariCache = new TemariFactor[TemariMaxAtomicNumber + 1];
-    private static readonly object temariSync = new();
+    //private static readonly object temariSync = new(); // 261111Cl 変更前
+    private static readonly Lock temariSync = new(); // 261111Cl 変更: System.Threading.Lock (Monitor.Wait/Pulse は使っていない)
 
     private static string TemariMeta(string key)
     {

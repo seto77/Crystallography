@@ -5,6 +5,7 @@ using System.ComponentModel;
 using System.Diagnostics;
 using System.Linq;
 using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices; // 261111Cl 追加: CollectionsMarshal
 using System.Threading.Tasks;
 using System.Xml.Serialization;
 
@@ -752,6 +753,9 @@ public class Crystallite
                     //初期位置の計算
                     var XY = (Hk3 / Hk1 + (ewaldR * Math.Sqrt(1 + xyLength2 / rz2) - ewaldR + Z) / rz) / (Hk3 / Hk1 + xyLength2 / rz2) * xyLength;
                     var d = camPerRes / Math.Sqrt(ewaldR2 / XY / XY - 1) / xyLength;
+                    // 261111Cl 追加: d が NaN・∞ のときは捨てる。.NET 9 以降は double → int の変換が飽和する (NaN → 0、∞ → int.MaxValue) ので、
+                    // 下の startPosition が画像内の誤った位置になり得る。.NET 8 までは int.MinValue になって全部範囲外として捨てられていた (その挙動に戻す)
+                    if (!double.IsFinite(d)) continue;
                     // var startPosition = (int)(-d * Y + cY + 0.5) * imageWidth + (int)(d * X + cX + 0.5);
                     var startPosition = (int)(Math.FusedMultiplyAdd(-d, Y, cY + 0.5)) * imageWidth + (int)(Math.FusedMultiplyAdd(d, X, cX + 0.5));
                     var tempIntensity = Intensity2 / subDiv3 * SolidAngle[num];
@@ -774,14 +778,21 @@ public class Crystallite
                             {
                                 var temp = sqrtPiLog2 * Math.Exp(-log2 * dev2) * tempIntensity * area;
 
-                                if (!result.TryAdd(pos, temp))
-                                    result[pos] += temp;
+                                //if (!result.TryAdd(pos, temp)) // 261111Cl 変更前 (2 行)
+                                //    result[pos] += temp;
+                                CollectionsMarshal.GetValueRefOrAddDefault(result, pos, out _) += temp; // 261111Cl 変更: 探索 1 回で足す (無ければ 0 + temp = temp)
                             }
                         }
                     }
                 }
             }
-            return result.Select(r => (r.Key, r.Value)).ToArray();
+            //return result.Select(r => (r.Key, r.Value)).ToArray(); // 261111Cl 変更前
+            // 261111Cl 変更: LINQ を使わずに詰める (並びは同じ Dictionary の列挙順)
+            var pixels = new (int Index, double Intensity)[result.Count];
+            int count = 0;
+            foreach (var (key, value) in result)
+                pixels[count++] = (key, value);
+            return pixels;
         }
         #endregion
 

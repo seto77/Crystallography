@@ -156,14 +156,33 @@ public partial class Bonds
 
         var bonds = new List<Bonds>();
 
-        foreach ((string e1, string e2, double min, double max) in bondCandidates)
-            if (symbolToElement.TryGetValue(e1, out var element1) && symbolToElement.TryGetValue(e2, out var element2))
-            {
-                //bonds.Add(new Bonds(true, list, element1, element2, // 261105Cl 変更前 (2 行): 稜線の太さ 0 (描画では使われず、実際は常に 1 px だった)
-                //    min / 10.0, max / 10.0, true, 0.01, 1, false, true, true, true, 0.7, true, 0));
-                bonds.Add(new Bonds(true, list, element1, element2,
-                    min / 10.0, max / 10.0, true, 0.01, 1, false, true, true, true, 0.7, true, 1)); // 261105Cl 変更 (監査 H4): 稜線の太さを 1 px に (範囲 1〜5 px。従来の見え方と同じ)
-            }
+        // 261111Cl 変更: 約 900 件の候補を毎回全部見ていたのを、1 つ目の元素で引く索引 (candidatesByFirstElement) から、含まれる元素の候補だけ集める。
+        // 候補の番号を昇順に並べ直してから作るので、結合の並びは旧 (bondCandidates の順) と同じ
+        var hit = new List<int>();
+        foreach (var symbol in symbolToElement.Keys)
+            if (candidatesByFirstElement.TryGetValue(symbol, out var indices))
+                foreach (var i in indices)
+                    if (symbolToElement.ContainsKey(bondCandidates[i].e2))
+                        hit.Add(i);
+        hit.Sort();
+        foreach (var i in hit)
+        {
+            var (e1, e2, min, max) = bondCandidates[i];
+            var element1 = symbolToElement[e1];
+            var element2 = symbolToElement[e2];
+            bonds.Add(new Bonds(true, list, element1, element2,
+                min / 10.0, max / 10.0, true, 0.01, 1, false, true, true, true, 0.7, true, 1)); // 261105Cl 変更 (監査 H4): 稜線の太さを 1 px に (範囲 1〜5 px。従来の見え方と同じ)
+        }
+        #region 261111Cl 変更前
+        //foreach ((string e1, string e2, double min, double max) in bondCandidates)
+        //    if (symbolToElement.TryGetValue(e1, out var element1) && symbolToElement.TryGetValue(e2, out var element2))
+        //    {
+        //        //bonds.Add(new Bonds(true, list, element1, element2, // 261105Cl 変更前 (2 行): 稜線の太さ 0 (描画では使われず、実際は常に 1 px だった)
+        //        //    min / 10.0, max / 10.0, true, 0.01, 1, false, true, true, true, 0.7, true, 0));
+        //        bonds.Add(new Bonds(true, list, element1, element2,
+        //            min / 10.0, max / 10.0, true, 0.01, 1, false, true, true, true, 0.7, true, 1)); // 261105Cl 変更 (監査 H4): 稜線の太さを 1 px に (範囲 1〜5 px。従来の見え方と同じ)
+        //    }
+        #endregion
 
         //CationとAnionが両方含まれている場合は、同種原子の結合を除去
         var selectedElements = new HashSet<string>(list, StringComparer.Ordinal);
@@ -1120,6 +1139,13 @@ public partial class Bonds
 
 	#endregion
 		];
+
+    /// <summary>261111Cl 追加: bondCandidates の番号を 1 つ目の元素記号ごとにまとめた索引 (番号は昇順)。GetVestaBonds が含まれる元素の候補だけを見るのに使う。
+    /// bondCandidates より後に書くこと (静的フィールドの初期化子は書いた順に実行される)</summary>
+    private static readonly Dictionary<string, int[]> candidatesByFirstElement = bondCandidates
+        .Select((c, i) => (c.e1, i))
+        .GroupBy(x => x.e1, StringComparer.Ordinal)
+        .ToDictionary(g => g.Key, g => g.Select(x => x.i).ToArray(), StringComparer.Ordinal);
     #endregion
 
 }

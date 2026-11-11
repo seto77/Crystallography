@@ -21,7 +21,8 @@ public class CCP4
     private static uint shift_right(uint x, int n)
     { return (((x) >> (n)) & (uint)setbits[32 - (n)]); }
 
-    public static unsafe uint[] unpack(BinaryReader br, int x, int y)
+    //public static unsafe uint[] unpack(BinaryReader br, int x, int y) // 261111Cl 変更前
+    public static uint[] unpack(BinaryReader br, int x, int y) // 261111Cl 変更: ポインタを使っていないので unsafe を外す
     {
         int valids = 0, spillbits = 0, usedbits;
         int total = x * y;
@@ -115,7 +116,8 @@ public class CCP4
         return img;
     }
 
-    public static unsafe uint[] unpack_long(BinaryReader br, int x, int y)
+    //public static unsafe uint[] unpack_long(BinaryReader br, int x, int y) // 261111Cl 変更前
+    public static uint[] unpack_long(BinaryReader br, int x, int y) // 261111Cl 変更: ポインタを使っていないので unsafe を外す
     // void unpack_long(FILE *packfile, int x, int y, LONG *img)
     {
         int valids = 0, spillbits = 0, usedbits;
@@ -214,7 +216,8 @@ public class CCP4
         return img;
     }
 
-    public static unsafe uint[] v2unpack(BinaryReader br, int x, int y)
+    //public static unsafe uint[] v2unpack(BinaryReader br, int x, int y) // 261111Cl 変更前
+    public static uint[] v2unpack(BinaryReader br, int x, int y) // 261111Cl 変更: ポインタを使っていないので unsafe を外す
     {
         int valids = 0, spillbits = 0, usedbits;
         int total = x * y;

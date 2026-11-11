@@ -58,6 +58,7 @@ public enum TimeUnitEnum
     NanoSecond
 }
 
-internal class Enum
-{
-}
+// 261111Cl 変更前: 中身の無いクラスが名前空間 Crystallography の中で System.Enum を隠していた (参照は 0 件。System.Enum は完全修飾で使われている)
+//internal class Enum
+//{
+//}

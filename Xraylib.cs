@@ -1,6 +1,7 @@
 #nullable enable
 using System;
 using System.Runtime.InteropServices;
+using System.Runtime.CompilerServices; // 261111Cl 追加: CallConvCdecl
 
 namespace Crystallography;
 
@@ -23,56 +24,102 @@ namespace Crystallography;
 /// - xraylib の生 <c>Fii</c> は結晶学慣用の f″ と <b>符号が逆</b> (公式実装でも f″ = −Fii)。本ラッパは符号反転して返す。
 /// - 検証: Fi(26, 8.04778)=−1.106 / −Fii(26, 8.04778)=+3.192 ≈ International Tables の Fe@Cu Kα (f′=−1.13, f″=3.20)。
 /// </remarks>
-public static class Xraylib
+//public static class Xraylib // 261111Cl 変更前
+public static partial class Xraylib // 261111Cl 変更: LibraryImport のため partial
 {
     private const string Dll = "libxrl-11.dll";
 
     // xraylib 4.x の C ABI: double Fi(int Z, double E, xrl_error **error); error は NULL(IntPtr.Zero) 可。
     // x64 Windows は呼び出し規約が単一だが可読性のため Cdecl を明示。ExactSpelling で A/W 名探索を抑止。
-    [DllImport(Dll, CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-    private static extern double Fi(int Z, double E, IntPtr error);
+    //[DllImport(Dll, CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)] // 261111Cl 変更前
+    //private static extern double Fi(int Z, double E, IntPtr error);
+    [LibraryImport(Dll)] // 261111Cl 変更: LibraryImport (引数・戻り値は int / double / IntPtr のみで blittable。名前はそのまま探す)
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    private static partial double Fi(int Z, double E, IntPtr error);
 
-    [DllImport(Dll, CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-    private static extern double Fii(int Z, double E, IntPtr error);
+    //[DllImport(Dll, CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)] // 261111Cl 変更前
+    //private static extern double Fii(int Z, double E, IntPtr error);
+    [LibraryImport(Dll)] // 261111Cl 変更: LibraryImport (引数・戻り値は int / double / IntPtr のみで blittable。名前はそのまま探す)
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    private static partial double Fii(int Z, double E, IntPtr error);
 
     // 弾性(Rayleigh, コヒーレント)原子形状因子 F(q) と 非弾性(Compton)散乱関数 S(q)。
     // q = sin(θ/2)/λ [Å⁻¹]。これは結晶学の s = sinθ_B/λ と同一量 (散乱角 θ=2θ_B なので sin(θ/2)=sinθ_B)。260606Cl
-    [DllImport(Dll, CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-    private static extern double FF_Rayl(int Z, double q, IntPtr error);
+    //[DllImport(Dll, CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)] // 261111Cl 変更前
+    //private static extern double FF_Rayl(int Z, double q, IntPtr error);
+    [LibraryImport(Dll)] // 261111Cl 変更: LibraryImport (引数・戻り値は int / double / IntPtr のみで blittable。名前はそのまま探す)
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    private static partial double FF_Rayl(int Z, double q, IntPtr error);
 
-    [DllImport(Dll, CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-    private static extern double SF_Compt(int Z, double q, IntPtr error);
+    //[DllImport(Dll, CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)] // 261111Cl 変更前
+    //private static extern double SF_Compt(int Z, double q, IntPtr error);
+    [LibraryImport(Dll)] // 261111Cl 変更: LibraryImport (引数・戻り値は int / double / IntPtr のみで blittable。名前はそのまま探す)
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    private static partial double SF_Compt(int Z, double q, IntPtr error);
 
     // 260606Cl 追加 (P4 残: Attenuation & transport / Fluorescence タブ用)。すべて電子単位ではなく物理単位 (cm²/g, keV, 無次元)。
     // 質量減衰断面積 [cm²/g] (元素別, E は keV)。_CP (化合物文字列版) は当面使わず per-Z を ElementNum で質量加重する。
-    [DllImport(Dll, CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-    private static extern double CS_Total(int Z, double E, IntPtr error);   // 全減衰 µ/ρ
-    [DllImport(Dll, CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-    private static extern double CS_Photo(int Z, double E, IntPtr error);   // 光電吸収
-    [DllImport(Dll, CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-    private static extern double CS_Rayl(int Z, double E, IntPtr error);    // Rayleigh (弾性)
-    [DllImport(Dll, CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-    private static extern double CS_Compt(int Z, double E, IntPtr error);   // Compton (非弾性)
-    [DllImport(Dll, CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-    private static extern double CS_Energy(int Z, double E, IntPtr error);  // 質量エネルギー吸収 µ_en/ρ (≠ µ/ρ)
+    //[DllImport(Dll, CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)] // 261111Cl 変更前
+    //private static extern double CS_Total(int Z, double E, IntPtr error);   // 全減衰 µ/ρ
+    [LibraryImport(Dll)] // 261111Cl 変更: LibraryImport (引数・戻り値は int / double / IntPtr のみで blittable。名前はそのまま探す)
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    private static partial double CS_Total(int Z, double E, IntPtr error);   // 全減衰 µ/ρ
+    //[DllImport(Dll, CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)] // 261111Cl 変更前
+    //private static extern double CS_Photo(int Z, double E, IntPtr error);   // 光電吸収
+    [LibraryImport(Dll)] // 261111Cl 変更: LibraryImport (引数・戻り値は int / double / IntPtr のみで blittable。名前はそのまま探す)
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    private static partial double CS_Photo(int Z, double E, IntPtr error);   // 光電吸収
+    //[DllImport(Dll, CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)] // 261111Cl 変更前
+    //private static extern double CS_Rayl(int Z, double E, IntPtr error);    // Rayleigh (弾性)
+    [LibraryImport(Dll)] // 261111Cl 変更: LibraryImport (引数・戻り値は int / double / IntPtr のみで blittable。名前はそのまま探す)
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    private static partial double CS_Rayl(int Z, double E, IntPtr error);    // Rayleigh (弾性)
+    //[DllImport(Dll, CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)] // 261111Cl 変更前
+    //private static extern double CS_Compt(int Z, double E, IntPtr error);   // Compton (非弾性)
+    [LibraryImport(Dll)] // 261111Cl 変更: LibraryImport (引数・戻り値は int / double / IntPtr のみで blittable。名前はそのまま探す)
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    private static partial double CS_Compt(int Z, double E, IntPtr error);   // Compton (非弾性)
+    //[DllImport(Dll, CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)] // 261111Cl 変更前
+    //private static extern double CS_Energy(int Z, double E, IntPtr error);  // 質量エネルギー吸収 µ_en/ρ (≠ µ/ρ)
+    [LibraryImport(Dll)] // 261111Cl 変更: LibraryImport (引数・戻り値は int / double / IntPtr のみで blittable。名前はそのまま探す)
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    private static partial double CS_Energy(int Z, double E, IntPtr error);  // 質量エネルギー吸収 µ_en/ρ (≠ µ/ρ)
 
     // 吸収端・特性線・蛍光。shell / line は整数マクロ (xraylib.h)。⚠発光線マクロは負値・殻マクロは 0 始まり (XrlLine/XrlShell enum で型安全化)。
-    [DllImport(Dll, CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-    private static extern double EdgeEnergy(int Z, int shell, IntPtr error); // 吸収端エネルギー [keV]
-    [DllImport(Dll, CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-    private static extern double JumpFactor(int Z, int shell, IntPtr error); // 吸収端ジャンプ比 (無次元)
-    [DllImport(Dll, CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-    private static extern double LineEnergy(int Z, int line, IntPtr error);  // 特性線エネルギー [keV]
-    [DllImport(Dll, CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-    private static extern double RadRate(int Z, int line, IntPtr error);     // 殻内 radiative rate (分率)
-    [DllImport(Dll, CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-    private static extern double FluorYield(int Z, int shell, IntPtr error); // 蛍光収率 ω (≤1)
+    //[DllImport(Dll, CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)] // 261111Cl 変更前
+    //private static extern double EdgeEnergy(int Z, int shell, IntPtr error); // 吸収端エネルギー [keV]
+    [LibraryImport(Dll)] // 261111Cl 変更: LibraryImport (引数・戻り値は int / double / IntPtr のみで blittable。名前はそのまま探す)
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    private static partial double EdgeEnergy(int Z, int shell, IntPtr error); // 吸収端エネルギー [keV]
+    //[DllImport(Dll, CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)] // 261111Cl 変更前
+    //private static extern double JumpFactor(int Z, int shell, IntPtr error); // 吸収端ジャンプ比 (無次元)
+    [LibraryImport(Dll)] // 261111Cl 変更: LibraryImport (引数・戻り値は int / double / IntPtr のみで blittable。名前はそのまま探す)
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    private static partial double JumpFactor(int Z, int shell, IntPtr error); // 吸収端ジャンプ比 (無次元)
+    //[DllImport(Dll, CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)] // 261111Cl 変更前
+    //private static extern double LineEnergy(int Z, int line, IntPtr error);  // 特性線エネルギー [keV]
+    [LibraryImport(Dll)] // 261111Cl 変更: LibraryImport (引数・戻り値は int / double / IntPtr のみで blittable。名前はそのまま探す)
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    private static partial double LineEnergy(int Z, int line, IntPtr error);  // 特性線エネルギー [keV]
+    //[DllImport(Dll, CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)] // 261111Cl 変更前
+    //private static extern double RadRate(int Z, int line, IntPtr error);     // 殻内 radiative rate (分率)
+    [LibraryImport(Dll)] // 261111Cl 変更: LibraryImport (引数・戻り値は int / double / IntPtr のみで blittable。名前はそのまま探す)
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    private static partial double RadRate(int Z, int line, IntPtr error);     // 殻内 radiative rate (分率)
+    //[DllImport(Dll, CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)] // 261111Cl 変更前
+    //private static extern double FluorYield(int Z, int shell, IntPtr error); // 蛍光収率 ω (≤1)
+    [LibraryImport(Dll)] // 261111Cl 変更: LibraryImport (引数・戻り値は int / double / IntPtr のみで blittable。名前はそのまま探す)
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    private static partial double FluorYield(int Z, int shell, IntPtr error); // 蛍光収率 ω (≤1)
 
     //260925Cl 追加: Coster–Kronig の遷移確率 (線ごとの X 線の応答 XrayLineSeries の空孔の連鎖で使う)。trans は xraylib の FL12_TRANS=1 … FM45_TRANS=14。
     //⚠ 同梱の DLL は Kissel の光電・Compton profile・Auger rates を削った build (native\win-x64\libxrl-11.x64.PROVENANCE.txt) だが、
     //  この関数は ω・R と同じく残っている (2026-09-25 に PyPI の xraylib 4.2.1 と 14 遷移すべてビット同一を確認)。
-    [DllImport(Dll, CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-    private static extern double CosKronTransProb(int Z, int trans, IntPtr error);
+    //[DllImport(Dll, CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)] // 261111Cl 変更前
+    //private static extern double CosKronTransProb(int Z, int trans, IntPtr error);
+    [LibraryImport(Dll)] // 261111Cl 変更: LibraryImport (引数・戻り値は int / double / IntPtr のみで blittable。名前はそのまま探す)
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    private static partial double CosKronTransProb(int Z, int trans, IntPtr error);
 
     /// <summary>xraylib ネイティブ DLL が読み込めて self-test に通ったか。260606Cl 追加。</summary>
     public static bool Enabled { get; }

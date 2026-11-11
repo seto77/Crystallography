@@ -20,12 +20,23 @@ using V3 = OpenTK.Mathematics.Vector3d;
 
 namespace Crystallography;
 
-public class ConvertCrystalData
+//public class ConvertCrystalData // 261111Cl 変更前
+public partial class ConvertCrystalData // 261111Cl 変更: [GeneratedRegex] のため partial (このクラスの宣言はこのファイルだけ)
 {
     private static readonly StringComparison Ord = StringComparison.Ordinal;
+    /// <summary>261111Cl 追加: ファイル形式の数値の読み書きに使うカルチャ (小数点 '.'。日本語・英語の環境と同じ書式)</summary>
+    private static readonly System.Globalization.CultureInfo Inv = System.Globalization.CultureInfo.InvariantCulture;
 
     // 260427Cl 追加: CIF/特殊位置の "2x" のような暗黙乗算を "2*x" に変換 (DynamicExpresso は暗黙乗算非対応)
-    private static readonly Regex ImplicitMulRegex = new(@"([0-9])([xyz])", RegexOptions.Compiled);
+    //private static readonly Regex ImplicitMulRegex = new(@"([0-9])([xyz])", RegexOptions.Compiled); // 261111Cl 変更前
+    // 261111Cl 変更: 実行時にコンパイルする Regex の代わりにソース生成 (パターン・オプションは同じ。呼び出し側はそのまま ImplicitMulRegex.Replace)
+    private static Regex ImplicitMulRegex => ImplicitMulRegexGenerated();
+    [GeneratedRegex(@"([0-9])([xyz])")]
+    private static partial Regex ImplicitMulRegexGenerated();
+
+    /// <summary>261111Cl 追加: scaleValueText が読む CIF の数値 ("0.071(1)"、"1.2E-3(3)"、"1.2(3)E-3" など)。旧は呼ぶたびに静的 Regex.Match へパターン文字列を渡していた (パターンは同じ)</summary>
+    [GeneratedRegex(@"^([+-]?(?:\d+\.?\d*|\.\d+))(?:\((\d+)\))?(?:[eE]([+-]?\d+))?(?:\((\d+)\))?$")]
+    private static partial Regex CifNumberWithUncertaintyRegex();
 
     #region 文字列操作の高速化を狙った関数群
 
@@ -54,10 +65,12 @@ public class ConvertCrystalData
         Replace(ref s, "&#39;", "'");
     }
 
-    static void RemoveAt(ref string[] str, int index) => str = [..str[..index] , ..str[(index + 1)..]];
-    static void RemoveRange(ref string[] str, int start, int count) => str = [..str[..start] ,.. str[(start + count)..]];
-
-    static void Insert(ref string[] str, int index, string value) => str = [.. str[..index], value, .. str[index..]];
+    // 261111Cl 変更前: 呼ぶたびに配列を作り直す (O(N)) ので、CIF の前処理で行を消すたびに全体を複写していた (O(N²))。
+    // 前処理は List<string> の RemoveRange / Insert と 1 パスのフィルタにしたので使わない
+    //static void RemoveAt(ref string[] str, int index) => str = [..str[..index] , ..str[(index + 1)..]];
+    //static void RemoveRange(ref string[] str, int start, int count) => str = [..str[..start] ,.. str[(start + count)..]];
+    //
+    //static void Insert(ref string[] str, int index, string value) => str = [.. str[..index], value, .. str[index..]];
 
     #endregion
 
@@ -85,7 +98,8 @@ public class ConvertCrystalData
     public static Crystal[] ConvertToCrystalList(string filename)
     {
         var cry = Array.Empty<Crystal>();
-        if (filename.ToLower().EndsWith("xml", Ord))//XML形式のリストを読み込んだとき
+        //if (filename.ToLower().EndsWith("xml", Ord))//XML形式のリストを読み込んだとき // 261111Cl 変更前
+        if (filename.EndsWith("xml", StringComparison.OrdinalIgnoreCase))//XML形式のリストを読み込んだとき // 261111Cl 変更: 一時文字列と現在のカルチャへの依存をなくす
         {
             if (new FileInfo(filename).Length > 10000000)//なぜかファイルが3GBとかになったことが有ったので、それに対する対処. 10MB以上だったらスキップすることにした.
                 return cry;
@@ -97,7 +111,8 @@ public class ConvertCrystalData
             string xmlText; // 261105Cl 追加: 互換の置換を済ませた XML 本文
             try
             {
-                var reader = new StreamReader(filename, Encoding.GetEncoding("UTF-8"));
+                //var reader = new StreamReader(filename, Encoding.GetEncoding("UTF-8")); // 261111Cl 変更前
+                var reader = new StreamReader(filename, Encoding.UTF8); // 261111Cl 変更: 同じ UTF-8 (読み込みは BOM の有無を問わない)
                 var strList = new List<string>();
                 string tempstr;
                 while ((tempstr = reader.ReadLine()) != null)
@@ -126,22 +141,30 @@ public class ConvertCrystalData
                 var serializer = new System.Xml.Serialization.XmlSerializer(typeof(Crystal[]));
 
 
-                var worker = new BackgroundWorker();
-                worker.DoWork += (sender, e) => cry = (Crystal[])serializer.Deserialize(fs);
-                worker.RunWorkerAsync();
-
-                var timeout = 10000;
-                var sw = new Stopwatch();
-                for (int i = 0; i < timeout; i++)
-                {
-                    if (cry.Length != 0)
-                        break;
-                    if (i == timeout - 1)
-                    {
-                        throw new Exception();
-                    }
-                    Thread.Sleep(1);
-                }
+                #region 261111Cl 変更前: BackgroundWorker + UI スレッドで Thread.Sleep(1) を最大 1 万回ポーリング。例外や 0 件のときは約 2.5 分固まってから空を返していた
+                //var worker = new BackgroundWorker();
+                //worker.DoWork += (sender, e) => cry = (Crystal[])serializer.Deserialize(fs);
+                //worker.RunWorkerAsync();
+                //
+                //var timeout = 10000;
+                //var sw = new Stopwatch();
+                //for (int i = 0; i < timeout; i++)
+                //{
+                //    if (cry.Length != 0)
+                //        break;
+                //    if (i == timeout - 1)
+                //    {
+                //        throw new Exception();
+                //    }
+                //    Thread.Sleep(1);
+                //}
+                #endregion
+                // 261111Cl 変更: Task で読み、終わるまで (上限 30 秒) 待つ。読込の例外はその場で Wait から上がり、下の catch で従来どおり空の配列を返す。
+                // 0 件のリストもすぐ返る (従来は 0 件を「未完了」と区別できず、上限まで待っていた)。30 秒を過ぎたら TimeoutException → 空の配列
+                var task = System.Threading.Tasks.Task.Run(() => (Crystal[])serializer.Deserialize(fs));
+                if (!task.Wait(TimeSpan.FromSeconds(30)))
+                    throw new TimeoutException();
+                cry = task.Result;
 
                 foreach (var c in cry.Where(e => e.FlexiblePlane != null && e.FlexiblePlane.Count > 0))
                     c.Plane = c.FlexiblePlane;
@@ -201,12 +224,19 @@ public class ConvertCrystalData
             if (str[line].StartsWith(" Cell Constants", Ord))
             {
                 string[] cellconstants = str[line + 1].Split(' ', true);
-                a = Convert.ToDouble(cellconstants[0]) / 10.0;
-                b = Convert.ToDouble(cellconstants[1]) / 10.0;
-                c = Convert.ToDouble(cellconstants[2]) / 10.0;
-                alpha = Convert.ToDouble(cellconstants[3]) / 180 * Math.PI;
-                beta = Convert.ToDouble(cellconstants[4]) / 180 * Math.PI;
-                gamma = Convert.ToDouble(cellconstants[5]) / 180 * Math.PI;
+                //a = Convert.ToDouble(cellconstants[0]) / 10.0; // 261111Cl 変更前 (6 行)
+                //b = Convert.ToDouble(cellconstants[1]) / 10.0;
+                //c = Convert.ToDouble(cellconstants[2]) / 10.0;
+                //alpha = Convert.ToDouble(cellconstants[3]) / 180 * Math.PI;
+                //beta = Convert.ToDouble(cellconstants[4]) / 180 * Math.PI;
+                //gamma = Convert.ToDouble(cellconstants[5]) / 180 * Math.PI;
+                // 261111Cl 変更: ファイルの数値は現在のカルチャでなく Invariant で読む (小数点がカンマの環境で "5.43" が 543 になっていた)
+                a = Convert.ToDouble(cellconstants[0], Inv) / 10.0;
+                b = Convert.ToDouble(cellconstants[1], Inv) / 10.0;
+                c = Convert.ToDouble(cellconstants[2], Inv) / 10.0;
+                alpha = Convert.ToDouble(cellconstants[3], Inv) / 180 * Math.PI;
+                beta = Convert.ToDouble(cellconstants[4], Inv) / 180 * Math.PI;
+                gamma = Convert.ToDouble(cellconstants[5], Inv) / 180 * Math.PI;
                 break;
             }
 
@@ -257,9 +287,12 @@ public class ConvertCrystalData
                                 }
                             }
                         }
-                        double x = ZeroToOne(Convert.ToDouble(s[2]));
-                        double y = ZeroToOne(Convert.ToDouble(s[3]));
-                        double z = ZeroToOne(Convert.ToDouble(s[4]));
+                        //double x = ZeroToOne(Convert.ToDouble(s[2])); // 261111Cl 変更前 (3 行)
+                        //double y = ZeroToOne(Convert.ToDouble(s[3]));
+                        //double z = ZeroToOne(Convert.ToDouble(s[4]));
+                        double x = ZeroToOne(Convert.ToDouble(s[2], Inv)); // 261111Cl 変更: Invariant で読む
+                        double y = ZeroToOne(Convert.ToDouble(s[3], Inv));
+                        double z = ZeroToOne(Convert.ToDouble(s[4], Inv));
 
                         tempCrystal.AddAtoms(label, atomicNumber, 0, 0, null, x, y, z, 1, new DiffuseScatteringFactor(), true);
                     }
@@ -509,9 +542,13 @@ public class ConvertCrystalData
 
             if (xShift != 0 || yShift != 0 || zShift != 0)
             {
-                x = (x.ToDouble() + xShift).ToString("f8").TrimEnd(['0']);
-                y = (y.ToDouble() + yShift).ToString("f8").TrimEnd(['0']);
-                z = (z.ToDouble() + zShift).ToString("f8").TrimEnd(['0']);
+                //x = (x.ToDouble() + xShift).ToString("f8").TrimEnd(['0']); // 261111Cl 変更前 (3 行)
+                //y = (y.ToDouble() + yShift).ToString("f8").TrimEnd(['0']);
+                //z = (z.ToDouble() + zShift).ToString("f8").TrimEnd(['0']);
+                // 261111Cl 変更: Invariant で書く (小数点がカンマの環境では "0,375" になり、内部形式 (ToBytes) がカンマを表せず座標が壊れていた)
+                x = (x.ToDouble() + xShift).ToString("f8", Inv).TrimEnd(['0']);
+                y = (y.ToDouble() + yShift).ToString("f8", Inv).TrimEnd(['0']);
+                z = (z.ToDouble() + zShift).ToString("f8", Inv).TrimEnd(['0']);
             }
 
             var occ = "1";
@@ -540,21 +577,27 @@ public class ConvertCrystalData
             var atomicNumber = 0;
             for (int q = label.Length; q > 0 && atomicNumber == 0; q--)
             {
-                var temp = label[..q];
-                for (int k = 0; k <= 96 && atomicNumber == 0; k++)
-                {
-                    if (AtomStatic.AtomicName(k) == temp)
-                    {
-                        atomicNumber = k;
-                        q = -1;
-                        break;
-                    }
-                }
-                if (temp == "OH") //OH基のとき
+                //var temp = label[..q]; // 261111Cl 変更前 (11 行)
+                //for (int k = 0; k <= 96 && atomicNumber == 0; k++)
+                //{
+                //    if (AtomStatic.AtomicName(k) == temp)
+                //    {
+                //        atomicNumber = k;
+                //        q = -1;
+                //        break;
+                //    }
+                //}
+                //if (temp == "OH") //OH基のとき
+                //    atomicNumber = -1;
+                // 261111Cl 変更: 部分文字列を作らず span 版で 1〜96 を大文字小文字を区別して探す (AtomicName(0) = "" は一致しないので同じ。
+                // 一致したら atomicNumber ≠ 0 で外側のループを抜けるので q = -1 は不要)。OH/D/Wat の特例を後で見る順は同じ
+                var temp = label.AsSpan(0, q);
+                atomicNumber = AtomStatic.AtomicNumber(temp, caseSensitive: true);
+                if (temp is "OH") //OH基のとき
                     atomicNumber = -1;
-                else if (temp == "D") //重水素のとき
+                else if (temp is "D") //重水素のとき
                     atomicNumber = 255;
-                else if (temp == "Wat" || temp == "WAT" || temp == "wat") //水のとき
+                else if (temp is "Wat" or "WAT" or "wat") //水のとき
                     atomicNumber = -2;
             }
 
@@ -863,7 +906,8 @@ public class ConvertCrystalData
             else if (str.IndexOf('/') > 0)
             {
                 var temp = str.Split('/', true);
-                return temp.Length == 2 ? Convert.ToDouble(temp[0]) / Convert.ToDouble(temp[1]) : 0;
+                //return temp.Length == 2 ? Convert.ToDouble(temp[0]) / Convert.ToDouble(temp[1]) : 0; // 261111Cl 変更前
+                return temp.Length == 2 ? Convert.ToDouble(temp[0], Inv) / Convert.ToDouble(temp[1], Inv) : 0; // 261111Cl 変更: Invariant で読む
             }
             else if (IsHex)
             {
@@ -898,7 +942,8 @@ public class ConvertCrystalData
                 else if (str.Contains(",9167")) return 11.0 / 12.0;
             }
 
-            return Convert.ToDouble(str);
+            //return Convert.ToDouble(str); // 261111Cl 変更前
+            return Convert.ToDouble(str, Inv); // 261111Cl 変更: Invariant で読む (小数点がカンマの環境で AMC の原点シフト "0.25" が 25 になっていた)
         }
         catch
         {
@@ -948,30 +993,45 @@ public class ConvertCrystalData
             str = strTemp.Split('\n', true);
         }
 
+        // 261111Cl 変更: 行の削除は List<string> の RemoveRange (その場で詰める) で行う。旧は消すたびに配列全体を作り直していた (O(N²))。
+        // 探す条件・消す範囲・順序は旧と同じ。最後に配列へ戻す
+        var lines = new List<string>(str); // 261111Cl 追加
         foreach (var word in ignoreWords2)
         {
             int start = -1, end = -1;
-            while ((start = Array.IndexOf( str, word + "file")) > -1 &&
-                (end =Array.FindIndex(str, s => s.StartsWith(word + "checksum", Ord))) > -1)
-                RemoveRange(ref str, Math.Min(start, end), Math.Abs(start - end) + 1);
+            //while ((start = Array.IndexOf( str, word + "file")) > -1 && // 261111Cl 変更前 (3 行)
+            //    (end =Array.FindIndex(str, s => s.StartsWith(word + "checksum", Ord))) > -1)
+            //    RemoveRange(ref str, Math.Min(start, end), Math.Abs(start - end) + 1);
+            while ((start = lines.IndexOf(word + "file")) > -1 &&
+                (end = lines.FindIndex(s => s.StartsWith(word + "checksum", Ord))) > -1)
+                lines.RemoveRange(Math.Min(start, end), Math.Abs(start - end) + 1);
         }
-     
+
 
         foreach (var word in ignoreWords3)
         {
             int start = -1;
-            while ((start = Array.FindIndex(str, s => s.Trim().StartsWith(word, Ord)) - 1) > -1)
+            int from = 0; // 261111Cl 追加: 次に探し始める行。前回見つけた行の 1 つ前 (start) より前の行は一致せず、消されもしないので、そこから探しても旧 (毎回先頭から) と同じ
+            //while ((start = Array.FindIndex(str, s => s.Trim().StartsWith(word, Ord)) - 1) > -1) // 261111Cl 変更前
+            while ((start = lines.FindIndex(from, s => s.Trim().StartsWith(word, Ord)) - 1) > -1)
             {
-                if (str[start] == "loop_")
+                from = start; // 261111Cl 追加
+                //if (str[start] == "loop_") // 261111Cl 変更前 (この中の str[…] を lines[…] に、RemoveRange を lines.RemoveRange にした)
+                if (lines[start] == "loop_")
                 {
                     var end = start + 1;
-                    while (str[end].StartsWith(word, Ord))
+                    //while (str[end].StartsWith(word, Ord)) // 261111Cl 変更前
+                    while ((end < lines.Count ? lines[end] : throw new IndexOutOfRangeException()).StartsWith(word, Ord)) // 261111Cl 変更: 末尾を越えたときの例外も旧 (配列) と同じ型にする
                         end++;
 
-                    for (; end < str.Length; end++)
-                        if (str[end] == "loop_" || str[end].StartsWith("_", Ord) || str[end].StartsWith("#", Ord))
+                    //for (; end < str.Length; end++) // 261111Cl 変更前 (4 行)
+                    //    if (str[end] == "loop_" || str[end].StartsWith("_", Ord) || str[end].StartsWith("#", Ord))
+                    //        break;
+                    //RemoveRange(ref str, start, end - start);
+                    for (; end < lines.Count; end++)
+                        if (lines[end] == "loop_" || lines[end].StartsWith("_", Ord) || lines[end].StartsWith("#", Ord))
                             break;
-                    RemoveRange(ref str, start, end - start);
+                    lines.RemoveRange(start, end - start);
                 }
                 else
                 {
@@ -984,23 +1044,36 @@ public class ConvertCrystalData
                     var last = tag;
                     // 値はタグの次の「コメントでない行」にある。タグと値の間のコメント行もいっしょに消す (Codex2 r3。以前はタグとコメントだけを消して値を残していた)
                     var next = tag + 1;
-                    while (next < str.Length && str[next].TrimStart().StartsWith('#'))
+                    //while (next < str.Length && str[next].TrimStart().StartsWith('#')) // 261111Cl 変更前 (12 行。str → lines、RemoveRange → lines.RemoveRange)
+                    //    next++;
+                    //if (next < str.Length && str[next].StartsWith(';'))
+                    //{
+                    //    last = next + 1;
+                    //    while (last < str.Length - 1 && !str[last].StartsWith(';'))
+                    //        last++;
+                    //}
+                    //else if (next < str.Length && str[tag].Trim().Split((char[])null, StringSplitOptions.RemoveEmptyEntries).Length == 1
+                    //    && !str[next].TrimStart().StartsWith('_') && !str[next].TrimStart().StartsWith("loop_", Ord) && !str[next].StartsWith("data_", Ord))
+                    //    last = next; // タグだけの行で、値が次の (コメントでない) 行にあるとき
+                    //RemoveRange(ref str, tag, last - tag + 1);
+                    while (next < lines.Count && lines[next].TrimStart().StartsWith('#'))
                         next++;
-                    if (next < str.Length && str[next].StartsWith(';'))
+                    if (next < lines.Count && lines[next].StartsWith(';'))
                     {
                         last = next + 1;
-                        while (last < str.Length - 1 && !str[last].StartsWith(';'))
+                        while (last < lines.Count - 1 && !lines[last].StartsWith(';'))
                             last++;
                     }
-                    else if (next < str.Length && str[tag].Trim().Split((char[])null, StringSplitOptions.RemoveEmptyEntries).Length == 1
-                        && !str[next].TrimStart().StartsWith('_') && !str[next].TrimStart().StartsWith("loop_", Ord) && !str[next].StartsWith("data_", Ord))
+                    else if (next < lines.Count && lines[tag].Trim().Split((char[])null, StringSplitOptions.RemoveEmptyEntries).Length == 1
+                        && !lines[next].TrimStart().StartsWith('_') && !lines[next].TrimStart().StartsWith("loop_", Ord) && !lines[next].StartsWith("data_", Ord))
                         last = next; // タグだけの行で、値が次の (コメントでない) 行にあるとき
-                    RemoveRange(ref str, tag, last - tag + 1);
+                    lines.RemoveRange(tag, last - tag + 1);
                 }
             }
         }
 
-        return ConvertFromCIF(str);
+        //return ConvertFromCIF(str); // 261111Cl 変更前
+        return ConvertFromCIF([.. lines]); // 261111Cl 変更
     }
 
     /// <summary>CIFファイルを読み込む</summary>
@@ -1023,42 +1096,91 @@ public class ConvertCrystalData
         // 前処理で末尾の _geom のループが除かれたあと最後に残る「# 10. MOLECULAR GEOMETRY」のような区切り (CCDC の CIF に多い) が、
         // 直前のループ (_atom_site_aniso) のデータとして読まれ、異方性の温度因子が全部捨てられていた (tools/EbsdCheck/testdata/koseki_cif/818186_OAc.cif)
         str = [.. str.Where(s => !s.StartsWith('#'))];
-        for (int n = 0; n < str.Length; n++)
+        #region 261111Cl 変更前: ; で囲まれた複数行を 1 行にするたびに RemoveRange で配列全体を作り直していた
+        //for (int n = 0; n < str.Length; n++)
+        //{
+        //    if (str[n].StartsWith(";", Ord))//;で始まる行を見つけたら
+        //    {
+        //        //次の;の位置を見つけて mに格納
+        //        int m = n + 1;
+        //        for (; m < str.Length; m++)
+        //            if (str[m].StartsWith(';'))
+        //                break;
+        //        //直後の行が「loop_」の場合や「_」で始まる場合は、;を一文字だけ消す
+        //        if (n + 1 < str.Length && (str[n + 1].StartsWith("loop_", Ord) || str[n + 1].StartsWith("_", Ord)))
+        //            str[n] = "";
+        //        //次の;が見つからない場合も、;を一文字だけ消す
+        //        else if (m == str.Length)
+        //            str[n] = "";
+        //        else
+        //        {
+        //            var temp = new StringBuilder();
+        //            //次に;が出てくるところまですすめてまとめて一行にする
+        //            for (int i = n + 1; i < m; i++)
+        //                temp.Append(str[i] + " ");
+        //            str[n] = $"'{temp.ToString().Trim().TrimEnd()}'";
+        //            RemoveRange(ref str, n + 1, m - n);
+        //        }
+        //    }
+        //}
+        #endregion
+        // 261111Cl 変更: 1 パスで新しい List に書き出す。まとめた行の中身 (n+1〜m 行目) は読み飛ばす (旧の RemoveRange(n + 1, m - n) と同じ行)。
+        // 旧で消した行はどれも処理済みの行なので、後ろの行から見た「次の行」「次の ;」は同じ
         {
-            if (str[n].StartsWith(";", Ord))//;で始まる行を見つけたら
+            var merged = new List<string>(str.Length);
+            for (int n = 0; n < str.Length; n++)
             {
-                //次の;の位置を見つけて mに格納
-                int m = n + 1;
-                for (; m < str.Length; m++)
-                    if (str[m].StartsWith(';'))
-                        break;
-                //直後の行が「loop_」の場合や「_」で始まる場合は、;を一文字だけ消す
-                if (n + 1 < str.Length && (str[n + 1].StartsWith("loop_", Ord) || str[n + 1].StartsWith("_", Ord)))
-                    str[n] = "";
-                //次の;が見つからない場合も、;を一文字だけ消す
-                else if (m == str.Length)
-                    str[n] = "";
-                else
+                if (str[n].StartsWith(";", Ord))//;で始まる行を見つけたら
                 {
-                    var temp = new StringBuilder();
-                    //次に;が出てくるところまですすめてまとめて一行にする
-                    for (int i = n + 1; i < m; i++)
-                        temp.Append(str[i] + " ");
-                    str[n] = $"'{temp.ToString().Trim().TrimEnd()}'";
-                    RemoveRange(ref str, n + 1, m - n);
+                    //次の;の位置を見つけて mに格納
+                    int m = n + 1;
+                    for (; m < str.Length; m++)
+                        if (str[m].StartsWith(';'))
+                            break;
+                    //直後の行が「loop_」の場合や「_」で始まる場合は、;を一文字だけ消す
+                    if (n + 1 < str.Length && (str[n + 1].StartsWith("loop_", Ord) || str[n + 1].StartsWith("_", Ord)))
+                        merged.Add("");
+                    //次の;が見つからない場合も、;を一文字だけ消す
+                    else if (m == str.Length)
+                        merged.Add("");
+                    else
+                    {
+                        var temp = new StringBuilder();
+                        //次に;が出てくるところまですすめてまとめて一行にする
+                        for (int i = n + 1; i < m; i++)
+                            temp.Append(str[i] + " ");
+                        merged.Add($"'{temp.ToString().Trim().TrimEnd()}'");
+                        n = m;
+                    }
                 }
+                else
+                    merged.Add(str[n]);
             }
+            str = [.. merged];
         }
 
         if (str[^1]=="")
             str[^1] = "#End of data";
 
-        for (int n = 0; n <str.Length; n++)
+        //for (int n = 0; n <str.Length; n++) // 261111Cl 変更前 (7 行): 空行を 1 行消すたびに配列全体を作り直していた
+        //{
+        //    Replace(ref str[n], "\t", " ");
+        //    TrimStartEnd(ref str[n]);
+        //    if (str[n] == "")
+        //        RemoveAt(ref str, n--);
+        //}
+        // 261111Cl 変更: 1 パスのフィルタ (タブを空白に → 前後の空白を除く → 空なら捨てる。順は同じ)
         {
-            Replace(ref str[n], "\t", " ");
-            TrimStartEnd(ref str[n]);
-            if (str[n] == "")
-                RemoveAt(ref str, n--);
+            var kept = new List<string>(str.Length);
+            foreach (var line in str)
+            {
+                var s = line;
+                Replace(ref s, "\t", " ");
+                TrimStartEnd(ref s);
+                if (s != "")
+                    kept.Add(s);
+            }
+            str = [.. kept];
         }
 
         //次に'あるいは"で囲まれている文字列中の空白を偶然出てこないような文字列に変換する
@@ -1066,9 +1188,11 @@ public class ConvertCrystalData
         {
             if (str[n].Contains("''"))//''という文字列が含まれていたら
             {
-                var temp = str[n][str[n].IndexOf("'")..];
+                //var temp = str[n][str[n].IndexOf("'")..]; // 261111Cl 変更前
+                var temp = str[n][str[n].IndexOf('\'')..]; // 261111Cl 変更: 文字で探す (Ordinal。旧の文字列版は現在のカルチャで比べていた)
                 Replace(ref temp, "''", "薔");
-                str[n] = $"{str[n][..str[n].IndexOf("'")]}{temp}";
+                //str[n] = $"{str[n][..str[n].IndexOf("'")]}{temp}"; // 261111Cl 変更前
+                str[n] = $"{str[n][..str[n].IndexOf('\'')]}{temp}"; // 261111Cl 変更
             }
 
             if (str[n].Contains('\''))//'が含まれていたら
@@ -1104,14 +1228,28 @@ public class ConvertCrystalData
         }
 
         //次にloop_に続く行が　"label  data"だった時に対応
-        for (int n = 0; n < str.Length - 1; n++)
+        //for (int n = 0; n < str.Length - 1; n++) // 261111Cl 変更前 (9 行)
+        //{
+        //    if (str[n].StartsWith("loop_", Ord) && str[n + 1].Contains(' '))
+        //    {
+        //        var temp = str[n + 1].Split(' ', true);
+        //        str[n + 1] = temp[0];
+        //        Insert(ref str, n + 2, temp[1]);
+        //    }
+        //}
+        // 261111Cl 変更: 挿入は List<string>.Insert で行う (旧は挿入のたびに配列全体を作り直していた)。挿入した行も続けて調べるのは同じ
         {
-            if (str[n].StartsWith("loop_", Ord) && str[n + 1].Contains(' '))
+            var list = new List<string>(str);
+            for (int n = 0; n < list.Count - 1; n++)
             {
-                var temp = str[n + 1].Split(' ', true);
-                str[n + 1] = temp[0];
-                Insert(ref str, n + 2, temp[1]);
+                if (list[n].StartsWith("loop_", Ord) && list[n + 1].Contains(' '))
+                {
+                    var temp = list[n + 1].Split(' ', true);
+                    list[n + 1] = temp[0];
+                    list.Insert(n + 2, temp[1]);
+                }
             }
+            str = [.. list];
         }
 
         var CIF = new List<List<(string Label, string Data)>>();
@@ -1422,19 +1560,23 @@ public class ConvertCrystalData
 
             for (int q = atomName.Length; q > 0 && atomicNumber == 0; q--)
             {
-                var temp = atomName[..q];
-                for (int k = 0; k <= 96 && atomicNumber == 0; k++)
-                {
-                    if (AtomStatic.AtomicName(k).ToLower() == temp.ToLower())
-                        atomicNumber = k;
-                }
+                //var temp = atomName[..q]; // 261111Cl 変更前 (6 行)
+                //for (int k = 0; k <= 96 && atomicNumber == 0; k++)
+                //{
+                //    if (AtomStatic.AtomicName(k).ToLower() == temp.ToLower())
+                //        atomicNumber = k;
+                //}
+                // 261111Cl 変更: 1 文字ずつ ToLower() した文字列を q×97 回作っていたのを、span 版 (ASCII の大文字小文字を区別しない Ordinal 比較) にする。
+                // 現在のカルチャに依らなくなる (tr-TR で "SI1" が S になっていた)。日本語・英語の環境では結果は同じ
+                var temp = atomName.AsSpan(0, q);
+                atomicNumber = AtomStatic.AtomicNumber(temp, caseSensitive: false);
 
-                if (temp == "OH")
+                if (temp is "OH")
                 {
                     atomicNumber = -1;
                     break;
                 }
-                else if (temp == "D")
+                else if (temp is "D")
                 {
                     atomicNumber = 255;
                     break;
@@ -1534,6 +1676,38 @@ public class ConvertCrystalData
         return new V3(d[0], d[1], d[2]);
     }
 
+    /// <summary>261111Cl 追加: 530 設定の空間群記号を、SearchSGseriesNumberForCIF で比べる形に直した表。CIF 1 件ごとに 530 設定ぶんの
+    /// Split/Join と Replace (計 530×4 回) をしていたのを、最初に使うときの 1 回だけにする。値は旧来の式と同じ</summary>
+    private static class SgNameTables
+    {
+        /// <summary>Hall 記号の連続する空白・タブを空白 1 つにまとめる (旧 SearchSGseriesNumberForCIF 内の normalizeHall と同じ式)</summary>
+        public static string NormalizeHall(string s) => string.Join(" ", s.Split([' ', '\t'], StringSplitOptions.RemoveEmptyEntries));
+        /// <summary>標準 Hall 記号 (SpaceGroupHallStandardStr) を NormalizeHall したもの</summary>
+        public static readonly string[] HallStandardNormalized;
+        /// <summary>標準 Hall 記号から空白を除いたもの</summary>
+        public static readonly string[] HallStandardCompact;
+        /// <summary>従来の Hall 記号 (SpaceGroupHallStr) から空白を除いたもの</summary>
+        public static readonly string[] HallCompact;
+        /// <summary>完全 H-M 記号 (SpaceGroupHMfullStr) から空白を除いたもの</summary>
+        public static readonly string[] HMfullCompact;
+        static SgNameTables()
+        {
+            var syms = SymmetryStatic.Symmetries;
+            int n = SymmetryStatic.TotalSpaceGroupNumber;
+            HallStandardNormalized = new string[n];
+            HallStandardCompact = new string[n];
+            HallCompact = new string[n];
+            HMfullCompact = new string[n];
+            for (int i = 0; i < n; i++)
+            {
+                HallStandardNormalized[i] = NormalizeHall(syms[i].SpaceGroupHallStandardStr);
+                HallStandardCompact[i] = syms[i].SpaceGroupHallStandardStr.Replace(" ", "");
+                HallCompact[i] = syms[i].SpaceGroupHallStr.Replace(" ", "");
+                HMfullCompact[i] = syms[i].SpaceGroupHMfullStr.Replace(" ", "");
+            }
+        }
+    }
+
     //private static int SearchSGseriesNumberForCIF(string SgNameHM, string SgNameHall, int SpaceGroupNumber, bool isRhomboShape, bool isAlpha90, bool isBeta90, bool isGamma90) // 261105Cl 変更前
     /// <param name="operations">261105Cl 追加: CIF の対称操作 (_space_group_symop_operation_xyz / _symmetry_equiv_pos_as_xyz)。
     /// 空白なしの Hall 記号が違う群の複数の設定に当たるとき、どれを採るかの判定に使う。null や空なら使わない。</param>
@@ -1556,10 +1730,15 @@ public class ConvertCrystalData
             //    }
             //if (symmetrySeriesNumber != -1)
             //    return symmetrySeriesNumber;
-            static string normalizeHall(string s) => string.Join(" ", s.Split([' ', '\t'], StringSplitOptions.RemoveEmptyEntries));
-            var hall = normalizeHall(SgNameHall);
+            //static string normalizeHall(string s) => string.Join(" ", s.Split([' ', '\t'], StringSplitOptions.RemoveEmptyEntries)); // 261111Cl 変更前 (SgNameTables.NormalizeHall へ)
+            //var hall = normalizeHall(SgNameHall);
+            //for (int i = 0; i < SymmetryStatic.TotalSpaceGroupNumber; i++)
+            //    if (hall == normalizeHall(SymmetryStatic.Symmetries[i].SpaceGroupHallStandardStr))
+            //        return i;
+            // 261111Cl 変更: 530 設定側の正規化は SgNameTables に 1 回だけ作った表を使う (最初に一致した設定を採るのは同じ)
+            var hall = SgNameTables.NormalizeHall(SgNameHall);
             for (int i = 0; i < SymmetryStatic.TotalSpaceGroupNumber; i++)
-                if (hall == normalizeHall(SymmetryStatic.Symmetries[i].SpaceGroupHallStandardStr))
+                if (hall == SgNameTables.HallStandardNormalized[i])
                     return i;
 
             // 空白なしの比較は、標準表記と従来表記 (SpaceGroupHallStr。旧版が CIF に書き出していた表記) の両方で行う。
@@ -1585,10 +1764,12 @@ public class ConvertCrystalData
             {
                 //int hit = -1, hitCount = 0; // 261105Cl 変更前
                 var hits = new List<int>(); // 261105Cl
+                var table = standard ? SgNameTables.HallStandardCompact : SgNameTables.HallCompact; // 261111Cl 追加
                 for (int i = 0; i < SymmetryStatic.TotalSpaceGroupNumber; i++)
                 {
-                    var s = SymmetryStatic.Symmetries[i];
-                    if (compact == (standard ? s.SpaceGroupHallStandardStr : s.SpaceGroupHallStr).Replace(" ", ""))
+                    //var s = SymmetryStatic.Symmetries[i]; // 261111Cl 変更前 (2 行)
+                    //if (compact == (standard ? s.SpaceGroupHallStandardStr : s.SpaceGroupHallStr).Replace(" ", ""))
+                    if (compact == table[i]) // 261111Cl 変更: 空白を除いた表を 1 回だけ作って比べる (一致の順・件数は同じ)
                         hits.Add(i); // 261105Cl
                     //{ // 261105Cl 変更前
                     //    hit = i;
@@ -1891,7 +2072,8 @@ public class ConvertCrystalData
         var fullName = SgNameHM.Replace(" ", "");
         var fullHits = new List<int>();
         for (int i = 1; i < SymmetryStatic.TotalSpaceGroupNumber; i++)
-            if (SymmetryStatic.Symmetries[i].SpaceGroupHMfullStr.Replace(" ", "") == fullName)
+            //if (SymmetryStatic.Symmetries[i].SpaceGroupHMfullStr.Replace(" ", "") == fullName) // 261111Cl 変更前
+            if (SgNameTables.HMfullCompact[i] == fullName) // 261111Cl 変更: 空白を除いた表を 1 回だけ作って比べる
                 fullHits.Add(i);
         if (fullHits.Count > 0)
         {
@@ -1973,7 +2155,8 @@ public class ConvertCrystalData
         if (string.IsNullOrWhiteSpace(s))
             return s;
         // 不確かさは指数の前 ("7.896(13)E-1") と後ろ (CIF 1.1 の文法どおりの "7.896E-1(13)") のどちらでも読む。どちらも仮数の最後の桁に対する値
-        var m = Regex.Match(s.Trim(), @"^([+-]?(?:\d+\.?\d*|\.\d+))(?:\((\d+)\))?(?:[eE]([+-]?\d+))?(?:\((\d+)\))?$");
+        //var m = Regex.Match(s.Trim(), @"^([+-]?(?:\d+\.?\d*|\.\d+))(?:\((\d+)\))?(?:[eE]([+-]?\d+))?(?:\((\d+)\))?$"); // 261111Cl 変更前
+        var m = CifNumberWithUncertaintyRegex().Match(s.Trim()); // 261111Cl 変更: ソース生成の Regex
         if (!m.Success || (m.Groups[2].Success && m.Groups[4].Success))
             return "";
         var ci = System.Globalization.CultureInfo.InvariantCulture;
@@ -2007,7 +2190,8 @@ public class ConvertCrystalData
     public static string ConvertToCIF(Crystal crystal)
     {
         var sb = new StringBuilder();
-        sb.AppendLine("# This file is exported from \"" + Process.GetCurrentProcess().ProcessName + "\"");
+        //sb.AppendLine("# This file is exported from \"" + Process.GetCurrentProcess().ProcessName + "\""); // 261111Cl 変更前: Process を Dispose していなかった
+        sb.AppendLine("# This file is exported from \"" + Path.GetFileNameWithoutExtension(Environment.ProcessPath) + "\""); // 261111Cl 変更: 実行ファイル名 (拡張子なし) = 旧の ProcessName と同じ
         sb.AppendLine("# https://github.com/seto77/");
 
         sb.AppendLine("data_global");

@@ -7,8 +7,14 @@ using System.Text;
 
 namespace Crystallography;
 
-public static class XYFile
+//public static class XYFile // 261111Cl 変更前
+public static partial class XYFile // 261111Cl 変更: [GeneratedRegex] のため partial
 {
+    /// <summary>261111Cl 追加: 旧版の要素名 &lt;pt&gt; / &lt;/pt&gt; / &lt;pt /&gt; (現 Profile.Pt) を読むための置換の対象。旧は 1 行ずつ Regex.Replace(tempstr, @"(&lt;/?)pt(?=[\s/&gt;])", "$1Pt") していた。
+    /// 全文に 1 回だけ掛けるので、後ろを見る文字から改行 (\r, \n) を除く (1 行ずつのときは行末の後ろに文字が無く、一致しなかった)</summary>
+    [System.Text.RegularExpressions.GeneratedRegex(@"(</?)pt(?=[\s/>-[\r\n]])")]
+    private static partial System.Text.RegularExpressions.Regex OldPtTagRegex();
+
     public static bool SavePdi2File(DiffractionProfile2[] dp, string fileName)
     {
         FileStream fs = null;
@@ -44,11 +50,11 @@ public static class XYFile
             string tempstr;
             while ((tempstr = reader.ReadLine()) != null)
             {
-                tempstr = tempstr.Replace("OriginalFormatType", "SrcAxisMode");
-                tempstr = tempstr.Replace("OriginalWaveLength", "SrcWaveLength");
-                tempstr = tempstr.Replace("OriginalTakeoffAngle", "SrcTakeoffAngle");
-                //tempstr = tempstr.Replace("pt", "Pt"); // 261105Cl 変更前
-                tempstr = System.Text.RegularExpressions.Regex.Replace(tempstr, @"(</?)pt(?=[\s/>])", "$1Pt"); // 261105Cl
+                //tempstr = tempstr.Replace("OriginalFormatType", "SrcAxisMode"); // 261111Cl 変更前 (5 行): 1 行ごとに置換していた。下で全文に 1 回だけ掛ける
+                //tempstr = tempstr.Replace("OriginalWaveLength", "SrcWaveLength");
+                //tempstr = tempstr.Replace("OriginalTakeoffAngle", "SrcTakeoffAngle");
+                ////tempstr = tempstr.Replace("pt", "Pt"); // 261105Cl 変更前
+                //tempstr = System.Text.RegularExpressions.Regex.Replace(tempstr, @"(</?)pt(?=[\s/>])", "$1Pt"); // 261105Cl
                 strList.Add(tempstr);
             }
 
@@ -60,6 +66,9 @@ public static class XYFile
             //writer.Flush();
             //writer.Close();
             xmlText = string.Join(Environment.NewLine, strList); // 261105Cl 追加
+            // 261111Cl 追加: 互換の置換を全文に 1 回だけ掛ける (順も同じ)。どの置換も改行を含まない語なので行をまたいで一致せず、1 行ずつ掛けたのと同じ結果になる
+            xmlText = xmlText.Replace("OriginalFormatType", "SrcAxisMode").Replace("OriginalWaveLength", "SrcWaveLength").Replace("OriginalTakeoffAngle", "SrcTakeoffAngle");
+            xmlText = OldPtTagRegex().Replace(xmlText, "$1Pt");
         }
         catch { };
 
@@ -135,7 +144,8 @@ public static class XYFile
                 {
                     if (fs != null)
                         fs.Close();
-                    var reader = new StreamReader(fileName, Encoding.GetEncoding("UTF-8"));
+                    //var reader = new StreamReader(fileName, Encoding.GetEncoding("UTF-8")); // 261111Cl 変更前
+                    using var reader = new StreamReader(fileName, Encoding.GetEncoding("UTF-8")); // 261111Cl 変更: 例外でも閉じる
                     var strList = new List<string>();
                     string tempstr;
                     while ((tempstr = reader.ReadLine()) != null)
@@ -190,7 +200,8 @@ public static class XYFile
     public static DiffractionProfile2[] ReadRasFile(string fileName)
     {
         var strArray = new List<string>();
-        var reader = new StreamReader(fileName, Encoding.GetEncoding("UTF-8"));
+        //var reader = new StreamReader(fileName, Encoding.GetEncoding("UTF-8")); // 261111Cl 変更前
+        using var reader = new StreamReader(fileName, Encoding.GetEncoding("UTF-8")); // 261111Cl 変更: 例外でも閉じる
         string tempstr;
         while ((tempstr = reader.ReadLine()) != null)
             strArray.Add(tempstr);
@@ -301,7 +312,8 @@ public static class XYFile
     public static DiffractionProfile2 ConvertUnknownFileToProfileData(string fileName, char separater)
     {
         var strArray = new List<string>();
-        var reader = new StreamReader(fileName, Encoding.GetEncoding("UTF-8"));
+        //var reader = new StreamReader(fileName, Encoding.GetEncoding("UTF-8")); // 261111Cl 変更前
+        using var reader = new StreamReader(fileName, Encoding.GetEncoding("UTF-8")); // 261111Cl 変更: 例外でも閉じる
         string tempstr;
         while ((tempstr = reader.ReadLine()) != null)
             strArray.Add(tempstr);

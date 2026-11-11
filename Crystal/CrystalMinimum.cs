@@ -82,10 +82,15 @@ public partial class Crystal2
     {
         get
         {
-            var cellTexts = CellTexts; // ローカルに持つことで呼び出しコスト削減
+            //var cellTexts = CellTexts; // ローカルに持つことで呼び出しコスト削減 // 261111Cl 変更前 (3 行)
+            //return (
+            //    DecomposeOnlyValue(cellTexts[0]), DecomposeOnlyValue(cellTexts[1]), DecomposeOnlyValue(cellTexts[2]),
+            //    DecomposeOnlyValue(cellTexts[3]), DecomposeOnlyValue(cellTexts[4]), DecomposeOnlyValue(cellTexts[5]));
+            // 261111Cl 変更: 6 本の文字列を作らず、4bit 符号を stackalloc の文字列へ直接展開して読む (値はビット一致)
+            var cb = cellBytes;
             return (
-                DecomposeOnlyValue(cellTexts[0]), DecomposeOnlyValue(cellTexts[1]), DecomposeOnlyValue(cellTexts[2]),
-                DecomposeOnlyValue(cellTexts[3]), DecomposeOnlyValue(cellTexts[4]), DecomposeOnlyValue(cellTexts[5]));
+                ValueFromBytes(cb[0]), ValueFromBytes(cb[1]), ValueFromBytes(cb[2]),
+                ValueFromBytes(cb[3]), ValueFromBytes(cb[4]), ValueFromBytes(cb[5]));
         }
     }
 
@@ -95,10 +100,15 @@ public partial class Crystal2
     {
         get
         {
-            var cellTexts = CellTexts; // ローカルに持つことで呼び出しコスト削減
+            //var cellTexts = CellTexts; // ローカルに持つことで呼び出しコスト削減 // 261111Cl 変更前 (3 行)
+            //return (
+            //    (float)DecomposeOnlyValue(cellTexts[0]), (float)DecomposeOnlyValue(cellTexts[1]), (float)DecomposeOnlyValue(cellTexts[2]),
+            //    (float)DecomposeOnlyValue(cellTexts[3]), (float)DecomposeOnlyValue(cellTexts[4]), (float)DecomposeOnlyValue(cellTexts[5]));
+            // 261111Cl 変更: 上の CellOnlyValue と同じく文字列を作らない
+            var cb = cellBytes;
             return (
-                (float)DecomposeOnlyValue(cellTexts[0]), (float)DecomposeOnlyValue(cellTexts[1]), (float)DecomposeOnlyValue(cellTexts[2]),
-                (float)DecomposeOnlyValue(cellTexts[3]), (float)DecomposeOnlyValue(cellTexts[4]), (float)DecomposeOnlyValue(cellTexts[5]));
+                (float)ValueFromBytes(cb[0]), (float)ValueFromBytes(cb[1]), (float)ValueFromBytes(cb[2]),
+                (float)ValueFromBytes(cb[3]), (float)ValueFromBytes(cb[4]), (float)ValueFromBytes(cb[5]));
         }
     }
 
@@ -269,6 +279,7 @@ public partial class Crystal2
     [MemoryPackIgnore]
     private static readonly StringComparison Ord = StringComparison.Ordinal;
     [MemoryPackIgnore]
+    // 261111Cl 注: ToString(byte[]) は nibbleChars から直接展開するようになり、この表はもう参照しない (4bit 符号と文字の対応の記録として残す)
     static readonly string[] toStringDic =
         [
             #region 
@@ -291,11 +302,23 @@ public partial class Crystal2
             #endregion
         ];
 
-    [MemoryPackIgnore]
-    static readonly FrozenDictionary<char, byte> toByteDic = new Dictionary<char, byte>()
+    //[MemoryPackIgnore] // 261111Cl 変更前 (5 行): 16 文字の対応を FrozenDictionary で引いていた。下の ToNibble (switch 式) にした
+    //static readonly FrozenDictionary<char, byte> toByteDic = new Dictionary<char, byte>()
+    //{
+    //    { '0', 0 }, { '1', 1 }, { '2', 2 }, { '3', 3 },  { '4', 4 }, { '5', 5 }, { '6', 6 }, { '7', 7 }, { '8', 8 }, { '9', 9 }, { '.', 10 }, { '/', 11 }, { '-', 12 }, { '(', 13 }, { ')', 13 }, { 'E', 14 },
+    //}.ToFrozenDictionary();
+
+    /// <summary>261111Cl 追加: 文字を 4bit 符号に直す (旧 toByteDic と同じ対応)。対応の無い文字は -1</summary>
+    private static int ToNibble(char c) => c switch
     {
-        { '0', 0 }, { '1', 1 }, { '2', 2 }, { '3', 3 },  { '4', 4 }, { '5', 5 }, { '6', 6 }, { '7', 7 }, { '8', 8 }, { '9', 9 }, { '.', 10 }, { '/', 11 }, { '-', 12 }, { '(', 13 }, { ')', 13 }, { 'E', 14 },
-    }.ToFrozenDictionary();
+        >= '0' and <= '9' => c - '0',
+        '.' => 10,
+        '/' => 11,
+        '-' => 12,
+        '(' or ')' => 13,
+        'E' => 14,
+        _ => -1,
+    };
 
     /// <summary></summary>
     /// <param name="s"></param>
@@ -325,12 +348,14 @@ public partial class Crystal2
                 {
                     if (i + 1 < s.Length)
                     {
-                        if (toByteDic.TryGetValue(s[i], out var b1) && toByteDic.TryGetValue(s[i + 1], out var b2))
+                        //if (toByteDic.TryGetValue(s[i], out var b1) && toByteDic.TryGetValue(s[i + 1], out var b2)) // 261111Cl 変更前
+                        if (ToNibble(s[i]) is var b1 and >= 0 && ToNibble(s[i + 1]) is var b2 and >= 0) // 261111Cl 変更
                             result[i / 2] = (byte)(b1 + (b2 << 4));
                     }
                     else
                     {
-                        if (toByteDic.TryGetValue(s[i], out var b1))
+                        //if (toByteDic.TryGetValue(s[i], out var b1)) // 261111Cl 変更前
+                        if (ToNibble(s[i]) is var b1 and >= 0) // 261111Cl 変更
                             result[i / 2] = (byte)(b1 + 240);
                     }
                 }
@@ -345,12 +370,44 @@ public partial class Crystal2
         }
     }
 
+    //public static string ToString(byte[] bytes) // 261111Cl 変更前
+    //{
+    //    var sb = new StringBuilder(bytes.Length * 2);
+    //    foreach (var b in bytes)
+    //        sb.Append(toStringDic[b]);
+    //    return sb.ToString();
+    //}
+    // 261111Cl 変更: 長さを数えてから string.Create で 1 回だけ確保する。並びは toStringDic[b] と同じ (下位 4bit → 上位 4bit、15 は文字なし)
     public static string ToString(byte[] bytes)
     {
-        var sb = new StringBuilder(bytes.Length * 2);
+        int len = 0;
         foreach (var b in bytes)
-            sb.Append(toStringDic[b]);
-        return sb.ToString();
+            len += ((b & 15) != 15 ? 1 : 0) + ((b >> 4) != 15 ? 1 : 0);
+        return string.Create(len, bytes, static (dst, bs) => DecodeChars(bs, dst));
+    }
+
+    /// <summary>261111Cl 追加: 4bit 符号の文字 (toStringDic の 1 文字目・2 文字目と同じ対応)。15 は「文字なし」</summary>
+    [MemoryPackIgnore]
+    private const string nibbleChars = "0123456789./-|E";
+
+    /// <summary>261111Cl 追加: 4bit 符号のバイト列を dst へ文字として展開し、書いた文字数を返す (dst は bytes.Length * 2 以上)</summary>
+    private static int DecodeChars(ReadOnlySpan<byte> bytes, Span<char> dst)
+    {
+        int n = 0;
+        foreach (var b in bytes)
+        {
+            int lo = b & 15, hi = b >> 4;
+            if (lo != 15) dst[n++] = nibbleChars[lo];
+            if (hi != 15) dst[n++] = nibbleChars[hi];
+        }
+        return n;
+    }
+
+    /// <summary>261111Cl 追加: 4bit 符号のバイト列のまま DecomposeOnlyValue(ToString(bytes)) と同じ値を返す (文字列を作らない)</summary>
+    private static double ValueFromBytes(byte[] bytes)
+    {
+        Span<char> buf = bytes.Length <= 64 ? stackalloc char[128] : new char[bytes.Length * 2];
+        return DecomposeOnlyValue((ReadOnlySpan<char>)buf[..DecodeChars(bytes, buf)]);
     }
 
     private static (double Value, double Error) Decompose(string str) => Decompose(str, false);
@@ -443,9 +500,12 @@ public partial class Crystal2
     /// </summary>
     /// <param name="str"></param>
     /// <returns></returns>
-    public static double DecomposeOnlyValue(string str)
+    public static double DecomposeOnlyValue(string str) => DecomposeOnlyValue(str.AsSpan()); // 261111Cl 変更: 本体は下の span 版へ移した (旧本体はその中にコメントで残す)
+
+    /// <summary>261111Cl 追加: DecomposeOnlyValue(string) の span 版。指数の "1E…" も stackalloc で組み立てて読む (値はビット一致)</summary>
+    public static double DecomposeOnlyValue(ReadOnlySpan<char> s)
     {
-        var s = str.AsSpan();
+        //var s = str.AsSpan(); // 261111Cl 変更前 (引数で受ける)
         var expValue = 1.0;
         if (s.Contains('E'))
         {
@@ -455,7 +515,14 @@ public partial class Crystal2
             var exp = s[(i + 1)..];
             if (exp.IndexOf('|') is var bar and >= 0)
                 exp = exp[..bar];
-            if (!double.TryParse(string.Concat("1E", exp), NumberStyles.Float, culture, out expValue))
+            //if (!double.TryParse(string.Concat("1E", exp), NumberStyles.Float, culture, out expValue)) // 261111Cl 変更前
+            //    return double.NaN;
+            // 261111Cl 変更: "1E" + exp を stackalloc に組み立てる (TryParse(string) は中で同じ span 版を呼ぶので結果は同じ)
+            Span<char> e = exp.Length <= 62 ? stackalloc char[64] : new char[exp.Length + 2];
+            e[0] = '1';
+            e[1] = 'E';
+            exp.CopyTo(e[2..]);
+            if (!double.TryParse(e[..(exp.Length + 2)], NumberStyles.Float, culture, out expValue))
                 return double.NaN;
             s = s[..i];
         }
