@@ -25,7 +25,11 @@ public static class ProgramUpdates
     {
         try
         {
-            var ver = httpClient.GetByteArrayAsync($"https://raw.githubusercontent.com/seto77/{software}/master/{software}/Version.cs").Result;
+            // 261111Cl 追加: 確認の要求ごとに 15 秒で打ち切る (既定の HttpClient.Timeout = 100 秒だと、つながらないときに長く固まる)。
+            // 共用の httpClient.Timeout は変えない (同じクライアントでインストーラ (数十 MB) も落とすため、そちらを打ち切らないように)
+            using var cts = new System.Threading.CancellationTokenSource(TimeSpan.FromSeconds(15));
+            //var ver = httpClient.GetByteArrayAsync($"https://raw.githubusercontent.com/seto77/{software}/master/{software}/Version.cs").Result;
+            var ver = httpClient.GetByteArrayAsync($"https://raw.githubusercontent.com/seto77/{software}/master/{software}/Version.cs", cts.Token).Result; // 261111Cl 変更 (打ち切りは下の catch で Error! になる)
 
             //V上手くダウンロードできなかった場合
             if (ver == null || ver.Length == 0)
@@ -54,7 +58,9 @@ public static class ProgramUpdates
                 var asset = string.IsNullOrEmpty(installerAssetName) ? software + "Setup.msi" : installerAssetName;
                 var url = $"https://github.com/seto77/{software}/releases/download/v.{newVersion}/{asset}"; //260715Ch 更新インストーラを最初のリクエストから TLS で取得する
                 using var request = new HttpRequestMessage(HttpMethod.Get, url); //260715Ch Send 後も request を確実に破棄する
-                using var res = httpClient.Send(request, HttpCompletionOption.ResponseHeadersRead); //260715Ch ヘッダ確認後に response を破棄する
+                //using var res = httpClient.Send(request, HttpCompletionOption.ResponseHeadersRead); //260715Ch ヘッダ確認後に response を破棄する
+                cts.CancelAfter(TimeSpan.FromSeconds(15)); // 261111Cl 追加: 2 つ目の要求にも改めて 15 秒
+                using var res = httpClient.Send(request, HttpCompletionOption.ResponseHeadersRead, cts.Token); //260715Ch ヘッダ確認後に response を破棄する (261111Cl 打ち切りの token を追加)
                 if (!res.IsSuccessStatusCode)
                     return ("Update checked!", $"New version {newVersion} is available, but the installer for this architecture ({asset}) " +
                         $"has not been published yet. Please try again later, or download the latest package from\r\nhttps://github.com/seto77/{software}/releases/latest", false, "", "");

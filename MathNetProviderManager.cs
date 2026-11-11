@@ -26,7 +26,8 @@ public static class MathNetProviderManager
     /// <summary>260712Cl 追加: 環境変数 RECIPRO_DISABLE_MKL=1 による強制無効化が指定されているか (GUI のメニュー可視性判定用)</summary>
     public static bool MklDisabledByEnvironment => Environment.GetEnvironmentVariable("RECIPRO_DISABLE_MKL") == "1";
 
-    private static readonly object initLock = new();//260712Cl 追加 (codex 指摘: 多重初期化の競合防止)
+    //private static readonly object initLock = new();//260712Cl 追加 (codex 指摘: 多重初期化の競合防止)
+    private static readonly System.Threading.Lock initLock = new();//261111Cl 変更: object → System.Threading.Lock (lock 文でだけ使い、Monitor や外へは渡していない)
 
     /// <summary>MKL native DLL が実行フォルダに配置済みかどうか</summary>
     public static bool MklNativeFilesExist()

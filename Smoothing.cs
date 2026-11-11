@@ -8,10 +8,16 @@ public class Smoothing
 {
     public static Profile SavitzkyGolay(Profile profile, int pointNum, int order)
     {
-        if (pointNum < 2) return Deep.Copy<Profile>(profile);
+        //if (pointNum < 2) return Deep.Copy<Profile>(profile);
+        //if (pointNum < order + 1) order = pointNum - 1;
+        //if (order <= 0) return Deep.Copy<Profile>(profile);
+        //if (profile.Pt.Count < 3) return Deep.Copy<Profile>(profile);
+        // 261111Cl 変更: 縮退した引数のときの複製を、XML の往復 (Deep.Copy) から Profile.CopyTo() の直接コピーに変える。
+        // 点列・誤差・text・LineWidth は同じ値。XML では落ちていた Color (と PointD.Tag) も保たれるようになる
+        if (pointNum < 2) return profile.CopyTo();
         if (pointNum < order + 1) order = pointNum - 1;
-        if (order <= 0) return Deep.Copy<Profile>(profile);
-        if (profile.Pt.Count < 3) return Deep.Copy<Profile>(profile);
+        if (order <= 0) return profile.CopyTo();
+        if (profile.Pt.Count < 3) return profile.CopyTo();
 
         if (Math.Abs((profile.Pt[^1].X - profile.Pt[^2].X) / (profile.Pt[1].X - profile.Pt[0].X) - 1) < 0.000000001)
             return new Profile(SavitzkyGolaySimple([.. profile.Pt], pointNum, order));

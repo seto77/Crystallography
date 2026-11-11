@@ -44,7 +44,8 @@ public static class Miscellaneous
 {
     public static Color BlendColor(Color col1, Color col2, double ratio)
     {
-        var r = ratio > 1 ? 1 : ratio < 0 ? 0 : ratio;
+        //var r = ratio > 1 ? 1 : ratio < 0 ? 0 : ratio;
+        var r = Math.Clamp(ratio, 0, 1); // 261111Cl 変更: 手書きのクランプ → Math.Clamp (NaN・-0 も旧と同じ値を返す)
         return Color.FromArgb(
             (byte)(col1.A * r + col2.A * (1 - r)),
             (byte)(col1.R * r + col2.R * (1 - r)),
@@ -74,11 +75,22 @@ public static class Miscellaneous
     /// <summary>有限の数字かどうかを判定する</summary>
     /// <param name="d"></param>
     /// <returns></returns>
-    public static bool IsFiniteNumber(params double[] d)
+    //public static bool IsFiniteNumber(params double[] d)
+    //{
+    //    foreach (var value in d)
+    //    {
+    //        if (double.IsNaN(value) || double.IsInfinity(value))
+    //            return false;
+    //    }
+    //    return true;
+    //}
+    // 261111Cl 変更: params double[] → params ReadOnlySpan<double> (可変長の呼び出しで配列を作らない)、判定は double.IsFinite (NaN・±∞ を偽にするのは同じ)。
+    // 呼び出しは 4 アプリとも GraphControl の 4 引数の 1 か所だけで、ソースはそのまま通る。null を渡すと旧は例外・新は空 (true) になる (null を渡す呼び出しは無い)
+    public static bool IsFiniteNumber(params ReadOnlySpan<double> d)
     {
         foreach (var value in d)
         {
-            if (double.IsNaN(value) || double.IsInfinity(value))
+            if (!double.IsFinite(value))
                 return false;
         }
         return true;
@@ -101,7 +113,8 @@ public static class Miscellaneous
         }
     }
 
-    public static (int Division, int Modulus) DivMod(int n, int m) => (n / m, n % m);
+    //public static (int Division, int Modulus) DivMod(int n, int m) => (n / m, n % m);
+    public static (int Division, int Modulus) DivMod(int n, int m) => Math.DivRem(n, m); // 261111Cl 変更: Math.DivRem (同じ値・同じ例外)
 
     /// <summary>ファイルが使用中かどうかをチェック</summary>
     /// <param name="path"></param>

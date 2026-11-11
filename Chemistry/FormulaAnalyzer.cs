@@ -363,12 +363,17 @@ public sealed class SiteBasedParameterization
 }
 
 
-public static class FormulaParser
+//public static class FormulaParser
+public static partial class FormulaParser // 261111Cl 変更: [GeneratedRegex] のため partial にする
 {
     // 260712Cl 追加: ParseToElementCounts 内で呼び出し毎に new Regex(Compiled) して IL コンパイルが走っていたため、static キャッシュへ昇格 (Regex はスレッド安全)。
-    private static readonly Regex elementCoeffRegex = new(
-        @"(?<el>[A-Z][a-z]*)(?:(?<coef>\d+(?:\.\d+)?)|_\{(?<coef2>\d+(?:\.\d+)?)\})?",
-        RegexOptions.Compiled);
+    //private static readonly Regex elementCoeffRegex = new(
+    //    @"(?<el>[A-Z][a-z]*)(?:(?<coef>\d+(?:\.\d+)?)|_\{(?<coef2>\d+(?:\.\d+)?)\})?",
+    //    RegexOptions.Compiled);
+    // 261111Cl 変更: 実行時の IL 生成 (RegexOptions.Compiled) をやめ、ビルド時のソース生成 [GeneratedRegex] にする (同じパターン・同じ照合。初回の生成待ちがなくなる)
+    [GeneratedRegex(@"(?<el>[A-Z][a-z]*)(?:(?<coef>\d+(?:\.\d+)?)|_\{(?<coef2>\d+(?:\.\d+)?)\})?")]
+    private static partial Regex ElementCoeffRegex();
+    private static readonly Regex elementCoeffRegex = ElementCoeffRegex(); // 261111Cl 変更: 使う側 (elementCoeffRegex.Matches) はそのまま
 
     // 例:
     // "A5X2" -> {A:5, X:2}

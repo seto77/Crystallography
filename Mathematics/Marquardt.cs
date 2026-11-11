@@ -83,6 +83,9 @@ public class Marquardt
 
         private readonly double[] steps;
 
+        /// <summary>261111Cl 追加: 数値微分の刻み 10^-9 〜 10^10 (20 個)。旧はインスタンスごとに ZLinq で作っていた。同じ式 (Math.Pow) で 1 回だけ作り、全インスタンスで共有する (読むだけなので共有して安全)</summary>
+        private static readonly double[] defaultSteps = ValueEnumerable.Range(-9, 20).Select(n => Pow(10, n)).ToArray();
+
         /// <summary>コンストラクタ</summary>
         /// <param name="formula"></param>
         /// <param name="parameters"></param>
@@ -95,7 +98,8 @@ public class Marquardt
             PrmsPrev = new double[Prms.Length];
             Constraints = constraints;
             Derivatives = derivatives;
-            steps = ValueEnumerable.Range(-9, 20).Select(n => Pow(10, n)).ToArray();
+            //steps = ValueEnumerable.Range(-9, 20).Select(n => Pow(10, n)).ToArray();
+            steps = defaultSteps; // 261111Cl 変更: 共有の静的配列 (値は同じ)
             PrmLength = Prms.Length;
         }
 
@@ -171,7 +175,8 @@ public class Marquardt
                     #endregion
             }
 
-            steps = ValueEnumerable.Range(-9, 20).Select(n => Pow(10, n)).ToArray();
+            //steps = ValueEnumerable.Range(-9, 20).Select(n => Pow(10, n)).ToArray();
+            steps = defaultSteps; // 261111Cl 変更: 共有の静的配列 (値は同じ)
             PrmLength = Prms.Length;
         }
 
@@ -186,14 +191,27 @@ public class Marquardt
 
             var derivative = new double[Length];
             var f0 = Formula(x, Prms);
+            //for (int j = 0; j < Length; j++)
+            //    for (int i = 0; i < steps.Length; i++)
+            //    {
+            //        var pTemp = Prms.ToArray();//値渡しでコピー
+            //        pTemp[j] += steps[i];
+            //        derivative[j] = (Formula(x, pTemp) - f0) / steps[i];
+            //        if (derivative[j] != 0) break;
+            //    }
+            // 261111Cl 変更: 刻みごとに Prms.ToArray() を作らず、作業用配列を 1 本だけ使い、動かした成分を元に戻して使い回す。
+            // pTemp[j] は旧と同じく Prms[j] + steps[i]。作業用配列は呼び出しごとに作るので、並列 (Solve の PLINQ) から呼ばれても安全
+            var pTemp = Prms.ToArray();//値渡しでコピー
             for (int j = 0; j < Length; j++)
+            {
                 for (int i = 0; i < steps.Length; i++)
                 {
-                    var pTemp = Prms.ToArray();//値渡しでコピー
-                    pTemp[j] += steps[i];
+                    pTemp[j] = Prms[j] + steps[i];
                     derivative[j] = (Formula(x, pTemp) - f0) / steps[i];
                     if (derivative[j] != 0) break;
                 }
+                pTemp[j] = Prms[j];
+            }
             return derivative;
         }
 
@@ -561,11 +579,12 @@ public class Marquardt
         */
     }
 
-    [DllImport("Crystallography.Native.dll")]
-    private static extern void _PseudoVoigtDiff(in double[] x, in double x0, in double y0, in double hx, in double hy, in double t, in double eta, in double a, in double[] results);
+    // 261111Cl コメントアウト: 未使用 (呼び出しは上のコメント内だけ) の P/Invoke 宣言 2 つ
+    //[DllImport("Crystallography.Native.dll")]
+    //private static extern void _PseudoVoigtDiff(in double[] x, in double x0, in double y0, in double hx, in double hy, in double t, in double eta, in double a, in double[] results);
 
-    [DllImport("Crystallography.Native.dll")]
-    private static extern void _PseudoVoigt(in double[] x, double x0, in double y0, in double hx, in double hy, in double t, in double eta, in double a, in double[] results);
+    //[DllImport("Crystallography.Native.dll")]
+    //private static extern void _PseudoVoigt(in double[] x, double x0, in double y0, in double hx, in double hy, in double t, in double eta, in double a, in double[] results);
 
     #endregion 組み込み関数
 }

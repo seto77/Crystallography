@@ -62,6 +62,7 @@ public static class WineCompat
     };
 
     private static readonly Dictionary<string, string> cache = new(StringComparer.OrdinalIgnoreCase);
+    private static readonly System.Threading.Lock cacheLock = new(); // 261111Cl 追加: 辞書そのものではなく専用の Lock でロックする (cache は外へ渡していない)
     private static HashSet<string> installedFamilies;
 
     /// <summary>
@@ -72,7 +73,8 @@ public static class WineCompat
     {
         if (!IsWine || familyName == null)
             return familyName;
-        lock (cache)
+        //lock (cache)
+        lock (cacheLock) // 261111Cl 変更
         {
             if (cache.TryGetValue(familyName, out var hit))
                 return hit;

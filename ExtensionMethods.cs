@@ -26,11 +26,23 @@ public static class MathnetEx
     /// <returns></returns>
     public static Matrix<double> TryInverse(this Matrix<double> mat)
     {
-        if (mat.Determinant() == 0)
+        //if (mat.Determinant() == 0)
+        //    return null;
+        //try
+        //{
+        //    return mat.Inverse();
+        //}
+        //catch
+        //{
+        //    return null;
+        //}
+        // 261111Cl 変更: Determinant() と Inverse() がそれぞれ LU 分解していた (MathNet ではどちらも LU() 経由) ので、LU を 1 回だけ計算して使い回す。非正方行列は旧と同じく ArgumentException
+        var lu = mat.LU();
+        if (lu.Determinant == 0)
             return null;
         try
         {
-            return mat.Inverse();
+            return lu.Inverse();
         }
         catch
         {
@@ -43,11 +55,23 @@ public static class MathnetEx
     /// <returns></returns>
     public static Matrix TryInverse(this Matrix mat)
     {
-        if (mat.Determinant() == 0)
+        //if (mat.Determinant() == 0)
+        //    return null;
+        //try
+        //{
+        //    return (Matrix)mat.Inverse();
+        //}
+        //catch
+        //{
+        //    return null;
+        //}
+        // 261111Cl 変更: LU を 1 回だけ計算して使い回す (上の Matrix<double> 版と同じ)
+        var lu = mat.LU();
+        if (lu.Determinant == 0)
             return null;
         try
         {
-            return (Matrix)mat.Inverse();
+            return (Matrix)lu.Inverse();
         }
         catch
         {
@@ -94,6 +118,11 @@ public static class MathnetEx
 
         int k = 0;
         double mNorm = m.L1Norm();
+        // 261111Cl 追加: mNorm=+∞ のとき、.NET 9 以降は (int)Math.Ceiling(Math.Log2(∞)) が int.MaxValue に飽和し、下の二乗ループが 2^31 回回ってハングする。
+        // 旧 (.NET 8 まで) は int.MinValue になり、m.Divide(ScaleB(1, int.MinValue) = 0) で MathNet が DivideByZeroException を投げていた (比較ハーネスで旧算法を再現して確認)。
+        // それに合わせて同じ例外を投げる (mNorm=NaN は従来どおり k=0 の経路)
+        if (double.IsInfinity(mNorm))
+            throw new DivideByZeroException();
         if (mNorm > 0.5)
         {
             k = (int)Math.Ceiling(Math.Log2(mNorm));
@@ -426,27 +455,51 @@ public static class GraphicsAlpha
     public static Rectangle MeasureStringPrecisely(Graphics g,
         string text, Font font, Size proposedSize, StringFormat stringFormat)
     {
-        //解像度を引き継いで、Bitmapを作成する
-        Bitmap bmp = new(proposedSize.Width, proposedSize.Height, g);
-        //BitmapのGraphicsを作成する
-        Graphics bmpGraphics = Graphics.FromImage(bmp);
-        //Graphicsのプロパティを引き継ぐ
-        bmpGraphics.TextRenderingHint = g.TextRenderingHint;
-        bmpGraphics.TextContrast = g.TextContrast;
-        bmpGraphics.PixelOffsetMode = g.PixelOffsetMode;
-        bmpGraphics.Transform = g.Transform;
-        //文字列の描かれていない部分の色を取得する
-        Color backColor = bmp.GetPixel(0, 0);
-        //実際にBitmapに文字列を描画する
-        bmpGraphics.DrawString(text, font, Brushes.Black,
-            new RectangleF(0f, 0f, proposedSize.Width, proposedSize.Height),
-            stringFormat);
-        bmpGraphics.Dispose();
-        //文字列が描画されている範囲を計測する
-        Rectangle resultRect = MeasureForegroundArea(bmp, backColor);
-        bmp.Dispose();
+        #region 261111Cl 変更前
+        ////解像度を引き継いで、Bitmapを作成する
+        //Bitmap bmp = new(proposedSize.Width, proposedSize.Height, g);
+        ////BitmapのGraphicsを作成する
+        //Graphics bmpGraphics = Graphics.FromImage(bmp);
+        ////Graphicsのプロパティを引き継ぐ
+        //bmpGraphics.TextRenderingHint = g.TextRenderingHint;
+        //bmpGraphics.TextContrast = g.TextContrast;
+        //bmpGraphics.PixelOffsetMode = g.PixelOffsetMode;
+        //bmpGraphics.Transform = g.Transform;
+        ////文字列の描かれていない部分の色を取得する
+        //Color backColor = bmp.GetPixel(0, 0);
+        ////実際にBitmapに文字列を描画する
+        //bmpGraphics.DrawString(text, font, Brushes.Black,
+        //    new RectangleF(0f, 0f, proposedSize.Width, proposedSize.Height),
+        //    stringFormat);
+        //bmpGraphics.Dispose();
+        ////文字列が描画されている範囲を計測する
+        //Rectangle resultRect = MeasureForegroundArea(bmp, backColor);
+        //bmp.Dispose();
 
-        return resultRect;
+        //return resultRect;
+        #endregion 261111Cl 変更前
+        // 261111Cl 変更: Bitmap・Graphics・g.Transform の複製を using で確実に解放する (例外時も漏らさない)。処理の順序は旧と同じ
+        //解像度を引き継いで、Bitmapを作成する
+        using Bitmap bmp = new(proposedSize.Width, proposedSize.Height, g);
+        Color backColor;
+        //BitmapのGraphicsを作成する
+        using (Graphics bmpGraphics = Graphics.FromImage(bmp))
+        {
+            //Graphicsのプロパティを引き継ぐ
+            bmpGraphics.TextRenderingHint = g.TextRenderingHint;
+            bmpGraphics.TextContrast = g.TextContrast;
+            bmpGraphics.PixelOffsetMode = g.PixelOffsetMode;
+            using var transform = g.Transform;
+            bmpGraphics.Transform = transform;
+            //文字列の描かれていない部分の色を取得する
+            backColor = bmp.GetPixel(0, 0);
+            //実際にBitmapに文字列を描画する
+            bmpGraphics.DrawString(text, font, Brushes.Black,
+                new RectangleF(0f, 0f, proposedSize.Width, proposedSize.Height),
+                stringFormat);
+        }
+        //文字列が描画されている範囲を計測する
+        return MeasureForegroundArea(bmp, backColor);
     }
 
     /// <summary>指定されたBitmapで、backColor以外の色が使われている範囲を計測する</summary>
@@ -456,6 +509,17 @@ public static class GraphicsAlpha
         int maxWidth = bmp.Width;
         int maxHeight = bmp.Height;
 
+        // 261111Cl 追加: 1 画素ごとに GDI+ を呼ぶ GetPixel の代わりに、LockBits で全画素を一度に読み出す。
+        // Format32bppArgb で読むので、各要素は GetPixel(x, y).ToArgb() と同じ値 (0xAARRGGBB)
+        var px = new int[maxWidth * maxHeight];
+        var bmpData = bmp.LockBits(new Rectangle(0, 0, maxWidth, maxHeight), System.Drawing.Imaging.ImageLockMode.ReadOnly, System.Drawing.Imaging.PixelFormat.Format32bppArgb);
+        try
+        {
+            for (int y = 0; y < maxHeight; y++)
+                System.Runtime.InteropServices.Marshal.Copy(bmpData.Scan0 + y * bmpData.Stride, px, y * maxWidth, maxWidth);
+        }
+        finally { bmp.UnlockBits(bmpData); }
+
         //左側の空白部分を計測する
         int leftPosition = -1;
         for (int x = 0; x < maxWidth; x++)
@@ -463,7 +527,8 @@ public static class GraphicsAlpha
             for (int y = 0; y < maxHeight; y++)
             {
                 //違う色を見つけたときは、位置を決定する
-                if (bmp.GetPixel(x, y).ToArgb() != backColorArgb)
+                //if (bmp.GetPixel(x, y).ToArgb() != backColorArgb)
+                if (px[y * maxWidth + x] != backColorArgb) // 261111Cl 変更 (LockBits で読んだ画素)
                 {
                     leftPosition = x;
                     break;
@@ -486,7 +551,8 @@ public static class GraphicsAlpha
         {
             for (int y = 0; y < maxHeight; y++)
             {
-                if (bmp.GetPixel(x, y).ToArgb() != backColorArgb)
+                //if (bmp.GetPixel(x, y).ToArgb() != backColorArgb)
+                if (px[y * maxWidth + x] != backColorArgb) // 261111Cl 変更 (LockBits で読んだ画素)
                 {
                     rightPosition = x;
                     break;
@@ -508,7 +574,8 @@ public static class GraphicsAlpha
         {
             for (int x = leftPosition; x <= rightPosition; x++)
             {
-                if (bmp.GetPixel(x, y).ToArgb() != backColorArgb)
+                //if (bmp.GetPixel(x, y).ToArgb() != backColorArgb)
+                if (px[y * maxWidth + x] != backColorArgb) // 261111Cl 変更 (LockBits で読んだ画素)
                 {
                     topPosition = y;
                     break;
@@ -530,7 +597,8 @@ public static class GraphicsAlpha
         {
             for (int x = leftPosition; x <= rightPosition; x++)
             {
-                if (bmp.GetPixel(x, y).ToArgb() != backColorArgb)
+                //if (bmp.GetPixel(x, y).ToArgb() != backColorArgb)
+                if (px[y * maxWidth + x] != backColorArgb) // 261111Cl 変更 (LockBits で読んだ画素)
                 {
                     bottomPosition = y;
                     break;

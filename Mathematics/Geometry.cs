@@ -634,7 +634,10 @@ public static class Geometry
         //a x + b y = c
         //(y1 - y2) x - (x1 - x2) y = x1 y2 - x2 y1
 
-        if (a * (p1.X + p2.X) - b * (p1.Y + p2.Y) == 0)
+        //if (a * (p1.X + p2.X) - b * (p1.Y + p2.Y) == 0)
+        // 261111Cl 変更 (不具合修正): 退化の判定が下の式の分母と食い違っていた (和と差・符号の書き損じ)。本来の分母 a(x1-x2)+b(y1-y2) が 0 のときだけ中点を返す。
+        // 旧は、2 点の和が直線の法線と直交するような場合 (例: x=c の直線と原点対称な 2 点) に、正しい交点ではなく中点を返していた
+        if (a * (p1.X - p2.X) + b * (p1.Y - p2.Y) == 0)
             return ((p1.X + p2.X) / 2, (p1.Y + p2.Y) / 2);
 
         return (
@@ -731,49 +734,123 @@ public static class Geometry
     /// <returns></returns>
     public static PointD[][] GetPointsWithinRectangle(IEnumerable<PointD> sourcePoints, RectangleD area)
     {
-        var pt = sourcePoints.ToList();
-        //まず、横軸の上限と下限をトリム
-        var first = pt.FindIndex(p => p.X >= area.X) - 1;
-        if (first > 0)
-            pt.RemoveRange(0, first);
-        var last = pt.FindLastIndex(p => p.X <= area.X + area.Width) + 2;
-        if (last < pt.Count)
-            pt.RemoveRange(last, pt.Count - last);
+        #region 261111Cl 変更前
+        //var pt = sourcePoints.ToList();
+        ////まず、横軸の上限と下限をトリム
+        //var first = pt.FindIndex(p => p.X >= area.X) - 1;
+        //if (first > 0)
+            //pt.RemoveRange(0, first);
+        //var last = pt.FindLastIndex(p => p.X <= area.X + area.Width) + 2;
+        //if (last < pt.Count)
+            //pt.RemoveRange(last, pt.Count - last);
 
-        if (pt.Max(p => p.Y) <= area.UpperY && pt.Min(pt => pt.Y) >= area.Y)
-            return [[.. pt]];
-        else if (pt.Max(p => p.Y) <= area.Y || pt.Min(pt => pt.Y) >= area.UpperY)
+        //if (pt.Max(p => p.Y) <= area.UpperY && pt.Min(pt => pt.Y) >= area.Y)
+            //return [[.. pt]];
+        //else if (pt.Max(p => p.Y) <= area.Y || pt.Min(pt => pt.Y) >= area.UpperY)
+            //return [[]];
+        //else
+        //{
+            //for (int i = 0; i < pt.Count - 1; i++)
+            //{
+                //if (!area.IsInside(pt[i]) || !area.IsInside(pt[i + 1])) //どちらかが範囲外の時
+                //{
+                    //var pts = getCrossPoint(pt[i], pt[i + 1], area);
+                    //if (pts != null)
+                    //{
+                        //pt.InsertRange(i + 1, pts);
+                        //i += pts.Length;
+                    //}
+                //}
+            //}
+
+            //var results = new List<List<PointD>>();
+            //for (int i = 0; i < pt.Count - 1; i++)
+            //{
+                //if (!area.IsInside(pt[i]))
+                    //pt.RemoveAt(i--);
+                //else
+                //{
+                    //var pts = new List<PointD>();
+                    //for (; i < pt.Count && area.IsInside(pt[i]); i++)
+                        //pts.Add(new PointD(pt[i]));
+                    //i--;
+                    //results.Add(pts);
+                //}
+            //}
+            //return [.. results.Select(r => r.ToArray())];
+        //}
+        #endregion 261111Cl 変更前
+        // 261111Cl 変更: 全体の ToList + RemoveRange、Max/Min の計 4 回の走査、InsertRange と RemoveAt(i--) の O(M²) をやめ、添字の範囲と前から順の走査で同じ結果を作る
+        ReadOnlySpan<PointD> all = sourcePoints switch
+        {
+            PointD[] arr => arr,
+            List<PointD> list => CollectionsMarshal.AsSpan(list),
+            _ => sourcePoints.ToArray()
+        };
+        //まず、横軸の上限と下限をトリム (旧: FindIndex(X >= area.X) - 1 より前を削り、残りの FindLastIndex(X <= area.X + area.Width) + 2 以降を削る)
+        int first = -1;
+        for (int i = 0; i < all.Length; i++)
+            if (all[i].X >= area.X) { first = i; break; }
+        first--;
+        var pt = first > 0 ? all[first..] : all;
+        int last = -1;
+        for (int i = pt.Length - 1; i >= 0; i--)
+            if (pt[i].X <= area.X + area.Width) { last = i; break; }
+        last += 2;
+        if (last < pt.Length)
+            pt = pt[..last];
+
+        // Y の最大・最小を Enumerable.Max/Min (セレクタ版) と同じ規則で求める: 空なら例外、Max は NaN を無視 (全部 NaN なら NaN)、Min は NaN が 1 つでもあれば NaN
+        if (pt.Length == 0)
+            throw new InvalidOperationException("Sequence contains no elements");
+        double maxY = pt[0].Y, minY = pt[0].Y;
+        int k = 1;
+        while (double.IsNaN(maxY) && k < pt.Length)
+            maxY = pt[k++].Y;
+        for (; k < pt.Length; k++)
+            if (pt[k].Y > maxY) maxY = pt[k].Y;
+        if (!double.IsNaN(minY))
+            for (int i = 1; i < pt.Length; i++)
+            {
+                var y = pt[i].Y;
+                if (y < minY) minY = y;
+                else if (double.IsNaN(y)) { minY = y; break; }
+            }
+
+        if (maxY <= area.UpperY && minY >= area.Y)
+            return [pt.ToArray()];
+        else if (maxY <= area.Y || minY >= area.UpperY)
             return [[]];
         else
         {
-            for (int i = 0; i < pt.Count - 1; i++)
+            // 隣り合う 2 点のどちらかが範囲外なら、その間に交点を挟んだ列 q を作る (旧の InsertRange と同じ並び)
+            var q = new List<PointD>(pt.Length + 16);
+            for (int i = 0; i < pt.Length; i++)
             {
-                if (!area.IsInside(pt[i]) || !area.IsInside(pt[i + 1])) //どちらかが範囲外の時
+                q.Add(pt[i]);
+                if (i < pt.Length - 1 && (!area.IsInside(pt[i]) || !area.IsInside(pt[i + 1]))) //どちらかが範囲外の時
                 {
                     var pts = getCrossPoint(pt[i], pt[i + 1], area);
                     if (pts != null)
-                    {
-                        pt.InsertRange(i + 1, pts);
-                        i += pts.Length;
-                    }
+                        q.AddRange(pts);
                 }
             }
 
-            var results = new List<List<PointD>>();
-            for (int i = 0; i < pt.Count - 1; i++)
+            // 範囲内の点が続く区間ごとに切り出す。旧と同じく、最後の 1 点だけから始まる区間は採らない (旧のループ条件 i < Count - 1)
+            var results = new List<PointD[]>();
+            for (int i = 0; i < q.Count - 1;)
             {
-                if (!area.IsInside(pt[i]))
-                    pt.RemoveAt(i--);
-                else
+                if (!area.IsInside(q[i]))
                 {
-                    var pts = new List<PointD>();
-                    for (; i < pt.Count && area.IsInside(pt[i]); i++)
-                        pts.Add(new PointD(pt[i]));
-                    i--;
-                    results.Add(pts);
+                    i++;
+                    continue;
                 }
+                var pts = new List<PointD>();
+                for (; i < q.Count && area.IsInside(q[i]); i++)
+                    pts.Add(new PointD(q[i]));
+                results.Add([.. pts]);
             }
-            return [.. results.Select(r => r.ToArray())];
+            return [.. results];
         }
     }
 
@@ -928,7 +1005,8 @@ public static class Geometry
         {
             var n = GetClippedPolygon(i, bounds).Length;
             if (n >= 3)
-                countList.Add(GetClippedPolygon(i, bounds).Length);
+                //countList.Add(GetClippedPolygon(i, bounds).Length);
+                countList.Add(n); // 261111Cl 変更: 同じ i で GetClippedPolygon を 2 回計算していたので 1 回目の結果を使う
             if (countList.Count >= 4)
                 return true;
         }

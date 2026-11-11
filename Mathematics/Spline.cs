@@ -39,7 +39,8 @@ namespace Crystallography
 
         public PointD GetValue(double t)
         {
-            int n = (int)t;
+            //int n = (int)t;
+            int n = double.IsNaN(t) ? 0 : (int)t; // 261111Cl 変更: NaN を明示的に 0 として扱う (.NET 9 以降の (int)NaN = 0 と同じ値で、実行環境の変換規則に頼らない。.NET 8 までは int.MinValue で範囲外例外だった)。±∞ は (int) の飽和で両端に寄る
             if (t < 0) n = 0;
             if (n > Pt.Count - 2) n = Pt.Count - 2;
             t = t - n;

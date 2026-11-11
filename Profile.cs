@@ -192,6 +192,68 @@ public partial class Profile : ICloneable
 
         return GetValues([x], pointNum, order, eachside, false)[0];
     }
+
+    /// <summary>261111Cl 追加: list の X が狭義単調増加 (NaN を含まない) なら true。getValue21Sorted / getErrSorted を使ってよいかの判定</summary>
+    internal static bool isStrictlyAscendingX(List<PointD> list)
+    {
+        var s = CollectionsMarshal.AsSpan(list);
+        for (int i = 1; i < s.Length; i++)
+            if (!(s[i - 1].X < s[i].X))
+                return false;
+        return true;
+    }
+
+    /// <summary>261111Cl 追加: GetValue(x, 2, 1) と同じ値を二分探索で返す。Pt の X が狭義単調増加 (isStrictlyAscendingX) のときだけ呼ぶこと。
+    /// 狭義単調増加なら、旧の線形探索が止まる位置は「X ≥ x となる最初の点の 1 つ手前」と一致する (== 一致なら Pt[pos+1].Y を返すのも同じ)。
+    /// x が NaN、または点が 2 つ未満のときは旧の GetValue に回す (旧と同じ例外・値)</summary>
+    internal double getValue21Sorted(double x)
+    {
+        if (double.IsNaN(x) || Pt.Count < 2)
+            return GetValue(x, 2, 1);
+        var p = CollectionsMarshal.AsSpan(Pt);
+        if (x <= p[0].X)
+            return (p[0].Y - p[1].Y) / (p[0].X - p[1].X) * (x - p[1].X) + p[1].Y;
+        else if (p[^1].X < x)
+            return (p[^2].Y - p[^1].Y) / (p[^2].X - p[^1].X) * (x - p[^1].X) + p[^1].Y;
+        // ここでは p[0].X < x <= p[^1].X。X ≥ x となる最初の添字 lo (1 ≤ lo ≤ Count-1) を探す
+        int lo = 1, hi = p.Length - 1;
+        while (lo < hi)
+        {
+            int mid = (lo + hi) >>> 1;
+            if (p[mid].X < x) lo = mid + 1;
+            else hi = mid;
+        }
+        int pos = lo - 1;
+        if (x < p[pos + 1].X)
+            return (p[pos].Y - p[pos + 1].Y) / (p[pos].X - p[pos + 1].X) * (x - p[pos + 1].X) + p[pos + 1].Y;
+        else // p[pos + 1].X == x
+            return p[pos + 1].Y;
+    }
+
+    /// <summary>261111Cl 追加: GetErr(x) と同じ値を二分探索で返す。Err の X が狭義単調増加 (isStrictlyAscendingX) のときだけ呼ぶこと。
+    /// 旧の線形探索は Err[i].X == x を i の側でしか見ないので、x が Err[k].X (k ≥ 1) に一致しても (k-1, k) の平均を返す。それも同じにする。
+    /// x が NaN、点が 2 つ未満、または Err と Pt の点数が違うときは旧の GetErr に回す</summary>
+    internal double getErrSorted(double x)
+    {
+        if (double.IsNaN(x) || Err.Count < 2 || Err.Count != Pt.Count)
+            return GetErr(x);
+        var e = CollectionsMarshal.AsSpan(Err);
+        if (e[0].X > x)
+            return e[0].Y;
+        else if (e[^1].X < x)
+            return e[^1].Y;
+        if (e[0].X == x)
+            return e[0].Y;
+        // ここでは e[0].X < x <= e[^1].X。X ≥ x となる最初の添字 lo (1 ≤ lo ≤ Count-1) を探す
+        int lo = 1, hi = e.Length - 1;
+        while (lo < hi)
+        {
+            int mid = (lo + hi) >>> 1;
+            if (e[mid].X < x) lo = mid + 1;
+            else hi = mid;
+        }
+        return (e[lo - 1].Y + e[lo].Y) / 2;
+    }
     #endregion
 
     #region GetValues　指定されたxの値に対してorder次関数で補間した値を返す
@@ -799,10 +861,12 @@ public partial class DiffractionProfile2 : ICloneable
     public void SetMaskingProfile()
     {
         InterpolatedProfile.Clear();
-        for (int i = 0; i < ConvertedProfile.Pt.Count; i++)
-            InterpolatedProfile.Pt.Add(ConvertedProfile.Pt[i]);
-        for (int i = 0; i < ConvertedProfile.Err.Count; i++)
-            InterpolatedProfile.Err.Add(ConvertedProfile.Err[i]);
+        //for (int i = 0; i < ConvertedProfile.Pt.Count; i++)
+        //    InterpolatedProfile.Pt.Add(ConvertedProfile.Pt[i]);
+        //for (int i = 0; i < ConvertedProfile.Err.Count; i++)
+        //    InterpolatedProfile.Err.Add(ConvertedProfile.Err[i]);
+        InterpolatedProfile.Pt.AddRange(ConvertedProfile.Pt); // 261111Cl 変更: 1 要素ずつの Add → AddRange
+        InterpolatedProfile.Err.AddRange(ConvertedProfile.Err); // 261111Cl 変更
 
         if (DoesMaskAndInterpolate && maskingRanges.Count > 0)
         {
@@ -810,13 +874,30 @@ public partial class DiffractionProfile2 : ICloneable
             for (int i = 0; i < maskingRanges.Count; i++)
             {
                 x.Add([]);
-                for (int j = 0; j < InterpolatedProfile.Pt.Count && InterpolatedProfile.Pt[j].X < maskingRanges[i].Maximum; j++)
-                    if (InterpolatedProfile.Pt[j].X > maskingRanges[i].Minimum)
-                    {
-                        x[i].Add(InterpolatedProfile.Pt[j].X);
-                        InterpolatedProfile.Pt.RemoveAt(j);
-                        j--;
-                    }
+                //for (int j = 0; j < InterpolatedProfile.Pt.Count && InterpolatedProfile.Pt[j].X < maskingRanges[i].Maximum; j++)
+                //    if (InterpolatedProfile.Pt[j].X > maskingRanges[i].Minimum)
+                //    {
+                //        x[i].Add(InterpolatedProfile.Pt[j].X);
+                //        InterpolatedProfile.Pt.RemoveAt(j);
+                //        j--;
+                //    }
+                // 261111Cl 変更: RemoveAt(j--) の O(N²) をやめ、1 回の走査で詰め直す。旧と同じく、先頭から X < Maximum が続く範囲 [0, stop) だけを見て、
+                // その中で X > Minimum の点を (順序を保って) 取り除き X を記録する
+                var pts = InterpolatedProfile.Pt;
+                double max = maskingRanges[i].Maximum, min = maskingRanges[i].Minimum;
+                int stop = 0;
+                while (stop < pts.Count && pts[stop].X < max)
+                    stop++;
+                int w = 0;
+                for (int r = 0; r < stop; r++)
+                {
+                    var p = pts[r];
+                    if (p.X > min)
+                        x[i].Add(p.X);
+                    else
+                        pts[w++] = p;
+                }
+                pts.RemoveRange(w, stop - w);
             }
             var y = new List<List<double>>();
             for (int i = 0; i < x.Count; i++)
@@ -840,11 +921,13 @@ public partial class DiffractionProfile2 : ICloneable
         if (DoesSmoothing)
             SmoothedProfile = Smoothing.SavitzkyGolay(InterpolatedProfile, SazitkyGorayM, SazitkyGorayN);
         else
-            for (int i = 0; i < InterpolatedProfile.Pt.Count; i++)
-                SmoothedProfile.Pt.Add(InterpolatedProfile.Pt[i]);
+            //for (int i = 0; i < InterpolatedProfile.Pt.Count; i++)
+            //    SmoothedProfile.Pt.Add(InterpolatedProfile.Pt[i]);
+            SmoothedProfile.Pt.AddRange(InterpolatedProfile.Pt); // 261111Cl 変更: 1 要素ずつの Add → AddRange
 
-        for (int i = 0; i < InterpolatedProfile.Err.Count; i++)
-            SmoothedProfile.Err.Add(InterpolatedProfile.Err[i]);
+        //for (int i = 0; i < InterpolatedProfile.Err.Count; i++)
+        //    SmoothedProfile.Err.Add(InterpolatedProfile.Err[i]);
+        SmoothedProfile.Err.AddRange(InterpolatedProfile.Err); // 261111Cl 変更
 
         if (DoesBandpassFilter && SmoothedProfile.Pt.Count > 2)
         {
@@ -896,10 +979,12 @@ public partial class DiffractionProfile2 : ICloneable
     {
         Kalpha2RemovedProfile.Clear();
 
-        for (int i = 0; i < SmoothedProfile.Pt.Count; i++)
-            Kalpha2RemovedProfile.Pt.Add(SmoothedProfile.Pt[i]);
-        for (int i = 0; i < SmoothedProfile.Err.Count; i++)
-            Kalpha2RemovedProfile.Err.Add(SmoothedProfile.Err[i]);
+        //for (int i = 0; i < SmoothedProfile.Pt.Count; i++)
+        //    Kalpha2RemovedProfile.Pt.Add(SmoothedProfile.Pt[i]);
+        //for (int i = 0; i < SmoothedProfile.Err.Count; i++)
+        //    Kalpha2RemovedProfile.Err.Add(SmoothedProfile.Err[i]);
+        Kalpha2RemovedProfile.Pt.AddRange(SmoothedProfile.Pt); // 261111Cl 変更: 1 要素ずつの Add → AddRange
+        Kalpha2RemovedProfile.Err.AddRange(SmoothedProfile.Err); // 261111Cl 変更
 
         if (DoesRemoveKalpha2 && SrcProperty.WaveSource == WaveSource.Xray && SrcProperty.XrayElementNumber != 0 && SrcProperty.XrayLine == XrayLine.Ka1)
         {
@@ -913,6 +998,8 @@ public partial class DiffractionProfile2 : ICloneable
                 var d = alpha2 * 0.5 / Math.Sin(Kalpha2RemovedProfile.Pt[i].X / 360 * Math.PI);
                 theta.Add(Math.Asin(alpha1 * 0.5 / d) * 360 / Math.PI);
             }
+            // 261111Cl 追加: X が狭義単調増加なら (ループ中は Y しか変わらない)、GetValue(x, 2, 1) の線形探索の代わりに同じ値を返す二分探索版を使う (全体 O(N²) → O(N log N))
+            var sorted = Crystallography.Profile.isStrictlyAscendingX(Kalpha2RemovedProfile.Pt);
             for (int i = 0; i < Kalpha2RemovedProfile.Pt.Count; i++)
             {
                 if (theta[i] < Kalpha2RemovedProfile.Pt[0].X)
@@ -920,7 +1007,8 @@ public partial class DiffractionProfile2 : ICloneable
                     Kalpha2RemovedProfile.Pt[i] = new PointD(Kalpha2RemovedProfile.Pt[i].X, Kalpha2RemovedProfile.Pt[i].Y - startY * 0.5);
                 else
                     //    Kalpha2RemovedProfile.Pt[i].Y -= Kalpha2RemovedProfile.GetValue(theta[i], 2, 1) * 0.5;
-                    Kalpha2RemovedProfile.Pt[i] = new PointD(Kalpha2RemovedProfile.Pt[i].X, Kalpha2RemovedProfile.Pt[i].Y - Kalpha2RemovedProfile.GetValue(theta[i], 2, 1) * 0.5);
+                    //Kalpha2RemovedProfile.Pt[i] = new PointD(Kalpha2RemovedProfile.Pt[i].X, Kalpha2RemovedProfile.Pt[i].Y - Kalpha2RemovedProfile.GetValue(theta[i], 2, 1) * 0.5);
+                    Kalpha2RemovedProfile.Pt[i] = new PointD(Kalpha2RemovedProfile.Pt[i].X, Kalpha2RemovedProfile.Pt[i].Y - (sorted ? Kalpha2RemovedProfile.getValue21Sorted(theta[i]) : Kalpha2RemovedProfile.GetValue(theta[i], 2, 1)) * 0.5); // 261111Cl 変更
             }
         }
 
@@ -931,10 +1019,12 @@ public partial class DiffractionProfile2 : ICloneable
     public void SetBackGroundProfile()
     {
         Profile.Clear();
-        for (int i = 0; i < Kalpha2RemovedProfile.Pt.Count; i++)
-            Profile.Pt.Add(Kalpha2RemovedProfile.Pt[i]);
-        for (int i = 0; i < Kalpha2RemovedProfile.Err.Count; i++)
-            Profile.Err.Add(Kalpha2RemovedProfile.Err[i]);
+        //for (int i = 0; i < Kalpha2RemovedProfile.Pt.Count; i++)
+        //    Profile.Pt.Add(Kalpha2RemovedProfile.Pt[i]);
+        //for (int i = 0; i < Kalpha2RemovedProfile.Err.Count; i++)
+        //    Profile.Err.Add(Kalpha2RemovedProfile.Err[i]);
+        Profile.Pt.AddRange(Kalpha2RemovedProfile.Pt); // 261111Cl 変更: 1 要素ずつの Add → AddRange
+        Profile.Err.AddRange(Kalpha2RemovedProfile.Err); // 261111Cl 変更
 
         //必要であれば、ノーマライズ処理
         Normarize();
@@ -1130,6 +1220,10 @@ public partial class DiffractionProfile2 : ICloneable
 
         double startY = profile.Pt[0].Y * 2 / 3;
 
+        // 261111Cl 追加: X が狭義単調増加なら、GetValue(x, 2, 1) / GetErr(x) の線形探索の代わりに同じ値を返す二分探索版を使う (ループ中は Y しか変わらない)
+        var sortedPt = Crystallography.Profile.isStrictlyAscendingX(targetProfile.Pt);
+        var sortedErr = hasErr && Crystallography.Profile.isStrictlyAscendingX(profile.Err);
+
         for (int i = 0; i < profile.Pt.Count; i++)
         {
             double d = alpha2 / 2 / Math.Sin(profile.Pt[i].X / 360 * Math.PI);
@@ -1142,11 +1236,13 @@ public partial class DiffractionProfile2 : ICloneable
             if (theta > targetProfile.Pt[0].X)
             { // 261105Cl 波括弧を追加 (誤差の更新を同じ条件に入れるため)
                 //targetProfile.Pt[i].Y -= targetProfile.GetValue(theta, 2, 1) * ratio;
-                targetProfile.Pt[i] -= new PointD(0, targetProfile.GetValue(theta, 2, 1) * ratio);
+                //targetProfile.Pt[i] -= new PointD(0, targetProfile.GetValue(theta, 2, 1) * ratio);
+                targetProfile.Pt[i] -= new PointD(0, (sortedPt ? targetProfile.getValue21Sorted(theta) : targetProfile.GetValue(theta, 2, 1)) * ratio); // 261111Cl 変更
                 // 261105Cl 追加: 引いた量 (θ' での値 × ratio) の誤差を二乗和で加える
                 if (hasErr)
                 {
-                    var e = profile.GetErr(theta) * ratio; // 261105Cl
+                    //var e = profile.GetErr(theta) * ratio; // 261105Cl
+                    var e = (sortedErr ? profile.getErrSorted(theta) : profile.GetErr(theta)) * ratio; // 261111Cl 変更
                     targetProfile.Err[i] = new PointD(targetProfile.Err[i].X, Math.Sqrt(targetProfile.Err[i].Y * targetProfile.Err[i].Y + e * e)); // 261105Cl
                 }
             } // 261105Cl
@@ -1179,10 +1275,34 @@ public partial class DiffractionProfile2 : ICloneable
 
     public PointD[] ConvertSrcToDest(PointD[] pt)
     {
-        var dest = new List<PointD>();
+        //var dest = new List<PointD>();
+        //for (int i = 0; i < pt.Length; i++)
+        //{
+        //    var p = convertSrcToDest(pt[i]);
+        //    if (!double.IsNaN(p.X) && !double.IsInfinity(p.X) && !double.IsNaN(p.Y) && !double.IsInfinity(p.Y))
+        //        dest.Add(p);
+        //}
+        // 261111Cl 変更: 1 点ずつ Convert を呼ぶ (毎回配列と LINQ を作る) のをやめ、全点の X をまとめて 1 回で変換する。
+        // Convert は要素ごとの写像なので値は同じ。長さが合わない (単位が不明で空配列が返る) ときは旧と同じ 1 点ずつの処理に戻す
+        var xs = new double[pt.Length];
+        for (int i = 0; i < pt.Length; i++)
+            xs[i] = pt[i].X;
+        var cx = pt.Length == 0 ? xs : HorizontalAxisConverter.Convert(xs, SrcProperty, DstProperty);
+        var dest = new List<PointD>(pt.Length);
         for (int i = 0; i < pt.Length; i++)
         {
-            var p = convertSrcToDest(pt[i]);
+            PointD p;
+            if (cx.Length == pt.Length)
+            {
+                var y = pt[i].Y; // 以下 convertSrcToDest と同じ式
+                if (IsCPS && ExposureTime > 0)
+                    y /= ExposureTime;
+                if (IsLogIntensity)
+                    y = Math.Log10(y);
+                p = new PointD(cx[i], y);
+            }
+            else
+                p = convertSrcToDest(pt[i]);
             if (!double.IsNaN(p.X) && !double.IsInfinity(p.X) && !double.IsNaN(p.Y) && !double.IsInfinity(p.Y))
                 dest.Add(p);
         }
@@ -1225,10 +1345,33 @@ public partial class DiffractionProfile2 : ICloneable
     /// <returns></returns>
     public PointD[] ConvertDestToSrc(PointD[] pt)
     {
-        var dest = new List<PointD>();
+        //var dest = new List<PointD>();
+        //for (int i = 0; i < pt.Length; i++)
+        //{
+        //    var p = ConvertDestToSrc(pt[i]);
+        //    if (!double.IsNaN(p.X) && !double.IsInfinity(p.X) && !double.IsNaN(p.Y) && !double.IsInfinity(p.Y))
+        //        dest.Add(p);
+        //}
+        // 261111Cl 変更: ConvertSrcToDest(PointD[]) と同じく X をまとめて 1 回で変換する。長さが合わないときは旧と同じ 1 点ずつの処理 (旧と同じ例外) に戻す
+        var xs = new double[pt.Length];
+        for (int i = 0; i < pt.Length; i++)
+            xs[i] = pt[i].X;
+        var cx = pt.Length == 0 ? xs : HorizontalAxisConverter.Convert(xs, DstProperty, SrcProperty);
+        var dest = new List<PointD>(pt.Length);
         for (int i = 0; i < pt.Length; i++)
         {
-            var p = ConvertDestToSrc(pt[i]);
+            PointD p;
+            if (cx.Length == pt.Length)
+            {
+                var y = pt[i].Y; // 以下 ConvertDestToSrc(PointD) と同じ式
+                if (IsCPS && ExposureTime != 0)
+                    y *= ExposureTime;
+                if (IsLogIntensity)
+                    y = Math.Pow(10, y);
+                p = new PointD(cx[i], y);
+            }
+            else
+                p = ConvertDestToSrc(pt[i]);
             if (!double.IsNaN(p.X) && !double.IsInfinity(p.X) && !double.IsNaN(p.Y) && !double.IsInfinity(p.Y))
                 dest.Add(p);
         }

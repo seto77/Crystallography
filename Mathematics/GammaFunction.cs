@@ -170,21 +170,22 @@ namespace Crystallography
         /// without underflow/overlow.</summary>
         public static double Hypot(double a, double b)
         {
-            double r;
+            //double r;
 
-            if (Math.Abs(a) > Math.Abs(b))
-            {
-                r = b / a;
-                r = Math.Abs(a) * Math.Sqrt(1 + r * r);
-            }
-            else if (b != 0)
-            {
-                r = a / b;
-                r = Math.Abs(b) * Math.Sqrt(1 + r * r);
-            }
-            else r = 0.0;
+            //if (Math.Abs(a) > Math.Abs(b))
+            //{
+            //    r = b / a;
+            //    r = Math.Abs(a) * Math.Sqrt(1 + r * r);
+            //}
+            //else if (b != 0)
+            //{
+            //    r = a / b;
+            //    r = Math.Abs(b) * Math.Sqrt(1 + r * r);
+            //}
+            //else r = 0.0;
 
-            return r;
+            //return r;
+            return double.Hypot(a, b); // 261111Cl 変更: 標準の double.Hypot (あふれ・アンダーフローなし。値は丸め誤差の範囲で同じ、∞ と NaN の組では IEEE どおり ∞ を返す)
         }
 
         /// <summary>Returns the greatest common divisor of two integers using euclids algorithm.</summary>
@@ -263,8 +264,9 @@ namespace Crystallography
         {
             // TODO: check
             double x, y, ser, temp;
-            double[] coefficient = new double[]{76.18009172947146,-86.50535032941677,
-                                                   24.01409824083091,-1.231739572450155,0.1208650973866179e-2,-0.5395239384953e-5};
+            //double[] coefficient = new double[]{76.18009172947146,-86.50535032941677,
+            //                                       24.01409824083091,-1.231739572450155,0.1208650973866179e-2,-0.5395239384953e-5};
+            // 261111Cl 変更: 呼ぶたびにローカル配列を作らず、下の static の coefficient (同じ 6 つの値) を使う
             int j;
             y = x = xx;
             temp = x + 5.5;
@@ -304,21 +306,36 @@ namespace Crystallography
         /// <returns>The double precision result</returns>
         public static double Factorial(int n)
         {
-            int ntop = 4;
-            //double[] a = new double[32];
-            double[] a = new double[33]; // 260718Cl: n==32 のとき while が a[32] を書き range 外例外になっていた (n>32 は GammaLn 経由なので表は 0..32 で足りる)
-            a[0] = 1.0; a[1] = 1.0; a[2] = 2.0; a[3] = 6.0; a[4] = 24.0;
-            int j;
+            //int ntop = 4;
+            ////double[] a = new double[32];
+            //double[] a = new double[33]; // 260718Cl: n==32 のとき while が a[32] を書き range 外例外になっていた (n>32 は GammaLn 経由なので表は 0..32 で足りる)
+            //a[0] = 1.0; a[1] = 1.0; a[2] = 2.0; a[3] = 6.0; a[4] = 24.0;
+            //int j;
             if (n < 0)
                 throw new ArgumentException("Factorial expects a positive argument", nameof(n));
             if (n > 32)
                 return Math.Exp(GammaLn(n + 1.0));
-            while (ntop < n)
+            //while (ntop < n)
+            //{
+            //    j = ntop++;
+            //    a[ntop] = a[j] * ntop;
+            //}
+            //return a[n];
+            return factorialTable[n]; // 261111Cl 変更: 呼ぶたびに表を作らず、同じ漸化式で一度だけ作った表を引く
+        }
+
+        /// <summary>261111Cl 追加: 0! 〜 32! の表。旧の Factorial と同じ漸化式 a[k] = a[k-1] * k (a[0..4] は定数) で作るので値は同じ</summary>
+        private static readonly double[] factorialTable = makeFactorialTable();
+        private static double[] makeFactorialTable() // 261111Cl 追加
+        {
+            var a = new double[33];
+            a[0] = 1.0; a[1] = 1.0; a[2] = 2.0; a[3] = 6.0; a[4] = 24.0;
+            for (int ntop = 4; ntop < 32;)
             {
-                j = ntop++;
+                int j = ntop++;
                 a[ntop] = a[j] * ntop;
             }
-            return a[n];
+            return a;
         }
 
         /// <summary>Returns a binomial coefficient of n and k as a double precision number</summary>
@@ -338,15 +355,16 @@ namespace Crystallography
         public static double FactorialLn(int n)
         {
             // TODO: check
-            double[] a = new double[101];
+            //double[] a = new double[101];
             if (n < 0)
                 throw new ArgumentException("Factorial expects a positive argument", nameof(n));
             if (n <= 1)
                 return 0.0d;
             if (n <= 100)
             {
-                a[n] = GammaLn(n + 1.0d);
-                return (a[n] == 0.0d) ? a[n] : (a[n]); // TODO: historic hulk?
+                //a[n] = GammaLn(n + 1.0d);
+                //return (a[n] == 0.0d) ? a[n] : (a[n]); // TODO: historic hulk?
+                return GammaLn(n + 1.0d); // 261111Cl 変更: 呼ぶたびに長さ 101 の配列を作っていた (どちらの分岐も a[n] を返すだけ)。値は同じ
             }
             else
             {

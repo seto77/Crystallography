@@ -180,11 +180,18 @@ namespace Crystallography
 
             var zero = new Matrix3D(0, 0, 0, 0, 0, 0, 0, 0, 0); // 261105Cl 追加
             if (Compliance == null || Compliance.RowCount != 6 || Compliance.ColumnCount != 6 || stress == null) return zero;
-            double[] t = [stress.E11, stress.E22, stress.E33, (stress.E23 + stress.E32) / 2, (stress.E13 + stress.E31) / 2, (stress.E12 + stress.E21) / 2];
-            var e = new double[6];
+            //double[] t = [stress.E11, stress.E22, stress.E33, (stress.E23 + stress.E32) / 2, (stress.E13 + stress.E31) / 2, (stress.E12 + stress.E21) / 2];
+            //var e = new double[6];
+            //for (int i = 0; i < 6; i++)
+            //    for (int j = 0; j < 6; j++)
+            //        e[i] += Compliance[i, j] * t[j];
+            // 261111Cl 変更: 配列 2 本を stackalloc にし、密行列なら MathNet のインデクサ (36 回) を通さず列優先の内部配列を直接読む。加算の順序は旧と同じ (結果はビット一致)
+            System.Span<double> t = [stress.E11, stress.E22, stress.E33, (stress.E23 + stress.E32) / 2, (stress.E13 + stress.E31) / 2, (stress.E12 + stress.E21) / 2];
+            System.Span<double> e = stackalloc double[6];
+            var c = Compliance.AsColumnMajorArray(); // 密行列の内部配列 (それ以外は null)
             for (int i = 0; i < 6; i++)
                 for (int j = 0; j < 6; j++)
-                    e[i] += Compliance[i, j] * t[j];
+                    e[i] += (c != null ? c[i + 6 * j] : Compliance[i, j]) * t[j];
             foreach (var v in e)
                 if (!double.IsFinite(v)) return zero;
             return new Matrix3D(e[0], e[5] / 2, e[4] / 2, e[5] / 2, e[1], e[3] / 2, e[4] / 2, e[3] / 2, e[2]);

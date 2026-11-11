@@ -137,7 +137,8 @@ public struct SizeD
 [Serializable()]
 [TypeConverter(typeof(PointDConverter))]
 [MemoryPackable]
-public partial struct PointD : IComparable, IEquatable<PointD>
+//public partial struct PointD : IComparable, IEquatable<PointD>
+public partial struct PointD : IComparable, IComparable<PointD>, IEquatable<PointD> // 261111Cl IComparable<PointD> を追加 (並べ替えでのボックス化をなくす)
 {
     public double X { get; set; }
     public double Y { get; set; }
@@ -186,6 +187,15 @@ public partial struct PointD : IComparable, IEquatable<PointD>
         if (value != 0)
             return value;
         else return Y.CompareTo(((PointD)obj).Y);
+    }
+
+    /// <summary>261111Cl 追加: ボックス化しない比較。順序は CompareTo(object) と同じ (X、同じなら Y)</summary>
+    public readonly int CompareTo(PointD other)
+    {
+        int value = X.CompareTo(other.X);
+        if (value != 0)
+            return value;
+        else return Y.CompareTo(other.Y);
     }
 
     /// <summary>Get the string representation</summary>

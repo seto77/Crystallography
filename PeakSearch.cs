@@ -632,16 +632,26 @@ public class FittingPeak
                 {
                     for (int j = i; j < ParamNum + 2; j++)
                     {
-                        Alpha[i, j] = 0;
+                        //Alpha[i, j] = 0;
+                        //for (int k = 0; k < length; k++)
+                        //    Alpha[i, j] += diff[i, k] * diff[j, k];
+                        //Alpha[j, i] = Alpha[i, j];
+                        //if (i == j)
+                        //    Alpha[i, j] *= (1 + ramda);
+                        // 261111Cl 変更: 内側ループで MathNet のインデクサを呼ばず、ローカル変数に同じ順序で累積して最後に代入する (結果はビット一致)
+                        double sumA = 0;
                         for (int k = 0; k < length; k++)
-                            Alpha[i, j] += diff[i, k] * diff[j, k];
-                        Alpha[j, i] = Alpha[i, j];
-                        if (i == j)
-                            Alpha[i, j] *= (1 + ramda);
+                            sumA += diff[i, k] * diff[j, k];
+                        Alpha[j, i] = sumA;
+                        Alpha[i, j] = i == j ? sumA * (1 + ramda) : sumA;
                     }
-                    Beta[i] = 0;
+                    //Beta[i] = 0;
+                    //for (int k = 0; k < length; k++)
+                    //    Beta[i] += ResidualCurrent[k] * diff[i, k];
+                    double sumB = 0; // 261111Cl 変更: 同上
                     for (int k = 0; k < length; k++)
-                        Beta[i] += ResidualCurrent[k] * diff[i, k];
+                        sumB += ResidualCurrent[k] * diff[i, k];
+                    Beta[i] = sumB;
                 }
                 //行列Alpha、Beta、ここまで
 
@@ -804,10 +814,16 @@ public class FittingPeak
         for (int i = 0; i < ParamNum + 2; i++)
             for (int j = i; j < ParamNum + 2; j++)
             {
-                Alpha[i, j] = 0;
+                //Alpha[i, j] = 0;
+                //for (int k = 0; k < length; k++)
+                //    Alpha[i, j] += diff[i, k] * diff[j, k];
+                //Alpha[j, i] = Alpha[i, j];
+                // 261111Cl 変更: ローカル変数に同じ順序で累積して最後に代入する (結果はビット一致)
+                double sumA = 0;
                 for (int k = 0; k < length; k++)
-                    Alpha[i, j] += diff[i, k] * diff[j, k];
-                Alpha[j, i] = Alpha[i, j];
+                    sumA += diff[i, k] * diff[j, k];
+                Alpha[i, j] = sumA;
+                Alpha[j, i] = sumA;
             }
         // 261105Cl 追加: X の標準誤差 σ_X = √(s²·[(JᵀJ)⁻¹]_XX), s² = Σr²/(n − p) (n: 点数, p: ピークのパラメータ数 + 背景 2)。
         //   旧式 1/√(JᵀJ)_XX は (1) 逆行列ではなく行列の対角を使い (他のパラメータとの相関を無視)、(2) 残差分散 s² を掛けず、
@@ -884,6 +900,9 @@ public class FittingPeak
 
         double[,] tempIntensity = new double[range * 2 + 1, range * 2 + 1];
         if (center.Y < range + 2 || center.Y > height - range - 2 || center.X < range + 2 || center.X > width - range - 2)
+            return new PointD(center.X, center.Y);
+        // 261111Cl 追加: 中心が NaN だと上の判定をすり抜け、.NET 9 以降は (int)NaN = 0 で画像の左上を読んでしまう (.NET 8 までは int.MinValue で IndexOutOfRange)。範囲外と同じく center を返す
+        if (!double.IsFinite(center.X) || !double.IsFinite(center.Y))
             return new PointD(center.X, center.Y);
 
         for (int i = 0; i < range * 2 + 1; i++)
@@ -1003,19 +1022,30 @@ public class FittingPeak
             {
                 for (int l = 0; l < 9; l++)
                 {
-                    Alpha[k, l] = 0;
+                    //Alpha[k, l] = 0;
+                    //for (int i = 0; i < xLength; i++)
+                    //    for (int j = 0; j < yLength; j++)
+                    //        Alpha[k, l] += diff[k, i, j] * diff[l, i, j];
+
+                    //if (k == l)
+                    //    Alpha[k, l] *= (1 + lambda);
+                    // 261111Cl 変更: 内側ループで MathNet のインデクサを呼ばず、ローカル変数に同じ順序で累積して最後に代入する (結果はビット一致)
+                    double sumA = 0;
                     for (int i = 0; i < xLength; i++)
                         for (int j = 0; j < yLength; j++)
-                            Alpha[k, l] += diff[k, i, j] * diff[l, i, j];
-
-                    if (k == l)
-                        Alpha[k, l] *= (1 + lambda);
+                            sumA += diff[k, i, j] * diff[l, i, j];
+                    Alpha[k, l] = k == l ? sumA * (1 + lambda) : sumA;
                 }
 
-                Beta[k, 0] = 0;
+                //Beta[k, 0] = 0;
+                //for (int i = 0; i < xLength; i++)
+                //    for (int j = 0; j < yLength; j++)
+                //        Beta[k, 0] += ResidualCurrent[i, j] * diff[k, i, j];
+                double sumB = 0; // 261111Cl 変更: 同上
                 for (int i = 0; i < xLength; i++)
                     for (int j = 0; j < yLength; j++)
-                        Beta[k, 0] += ResidualCurrent[i, j] * diff[k, i, j];
+                        sumB += ResidualCurrent[i, j] * diff[k, i, j];
+                Beta[k, 0] = sumB;
             }
 
             if (!Alpha.TryInverse(out Matrix<double> alphaInv))

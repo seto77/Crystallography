@@ -20,26 +20,17 @@ public class Euler
         //
     }
 
-    //zaがtilt,azimuthに一致するようなオイラー角を返す
-    public static Matrix3D SerchEulerAngleFromZoneAxes(ZoneAxis za, Crystal cry)
+    // 261111Cl 追加: SerchEulerAngleFromZoneAxes (晶帯軸 1〜3 本の 3 つ) の共通部分。
+    // 旧は最内ループ (初回は約 39 万回) で毎回 Matrix3D と Vector3D を割り当て、外側の角度の SinCos も毎回計算していた。
+    // ここではスカラーで計算し、SinCos と外側の角度だけで決まる積・成分をループの外へ出す。式と加算の順序は旧と同じ
+    // (Matrix3D の行列×ベクトル = Dot3 = FMA(a1, b1, FMA(a2, b2, a3 * b3))、Vector3DBase の減算と Length2、偏差の和は軸の順に左から) なので、結果はビット単位で一致する。
+    // ⚠ Matrix3D の * 演算子 (Dot3) の式を変えたら、ここも合わせること
+    private static Matrix3D serchEulerAngle(ReadOnlySpan<(double X, double Y, double Z)> v, ReadOnlySpan<(double X, double Y, double Z)> V, int iteration, double window)
     {
-        double tilt1 = za.tilt1;
-        double tilt2 = za.tilt2;
-        // 261105Cl: ZoneAxis の [uvw] を教科書の向き g₁×g₂ に変えた (FindZoneAxis.cs) ので、ここ (と下の 2 つの関数) では旧の向き −(g₁×g₂) に
-        //   戻してビームの向きに合わせる。表示の約束だけを変え、求まる方位は旧と同じ (符号の反転は浮動小数点でも厳密なので結果はビット単位で一致)
-        //var v = Vector3D.Normarize(za.u * cry.A_Axis + za.v * cry.B_Axis + za.w * cry.C_Axis); // 261105Cl 変更前
-        var v = Vector3D.Normarize((-za.u) * cry.A_Axis + (-za.v) * cry.B_Axis + (-za.w) * cry.C_Axis); // 261105Cl 変更
-
-        var (sinTilt1, cosTilt1) = Math.SinCos(tilt1);
-        var (sinTilt2, cosTilt2) = Math.SinCos(tilt2);
-        //Vector3D V = new(-sinTilt1, -cosTilt1 * sinTilt2, cosTilt1 * cosTilt1);
-        Vector3D V = new(-sinTilt1, -cosTilt1 * sinTilt2, cosTilt1 * cosTilt2); // 260718Cl: Z 成分が cosTilt1*cosTilt1 で |V|≠1 になるコピペバグを修正。2軸版/3軸版 (下方) は全て cosTilt*cosAzimuth の形で、単一軸版では tilt2 が azimuth の役を担う
-
         double Phi, phi1, phi2, PhiStart, PhiEnd, phi1Start, phi1End, phi2Start, phi2End, step, PhiBest, phi1Best, phi2Best;
         double dev, devTemp;
         PhiStart = phi1Start = phi2Start = -Math.PI;
         PhiEnd = phi1End = phi2End = Math.PI * 1.001;
-        Matrix3D m;
         step = Math.PI / 36.0;
         dev = double.PositiveInfinity;
         PhiBest = double.PositiveInfinity;
@@ -47,22 +38,37 @@ public class Euler
         phi2Best = double.PositiveInfinity;
 
         double cosP, sinP, cosP1, sinP1, cosP2, sinP2;
+        Span<double> mvZ = stackalloc double[v.Length]; // 回転後の Z 成分 (Phi と phi1 だけで決まる)
 
-        for (int n = 0; n < 15; n++)
+        for (int n = 0; n < iteration; n++)
         {
             for (Phi = PhiStart; Phi <= PhiEnd; Phi += step)
+            {
+                (sinP, cosP) = Math.SinCos(Phi);
                 for (phi1 = phi1Start; phi1 <= phi1End; phi1 += step)
+                {
+                    (sinP1, cosP1) = Math.SinCos(phi1);
+                    // 旧の m = new Matrix3D(e11, e21, e31, e12, e22, e32, e13, e23, e33) の成分 (引数は列の順)。式の左結合は旧のまま
+                    double cosP_sinP1 = cosP * sinP1, cosP_cosP1 = cosP * cosP1;
+                    double E31 = sinP * sinP1, E32 = -sinP * cosP1, E33 = cosP;
+                    for (int k = 0; k < v.Length; k++) // (m * v[k]).Z = Dot3(E31, x, E32, y, E33, z)
+                        mvZ[k] = Math.FusedMultiplyAdd(E31, v[k].X, Math.FusedMultiplyAdd(E32, v[k].Y, E33 * v[k].Z));
                     for (phi2 = phi2Start; phi2 <= phi2End; phi2 += step)
                     {
-                        (sinP, cosP) = Math.SinCos(Phi);
-                        (sinP1, cosP1) = Math.SinCos(phi1);
                         (sinP2, cosP2) = Math.SinCos(phi2);
-                        m = new Matrix3D(
-                            cosP2 * cosP1 - cosP * sinP1 * sinP2, -sinP2 * cosP1 - cosP * sinP1 * cosP2, sinP * sinP1,
-                            cosP2 * sinP1 + cosP * cosP1 * sinP2, -sinP2 * sinP1 + cosP * cosP1 * cosP2, -sinP * cosP1,
-                            sinP2 * sinP, cosP2 * sinP, cosP
-                            );
-                        devTemp = (m * v - V).Length2;
+                        double E11 = cosP2 * cosP1 - cosP_sinP1 * sinP2, E21 = -sinP2 * cosP1 - cosP_sinP1 * cosP2;
+                        double E12 = cosP2 * sinP1 + cosP_cosP1 * sinP2, E22 = -sinP2 * sinP1 + cosP_cosP1 * cosP2;
+                        double E13 = sinP2 * sinP, E23 = cosP2 * sinP;
+                        devTemp = 0;
+                        for (int k = 0; k < v.Length; k++)
+                        {
+                            // (m * v[k] - V[k]).Length2。(m * v).X = Dot3(E11, x, E12, y, E13, z)、.Y = Dot3(E21, x, E22, y, E23, z)
+                            double dx = Math.FusedMultiplyAdd(E11, v[k].X, Math.FusedMultiplyAdd(E12, v[k].Y, E13 * v[k].Z)) - V[k].X;
+                            double dy = Math.FusedMultiplyAdd(E21, v[k].X, Math.FusedMultiplyAdd(E22, v[k].Y, E23 * v[k].Z)) - V[k].Y;
+                            double dz = mvZ[k] - V[k].Z;
+                            double l2 = dx * dx + dy * dy + dz * dz;
+                            devTemp = k == 0 ? l2 : devTemp + l2;
+                        }
                         if (dev > devTemp)
                         {
                             dev = devTemp;
@@ -71,13 +77,15 @@ public class Euler
                             phi2Best = phi2;
                         }
                     }
+                }
+            }
             if (double.IsInfinity(PhiBest)) break;
-            PhiStart = PhiBest - 1.5 * step;
-            PhiEnd = PhiBest + 1.5 * step;
-            phi1Start = phi1Best - 1.5 * step;
-            phi1End = phi1Best + 1.5 * step;
-            phi2Start = phi2Best - 1.5 * step;
-            phi2End = phi2Best + 1.5 * step;
+            PhiStart = PhiBest - window * step;
+            PhiEnd = PhiBest + window * step;
+            phi1Start = phi1Best - window * step;
+            phi1End = phi1Best + window * step;
+            phi2Start = phi2Best - window * step;
+            phi2End = phi2Best + window * step;
             step *= 0.4;
         }
 
@@ -101,14 +109,110 @@ public class Euler
             else phi2Best -= Math.PI;
         }
 
-        (sinP,cosP)  = Math.SinCos(PhiBest);
-        (sinP1,cosP1) = Math.SinCos(phi1Best);
+        (sinP, cosP) = Math.SinCos(PhiBest);
+        (sinP1, cosP1) = Math.SinCos(phi1Best);
         (sinP2, cosP2) = Math.SinCos(phi2Best);
         return new Matrix3D(
                             cosP2 * cosP1 - cosP * sinP1 * sinP2, -sinP2 * cosP1 - cosP * sinP1 * cosP2, sinP * sinP1,
                             cosP2 * sinP1 + cosP * cosP1 * sinP2, -sinP2 * sinP1 + cosP * cosP1 * cosP2, -sinP * cosP1,
                             sinP2 * sinP, cosP2 * sinP, cosP
                             );
+    }
+
+    //zaがtilt,azimuthに一致するようなオイラー角を返す
+    public static Matrix3D SerchEulerAngleFromZoneAxes(ZoneAxis za, Crystal cry)
+    {
+        double tilt1 = za.tilt1;
+        double tilt2 = za.tilt2;
+        // 261105Cl: ZoneAxis の [uvw] を教科書の向き g₁×g₂ に変えた (FindZoneAxis.cs) ので、ここ (と下の 2 つの関数) では旧の向き −(g₁×g₂) に
+        //   戻してビームの向きに合わせる。表示の約束だけを変え、求まる方位は旧と同じ (符号の反転は浮動小数点でも厳密なので結果はビット単位で一致)
+        //var v = Vector3D.Normarize(za.u * cry.A_Axis + za.v * cry.B_Axis + za.w * cry.C_Axis); // 261105Cl 変更前
+        var v = Vector3D.Normarize((-za.u) * cry.A_Axis + (-za.v) * cry.B_Axis + (-za.w) * cry.C_Axis); // 261105Cl 変更
+
+        var (sinTilt1, cosTilt1) = Math.SinCos(tilt1);
+        var (sinTilt2, cosTilt2) = Math.SinCos(tilt2);
+        //Vector3D V = new(-sinTilt1, -cosTilt1 * sinTilt2, cosTilt1 * cosTilt1);
+        Vector3D V = new(-sinTilt1, -cosTilt1 * sinTilt2, cosTilt1 * cosTilt2); // 260718Cl: Z 成分が cosTilt1*cosTilt1 で |V|≠1 になるコピペバグを修正。2軸版/3軸版 (下方) は全て cosTilt*cosAzimuth の形で、単一軸版では tilt2 が azimuth の役を担う
+
+        return serchEulerAngle([(v.X, v.Y, v.Z)], [(V.X, V.Y, V.Z)], 15, 1.5); // 261111Cl 変更: 共通関数へ (結果はビット一致)
+
+        #region 261111Cl 変更前 (探索本体。serchEulerAngle へまとめた)
+
+        //double Phi, phi1, phi2, PhiStart, PhiEnd, phi1Start, phi1End, phi2Start, phi2End, step, PhiBest, phi1Best, phi2Best;
+        //double dev, devTemp;
+        //PhiStart = phi1Start = phi2Start = -Math.PI;
+        //PhiEnd = phi1End = phi2End = Math.PI * 1.001;
+        //Matrix3D m;
+        //step = Math.PI / 36.0;
+        //dev = double.PositiveInfinity;
+        //PhiBest = double.PositiveInfinity;
+        //phi1Best = double.PositiveInfinity;
+        //phi2Best = double.PositiveInfinity;
+
+        //double cosP, sinP, cosP1, sinP1, cosP2, sinP2;
+
+        //for (int n = 0; n < 15; n++)
+        //{
+            //for (Phi = PhiStart; Phi <= PhiEnd; Phi += step)
+                //for (phi1 = phi1Start; phi1 <= phi1End; phi1 += step)
+                    //for (phi2 = phi2Start; phi2 <= phi2End; phi2 += step)
+                    //{
+                        //(sinP, cosP) = Math.SinCos(Phi);
+                        //(sinP1, cosP1) = Math.SinCos(phi1);
+                        //(sinP2, cosP2) = Math.SinCos(phi2);
+                        //m = new Matrix3D(
+                            //cosP2 * cosP1 - cosP * sinP1 * sinP2, -sinP2 * cosP1 - cosP * sinP1 * cosP2, sinP * sinP1,
+                            //cosP2 * sinP1 + cosP * cosP1 * sinP2, -sinP2 * sinP1 + cosP * cosP1 * cosP2, -sinP * cosP1,
+                            //sinP2 * sinP, cosP2 * sinP, cosP
+                            //);
+                        //devTemp = (m * v - V).Length2;
+                        //if (dev > devTemp)
+                        //{
+                            //dev = devTemp;
+                            //PhiBest = Phi;
+                            //phi1Best = phi1;
+                            //phi2Best = phi2;
+                        //}
+                    //}
+            //if (double.IsInfinity(PhiBest)) break;
+            //PhiStart = PhiBest - 1.5 * step;
+            //PhiEnd = PhiBest + 1.5 * step;
+            //phi1Start = phi1Best - 1.5 * step;
+            //phi1End = phi1Best + 1.5 * step;
+            //phi2Start = phi2Best - 1.5 * step;
+            //phi2End = phi2Best + 1.5 * step;
+            //step *= 0.4;
+        //}
+
+        //if (phi1Best < -Math.PI) phi1Best += 2 * Math.PI;
+        //if (phi1Best > Math.PI) phi1Best -= 2 * Math.PI;
+
+        //if (phi2Best < -Math.PI) phi2Best += 2 * Math.PI;
+        //if (phi2Best > Math.PI) phi2Best -= 2 * Math.PI;
+
+        //if (PhiBest < -Math.PI) PhiBest += 2 * Math.PI;
+        //if (PhiBest > Math.PI) PhiBest -= 2 * Math.PI;
+
+        //if (PhiBest < 0)
+        //{
+            //PhiBest = -PhiBest;
+
+            //if (phi1Best < 0) phi1Best += Math.PI;
+            //else phi1Best -= Math.PI;
+
+            //if (phi2Best < 0) phi2Best += Math.PI;
+            //else phi2Best -= Math.PI;
+        //}
+
+        //(sinP,cosP)  = Math.SinCos(PhiBest);
+        //(sinP1,cosP1) = Math.SinCos(phi1Best);
+        //(sinP2, cosP2) = Math.SinCos(phi2Best);
+        //return new Matrix3D(
+                            //cosP2 * cosP1 - cosP * sinP1 * sinP2, -sinP2 * cosP1 - cosP * sinP1 * cosP2, sinP * sinP1,
+                            //cosP2 * sinP1 + cosP * cosP1 * sinP2, -sinP2 * sinP1 + cosP * cosP1 * cosP2, -sinP * cosP1,
+                            //sinP2 * sinP, cosP2 * sinP, cosP
+                            //);
+        #endregion 261111Cl 変更前
     }
 
     //za1がtilt1,azimuth1に、za2がtilt2,azimuth2になるべく一致するようなオイラー角を返す
@@ -133,80 +237,85 @@ public class Euler
         var (sinAzimuth2, cosAzimuth2) = Math.SinCos(azimuth2);
         var V2 = new Vector3D(-sinTilt2, -cosTilt2 * sinAzimuth2, cosTilt2 * cosAzimuth2);
 
-        double Phi, phi1, phi2, PhiStart, PhiEnd, phi1Start, phi1End, phi2Start, phi2End, step, PhiBest, phi1Best, phi2Best;
-        double dev, devTemp;
-        PhiStart = phi1Start = phi2Start = -Math.PI;
-        PhiEnd = phi1End = phi2End = Math.PI * 1.001;
-        Matrix3D m;
-        step = Math.PI / 36.0;
-        dev = double.PositiveInfinity;
-        PhiBest = double.PositiveInfinity;
-        phi1Best = double.PositiveInfinity;
-        phi2Best = double.PositiveInfinity;
+        return serchEulerAngle([(v1.X, v1.Y, v1.Z), (v2.X, v2.Y, v2.Z)], [(V1.X, V1.Y, V1.Z), (V2.X, V2.Y, V2.Z)], 15, 1.5); // 261111Cl 変更: 共通関数へ (結果はビット一致)
 
-        double cosP, sinP, cosP1, sinP1, cosP2, sinP2;
+        #region 261111Cl 変更前 (探索本体。serchEulerAngle へまとめた)
 
-        for (int n = 0; n < 15; n++)
-        {
-            for (Phi = PhiStart; Phi <= PhiEnd; Phi += step)
-                for (phi1 = phi1Start; phi1 <= phi1End; phi1 += step)
-                    for (phi2 = phi2Start; phi2 <= phi2End; phi2 += step)
-                    {
-                        (sinP, cosP) = Math.SinCos(Phi);
-                        (sinP1, cosP1) = Math.SinCos(phi1);
-                        (sinP2, cosP2) = Math.SinCos(phi2);
-                        m = new Matrix3D(
-                            cosP2 * cosP1 - cosP * sinP1 * sinP2, -sinP2 * cosP1 - cosP * sinP1 * cosP2, sinP * sinP1,
-                            cosP2 * sinP1 + cosP * cosP1 * sinP2, -sinP2 * sinP1 + cosP * cosP1 * cosP2, -sinP * cosP1,
-                            sinP2 * sinP, cosP2 * sinP, cosP
-                            );
-                        devTemp = (m * v1 - V1).Length2 + (m * v2 - V2).Length2;
-                        if (dev > devTemp)
-                        {
-                            dev = devTemp;
-                            PhiBest = Phi;
-                            phi1Best = phi1;
-                            phi2Best = phi2;
-                        }
-                    }
-            if (double.IsInfinity(PhiBest)) break;
-            PhiStart = PhiBest - 1.5 * step;
-            PhiEnd = PhiBest + 1.5 * step;
-            phi1Start = phi1Best - 1.5 * step;
-            phi1End = phi1Best + 1.5 * step;
-            phi2Start = phi2Best - 1.5 * step;
-            phi2End = phi2Best + 1.5 * step;
-            step *= 0.4;
-        }
+        //double Phi, phi1, phi2, PhiStart, PhiEnd, phi1Start, phi1End, phi2Start, phi2End, step, PhiBest, phi1Best, phi2Best;
+        //double dev, devTemp;
+        //PhiStart = phi1Start = phi2Start = -Math.PI;
+        //PhiEnd = phi1End = phi2End = Math.PI * 1.001;
+        //Matrix3D m;
+        //step = Math.PI / 36.0;
+        //dev = double.PositiveInfinity;
+        //PhiBest = double.PositiveInfinity;
+        //phi1Best = double.PositiveInfinity;
+        //phi2Best = double.PositiveInfinity;
 
-        if (phi1Best < -Math.PI) phi1Best += 2 * Math.PI;
-        if (phi1Best > Math.PI) phi1Best -= 2 * Math.PI;
+        //double cosP, sinP, cosP1, sinP1, cosP2, sinP2;
 
-        if (phi2Best < -Math.PI) phi2Best += 2 * Math.PI;
-        if (phi2Best > Math.PI) phi2Best -= 2 * Math.PI;
+        //for (int n = 0; n < 15; n++)
+        //{
+            //for (Phi = PhiStart; Phi <= PhiEnd; Phi += step)
+                //for (phi1 = phi1Start; phi1 <= phi1End; phi1 += step)
+                    //for (phi2 = phi2Start; phi2 <= phi2End; phi2 += step)
+                    //{
+                        //(sinP, cosP) = Math.SinCos(Phi);
+                        //(sinP1, cosP1) = Math.SinCos(phi1);
+                        //(sinP2, cosP2) = Math.SinCos(phi2);
+                        //m = new Matrix3D(
+                            //cosP2 * cosP1 - cosP * sinP1 * sinP2, -sinP2 * cosP1 - cosP * sinP1 * cosP2, sinP * sinP1,
+                            //cosP2 * sinP1 + cosP * cosP1 * sinP2, -sinP2 * sinP1 + cosP * cosP1 * cosP2, -sinP * cosP1,
+                            //sinP2 * sinP, cosP2 * sinP, cosP
+                            //);
+                        //devTemp = (m * v1 - V1).Length2 + (m * v2 - V2).Length2;
+                        //if (dev > devTemp)
+                        //{
+                            //dev = devTemp;
+                            //PhiBest = Phi;
+                            //phi1Best = phi1;
+                            //phi2Best = phi2;
+                        //}
+                    //}
+            //if (double.IsInfinity(PhiBest)) break;
+            //PhiStart = PhiBest - 1.5 * step;
+            //PhiEnd = PhiBest + 1.5 * step;
+            //phi1Start = phi1Best - 1.5 * step;
+            //phi1End = phi1Best + 1.5 * step;
+            //phi2Start = phi2Best - 1.5 * step;
+            //phi2End = phi2Best + 1.5 * step;
+            //step *= 0.4;
+        //}
 
-        if (PhiBest < -Math.PI) PhiBest += 2 * Math.PI;
-        if (PhiBest > Math.PI) PhiBest -= 2 * Math.PI;
+        //if (phi1Best < -Math.PI) phi1Best += 2 * Math.PI;
+        //if (phi1Best > Math.PI) phi1Best -= 2 * Math.PI;
 
-        if (PhiBest < 0)
-        {
-            PhiBest = -PhiBest;
+        //if (phi2Best < -Math.PI) phi2Best += 2 * Math.PI;
+        //if (phi2Best > Math.PI) phi2Best -= 2 * Math.PI;
 
-            if (phi1Best < 0) phi1Best += Math.PI;
-            else phi1Best -= Math.PI;
+        //if (PhiBest < -Math.PI) PhiBest += 2 * Math.PI;
+        //if (PhiBest > Math.PI) PhiBest -= 2 * Math.PI;
 
-            if (phi2Best < 0) phi2Best += Math.PI;
-            else phi2Best -= Math.PI;
-        }
+        //if (PhiBest < 0)
+        //{
+            //PhiBest = -PhiBest;
 
-         (sinP, cosP) = Math.SinCos(PhiBest);
-         (sinP1, cosP1) = Math.SinCos(phi1Best);
-         (sinP2, cosP2) = Math.SinCos(phi2Best);
-        return new Matrix3D(
-                            cosP2 * cosP1 - cosP * sinP1 * sinP2, -sinP2 * cosP1 - cosP * sinP1 * cosP2, sinP * sinP1,
-                            cosP2 * sinP1 + cosP * cosP1 * sinP2, -sinP2 * sinP1 + cosP * cosP1 * cosP2, -sinP * cosP1,
-                            sinP2 * sinP, cosP2 * sinP, cosP
-                            );
+            //if (phi1Best < 0) phi1Best += Math.PI;
+            //else phi1Best -= Math.PI;
+
+            //if (phi2Best < 0) phi2Best += Math.PI;
+            //else phi2Best -= Math.PI;
+        //}
+
+         //(sinP, cosP) = Math.SinCos(PhiBest);
+         //(sinP1, cosP1) = Math.SinCos(phi1Best);
+         //(sinP2, cosP2) = Math.SinCos(phi2Best);
+        //return new Matrix3D(
+                            //cosP2 * cosP1 - cosP * sinP1 * sinP2, -sinP2 * cosP1 - cosP * sinP1 * cosP2, sinP * sinP1,
+                            //cosP2 * sinP1 + cosP * cosP1 * sinP2, -sinP2 * sinP1 + cosP * cosP1 * cosP2, -sinP * cosP1,
+                            //sinP2 * sinP, cosP2 * sinP, cosP
+                            //);
+        #endregion 261111Cl 変更前
     }
 
     //za1がtilt1,azimuth1に、za2がtilt2,azimuth2に、za3がなるべくtilt3,azimuth3に一致するようなオイラー角を返す
@@ -238,80 +347,85 @@ public class Euler
         var (sinAzimuth3, cosAzimuth3) = Math.SinCos(azimuth3);
         Vector3D V3 = new(-sinTilt3, -cosTilt3 * sinAzimuth3, cosTilt3 * cosAzimuth3);
 
-        double Phi, phi1, phi2, PhiStart, PhiEnd, phi1Start, phi1End, phi2Start, phi2End, step, PhiBest, phi1Best, phi2Best;
-        double dev, devTemp;
-        PhiStart = phi1Start = phi2Start = -Math.PI;
-        PhiEnd = phi1End = phi2End = Math.PI * 1.001;
-        Matrix3D m;
-        step = Math.PI / 36.0;
-        dev = double.PositiveInfinity;
-        PhiBest = double.PositiveInfinity;
-        phi1Best = double.PositiveInfinity;
-        phi2Best = double.PositiveInfinity;
+        return serchEulerAngle([(v1.X, v1.Y, v1.Z), (v2.X, v2.Y, v2.Z), (v3.X, v3.Y, v3.Z)], [(V1.X, V1.Y, V1.Z), (V2.X, V2.Y, V2.Z), (V3.X, V3.Y, V3.Z)], 25, 2.5); // 261111Cl 変更: 共通関数へ (結果はビット一致)
 
-        double cosP, sinP, cosP1, sinP1, cosP2, sinP2;
+        #region 261111Cl 変更前 (探索本体。serchEulerAngle へまとめた)
 
-        for (int n = 0; n < 25; n++)
-        {
-            for (Phi = PhiStart; Phi <= PhiEnd; Phi += step)
-                for (phi1 = phi1Start; phi1 <= phi1End; phi1 += step)
-                    for (phi2 = phi2Start; phi2 <= phi2End; phi2 += step)
-                    {
-                        (sinP, cosP) = Math.SinCos(Phi);
-                        (sinP1,cosP1) = Math.SinCos(phi1);
-                        (sinP2,cosP2) = Math.SinCos(phi2);
-                        m = new Matrix3D(
-                            cosP2 * cosP1 - cosP * sinP1 * sinP2, -sinP2 * cosP1 - cosP * sinP1 * cosP2, sinP * sinP1,
-                            cosP2 * sinP1 + cosP * cosP1 * sinP2, -sinP2 * sinP1 + cosP * cosP1 * cosP2, -sinP * cosP1,
-                            sinP2 * sinP, cosP2 * sinP, cosP
-                            );
-                        devTemp = (m * v1 - V1).Length2 + (m * v2 - V2).Length2 + (m * v3 - V3).Length2;
-                        if (dev > devTemp)
-                        {
-                            dev = devTemp;
-                            PhiBest = Phi;
-                            phi1Best = phi1;
-                            phi2Best = phi2;
-                        }
-                    }
-            if (double.IsInfinity(PhiBest)) break;
-            PhiStart = PhiBest - 2.5 * step;
-            PhiEnd = PhiBest + 2.5 * step;
-            phi1Start = phi1Best - 2.5 * step;
-            phi1End = phi1Best + 2.5 * step;
-            phi2Start = phi2Best - 2.5 * step;
-            phi2End = phi2Best + 2.5 * step;
-            step *= 0.4;
-        }
+        //double Phi, phi1, phi2, PhiStart, PhiEnd, phi1Start, phi1End, phi2Start, phi2End, step, PhiBest, phi1Best, phi2Best;
+        //double dev, devTemp;
+        //PhiStart = phi1Start = phi2Start = -Math.PI;
+        //PhiEnd = phi1End = phi2End = Math.PI * 1.001;
+        //Matrix3D m;
+        //step = Math.PI / 36.0;
+        //dev = double.PositiveInfinity;
+        //PhiBest = double.PositiveInfinity;
+        //phi1Best = double.PositiveInfinity;
+        //phi2Best = double.PositiveInfinity;
 
-        if (phi1Best < -Math.PI) phi1Best += 2 * Math.PI;
-        if (phi1Best > Math.PI) phi1Best -= 2 * Math.PI;
+        //double cosP, sinP, cosP1, sinP1, cosP2, sinP2;
 
-        if (phi2Best < -Math.PI) phi2Best += 2 * Math.PI;
-        if (phi2Best > Math.PI) phi2Best -= 2 * Math.PI;
+        //for (int n = 0; n < 25; n++)
+        //{
+            //for (Phi = PhiStart; Phi <= PhiEnd; Phi += step)
+                //for (phi1 = phi1Start; phi1 <= phi1End; phi1 += step)
+                    //for (phi2 = phi2Start; phi2 <= phi2End; phi2 += step)
+                    //{
+                        //(sinP, cosP) = Math.SinCos(Phi);
+                        //(sinP1,cosP1) = Math.SinCos(phi1);
+                        //(sinP2,cosP2) = Math.SinCos(phi2);
+                        //m = new Matrix3D(
+                            //cosP2 * cosP1 - cosP * sinP1 * sinP2, -sinP2 * cosP1 - cosP * sinP1 * cosP2, sinP * sinP1,
+                            //cosP2 * sinP1 + cosP * cosP1 * sinP2, -sinP2 * sinP1 + cosP * cosP1 * cosP2, -sinP * cosP1,
+                            //sinP2 * sinP, cosP2 * sinP, cosP
+                            //);
+                        //devTemp = (m * v1 - V1).Length2 + (m * v2 - V2).Length2 + (m * v3 - V3).Length2;
+                        //if (dev > devTemp)
+                        //{
+                            //dev = devTemp;
+                            //PhiBest = Phi;
+                            //phi1Best = phi1;
+                            //phi2Best = phi2;
+                        //}
+                    //}
+            //if (double.IsInfinity(PhiBest)) break;
+            //PhiStart = PhiBest - 2.5 * step;
+            //PhiEnd = PhiBest + 2.5 * step;
+            //phi1Start = phi1Best - 2.5 * step;
+            //phi1End = phi1Best + 2.5 * step;
+            //phi2Start = phi2Best - 2.5 * step;
+            //phi2End = phi2Best + 2.5 * step;
+            //step *= 0.4;
+        //}
 
-        if (PhiBest < -Math.PI) PhiBest += 2 * Math.PI;
-        if (PhiBest > Math.PI) PhiBest -= 2 * Math.PI;
+        //if (phi1Best < -Math.PI) phi1Best += 2 * Math.PI;
+        //if (phi1Best > Math.PI) phi1Best -= 2 * Math.PI;
 
-        if (PhiBest < 0)
-        {
-            PhiBest = -PhiBest;
+        //if (phi2Best < -Math.PI) phi2Best += 2 * Math.PI;
+        //if (phi2Best > Math.PI) phi2Best -= 2 * Math.PI;
 
-            if (phi1Best < 0) phi1Best += Math.PI;
-            else phi1Best -= Math.PI;
+        //if (PhiBest < -Math.PI) PhiBest += 2 * Math.PI;
+        //if (PhiBest > Math.PI) PhiBest -= 2 * Math.PI;
 
-            if (phi2Best < 0) phi2Best += Math.PI;
-            else phi2Best -= Math.PI;
-        }
+        //if (PhiBest < 0)
+        //{
+            //PhiBest = -PhiBest;
 
-        (sinP,cosP) = Math.SinCos(PhiBest);
-        (sinP1,cosP1) = Math.SinCos(phi1Best);
-        (sinP2,cosP2) = Math.SinCos(phi2Best);
-        return new Matrix3D(
-                            cosP2 * cosP1 - cosP * sinP1 * sinP2, -sinP2 * cosP1 - cosP * sinP1 * cosP2, sinP * sinP1,
-                            cosP2 * sinP1 + cosP * cosP1 * sinP2, -sinP2 * sinP1 + cosP * cosP1 * cosP2, -sinP * cosP1,
-                            sinP2 * sinP, cosP2 * sinP, cosP
-                            );
+            //if (phi1Best < 0) phi1Best += Math.PI;
+            //else phi1Best -= Math.PI;
+
+            //if (phi2Best < 0) phi2Best += Math.PI;
+            //else phi2Best -= Math.PI;
+        //}
+
+        //(sinP,cosP) = Math.SinCos(PhiBest);
+        //(sinP1,cosP1) = Math.SinCos(phi1Best);
+        //(sinP2,cosP2) = Math.SinCos(phi2Best);
+        //return new Matrix3D(
+                            //cosP2 * cosP1 - cosP * sinP1 * sinP2, -sinP2 * cosP1 - cosP * sinP1 * cosP2, sinP * sinP1,
+                            //cosP2 * sinP1 + cosP * cosP1 * sinP2, -sinP2 * sinP1 + cosP * cosP1 * cosP2, -sinP * cosP1,
+                            //sinP2 * sinP, cosP2 * sinP, cosP
+                            //);
+        #endregion 261111Cl 変更前
     }
 
     /// <summary>回転行列をEuler角(Z-X-Zセッティング)に変換</summary>
