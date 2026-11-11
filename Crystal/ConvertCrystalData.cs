@@ -10,9 +10,10 @@ using System.IO;
 using System.Linq;
 // using System.Linq.Dynamic.Core;       // 260427Cl DynamicExpresso へ置換
 // using System.Linq.Expressions;         // 260427Cl Expression.Parameter 不要になったため削除
-using DynamicExpresso;
+//using DynamicExpresso; // 261111Cl 削除: 対称操作式は AffineGen.Parse で読む
+using System.Buffers; // 261111Cl 追加: SearchValues (対称操作式の文字の確認)
 using System.Text;
-using System.Text.RegularExpressions; // 260427Cl 追加: 対称操作式の暗黙乗算変換に使用
+using System.Text.RegularExpressions; // 260427Cl 追加: 対称操作式の暗黙乗算変換に使用 (261111Cl: その用途は無くなった。CifNumberWithUncertaintyRegex で使う)
 using System.Threading;
 using ZLinq;
 using V3 = OpenTK.Mathematics.Vector3d;
@@ -30,9 +31,12 @@ public partial class ConvertCrystalData // 261111Cl 変更: [GeneratedRegex] の
     // 260427Cl 追加: CIF/特殊位置の "2x" のような暗黙乗算を "2*x" に変換 (DynamicExpresso は暗黙乗算非対応)
     //private static readonly Regex ImplicitMulRegex = new(@"([0-9])([xyz])", RegexOptions.Compiled); // 261111Cl 変更前
     // 261111Cl 変更: 実行時にコンパイルする Regex の代わりにソース生成 (パターン・オプションは同じ。呼び出し側はそのまま ImplicitMulRegex.Replace)
-    private static Regex ImplicitMulRegex => ImplicitMulRegexGenerated();
-    [GeneratedRegex(@"([0-9])([xyz])")]
-    private static partial Regex ImplicitMulRegexGenerated();
+    //private static Regex ImplicitMulRegex => ImplicitMulRegexGenerated(); // 261111Cl 削除 (3 行): DynamicExpresso をやめ、AffineGen.Parse が "2x" をそのまま読む
+    //[GeneratedRegex(@"([0-9])([xyz])")]
+    //private static partial Regex ImplicitMulRegexGenerated();
+
+    /// <summary>261111Cl 追加: CIF の対称操作の確認 (ConvertFromCIF) で読む文字。小文字にして空白を除いた後、これ以外 ("2*x" の * や括弧など) を含む操作は読まず、確認を飛ばす</summary>
+    private static readonly SearchValues<char> SymopChars = SearchValues.Create("xyz0123456789+-/.");
 
     /// <summary>261111Cl 追加: scaleValueText が読む CIF の数値 ("0.071(1)"、"1.2E-3(3)"、"1.2(3)E-3" など)。旧は呼ぶたびに静的 Regex.Match へパターン文字列を渡していた (パターンは同じ)</summary>
     [GeneratedRegex(@"^([+-]?(?:\d+\.?\d*|\.\d+))(?:\((\d+)\))?(?:[eE]([+-]?\d+))?(?:\((\d+)\))?$")]
@@ -1420,30 +1424,48 @@ public partial class ConvertCrystalData // 261111Cl 変更: [GeneratedRegex] の
             var th = 0.0000001;
             // 260427Cl DynamicExpresso へ置換。"x, y+1/2, z" のような対称操作 3 成分文字列を、カンマで分割して各成分を個別に Func<double,double,double,double> へコンパイルする。
             // var prms = new[] { "x", "y", "z" }.Select(s => Expression.Parameter(typeof(double), s)).ToArray();
-            var interpreter = new Interpreter();
+            //var interpreter = new Interpreter(); // 261111Cl 変更前 (DynamicExpresso)
             //文字列からラムダ式を返すローカル関数
+            // 261111Cl 変更: DynamicExpresso (CIF ごとに new Interpreter、1 操作につき 3 回 Expression.Compile) をやめ、AffineGen.Parse で読む。
+            //   小文字にしてから読むので、大文字の X, Y, Z の操作も確認する (以前は DynamicExpresso が読めず、確認を飛ばしていた。作者承認の挙動の変化)。
+            //   "x+0.5" のような小数も読む (allowDecimal)。x,y,z・数字・+-/. 以外 ("2*x" や括弧など) を含む操作は読まず、従来の読めないときと同じく確認を飛ばす
             Func<double, double, double, V3> func(string sExpr)
             {
-                try
+                #region 261111Cl 変更前 (DynamicExpresso)
+                //try
+                //{
+                //    sExpr = sExpr.Replace(" ", "").Replace(",+", ",").TrimStart(['+']);
+                //    sExpr = sExpr.Replace("/", ".0/").Replace(".0.0", ".0");//分子に小数点を加える
+                //    // (260427Ch) DynamicExpresso は "2x" のような暗黙の掛け算を受け付けないため、CIF/特殊位置表記を明示的な掛け算に直す。
+                //    // foreach (var v in new[] { 'x', 'y', 'z' })                                  // 260427Cl 旧: 30回の Replace ループ → 単一 Regex に統合
+                //    //     for (var coefficient = 0; coefficient <= 9; coefficient++)
+                //    //         sExpr = sExpr.Replace($"{coefficient}{v}", $"{coefficient}*{v}");
+                //    sExpr = ImplicitMulRegex.Replace(sExpr, "$1*$2"); // 260427Cl
+                //    // sExpr = "new [] {" + sExpr.Replace("/", ".0/").Replace(".0.0", ".0") + "}"; // 260427Cl 旧: System.Linq.Dynamic.Core 用の配列リテラル形式
+                //    // var f = DynamicExpressionParser.ParseLambda(prms, typeof(double[]), sExpr).Compile() as Func<double, double, double, double[]>;
+                //    // return (x, y, z) => { var d = f(x, y, z); return new V3(d[0], d[1], d[2]); };
+                //    var parts = sExpr.Split(',');
+                //    if (parts.Length != 3) return null;
+                //    var fx = interpreter.ParseAsDelegate<Func<double, double, double, double>>(parts[0], "x", "y", "z");
+                //    var fy = interpreter.ParseAsDelegate<Func<double, double, double, double>>(parts[1], "x", "y", "z");
+                //    var fz = interpreter.ParseAsDelegate<Func<double, double, double, double>>(parts[2], "x", "y", "z");
+                //    return (x, y, z) => new V3(fx(x, y, z), fy(x, y, z), fz(x, y, z));
+                //}
+                //catch (Exception e)
+                //{
+                //    if (AssemblyState.IsDebug)
+                //        System.Windows.Forms.MessageBox.Show(e.Message);
+                //    return null;
+                //}
+                #endregion
+                var parts = sExpr.ToLowerInvariant().Replace(" ", "").Split(','); // 261111Cl
+                if (parts.Length != 3 || parts.Any(t => t.AsSpan().ContainsAnyExcept(SymopChars))) return null; // 261111Cl
+                try // 261111Cl
                 {
-                    sExpr = sExpr.Replace(" ", "").Replace(",+", ",").TrimStart(['+']);
-                    sExpr = sExpr.Replace("/", ".0/").Replace(".0.0", ".0");//分子に小数点を加える
-                    // (260427Ch) DynamicExpresso は "2x" のような暗黙の掛け算を受け付けないため、CIF/特殊位置表記を明示的な掛け算に直す。
-                    // foreach (var v in new[] { 'x', 'y', 'z' })                                  // 260427Cl 旧: 30回の Replace ループ → 単一 Regex に統合
-                    //     for (var coefficient = 0; coefficient <= 9; coefficient++)
-                    //         sExpr = sExpr.Replace($"{coefficient}{v}", $"{coefficient}*{v}");
-                    sExpr = ImplicitMulRegex.Replace(sExpr, "$1*$2"); // 260427Cl
-                    // sExpr = "new [] {" + sExpr.Replace("/", ".0/").Replace(".0.0", ".0") + "}"; // 260427Cl 旧: System.Linq.Dynamic.Core 用の配列リテラル形式
-                    // var f = DynamicExpressionParser.ParseLambda(prms, typeof(double[]), sExpr).Compile() as Func<double, double, double, double[]>;
-                    // return (x, y, z) => { var d = f(x, y, z); return new V3(d[0], d[1], d[2]); };
-                    var parts = sExpr.Split(',');
-                    if (parts.Length != 3) return null;
-                    var fx = interpreter.ParseAsDelegate<Func<double, double, double, double>>(parts[0], "x", "y", "z");
-                    var fy = interpreter.ParseAsDelegate<Func<double, double, double, double>>(parts[1], "x", "y", "z");
-                    var fz = interpreter.ParseAsDelegate<Func<double, double, double, double>>(parts[2], "x", "y", "z");
-                    return (x, y, z) => new V3(fx(x, y, z), fy(x, y, z), fz(x, y, z));
+                    var g = AffineGen.Parse(parts[0], parts[1], parts[2], allowDecimal: true); // 261111Cl
+                    return (x, y, z) => { var (X, Y, Z) = g.Apply(x, y, z); return new V3(X, Y, Z); }; // 261111Cl
                 }
-                catch (Exception e)
+                catch (FormatException e) // 261111Cl ("x+", "1/0" など)
                 {
                     if (AssemblyState.IsDebug)
                         System.Windows.Forms.MessageBox.Show(e.Message);
