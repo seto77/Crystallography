@@ -2917,7 +2917,13 @@ public partial class BetheMethod
         //  候補は今の選び方の 8 倍の本数から取る
         //  "g" = 3 次元の |g| の小さい順 (球)、"gxy" = 面内の |g_xy| の小さい順 (円柱。同じなら |Q| の小さい順)
         var stemBeamSel = Environment.GetEnvironmentVariable("RECIPRO_STEM_BEAMSEL");
-        if (stemBeamSel is "q" or "g" or "gxy")
+        if (stemBeamSel == "u")// "u" = 今の選び方の N 本 ∪ |g| の順の N 本 (エワルド球の近くの HOLZ の環と、面内の高い |g| の両方)
+        {
+            var def = Find_gVectors(BaseRotation, vecK0);
+            var seen = new HashSet<(int H, int K, int L)>(def.Select(b => b.Index));
+            Beams = [.. def.Concat(Find_gVectors(BaseRotation, vecK0, MaxNumOfBloch * 8).OrderBy(e => e.Vec.Length2).Take(MaxNumOfBloch + 1).Where(b => seen.Add(b.Index))).OrderBy(e => e.Vec.Length2)];
+        }
+        else if (stemBeamSel is "q" or "g" or "gxy")
         {
             var cand = Find_gVectors(BaseRotation, vecK0, MaxNumOfBloch * 8);
             IEnumerable<Beam> ordered = stemBeamSel switch
