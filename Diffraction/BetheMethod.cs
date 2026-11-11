@@ -2912,6 +2912,23 @@ public partial class BetheMethod
         //k0ベクトルを計算
         var vecK0 = getVecK0(kvac, u0);
         //計算対象のg-Vectorsを決める。indexが小さく、かつsg(励起誤差)の小さいg-vectorを抽出する
+        //261111Cl 追加 (研究用、既定 = 未設定): RECIPRO_STEM_BEAMSEL=q なら、STEM のビームを励起の |Q| (= |K0|² − |K0+g|²) の小さい順に選ぶ。
+        //  今の選び方 (|g| × Q² の小さい順) は HAADF の TDS に効く面内の高い |g| を後回しにし、SrTiO₃ の 64〜200 mrad では N1000 でも 2 % ほど収束しない (STEM の設計書 §19)。
+        //  候補は今の選び方の 8 倍の本数から取る
+        //  "g" = 3 次元の |g| の小さい順 (球)、"gxy" = 面内の |g_xy| の小さい順 (円柱。同じなら |Q| の小さい順)
+        var stemBeamSel = Environment.GetEnvironmentVariable("RECIPRO_STEM_BEAMSEL");
+        if (stemBeamSel is "q" or "g" or "gxy")
+        {
+            var cand = Find_gVectors(BaseRotation, vecK0, MaxNumOfBloch * 8);
+            IEnumerable<Beam> ordered = stemBeamSel switch
+            {
+                "q" => cand.OrderBy(e => Math.Abs(e.Q)),
+                "g" => cand.OrderBy(e => e.Vec.Length2),
+                _ => cand.OrderBy(e => e.Vec.X * e.Vec.X + e.Vec.Y * e.Vec.Y).ThenBy(e => Math.Abs(e.Q)),
+            };
+            Beams = [.. ordered.Take(MaxNumOfBloch + 1).OrderBy(e => e.Vec.Length2)];
+        }
+        else
         Beams = [.. Find_gVectors(BaseRotation, vecK0).OrderBy(e => e.Vec.Length2)];
 
         int dLen = defocusses.Length, tLen = thicknesses.Length, bLen = Beams.Length;
