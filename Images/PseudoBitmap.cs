@@ -661,6 +661,10 @@ public class PseudoBitmap : IDisposable
         {
             return null;
         }
+        //261112Cl 追加: 画素ループなどで例外が出ても必ず UnlockBits する (旧はロックが残り、以後の LockBits が失敗して GetImage が null を返し続けた)。
+        //  try の中身は字下げを変えずに残す (差分を小さくするため)。finally は下の UnlockBits の位置
+        try
+        {
         double zoom = (width / srcRect.Width + height / srcRect.Height) / 2.0;
 
         # region 描画する画素位置をソース画像位置に変換するローカル関数
@@ -1119,7 +1123,12 @@ public class PseudoBitmap : IDisposable
         CollectionsMarshal.SetCount(FilterTemporary, Filter1.Count);
         CollectionsMarshal.AsSpan(FilterTemporary).Clear();
 
-        destBmp.UnlockBits(bmpData);
+        }
+        finally
+        {
+        //destBmp.UnlockBits(bmpData); //261112Cl 変更前
+        destBmp.UnlockBits(bmpData); //261112Cl 変更: finally の中へ (上の try を参照)
+        }
 
         return destBmp;
     }
