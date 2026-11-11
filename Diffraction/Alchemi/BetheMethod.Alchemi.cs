@@ -299,8 +299,11 @@ public partial class BetheMethod
                 var pOverP0 = new double[bLen];
                 for (int g = 0; g < bLen; g++)
                     pOverP0[g] = beams[g].P / beams[0].P;
+                // var reduction = new AlchemiReduction(bLen, eigenValues, eigenVectors, alpha, request.ThicknessesNm,
+                //     ImaginaryPotentialAbsorption, pOverP0); // 261111Cl 変更前
+                //261111Cl 変更: 縮約の行列積も固有値計算と同じく request.UseNativeSolver に従う (managed を指定したら全部 managed。結果は丸め誤差の範囲で同じ)
                 var reduction = new AlchemiReduction(bLen, eigenValues, eigenVectors, alpha, request.ThicknessesNm,
-                    ImaginaryPotentialAbsorption, pOverP0);
+                    ImaginaryPotentialAbsorption, pOverP0, useNative: request.UseNativeSolver && EigenEnabled);
                 var l = reduction.CoherentPathLengthNm();//方位あたり 1 回 (以後キャッシュ)
                 for (int t = 0; t < tLen; t++) lcoh[oi * tLen + t] = l[t];
 
