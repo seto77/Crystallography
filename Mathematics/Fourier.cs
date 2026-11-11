@@ -202,7 +202,9 @@ public static class Fourier
         for (int i = 0; i < src.Length; i++)
             for (int j = 0; j < src[i].Length; j++)
                 if (direction == FourierDirectionEnum.Inverse)
-                    src2[i < centerY ? i + centerY : i - centerY][j < centerX ? j + centerX : j - centerX] = filter == null ? src[i][j] : (1 - filter[i][j]) * src[i][j];
+                    //src2[i < centerY ? i + centerY : i - centerY][j < centerX ? j + centerX : j - centerX] = filter == null ? src[i][j] : (1 - filter[i][j]) * src[i][j];// 261112Cl 変更前: 奇数サイズで添字が衝突し 1 行 (1 列) が失われた
+                    // 261112Cl 変更: ifftshift (中心 c = N/2 の要素を 0 番へ)。偶数サイズでは旧と同じ
+                    src2[(i + src.Length - centerY) % src.Length][(j + src[0].Length - centerX) % src[0].Length] = filter == null ? src[i][j] : (1 - filter[i][j]) * src[i][j];
                 else
                     src2[i][j] = filter == null ? src[i][j] : (1 - filter[i][j]) * src[i][j];
         src = null;
@@ -292,7 +294,8 @@ public static class Fourier
                 dest3[i] = new Complex[src2[i].Length];
             for (int i = 0; i < src2.Length; i++)
                 for (int j = 0; j < src2[i].Length; j++)
-                    dest3[i < centerY ? i + centerY : i - centerY][j < centerX ? j + centerX : j - centerX] = dest1[i][j];
+                    //dest3[i < centerY ? i + centerY : i - centerY][j < centerX ? j + centerX : j - centerX] = dest1[i][j];// 261112Cl 変更前: 奇数サイズで添字が衝突し 1 行 (1 列) が失われた
+                    dest3[(i + centerY) % src2.Length][(j + centerX) % src2[0].Length] = dest1[i][j];// 261112Cl 変更: fftshift (0 番の要素を中心 c = N/2 へ)。偶数サイズでは旧と同じ
             dest1 = null;
             return dest3;
         }

@@ -1448,7 +1448,10 @@ public class Crystal : IEquatable<Crystal>, ICloneable, IComparable<Crystal>
         if (A_Star == null) SetAxis();
         // 261111Cl 追加: d_limit が 0 以下・NaN のときは空にして返す。.NET 9 以降は double → int の変換が飽和するので、0 のとき A / 0 = ∞ が
         // int.MaxValue になり下のループが終わらなかった (.NET 8 までは int.MinValue になって 1 回も回らず、空のまま返っていた。その挙動と同じ)
-        if (!(d_limit > 0))
+        //if (!(d_limit > 0))// 261112Cl 変更前
+        // 261112Cl 変更: d_limit が極小の正の値 (1e-300 など) でも A / d_limit が int の範囲を超えて飽和し、ループが事実上終わらなかった。
+        //  .NET 8 までは範囲外の変換が int.MinValue になって空のまま返っていたので、それと同じに空にする
+        if (!(d_limit > 0) || !(A / d_limit < int.MaxValue && B / d_limit < int.MaxValue && C / d_limit < int.MaxValue))
         {
             VectorOfG_KikuchiLine = [];
             return;

@@ -3315,7 +3315,8 @@ public static class Ring
     //FindTiltCorrection用の定数を先に決めておくメソッド
     public static void SetFindTiltParameter(IntegralProperty iP, double[] peaks, double serchRange)
     {
-        if (double.IsNaN(IP.EndLength))
+        //if (double.IsNaN(IP.EndLength))// 261112Cl 変更前: 下で IP = iP と差し替える前の、古い IP を見ていた
+        if (double.IsNaN(iP.EndLength))// 261112Cl 変更: これから使う引数 iP を見る
             return;
 
         var thread = Environment.ProcessorCount;

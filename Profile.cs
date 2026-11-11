@@ -150,6 +150,8 @@ public partial class Profile : ICloneable
             for (int i = 0; i < Err.Count - 1; i++)
                 if (Err[i].X == x)
                     return Err[i].Y;
+                else if (Err[i + 1].X == x)// 261112Cl 追加: x が 2 点目以降の X にちょうど一致したときもその点の値を返す (旧は (i, i+1) の平均を返していた)
+                    return Err[i + 1].Y;
                 else if (Err[i].X <= x && x <= Err[i + 1].X)
                     return (Err[i].Y + Err[i + 1].Y) / 2;
         }
@@ -167,6 +169,7 @@ public partial class Profile : ICloneable
     {
         if (pointNum == 2 && order == 1)//探索する点数が2, オーダーが1の時は、高速化のため以下のルーチンで
         {
+            if (double.IsNaN(x)) return double.NaN;// 261112Cl 追加: NaN は比較がすべて偽になり、下のループを抜けた後に Pt[Count] を読んで例外になっていた
             int pos = 0;//この値と、この値+1の間のindexにxが存在する
             if (x > Pt[Pt.Count * 3 / 4].X)
                 pos = Pt.Count * 3 / 4;
@@ -231,7 +234,7 @@ public partial class Profile : ICloneable
     }
 
     /// <summary>261111Cl 追加: GetErr(x) と同じ値を二分探索で返す。Err の X が狭義単調増加 (isStrictlyAscendingX) のときだけ呼ぶこと。
-    /// 旧の線形探索は Err[i].X == x を i の側でしか見ないので、x が Err[k].X (k ≥ 1) に一致しても (k-1, k) の平均を返す。それも同じにする。
+    /// (261112Cl 変更: 旧の線形探索は x が Err[k].X (k ≥ 1) に一致しても (k-1, k) の平均を返していたが、GetErr とともに、その点の値を返すように直した)
     /// x が NaN、点が 2 つ未満、または Err と Pt の点数が違うときは旧の GetErr に回す</summary>
     internal double getErrSorted(double x)
     {
@@ -252,6 +255,7 @@ public partial class Profile : ICloneable
             if (e[mid].X < x) lo = mid + 1;
             else hi = mid;
         }
+        if (e[lo].X == x) return e[lo].Y;// 261112Cl 追加: GetErr の修正に合わせ、X にちょうど一致したらその点の値
         return (e[lo - 1].Y + e[lo].Y) / 2;
     }
     #endregion

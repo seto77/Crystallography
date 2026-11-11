@@ -729,7 +729,10 @@ public class PseudoBitmap : IDisposable
         }
         #endregion
 
-        int range = (int)(1 / zoom / 2 + 0.5);
+        //int range = (int)(1 / zoom / 2 + 0.5);// 261112Cl 変更前
+        // 261112Cl 変更: zoom がほぼ 0 (描画範囲が出力の約 40 億倍) だと range が int.MaxValue に張り付き、下の sy + range があふれて標本数が 0 になり、
+        //  前の画素の色が残っていた。あふれない大きさ (int.MaxValue / 4) で頭打ちにする。それ未満では旧と同じ値
+        int range = (int)Math.Min(1 / zoom / 2 + 0.5, int.MaxValue / 4);
         int increase = (zoom >= 1) ? 0 : Math.Max(range / 3, 1);
 
         int step = AlphaEnabled ? 4 : 3;
@@ -1120,7 +1123,9 @@ public class PseudoBitmap : IDisposable
         //FilterTemporary.Clear();
         //FilterTemporary.AddRange(new bool[Filter1.Count]);
         //261111Cl 変更: 再描画のたびに Filter1.Count 個の bool[] (数千×数千画素で 16 MB) を確保していたのをやめ、要素数をそろえてその場で false に戻す (結果は同じ: 全要素 false・要素数 Filter1.Count)
-        CollectionsMarshal.SetCount(FilterTemporary, Filter1.Count);
+        FilterTemporary ??= [];// 261112Cl 追加: public フィールドが null だと SetCount で例外になっていた
+        //CollectionsMarshal.SetCount(FilterTemporary, Filter1.Count);// 261112Cl 変更前
+        CollectionsMarshal.SetCount(FilterTemporary, Filter1?.Count ?? 0);// 261112Cl 変更: Filter1 が null でも例外にしない (画素ループは Filter1 != null を確かめている)
         CollectionsMarshal.AsSpan(FilterTemporary).Clear();
 
         }

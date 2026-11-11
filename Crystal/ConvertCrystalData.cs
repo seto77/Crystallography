@@ -168,7 +168,8 @@ public partial class ConvertCrystalData // 261111Cl 変更: [GeneratedRegex] の
                 var task = System.Threading.Tasks.Task.Run(() => (Crystal[])serializer.Deserialize(fs));
                 if (!task.Wait(TimeSpan.FromSeconds(30)))
                     throw new TimeoutException();
-                cry = task.Result;
+                //cry = task.Result;// 261112Cl 変更前: Deserialize が null を返す (ルートが nil など) と、下の cry.Where / cry.Length で NullReferenceException
+                cry = task.Result ?? [];// 261112Cl 変更: null は空の配列として扱う
 
                 foreach (var c in cry.Where(e => e.FlexiblePlane != null && e.FlexiblePlane.Count > 0))
                     c.Plane = c.FlexiblePlane;
@@ -1897,7 +1898,8 @@ public partial class ConvertCrystalData // 261111Cl 変更: [GeneratedRegex] の
             return SpaceGroupNumber is >= 1 and <= 230 ? Array.FindIndex(SymmetryStatic.Symmetries, s => s.SpaceGroupNumber == SpaceGroupNumber) : -1; // 261105Cl 追加
 
         //一文字目以降の英字は全て小文字に
-        SgNameHM = SgNameHM[0] + SgNameHM[1..].ToLower();
+        //SgNameHM = SgNameHM[0] + SgNameHM[1..].ToLower();// 261112Cl 変更前: 現在のカルチャに依存 (tr-TR では I が点のない ı になり、記号が見つからない)
+        SgNameHM = SgNameHM[0] + SgNameHM[1..].ToLowerInvariant();// 261112Cl 変更: カルチャに依存しない小文字化
 
         Replace(ref SgNameHM,"P(-1)", "P-1");
 

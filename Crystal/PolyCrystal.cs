@@ -757,7 +757,12 @@ public class Crystallite
                     // 下の startPosition が画像内の誤った位置になり得る。.NET 8 までは int.MinValue になって全部範囲外として捨てられていた (その挙動に戻す)
                     if (!double.IsFinite(d)) continue;
                     // var startPosition = (int)(-d * Y + cY + 0.5) * imageWidth + (int)(d * X + cX + 0.5);
-                    var startPosition = (int)(Math.FusedMultiplyAdd(-d, Y, cY + 0.5)) * imageWidth + (int)(Math.FusedMultiplyAdd(d, X, cX + 0.5));
+                    //var startPosition = (int)(Math.FusedMultiplyAdd(-d, Y, cY + 0.5)) * imageWidth + (int)(Math.FusedMultiplyAdd(d, X, cX + 0.5));// 261112Cl 変更前
+                    // 261112Cl 変更: d が有限でも、FMA の結果が int の範囲を超えると変換が飽和し、さらに * imageWidth が桁あふれして画像内の誤った位置に入り得た。
+                    //  切り捨て (旧の (int) と同じ) を double のまま行い、行の位置が int の半分の範囲を超える点は捨てる。範囲内では旧と同じ値
+                    double startY = Math.Truncate(Math.FusedMultiplyAdd(-d, Y, cY + 0.5)), startX = Math.Truncate(Math.FusedMultiplyAdd(d, X, cX + 0.5));
+                    if (!(Math.Abs(startX) < int.MaxValue / 2 && Math.Abs(startY * imageWidth + startX) < int.MaxValue / 2)) continue;
+                    var startPosition = (int)startY * imageWidth + (int)startX;
                     var tempIntensity = Intensity2 / subDiv3 * SolidAngle[num];
 
                     var angle = (int)((Math.Atan2(Y, X) / Math.PI + 1.0) * SpotShapesAngleDivision / 2);
