@@ -2912,30 +2912,40 @@ public partial class BetheMethod
         //k0ベクトルを計算
         var vecK0 = getVecK0(kvac, u0);
         //計算対象のg-Vectorsを決める。indexが小さく、かつsg(励起誤差)の小さいg-vectorを抽出する
-        //261111Cl 追加 (研究用、既定 = 未設定): RECIPRO_STEM_BEAMSEL=q なら、STEM のビームを励起の |Q| (= |K0|² − |K0+g|²) の小さい順に選ぶ。
-        //  今の選び方 (|g| × Q² の小さい順) は HAADF の TDS に効く面内の高い |g| を後回しにし、SrTiO₃ の 64〜200 mrad では N1000 でも 2 % ほど収束しない (STEM の設計書 §19)。
-        //  候補は今の選び方の 8 倍の本数から取る
-        //  "g" = 3 次元の |g| の小さい順 (球)、"gxy" = 面内の |g_xy| の小さい順 (円柱。同じなら |Q| の小さい順)
+        // Beams = [.. Find_gVectors(BaseRotation, vecK0).OrderBy(e => e.Vec.Length2)]; // 261111Cl 変更前 (CBED と同じ選び方 = エワルド球の近くの候補から |g| × Q² の小さい順)
+        //261111Cl 変更 (作者の判断 2026-11-11、STEM の設計書 §19・§20): STEM のビームは |g| の小さい順に選ぶ。
+        //  CBED と同じ選び方は Q ≈ 0 の HOLZ の環のビームを優先し、HAADF の TDS に効く |g| の小さいビーム (HOLZ の層の中心付近・面内の高い |g|) を後回しにしていた
+        //  (Si [001] 40〜120 mrad で N80 の誤差 6.2 % → 1.4 %・N1000 でも 2 % ずれて収束しなかった、SrTiO₃ [001] 64〜200 mrad で N500 6.4 % → 0.7〜1.1 %。
+        //  Si を 5 mrad 傾けたときと ABF (弾性が主) では同程度)。候補は CBED と同じ選び方の 8 倍の本数から取る (エワルド球の殻の外と後ろ向きは入らない)。
+        //  研究用: 環境変数 RECIPRO_STEM_BEAMSEL = legacy (CBED と同じ選び方) / q (|Q| の順) / gxy (面内の |g_xy| の順) / u (CBED と同じ N 本 ∪ |g| の順の N 本)
         var stemBeamSel = Environment.GetEnvironmentVariable("RECIPRO_STEM_BEAMSEL");
-        if (stemBeamSel == "u")// "u" = 今の選び方の N 本 ∪ |g| の順の N 本 (エワルド球の近くの HOLZ の環と、面内の高い |g| の両方)
+        if (stemBeamSel == "legacy")
+            Beams = [.. Find_gVectors(BaseRotation, vecK0).OrderBy(e => e.Vec.Length2)];
+        else if (stemBeamSel == "u")
         {
             var def = Find_gVectors(BaseRotation, vecK0);
             var seen = new HashSet<(int H, int K, int L)>(def.Select(b => b.Index));
             Beams = [.. def.Concat(Find_gVectors(BaseRotation, vecK0, MaxNumOfBloch * 8).OrderBy(e => e.Vec.Length2).Take(MaxNumOfBloch + 1).Where(b => seen.Add(b.Index))).OrderBy(e => e.Vec.Length2)];
         }
-        else if (stemBeamSel is "q" or "g" or "gxy")
+        else
         {
             var cand = Find_gVectors(BaseRotation, vecK0, MaxNumOfBloch * 8);
             IEnumerable<Beam> ordered = stemBeamSel switch
             {
                 "q" => cand.OrderBy(e => Math.Abs(e.Q)),
-                "g" => cand.OrderBy(e => e.Vec.Length2),
-                _ => cand.OrderBy(e => e.Vec.X * e.Vec.X + e.Vec.Y * e.Vec.Y).ThenBy(e => Math.Abs(e.Q)),
+                "gxy" => cand.OrderBy(e => e.Vec.X * e.Vec.X + e.Vec.Y * e.Vec.Y).ThenBy(e => Math.Abs(e.Q)),
+                _ => cand.OrderBy(e => e.Vec.Length2), // 既定 = |g| の小さい順
             };
-            Beams = [.. ordered.Take(MaxNumOfBloch + 1).OrderBy(e => e.Vec.Length2)];
+            var selList = ordered.ToList();
+            int take = Math.Min(MaxNumOfBloch + 1, selList.Count);
+            // 既定 (|g| の順) は、同じ |g| の殻を途中で切らない (切ると像の対称が崩れる。CBED と同じ選び方も末尾の同点の組は丸ごと落とす)
+            if (stemBeamSel is not ("q" or "gxy") && take < selList.Count)
+            {
+                double cut = selList[take].Vec.Length2;
+                while (take > 1 && Math.Abs(selList[take - 1].Vec.Length2 - cut) <= 1e-9 * cut) take--;
+            }
+            Beams = [.. selList.Take(take).OrderBy(e => e.Vec.Length2)];
         }
-        else
-        Beams = [.. Find_gVectors(BaseRotation, vecK0).OrderBy(e => e.Vec.Length2)];
 
         int dLen = defocusses.Length, tLen = thicknesses.Length, bLen = Beams.Length;
 
