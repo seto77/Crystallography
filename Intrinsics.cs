@@ -4,6 +4,9 @@ using System.Runtime.Intrinsics;
 using System.Runtime.Intrinsics.X86;
 
 namespace Crystallography;
+// 261111Cl 追加: 4 アプリ (ReciPro / PDIndexer / IPAnalyzer / CSManager) と共有ライブラリのどこからも使われていない。
+//   Sum256 などは配列長が 4 (Complex は 2) の倍数でないと配列の外を読む。同等の計算は NativeWrapper 側にある。
+[System.Obsolete("261111Cl: 4 アプリで未使用 (配列長が 4 の倍数でないと配列の外を読む不具合あり)。将来削除予定")]
 public static class Intrinsics
 {
 

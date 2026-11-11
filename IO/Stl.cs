@@ -7,6 +7,7 @@ using System.Text;
 namespace Crystallography
 {
     /// <summary>STLファイル</summary>
+    [Obsolete("261111Cl: 4 アプリで未使用。将来削除予定")] // 261111Cl 追加
     public class StlFile
     {
         #region Constructions
@@ -310,6 +311,7 @@ namespace Crystallography
     }
 
     /// <summary>頂点</summary>
+    [Obsolete("261111Cl: 4 アプリで未使用。将来削除予定")] // 261111Cl 追加
     public struct StlVertex
     {
         #region Constructions
@@ -335,6 +337,7 @@ namespace Crystallography
     }
 
     /// <summary>ファセット（3頂点と1法線で表現する三角形）</summary>
+    [Obsolete("261111Cl: 4 アプリで未使用。将来削除予定")] // 261111Cl 追加
     public class StlFacet
     {
         #region Constructions

@@ -18,6 +18,7 @@ public static class ImageProcess
     /// <param name="width">画像の幅</param>
     /// <param name="radius">ピクセル単位でのフィルムにじみ半値幅</param>
     /// <returns></returns>
+    [Obsolete("261111Cl: 4 アプリで未使用 (GaussianBlurFast を使う)。将来削除予定")] // 261111Cl 追加
     unsafe static public double[] GaussianBlur(double[] pixels, int width, double radius)
     {
         /*  var src = Cv.Mat<double>(width, pixels.Length / width, MatrixType.F64C1, pixels);

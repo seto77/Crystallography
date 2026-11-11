@@ -1,5 +1,6 @@
 ﻿namespace Crystallography
 {
+    [System.Obsolete("261111Cl: 4 アプリで未使用。将来削除予定")] // 261111Cl 追加
     public class Tensor3D
     {
         public double E11, E12, E13, E21, E22, E23, E31, E32, E33;

@@ -2,6 +2,7 @@
 
 namespace Crystallography;
 
+[System.Obsolete("261111Cl: 4 アプリで未使用。将来削除予定")] // 261111Cl 追加
 public class AssociatedExtension
 {
     public static void Add(string extension, string appPath, string appName)

@@ -639,6 +639,7 @@ public static class IEnumerableExtensions
         public int GetHashCode(T obj) => m_selector(obj).GetHashCode();
     }
 
+    [Obsolete("261111Cl: 4 アプリで未使用 (標準の DistinctBy で代わりになる)。将来削除予定")] // 261111Cl 追加
     public static IEnumerable<T> Distinct<T, TKey>(this IEnumerable<T> source, Func<T, TKey> selector)
         => source.Distinct(new CommonSelector<T, TKey>(selector));
 }

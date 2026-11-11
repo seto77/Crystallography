@@ -116,6 +116,7 @@ public class Statistics
     /// <param name="x"></param>
     /// <param name="y"></param>
     /// <returns></returns>
+    [Obsolete("261111Cl: 4 アプリで未使用 (条件が逆で常に 0 を返す不具合あり)。将来削除予定")] // 261111Cl 追加
     public static double Slope(double[] x, double[] y)
     {
         if (x.Length != y.Length || x.Length != 0) return 0;
@@ -228,6 +229,7 @@ public class Statistics
     /// <param name="mu">平均値</param>
     /// <param name="sigma">標準偏差</param>
     /// <returns>指定した正規分布に即した乱数</returns>
+    [Obsolete("261111Cl: 4 アプリで未使用。将来削除予定")] // 261111Cl 追加
     public static double NormalDistribution(double mu, double sigma)
     {
         if (Flag)
@@ -260,7 +262,9 @@ public class Statistics
         if (mu <= 0)
             return double.NaN;
         else
+#pragma warning disable CS0618 // 261111Cl 追加: Obsolete にした NormalDistribution を呼ぶ (LogNormalDistribution も 4 アプリで未使用)
             return Math.Exp(NormalDistribution(Math.Log(mu * mu) - Math.Log(mu * mu + sigma * sigma) / 2.0, Math.Sqrt(Math.Log(1 + sigma / mu * sigma / mu))));
+#pragma warning restore CS0618 // 261111Cl 追加
     }
 
     /// <summary>数値配列を受け取って頻度分布を返す</summary>

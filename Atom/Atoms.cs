@@ -410,6 +410,7 @@ public class Atoms : System.IEquatable<Atoms>, ICloneable
         else return d.ToString("g6");
     }
 
+    [Obsolete("261111Cl: 4 アプリで未使用。将来削除予定")] // 261111Cl 追加
     public static double GetDoubleFromString(string s)
     {
         if (s == "1/8" || s == "1.0/8.0") return 1.0 / 8.0;

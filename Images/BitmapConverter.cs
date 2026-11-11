@@ -58,6 +58,7 @@ public static class BitmapConverter
             return new Bitmap(1, 1);
     }
 
+    [Obsolete("261111Cl: 4 アプリで未使用。将来削除予定")] // 261111Cl 追加
     public static byte[] ToByte(Bitmap Bmp)
     {
         var bmpData = Bmp.LockBits(new Rectangle(0, 0, Bmp.Width, Bmp.Height), ImageLockMode.ReadOnly, Bmp.PixelFormat);
@@ -67,6 +68,7 @@ public static class BitmapConverter
         return rgbValues;
     }
 
+    [Obsolete("261111Cl: 4 アプリで未使用。将来削除予定")] // 261111Cl 追加
     public static byte[] ToByteWithA(Bitmap Bmp, byte a)
     {
         var bmpData = Bmp.LockBits(new Rectangle(0, 0, Bmp.Width, Bmp.Height), ImageLockMode.ReadOnly, Bmp.PixelFormat);
@@ -97,6 +99,7 @@ public static class BitmapConverter
         return rgbaValues;
     }
 
+    [Obsolete("261111Cl: 4 アプリで未使用。将来削除予定")] // 261111Cl 追加
     public static Byte[][] ToByteRGB(Bitmap Bmp)
     {
         if (Bmp.PixelFormat != PixelFormat.Format24bppRgb)
@@ -208,6 +211,7 @@ public static class BitmapConverter
             return null;
     }
 
+    [Obsolete("261111Cl: 4 アプリで未使用。将来削除予定")] // 261111Cl 追加
     public static int[] ToIntGray(Bitmap bmp)
     {
         var byteValue = ToByteGray(bmp);
@@ -217,6 +221,7 @@ public static class BitmapConverter
         return intValue;
     }
 
+    [Obsolete("261111Cl: 4 アプリで未使用。将来削除予定")] // 261111Cl 追加
     public static void FromByte(Bitmap bmp, byte[] values)
     {
         var bmpData = bmp.LockBits(new Rectangle(0, 0, bmp.Width, bmp.Height), ImageLockMode.ReadOnly, bmp.PixelFormat);
@@ -225,6 +230,7 @@ public static class BitmapConverter
         bmp.UnlockBits(bmpData);
     }
 
+    [Obsolete("261111Cl: 4 アプリで未使用。将来削除予定")] // 261111Cl 追加
     public static void FromByte(Bitmap bmp, byte[] rValues, byte[] gValues, byte[] bValues)
     {
         if (bmp.PixelFormat == PixelFormat.Format24bppRgb)//24bitカラーモードのときだけ
@@ -246,6 +252,7 @@ public static class BitmapConverter
         }
     }
 
+    [Obsolete("261111Cl: 4 アプリで未使用。将来削除予定")] // 261111Cl 追加
     public static void FromByte(Bitmap bmp, byte[] values, bool[] filter, Color fiterColor)
     {
         if (bmp.PixelFormat == PixelFormat.Format24bppRgb)//24bitカラーモードのときだけ
@@ -275,6 +282,7 @@ public static class BitmapConverter
 
     private static readonly Lock lockObject = new();
 
+    [Obsolete("261111Cl: 4 アプリで未使用。将来削除予定")] // 261111Cl 追加
     public static double detectSkewAngle(Bitmap bmp)
     {
         int[] value = BitmapConverter.ToIntGray(bmp);
@@ -356,6 +364,7 @@ public static class BitmapConverter
         return R;
     }
 
+    [Obsolete("261111Cl: 4 アプリで未使用。将来削除予定")] // 261111Cl 追加
     public static Bitmap ToGrayScaleBitmap(Bitmap bmp)
     {
         var bmpTemp = new Bitmap(bmp.Width, bmp.Height, PixelFormat.Format8bppIndexed);

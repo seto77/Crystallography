@@ -3,6 +3,7 @@ using System.Drawing;
 using System.Windows.Forms;
 
 namespace Crystallography;
+[Obsolete("261111Cl: 4 アプリで未使用。将来削除予定")] // 261111Cl 追加
 public static class RichTextBoxSetting
 {
     public enum Style

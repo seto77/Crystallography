@@ -9,6 +9,7 @@ using System.Threading;
 
 namespace Crystallography;
 
+[Obsolete("261111Cl: 4 アプリで未使用。将来削除予定")] // 261111Cl 追加
 public struct FastSpinLock
 {
     private const int SYNC_ENTER = 1;

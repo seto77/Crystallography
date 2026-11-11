@@ -63,7 +63,8 @@ public class Material
         ambient = toByte(_ambient);
         diffuse = toByte(_diffuse);
         specular = toByte(_specular);
-        specularPower = toByte(_specularPow);
+        //specularPower = toByte(_specularPow); // 261111Cl 変更前: ×255 で 0〜1 用の変換をしていたため、既定の 4.0 が 255 に飽和し SpecularPower が常に 20 になっていた
+        specularPower = toByte20(_specularPow); // 261111Cl 変更: setter (SpecularPower) と同じ 0〜20 用の変換 (×12.75)。既定 4.0 → 51 → SpecularPower = 4.0
         emission = toByte(_emission);
 
     }

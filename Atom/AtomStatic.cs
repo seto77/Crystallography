@@ -3660,6 +3660,7 @@ new(4.86738014,0.319974401,4.58872425,
     /// <summary>原子名を与えて、原子番号を返す. 文字列textから適宜原子名を抽出する.</summary>
     /// <param name="text"></param>
     /// <returns></returns>
+    [Obsolete("261111Cl: 4 アプリで未使用。将来削除予定")] // 261111Cl 追加
     public static int AtomicNumber2(string text)
     {
         int number = 0;

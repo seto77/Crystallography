@@ -10,6 +10,7 @@ using System.Runtime.CompilerServices;
 namespace Crystallography;
 
 
+[Obsolete("261111Cl: 4 アプリで未使用。将来削除予定")] // 261111Cl 追加
 public readonly struct ItemWithIndex<T>(T item, int index)
 {
     public readonly T Item = item;
@@ -19,12 +20,14 @@ public readonly struct ItemWithIndex<T>(T item, int index)
 public static class NthItemExtensions
 {
     /// <param name="n">0 ~ source.Count - 1</param>
+    [Obsolete("261111Cl: 4 アプリで未使用。将来削除予定")] // 261111Cl 追加
     public static ItemWithIndex<T> NthLargest<T>(this IReadOnlyList<T> source, int n) where T : IComparable<T>
     {
         return source.NthSmallest(source.Count - 1 - n);
     }
 
     /// <param name="n">0 ~ source.Count - 1</param>
+    [Obsolete("261111Cl: 4 アプリで未使用。将来削除予定")] // 261111Cl 追加
     public static ItemWithIndex<T> NthSmallest<T>(this IReadOnlyList<T> source, int n) where T : IComparable<T>
     {
         var pool = ArrayPool<int>.Shared.Rent(source.Count);
@@ -44,12 +47,14 @@ public static class NthItemExtensions
     }
 
     /// <param name="n">0 ~ source.Count - 1</param>
+    [Obsolete("261111Cl: 4 アプリで未使用。将来削除予定")] // 261111Cl 追加
     public static ItemWithIndex<T> NthLargest<T>(this Span<T> source, int n) where T : IComparable<T>
     {
         return source.NthSmallest(source.Length - 1 - n);
     }
 
     /// <param name="n">0 ~ source.Length - 1</param>
+    [Obsolete("261111Cl: 4 アプリで未使用。将来削除予定")] // 261111Cl 追加
     public static ItemWithIndex<T> NthSmallest<T>(this Span<T> source, int n) where T : IComparable<T>
     {
         var pool = ArrayPool<int>.Shared.Rent(source.Length);
@@ -69,12 +74,14 @@ public static class NthItemExtensions
     }
 
     /// <param name="n">0 ~ source.Count - 1</param>
+    [Obsolete("261111Cl: 4 アプリで未使用。将来削除予定")] // 261111Cl 追加
     public static ItemWithIndex<T> NthLargest<T>(this ReadOnlySpan<T> source, int n) where T : IComparable<T>
     {
         return source.NthSmallest(source.Length - 1 - n);
     }
 
     /// <param name="n">0 ~ source.Length - 1</param>
+    [Obsolete("261111Cl: 4 アプリで未使用。将来削除予定")] // 261111Cl 追加
     public static ItemWithIndex<T> NthSmallest<T>(this ReadOnlySpan<T> source, int n) where T : IComparable<T>
     {
         var pool = ArrayPool<int>.Shared.Rent(source.Length);
@@ -94,12 +101,14 @@ public static class NthItemExtensions
     }
 
     /// <param name="n">0 ~ source.Count - 1</param>
+    [Obsolete("261111Cl: 4 アプリで未使用。将来削除予定")] // 261111Cl 追加
     public static ItemWithIndex<T> NthLargest<T>(this IReadOnlyList<T> source, int n, IComparer<T> comparer)
     {
         return source.NthSmallest(source.Count - 1 - n, comparer);
     }
 
     /// <param name="n">0 ~ source.Count - 1</param>
+    [Obsolete("261111Cl: 4 アプリで未使用。将来削除予定")] // 261111Cl 追加
     public static ItemWithIndex<T> NthSmallest<T>(this IReadOnlyList<T> source, int n, IComparer<T> comparer)
     {
         var pool = ArrayPool<int>.Shared.Rent(source.Count);
@@ -119,12 +128,14 @@ public static class NthItemExtensions
     }
 
     /// <param name="n">0 ~ source.Count - 1</param>
+    [Obsolete("261111Cl: 4 アプリで未使用。将来削除予定")] // 261111Cl 追加
     public static ItemWithIndex<T> NthLargest<T>(this Span<T> source, int n, IComparer<T> comparer)
     {
         return source.NthSmallest(source.Length - 1 - n, comparer);
     }
 
     /// <param name="n">0 ~ source.Length - 1</param>
+    [Obsolete("261111Cl: 4 アプリで未使用。将来削除予定")] // 261111Cl 追加
     public static ItemWithIndex<T> NthSmallest<T>(this Span<T> source, int n, IComparer<T> comparer)
     {
         var pool = ArrayPool<int>.Shared.Rent(source.Length);
@@ -144,12 +155,14 @@ public static class NthItemExtensions
     }
 
     /// <param name="n">0 ~ source.Count - 1</param>
+    [Obsolete("261111Cl: 4 アプリで未使用。将来削除予定")] // 261111Cl 追加
     public static ItemWithIndex<T> NthLargest<T>(this ReadOnlySpan<T> source, int n, IComparer<T> comparer)
     {
         return source.NthSmallest(source.Length - 1 - n, comparer);
     }
 
     /// <param name="n">0 ~ source.Length - 1</param>
+    [Obsolete("261111Cl: 4 アプリで未使用。将来削除予定")] // 261111Cl 追加
     public static ItemWithIndex<T> NthSmallest<T>(this ReadOnlySpan<T> source, int n, IComparer<T> comparer)
     {
         var pool = ArrayPool<int>.Shared.Rent(source.Length);
@@ -170,6 +183,7 @@ public static class NthItemExtensions
 
     #region Max
 
+    [Obsolete("261111Cl: 4 アプリで未使用。将来削除予定")] // 261111Cl 追加
     public static ItemWithIndex<T> MaxWithIndex<T>(this IReadOnlyList<T> source) where T : IComparable<T>
     {
         T maxValue = source[0];
@@ -187,6 +201,7 @@ public static class NthItemExtensions
         return new ItemWithIndex<T>(maxValue, index);
     }
 
+    [Obsolete("261111Cl: 4 アプリで未使用。将来削除予定")] // 261111Cl 追加
     public static ItemWithIndex<T> MaxWithIndex<T>(this Span<T> source) where T : IComparable<T>
     {
         T maxValue = source[0];
@@ -204,6 +219,7 @@ public static class NthItemExtensions
         return new ItemWithIndex<T>(maxValue, index);
     }
 
+    [Obsolete("261111Cl: 4 アプリで未使用。将来削除予定")] // 261111Cl 追加
     public static ItemWithIndex<T> MaxWithIndex<T>(this ReadOnlySpan<T> source) where T : IComparable<T>
     {
         T maxValue = source[0];
@@ -221,6 +237,7 @@ public static class NthItemExtensions
         return new ItemWithIndex<T>(maxValue, index);
     }
 
+    [Obsolete("261111Cl: 4 アプリで未使用。将来削除予定")] // 261111Cl 追加
     public static ItemWithIndex<T> MaxWithIndex<T>(this IReadOnlyList<T> source, IComparer<T> comparer)
     {
         T maxValue = source[0];
@@ -238,6 +255,7 @@ public static class NthItemExtensions
         return new ItemWithIndex<T>(maxValue, index);
     }
 
+    [Obsolete("261111Cl: 4 アプリで未使用。将来削除予定")] // 261111Cl 追加
     public static ItemWithIndex<T> MaxWithIndex<T>(this Span<T> source, IComparer<T> comparer)
     {
         T maxValue = source[0];
@@ -255,6 +273,7 @@ public static class NthItemExtensions
         return new ItemWithIndex<T>(maxValue, index);
     }
 
+    [Obsolete("261111Cl: 4 アプリで未使用。将来削除予定")] // 261111Cl 追加
     public static ItemWithIndex<T> MaxWithIndex<T>(this ReadOnlySpan<T> source, IComparer<T> comparer)
     {
         T maxValue = source[0];
@@ -275,6 +294,7 @@ public static class NthItemExtensions
     #endregion //Max
 
     #region Min
+    [Obsolete("261111Cl: 4 アプリで未使用。将来削除予定")] // 261111Cl 追加
     public static ItemWithIndex<T> MinWithIndex<T>(this IReadOnlyList<T> source) where T : IComparable<T>
     {
         T minValue = source[0];
@@ -292,6 +312,7 @@ public static class NthItemExtensions
         return new ItemWithIndex<T>(minValue, index);
     }
 
+    [Obsolete("261111Cl: 4 アプリで未使用。将来削除予定")] // 261111Cl 追加
     public static ItemWithIndex<T> MinWithIndex<T>(this Span<T> source) where T : IComparable<T>
     {
         T minValue = source[0];
@@ -309,6 +330,7 @@ public static class NthItemExtensions
         return new ItemWithIndex<T>(minValue, index);
     }
 
+    [Obsolete("261111Cl: 4 アプリで未使用。将来削除予定")] // 261111Cl 追加
     public static ItemWithIndex<T> MinWithIndex<T>(this ReadOnlySpan<T> source) where T : IComparable<T>
     {
         T minValue = source[0];
@@ -326,6 +348,7 @@ public static class NthItemExtensions
         return new ItemWithIndex<T>(minValue, index);
     }
 
+    [Obsolete("261111Cl: 4 アプリで未使用。将来削除予定")] // 261111Cl 追加
     public static ItemWithIndex<T> MinWithIndex<T>(this IReadOnlyList<T> source, IComparer<T> comparer)
     {
         T minValue = source[0];
@@ -343,6 +366,7 @@ public static class NthItemExtensions
         return new ItemWithIndex<T>(minValue, index);
     }
 
+    [Obsolete("261111Cl: 4 アプリで未使用。将来削除予定")] // 261111Cl 追加
     public static ItemWithIndex<T> MinWithIndex<T>(this Span<T> source, IComparer<T> comparer)
     {
         T minValue = source[0];
@@ -360,6 +384,7 @@ public static class NthItemExtensions
         return new ItemWithIndex<T>(minValue, index);
     }
 
+    [Obsolete("261111Cl: 4 アプリで未使用。将来削除予定")] // 261111Cl 追加
     public static ItemWithIndex<T> MinWithIndex<T>(this ReadOnlySpan<T> source, IComparer<T> comparer)
     {
         T minValue = source[0];
@@ -612,6 +637,7 @@ public static class QuickSelect
 
     #region Execute
     /// <param name="n">0 ~ source.Count - 1</param>
+    [Obsolete("261111Cl: 4 アプリで未使用。将来削除予定")] // 261111Cl 追加
     public static void Execute<T>(IReadOnlyList<T> source, Span<int> indices, int n) where T : IComparable<T>
     {
         Validation(source, indices, n);
@@ -620,6 +646,7 @@ public static class QuickSelect
     }
 
     /// <param name="n">0 ~ source.Count - 1</param>
+    [Obsolete("261111Cl: 4 アプリで未使用。将来削除予定")] // 261111Cl 追加
     public static void Execute<T>(IReadOnlyList<T> source, Span<int> indices, int n, IComparer<T> comparer)
     {
         Validation(source, indices, n);
@@ -628,6 +655,7 @@ public static class QuickSelect
     }
 
     /// <param name="n">0 ~ source.Count - 1</param>
+    [Obsolete("261111Cl: 4 アプリで未使用。将来削除予定")] // 261111Cl 追加
     public static void Execute<T>(IReadOnlyList<T> source, Span<int> indices, int n, Comparison<T> comparison)
     {
         Validation(source, indices, n);
@@ -636,6 +664,7 @@ public static class QuickSelect
     }
 
     /// <param name="n">0 ~ source.Length - 1</param>
+    [Obsolete("261111Cl: 4 アプリで未使用。将来削除予定")] // 261111Cl 追加
     public static void Execute<T>(ReadOnlySpan<T> source, Span<int> indices, int n) where T : IComparable<T>
     {
         Validation(source, indices, n);
@@ -645,6 +674,7 @@ public static class QuickSelect
 
 
     /// <param name="n">0 ~ source.Length - 1</param>
+    [Obsolete("261111Cl: 4 アプリで未使用。将来削除予定")] // 261111Cl 追加
     public static void Execute<T>(ReadOnlySpan<T> source, Span<int> indices, int n, IComparer<T> comparer)
     {
         Validation(source, indices, n);
@@ -653,6 +683,7 @@ public static class QuickSelect
     }
 
     /// <param name="n">0 ~ source.Length - 1</param>
+    [Obsolete("261111Cl: 4 アプリで未使用。将来削除予定")] // 261111Cl 追加
     public static void Execute<T>(ReadOnlySpan<T> source, Span<int> indices, int n, Comparison<T> comparison)
     {
         Validation(source, indices, n);
@@ -661,6 +692,7 @@ public static class QuickSelect
     }
 
     /// <param name="n">0 ~ source.Length - 1</param>
+    [Obsolete("261111Cl: 4 アプリで未使用。将来削除予定")] // 261111Cl 追加
     public static void Execute<T>(Span<T> source, Span<int> indices, int n, Comparison<T> comparison)
     {
         Validation(source, indices, n);
