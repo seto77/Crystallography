@@ -1358,24 +1358,39 @@ public static class Ring
             R2[i] = (i + 0.5) * stepTheta + startTheta;
         int height = chiDivision;
         int width = R2.Length;
-        int thread = Environment.ProcessorCount;
-        int yStep = IP.SrcHeight / thread + 1;
+        //int thread = Environment.ProcessorCount; // 261111Cl 変更前 (下の Parallel.For とともに)
+        //int yStep = IP.SrcHeight / thread + 1;
 
         var profiles = new double[height * width];
         var pixels = new double[height * width];
 
-        Parallel.For(0, thread, i =>
-        {
-            (double[][] Profile, double[][] Pixels) = GetProfileThreadWithTiltCorrectionNew(0, iP.SrcWidth, i * yStep, Math.Min((i + 1) * yStep, iP.SrcHeight), chiDivision);
-            lock (lockObj)
+        #region 261111Cl 変更前 (スレッド数で行を均等に固定分割し、lock で終わった順に合算していた → 負荷が偏り、実行ごとに結果が丸め誤差で揺れた)
+        //Parallel.For(0, thread, i =>
+        //{
+        //    (double[][] Profile, double[][] Pixels) = GetProfileThreadWithTiltCorrectionNew(0, iP.SrcWidth, i * yStep, Math.Min((i + 1) * yStep, iP.SrcHeight), chiDivision);
+        //    lock (lockObj)
+        //        for (int h = 0; h < height; h++)
+        //            for (int w = 0; w < width; w++)
+        //                if (Pixels[h][w] > 0)
+        //                {
+        //                    pixels[h * width + w] += Pixels[h][w];
+        //                    profiles[h * width + w] += Profile[h][w];
+        //                }
+        //});
+        #endregion
+        // 261111Cl 行を区間に分けて動的に配り、区間の番号順に合算する (内側の計算・合算の条件は旧来どおり)
+        ForEachRowChunkOrdered(0, iP.SrcHeight, 2L * height * width,
+            (y0, y1) => GetProfileThreadWithTiltCorrectionNew(0, iP.SrcWidth, y0, y1, chiDivision),
+            r =>
+            {
                 for (int h = 0; h < height; h++)
                     for (int w = 0; w < width; w++)
-                        if (Pixels[h][w] > 0)
+                        if (r.Pixels[h][w] > 0)
                         {
-                            pixels[h * width + w] += Pixels[h][w];
-                            profiles[h * width + w] += Profile[h][w];
+                            pixels[h * width + w] += r.Pixels[h][w];
+                            profiles[h * width + w] += r.Profile[h][w];
                         }
-        });
+            });
         double[] destPixels = new double[height * width];
         for (int i = 0; i < destPixels.Length; i++)
             if (pixels[i] > 0)
@@ -1684,6 +1699,125 @@ public static class Ring
 
     #endregion
 
+    #region 261111Cl 追加: 行を区間に分けて動的に配り、区間の番号順に合算する
+    /// <summary>
+    /// 261111Cl 追加: 行 [<paramref name="yStart"/>, <paramref name="yEnd"/>) を区間 (チャンク) に分け、空いたスレッドへ区間を 1 つずつ配って
+    /// <paramref name="compute"/>(区間の先頭行, 末尾行+1) で部分和を求め、それを<b>区間の番号順に</b> <paramref name="merge"/> で合算する。
+    /// <para>・区間の切り方は「有効画素 (IsValid) の配置」と「部分和の大きさ」だけで決まり、合算の順も番号順に固定なので、
+    ///   スレッド数や終わった順に依らず結果はビット一致する (旧実装はスレッド数で均等に固定分割し、一部は lock で終わった順に足していた)。</para>
+    /// <para>・有効画素 (IsValid) の無い行は先頭と末尾から除き、有効画素の無い区間は計算も合算もしない
+    ///   (その区間の部分和は全部 +0 で、+0 を足しても和は変わらないので結果は同じ)。</para>
+    /// <para>・合算は、番号の若い方から揃った分をその場で行う (lock を TryEnter で取れたスレッドが担当し、取れなければ次の区間の計算へ進む)。
+    ///   部分和を全区間ぶん溜めないので、メモリは概ね「スレッド数 × 部分和」で済む。</para>
+    /// </summary>
+    /// <param name="doublesPerChunk">1 区間の部分和が持つ double の個数 (強度と画素数の配列の合計。区間ごとに確保する作業配列があればその分も足す)。区間数の上限を決めるのに使う</param>
+    /// <param name="maxDegreeOfParallelism">並列度の上限 (-1 は既定)。結果には影響しない</param>
+    private static void ForEachRowChunkOrdered<T>(int yStart, int yEnd, long doublesPerChunk, Func<int, int, T> compute, Action<T> merge, int maxDegreeOfParallelism = -1)
+    {
+        if (yStart >= yEnd) return;
+        int width = IP.SrcWidth;
+        bool canCheckValid = IsValid != null && width > 0 && yStart >= 0 && (long)yEnd * width <= IsValid.Length;
+        // 有効画素の無い行を先頭と末尾から除く (結果は同一。扇形や片側の矩形のマスクで、区間を有効な範囲に集める)
+        if (canCheckValid)
+        {
+            while (yStart < yEnd && !IsValid.AsSpan(yStart * width, width).Contains(true)) yStart++;
+            while (yEnd > yStart && !IsValid.AsSpan((yEnd - 1) * width, width).Contains(true)) yEnd--;
+        }
+        int rows = yEnd - yStart;
+        if (rows <= 0) return;
+
+        // 行ごとの有効画素数の累積 (cum[k] = 行 yStart .. yStart+k-1 の有効画素数)。区間を有効画素の数でほぼ均等に切るのに使う
+        long[] cum = null;
+        long validCount = 0;
+        if (canCheckValid)
+        {
+            cum = new long[rows + 1];
+            for (int k = 0; k < rows; k++)
+                cum[k + 1] = cum[k] + MemoryExtensions.Count(IsValid.AsSpan((yStart + k) * width, width), true);
+            validCount = cum[rows];
+        }
+
+        // 区間数: 多いほど負荷が均されるが、区間ごとに部分和の確保 (GC)・係数掛け・合算 (直列) がかかる。
+        //   (1) 最大 256 区間、かつ 行数/2 以下。
+        //   (2) 「区間数 × doublesPerChunk」が 2^21 個 (16 MB) を超えないように抑える (ただし 32 区間までは許す。旧実装の 32 スレッド相当)。
+        //   (3) 区間ごとの手間 (部分和 doublesPerChunk 個 + 固定分 4096 個) が区間の計算量 (有効画素 1 個 ≈ 部分和 16 個分) を超えないよう、
+        //       有効画素が少ないときは区間を減らす。
+        //   2048×2048 画像の実測 (JIT の段階の影響を除く) で、扇形 (36 分割) は 64〜160 区間、展開画像 (360 分割) は 32 区間付近が速く、
+        //   256 区間では 1.7〜5 倍遅くなった。有効画素が約 8,500 個の細い帯では 8 区間 (展開画像は 1〜2 区間) 付近が速かった。
+        //   どれもスレッド数には依らない (区間の切り方が変わると和の順が変わるため)。
+        const int maxChunks = 256, minRowsPerChunk = 2, minChunksForMemory = 32;
+        const long memoryBudget = 1L << 21, fixedCostPerChunk = 4096, costPerValidPixel = 16;
+        long capByMemory = Math.Max(minChunksForMemory, memoryBudget / Math.Max(1, doublesPerChunk));
+        int chunkCount = (int)Math.Min(Math.Min(maxChunks, (rows + minRowsPerChunk - 1) / minRowsPerChunk), capByMemory);
+        if (cum != null)
+            chunkCount = (int)Math.Min(chunkCount, Math.Max(1, validCount * costPerValidPixel / (Math.Max(0, doublesPerChunk) + fixedCostPerChunk)));
+
+        // 区間の境界 (行 yStart からの相対)。有効画素が数えられるときは有効画素の数でほぼ均等に、数えられないときは行数で均等に切る。
+        //   (区間の長さを行数で揃えると、扇形などのマスクで区間ごとの仕事が大きく違い、少ない区間数では負荷が均されない。
+        //    また Gandolfi は画素ごとにクラスを確保するので、区間を細かくすると GC が増えて遅くなった)
+        var bounds = new int[chunkCount + 1];
+        bounds[chunkCount] = rows;
+        if (cum != null)
+        {
+            // 区間 k の終わり = 累積が validCount * k / chunkCount 以上になる最初の行。各区間に少なくとも 1 行を残す
+            for (int k = 1, b = 0; k < chunkCount; k++)
+            {
+                long target = validCount * k / chunkCount;
+                while (b < rows && cum[b] < target) b++;
+                bounds[k] = Math.Clamp(b, bounds[k - 1] + 1, rows - (chunkCount - k));
+                b = bounds[k];
+            }
+        }
+        else
+        {
+            int chunkRows = (rows + chunkCount - 1) / chunkCount;
+            chunkCount = (rows + chunkRows - 1) / chunkRows;
+            bounds = new int[chunkCount + 1];
+            for (int k = 0; k <= chunkCount; k++)
+                bounds[k] = Math.Min(k * chunkRows, rows);
+        }
+
+        var results = new T[chunkCount];
+        var computed = new bool[chunkCount];// 部分和がある (有効画素のある区間)
+        var ready = new bool[chunkCount];// 区間の処理が済んだ
+        int nextMerge = 0;
+        var mergeLock = new Lock();
+
+        // Partitioner.Create(from, to, 1) は区間を番号の若い順に 1 つずつ配る
+        Parallel.ForEach(System.Collections.Concurrent.Partitioner.Create(0, chunkCount, 1), new ParallelOptions { MaxDegreeOfParallelism = maxDegreeOfParallelism }, range =>
+        {
+            int c = range.Item1;
+            int y0 = yStart + bounds[c], y1 = yStart + bounds[c + 1];
+            if (cum == null || cum[bounds[c + 1]] > cum[bounds[c]])
+            {
+                results[c] = compute(y0, y1);
+                computed[c] = true;
+            }
+            Volatile.Write(ref ready[c], true);
+            if (mergeLock.TryEnter())
+            {
+                try
+                {
+                    for (; nextMerge < chunkCount && Volatile.Read(ref ready[nextMerge]); nextMerge++)
+                        if (computed[nextMerge])
+                        {
+                            merge(results[nextMerge]);
+                            results[nextMerge] = default;
+                        }
+                }
+                finally { mergeLock.Exit(); }
+            }
+        });
+        // 残り (lock が取れずに保留された分) を番号順に合算
+        for (; nextMerge < chunkCount; nextMerge++)
+            if (computed[nextMerge])
+            {
+                merge(results[nextMerge]);
+                results[nextMerge] = default;
+            }
+    }
+    #endregion
+
     public static Profile GetProfile(IntegralProperty iP)
     {
         if (iP.ConcentricMode)
@@ -1848,7 +1982,7 @@ public static class Ring
     /// <returns></returns>
     private static Profile GetConcenrticProfile(IntegralProperty iP)
     {
-        var thread = Environment.ProcessorCount;
+        //var thread = Environment.ProcessorCount; // 261111Cl 変更前 (スレッド数での固定分割をやめた)
 
 
         IP = iP;
@@ -1879,24 +2013,31 @@ public static class Ring
                 yMax = Math.Max(i / IP.SrcWidth, yMax);
             }
 
-        thread = Environment.ProcessorCount;
-#if (DEBUG)
-        thread = 1;
-#endif
+        #region 261111Cl 変更前 (スレッド数で行を均等に固定分割していた。下の ForEachRowChunkOrdered に置き換え)
+        //        thread = Environment.ProcessorCount;
+        //#if (DEBUG)
+        //        thread = 1;
+        //#endif
 
-        //各スレッドの上限と下限を決める
-        int[] yThreadMin = new int[thread];
-        int[] yThreadMax = new int[thread];
-        // 260712Cl 修正: 旧実装は (1) 最終スレッドを全域に拡張しないため剰余行が脱落し、(2) 包含的な yMax を排他的上限に使うため最終行も脱落していた。
-        // 姉妹メソッド FindSpots(L356-359) と同じく、区間を [yMin, yMax] 包含として端数分だけ広げ、最終スレッドを yMax+1(排他) まで拡張する。
-        // int yStep = (yMax - yMin) / thread; ... yThreadMax[i] = Math.Min(yMin + (i + 1) * yStep, yMax); // 260712Cl 変更前
-        int yStep = (yMax - yMin + 1) / thread;
-        for (int i = 0; i < thread; i++)
-        {
-            yThreadMin[i] = yMin + i * yStep;
-            yThreadMax[i] = yMin + (i + 1) * yStep;
-        }
-        yThreadMax[thread - 1] = yMax + 1;// 最終行 yMax まで含める排他的上限 (下流ループは j < yThreadMax)
+        //        //各スレッドの上限と下限を決める
+        //        int[] yThreadMin = new int[thread];
+        //        int[] yThreadMax = new int[thread];
+        //        // 260712Cl 修正: 旧実装は (1) 最終スレッドを全域に拡張しないため剰余行が脱落し、(2) 包含的な yMax を排他的上限に使うため最終行も脱落していた。
+        //        // 姉妹メソッド FindSpots(L356-359) と同じく、区間を [yMin, yMax] 包含として端数分だけ広げ、最終スレッドを yMax+1(排他) まで拡張する。
+        //        // int yStep = (yMax - yMin) / thread; ... yThreadMax[i] = Math.Min(yMin + (i + 1) * yStep, yMax); // 260712Cl 変更前
+        //        int yStep = (yMax - yMin + 1) / thread;
+        //        for (int i = 0; i < thread; i++)
+        //        {
+        //            yThreadMin[i] = yMin + i * yStep;
+        //            yThreadMax[i] = yMin + (i + 1) * yStep;
+        //        }
+        //        yThreadMax[thread - 1] = yMax + 1;// 最終行 yMax まで含める排他的上限 (下流ループは j < yThreadMax)
+        #endregion
+        // 261111Cl 並列度 (結果には影響しない)。旧来どおり DEBUG ビルドでは 1 スレッドで計算する
+        int maxDegreeOfParallelism = -1;
+#if (DEBUG)
+        maxDegreeOfParallelism = 1;
+#endif
 
         //フラットパネルモードの時
         if (IP.Camera == IntegralProperty.CameraEnum.FlatPanel)
@@ -1933,16 +2074,18 @@ public static class Ring
         }
         int length = R2.Length;
 
-        //Profile(各ステップごとの強度)とPixels(各ステップに寄与したピクセル数)を作成
-        var tempProfileIntensity = new double[thread][][];
-        var tempContibutedPixels = new double[thread][][];
-        for (int i = 0; i < thread; i++)
-        {
-            tempProfileIntensity[i] = new double[1][];
-            tempContibutedPixels[i] = new double[1][];
-            tempProfileIntensity[i][0] = new double[length];
-            tempContibutedPixels[i][0] = new double[length];
-        }
+        #region 261111Cl 変更前 (スレッドごとの部分和。区間ごとの部分和は ForEachRowChunkOrdered の中で確保する)
+        ////Profile(各ステップごとの強度)とPixels(各ステップに寄与したピクセル数)を作成
+        //var tempProfileIntensity = new double[thread][][];
+        //var tempContibutedPixels = new double[thread][][];
+        //for (int i = 0; i < thread; i++)
+        //{
+        //    tempProfileIntensity[i] = new double[1][];
+        //    tempContibutedPixels[i] = new double[1][];
+        //    tempProfileIntensity[i][0] = new double[length];
+        //    tempContibutedPixels[i][0] = new double[length];
+        //}
+        #endregion
 
         //傾き補正用パラメータを計算
         SetTiltParameter();
@@ -1974,76 +2117,137 @@ public static class Ring
         //FlatPanelモードの時
         if (iP.Camera == IntegralProperty.CameraEnum.FlatPanel)
         {
+            #region 261111Cl 変更前 (スレッド数で固定分割した行を並列に計算し、スレッドの番号順に合算していた)
+            //if (IP.Mode == HorizontalAxis.Angle || IP.Mode == HorizontalAxis.d)
+            //{
+            //    // NativeWrapper.Histogram 版は managed 実装より速くならなかったため、managed 実装を採用。
+
+            //    // 260712Cl 修正: xMax は有効領域の最大列(包含的)。下流は i < xMax の排他ループなので最終列が漏れる。xMax+1 を渡して最終列も積分する。
+            //    Parallel.For(0, thread, i =>
+            //            (tempProfileIntensity[i], tempContibutedPixels[i]) = GetProfileThreadWithTiltCorrectionNew(xMin, xMax + 1, yThreadMin[i], yThreadMax[i]));
+            //}
+
+            //else if (IP.Mode == HorizontalAxis.Length)
+            //    // 260712Cl 修正: 同上 (最終列 xMax を含めるため xMax+1)
+            //    Parallel.For(0, thread, i
+            //        =>  GetProfileThreadWithTiltCorrection(xMin, xMax + 1, yThreadMin[i], yThreadMax[i], ref tempProfileIntensity[i][0], ref tempContibutedPixels[i][0]));
+
+
+            //for (int i = 0; i < thread; i++)
+            //    for (int j = 0; j < length; j++)
+            //    {
+            //        ProfileIntensity[j] += tempProfileIntensity[i][0][j];
+            //        ContributedPixels[j] += tempContibutedPixels[i][0][j];
+            //    }
+            #endregion
+            // 261111Cl 行 [yMin, yMax] を区間に分けて動的に配り、区間の番号順に合算する (内側の計算は旧来どおり)
             if (IP.Mode == HorizontalAxis.Angle || IP.Mode == HorizontalAxis.d)
             {
                 // NativeWrapper.Histogram 版は managed 実装より速くならなかったため、managed 実装を採用。
 
                 // 260712Cl 修正: xMax は有効領域の最大列(包含的)。下流は i < xMax の排他ループなので最終列が漏れる。xMax+1 を渡して最終列も積分する。
-                Parallel.For(0, thread, i =>
-                        (tempProfileIntensity[i], tempContibutedPixels[i]) = GetProfileThreadWithTiltCorrectionNew(xMin, xMax + 1, yThreadMin[i], yThreadMax[i]));
+                ForEachRowChunkOrdered(yMin, yMax + 1, 2L * length,
+                    (y0, y1) => GetProfileThreadWithTiltCorrectionNew(xMin, xMax + 1, y0, y1),
+                    r =>
+                    {
+                        for (int j = 0; j < length; j++)
+                        {
+                            ProfileIntensity[j] += r.Profile[0][j];
+                            ContributedPixels[j] += r.Pixels[0][j];
+                        }
+                    }, maxDegreeOfParallelism);
             }
-
             else if (IP.Mode == HorizontalAxis.Length)
                 // 260712Cl 修正: 同上 (最終列 xMax を含めるため xMax+1)
-                Parallel.For(0, thread, i
-                    =>  GetProfileThreadWithTiltCorrection(xMin, xMax + 1, yThreadMin[i], yThreadMax[i], ref tempProfileIntensity[i][0], ref tempContibutedPixels[i][0]));
-
-
-            for (int i = 0; i < thread; i++)
-                for (int j = 0; j < length; j++)
-                {
-                    ProfileIntensity[j] += tempProfileIntensity[i][0][j];
-                    ContributedPixels[j] += tempContibutedPixels[i][0][j];
-                }
+                // 261111Cl 区間ごとに交点の作業配列 (幅+1)×2 を 3 本確保するので、その分も区間の大きさに数える
+                ForEachRowChunkOrdered(yMin, yMax + 1, 2L * length + 6L * (IP.SrcWidth + 1),
+                    (y0, y1) =>
+                    {
+                        var p = new double[length];
+                        var x = new double[length];
+                        GetProfileThreadWithTiltCorrection(xMin, xMax + 1, y0, y1, ref p, ref x);
+                        return (Profile: p, Pixels: x);
+                    },
+                    r =>
+                    {
+                        for (int j = 0; j < length; j++)
+                        {
+                            ProfileIntensity[j] += r.Profile[j];
+                            ContributedPixels[j] += r.Pixels[j];
+                        }
+                    }, maxDegreeOfParallelism);
         }
         //Gandolfiモードの時
         else
         {
-            int[] xThreadMin = new int[thread], xThreadMax = new int[thread];
-            //まず、IsValidなピクセル数をカウント
-            //int average = IsValid.Count(b => b) / thread; // 261111Cl 変更前
-            int average = MemoryExtensions.Count(IsValid.AsSpan(), true) / thread; // 261111Cl 要素ごとのデリゲート呼び出しをやめ、ベクトル化された Span.Count に
-            int y = 0;
-            for (int i = 0; i < thread; i++)
-            {
-                int count = 0;
-                for (; y < iP.SrcHeight; y++)
-                {
-                    for (int x = 0; x < IP.SrcWidth; x++)
-                    {
-                        if (IsValid[x + y * iP.SrcWidth])
-                        {
-                            if (count == 0)
-                            {
-                                xThreadMin[i] = xThreadMax[i] = x;
-                                yThreadMin[i] = yThreadMax[i] = y;
-                            }
-                            xThreadMin[i] = Math.Min(xThreadMin[i], x);
-                            xThreadMax[i] = Math.Max(xThreadMax[i], x);
-                            yThreadMax[i] = Math.Max(yThreadMax[i], y);
-                            count++;
-                        }
-                    }
-                    if (i != thread - 1 && count > average)
-                    {
-                        y++;
-                        break;
-                    }
-                }
-            }
+            #region 261111Cl 変更前 (有効画素の数でスレッドに行を割り振り、lock で終わった順に合算していた → 実行ごとに結果が丸め誤差で揺れた。
+            //                     また、有効画素を割り振られなかったスレッドが x=0 列と固定分割の行を計算してしまう不具合があった)
+            //int[] xThreadMin = new int[thread], xThreadMax = new int[thread];
+            ////まず、IsValidなピクセル数をカウント
+            ////int average = IsValid.Count(b => b) / thread; // 261111Cl 変更前
+            //int average = MemoryExtensions.Count(IsValid.AsSpan(), true) / thread; // 261111Cl 要素ごとのデリゲート呼び出しをやめ、ベクトル化された Span.Count に
+            //int y = 0;
+            //for (int i = 0; i < thread; i++)
+            //{
+            //    int count = 0;
+            //    for (; y < iP.SrcHeight; y++)
+            //    {
+            //        for (int x = 0; x < IP.SrcWidth; x++)
+            //        {
+            //            if (IsValid[x + y * iP.SrcWidth])
+            //            {
+            //                if (count == 0)
+            //                {
+            //                    xThreadMin[i] = xThreadMax[i] = x;
+            //                    yThreadMin[i] = yThreadMax[i] = y;
+            //                }
+            //                xThreadMin[i] = Math.Min(xThreadMin[i], x);
+            //                xThreadMax[i] = Math.Max(xThreadMax[i], x);
+            //                yThreadMax[i] = Math.Max(yThreadMax[i], y);
+            //                count++;
+            //            }
+            //        }
+            //        if (i != thread - 1 && count > average)
+            //        {
+            //            y++;
+            //            break;
+            //        }
+            //    }
+            //}
 
-            Parallel.For(0, thread, i =>
-            {
-                GetProfileGandlfi(xThreadMin[i], xThreadMax[i] + 1, yThreadMin[i], yThreadMax[i] + 1, ref tempProfileIntensity[i][0], ref tempContibutedPixels[i][0]);
-                lock (lockObj)
+            //Parallel.For(0, thread, i =>
+            //{
+            //    GetProfileGandlfi(xThreadMin[i], xThreadMax[i] + 1, yThreadMin[i], yThreadMax[i] + 1, ref tempProfileIntensity[i][0], ref tempContibutedPixels[i][0]);
+            //    lock (lockObj)
+            //    {
+            //        for (int j = 0; j < length; j++)
+            //        {
+            //            ProfileIntensity[j] += tempProfileIntensity[i][0][j];
+            //            ContributedPixels[j] += tempContibutedPixels[i][0][j];
+            //        }
+            //    }
+            //});
+            #endregion
+            // 261111Cl 行 [yMin, yMax] を区間に分けて動的に配り、区間の番号順に合算する。列は有効領域全体の [xMin, xMax]
+            //          (GetProfileGandlfi の画素ごとの寄与は画素の位置だけで決まり、渡す範囲には依らない)
+            //          区間ごとに区切りの表 3 本 (長さ length) を確保し、区間の境で重なる頂点 1 行分を計算し直す (頂点 1 個 ≈ 三角関数 3 回と確保で double 約 40 個分) ので、
+            //          その分も区間の手間に数える
+            ForEachRowChunkOrdered(yMin, yMax + 1, 5L * length + 40L * ((long)xMax - xMin + 2),
+                (y0, y1) =>
+                {
+                    var p = new double[length];
+                    var x = new double[length];
+                    GetProfileGandlfi(xMin, xMax + 1, y0, y1, ref p, ref x);
+                    return (Profile: p, Pixels: x);
+                },
+                r =>
                 {
                     for (int j = 0; j < length; j++)
                     {
-                        ProfileIntensity[j] += tempProfileIntensity[i][0][j];
-                        ContributedPixels[j] += tempContibutedPixels[i][0][j];
+                        ProfileIntensity[j] += r.Profile[j];
+                        ContributedPixels[j] += r.Pixels[j];
                     }
-                }
-            });
+                }, maxDegreeOfParallelism);
         }
 
         //Profile変数に代入
@@ -2102,16 +2306,16 @@ public static class Ring
                 profile.Err.Add(new PointD(x, temp / Math.Sqrt(ProfileIntensity[i])));
             }
         }
-        tempProfileIntensity = null;
-        tempContibutedPixels = null;
+        //tempProfileIntensity = null; // 261111Cl 変更前 (スレッドごとの部分和は無くなった)
+        //tempContibutedPixels = null;
         return profile;
     }
 
     public static Profile[] GetConcenrticProfilesBySector(IntegralProperty iP, int chiDivision)
     {
         IP = iP;
-        var thread = Environment.ProcessorCount;
-        int yStep = IP.SrcHeight / thread + 1;
+        //var thread = Environment.ProcessorCount; // 261111Cl 変更前 (下の Parallel.For とともに)
+        //int yStep = IP.SrcHeight / thread + 1;
 
         R2 = new double[(int)((IP.EndAngle - IP.StartAngle) / IP.StepAngle) + 1];
         for (int i = 0; i < R2.Length; i++)
@@ -2125,19 +2329,34 @@ public static class Ring
         var profiles = new double[chiDivision, length];
         var pixels = new double[chiDivision, length];
 
-        Parallel.For(0, thread, i =>
-        {
-            var (tempProfile, tempPixels) = GetProfileThreadWithTiltCorrectionNew(0, iP.SrcWidth, i * yStep, Math.Min((i + 1) * yStep, iP.SrcHeight), chiDivision);
-            lock (lockObj)
+        #region 261111Cl 変更前 (スレッド数で行を均等に固定分割し、lock で終わった順に合算していた → 負荷が偏り、実行ごとに結果が丸め誤差で揺れた)
+        //Parallel.For(0, thread, i =>
+        //{
+        //    var (tempProfile, tempPixels) = GetProfileThreadWithTiltCorrectionNew(0, iP.SrcWidth, i * yStep, Math.Min((i + 1) * yStep, iP.SrcHeight), chiDivision);
+        //    lock (lockObj)
+        //        for (int h = 0; h < chiDivision; h++)
+        //            for (int w = 0; w < length; w++)
+        //                if (tempPixels[h][w] > 0)
+        //                {
+        //                    pixels[h, w] += tempPixels[h][w];
+        //                    profiles[h, w] += tempProfile[h][w];
+        //                }
+
+        //});
+        #endregion
+        // 261111Cl 行を区間に分けて動的に配り、区間の番号順に合算する (内側の計算・合算の条件は旧来どおり)
+        ForEachRowChunkOrdered(0, iP.SrcHeight, 2L * chiDivision * length,
+            (y0, y1) => GetProfileThreadWithTiltCorrectionNew(0, iP.SrcWidth, y0, y1, chiDivision),
+            r =>
+            {
                 for (int h = 0; h < chiDivision; h++)
                     for (int w = 0; w < length; w++)
-                        if (tempPixels[h][w] > 0)
+                        if (r.Pixels[h][w] > 0)
                         {
-                            pixels[h, w] += tempPixels[h][w];
-                            profiles[h, w] += tempProfile[h][w];
+                            pixels[h, w] += r.Pixels[h][w];
+                            profiles[h, w] += r.Profile[h][w];
                         }
-
-        });
+            });
         var destProfiles = new Profile[chiDivision];
         for (int j = 0; j < chiDivision; j++)
         {
