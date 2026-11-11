@@ -2,7 +2,9 @@
 using System.Buffers;
 using System.Collections.Generic;
 using System.Linq;
+using System.Numerics;// 261111Cl 追加 (GaussianBlurFast の Vector<double>)
 using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;// 261111Cl 追加
 using System.Threading;
 using System.Threading.Tasks;
 using ZLinq;
@@ -131,14 +133,25 @@ public static class ImageProcess
                 int lo = Math.Max(0, center - h), hi = Math.Min(limit, height - h + center);
                 blurSumH[h] = lo == 0 && hi == limit ? 1 : blur[lo..hi].Sum();
             });
-            Parallel.For(0, width, w =>
+            #region 261111Cl 変更前: 縦方向のパス (列ごとの飛び飛びのアクセス・タップごとの割り算)
+            //Parallel.For(0, width, w =>
+            //{
+            //    for (int h = 0; h < height; h++)
+            //    {
+            //        tmpPixels[h * width + w] = 0;
+            //        for (int n = Math.Max(0, center - h); n < Math.Min(blur.Length, height - h + center); n++)
+            //            tmpPixels[h * width + w] += blur[n] / blurSumH[h] * pixels[(h - center + n) * width + w];
+            //    }
+            //});
+            #endregion
+            //261111Cl 変更: 出力の行ごとに、係数 c = blur[n] / blurSumH[h] を n の昇順に作り、入力の行全体へ dst += c * src を掛ける (行は連続アクセス・Vector<double>)。
+            //  各画素で見ると 0 から始めて n の昇順に (c × 画素) を足す、という旧式と同じ演算・同じ順序 (FMA なし) なので結果はビット一致する。
+            Parallel.For(0, height, h =>
             {
-                for (int h = 0; h < height; h++)
-                {
-                    tmpPixels[h * width + w] = 0;
-                    for (int n = Math.Max(0, center - h); n < Math.Min(blur.Length, height - h + center); n++)
-                        tmpPixels[h * width + w] += blur[n] / blurSumH[h] * pixels[(h - center + n) * width + w];
-                }
+                var dst = tmpPixels.AsSpan(h * width, width);
+                dst.Clear();
+                for (int n = Math.Max(0, center - h); n < Math.Min(blur.Length, height - h + center); n++)
+                    AddScaled(dst, pixels.AsSpan((h - center + n) * width, width), blur[n] / blurSumH[h]);
             });
 
             //260921Cl 変更: 上の blurSumH と同じ理由で、分母は畳み込みと同じ範囲の和にする
@@ -148,17 +161,62 @@ public static class ImageProcess
                 int lo = Math.Max(0, center - w), hi = Math.Min(limit, width - w + center);
                 blurSumW[w] = lo == 0 && hi == limit ? 1 : blur[lo..hi].Sum();
             });
+            #region 261111Cl 変更前: 横方向のパス (出力配列へ直接累積・タップごとの割り算)
+            //Parallel.For(0, height, h =>
+            //{
+            //    for (int w = 0; w < width; w++)
+            //    {
+            //        results[h * width + w] = 0;
+            //        for (int n = Math.Max(0, center - w); n < Math.Min(blur.Length, width - w + center); n++)
+            //            results[h * width + w] += blur[n] / blurSumW[w] * tmpPixels[h * width + w - center + n];
+            //    }
+            //});
+            #endregion
+            //261111Cl 変更: 端の列はローカル変数に累積する。カーネルがはみ出さない内側の列 [center, width - center) は blurSumW = 1 で
+            //  係数 blur[n] / 1 = blur[n] (割り算 x / 1 は厳密に x) なので、縦方向と同じく n の昇順に行全体へ dst += blur[n] * src を掛ける。
+            //  どちらも各画素で 0 から n の昇順に足す旧式と同じ演算・順序で、結果はビット一致する。
+            //  results が pixels と同じ配列でも、ここで読むのは tmpPixels だけなので問題ない。
+            int inBeg = Math.Min(center, width), inEnd = Math.Max(inBeg, width - center);
             Parallel.For(0, height, h =>
             {
+                var src = tmpPixels.AsSpan(h * width, width);
+                var dst = results.AsSpan(h * width, width);
                 for (int w = 0; w < width; w++)
                 {
-                    results[h * width + w] = 0;
+                    if (w == inBeg) w = inEnd;//内側の列は下でまとめて計算する
+                    if (w >= width) break;
+                    double sum = 0;
                     for (int n = Math.Max(0, center - w); n < Math.Min(blur.Length, width - w + center); n++)
-                        results[h * width + w] += blur[n] / blurSumW[w] * tmpPixels[h * width + w - center + n];
+                        sum += blur[n] / blurSumW[w] * src[w - center + n];
+                    dst[w] = sum;
+                }
+                if (inEnd > inBeg)
+                {
+                    var dstIn = dst[inBeg..inEnd];
+                    dstIn.Clear();
+                    for (int n = 0; n < limit; n++)
+                        AddScaled(dstIn, src.Slice(inBeg - center + n, inEnd - inBeg), blur[n]);
                 }
             });
         }
         finally { ArrayPool<double>.Shared.Return(tmpPixels); }
+    }
+
+    /// <summary>dst[i] += c * src[i] (乗算→加算、FMA なし。Vector&lt;double&gt; の各要素の演算は スカラーと同じ IEEE の乗算・加算なのでビット一致)。261111Cl 追加</summary>
+    private static void AddScaled(Span<double> dst, ReadOnlySpan<double> src, double c)
+    {
+        int i = 0;
+        if (Vector.IsHardwareAccelerated && dst.Length >= Vector<double>.Count)
+        {
+            var vc = new Vector<double>(c);
+            var vd = MemoryMarshal.Cast<double, Vector<double>>(dst);
+            var vs = MemoryMarshal.Cast<double, Vector<double>>(src[..dst.Length]);
+            for (int k = 0; k < vd.Length; k++)
+                vd[k] += vc * vs[k];
+            i = vd.Length * Vector<double>.Count;
+        }
+        for (; i < dst.Length; i++)
+            dst[i] += c * src[i];
     }
 
     /// <summary>260920Cl 追加: 画像から、その Gaussian ぼかし (半値全幅 fwhm [px]) を差し引き、緩やかに変わる明るさ分布を取り除く (ハイパスフィルタ)。
@@ -206,53 +264,84 @@ public static class ImageProcess
 
         var radiusPlusOne = (int)(radius + 1);
 
-        var index = new List<int>();
+        //var index = new List<int>();
+        var indexList = new List<int>();// 261111Cl 変更: 下で int[] にする
         for (int h = -radiusPlusOne; h < radiusPlusOne; h++)
             for (int w = -radiusPlusOne; w < radiusPlusOne; w++)
                 if (h * h + w * w <= radius * radius && h * h + w * w != 0)
-                    index.Add(h * width + w);
+                    indexList.Add(h * width + w);//index.Add(h * width + w);
+        int[] index = [.. indexList];// 261111Cl 変更: 内側のループで引く添字は List<int> でなく配列にする
 
-        if (index.Count == 0)
+        //if (index.Count == 0)
+        if (index.Length == 0)// 261111Cl
             return results;
 
-        var neighborCount = index.Count; // (260403Ch) ThreadLocal 配列の使用長を固定値として扱う
-        var threadLocalNeighbors = new ThreadLocal<double[]>(() => null, true); // (260403Ch) 行ごとの近傍バッファをスレッドごとに再利用する
-        try
+        #region 261111Cl 変更前: list1 (ThreadLocal + ArrayPool) は書くだけで、どこからも読まれていなかった
+        //var neighborCount = index.Count; // (260403Ch) ThreadLocal 配列の使用長を固定値として扱う
+        //var threadLocalNeighbors = new ThreadLocal<double[]>(() => null, true); // (260403Ch) 行ごとの近傍バッファをスレッドごとに再利用する
+        //try
+        //{
+        //    Parallel.For(radiusPlusOne, height - radiusPlusOne, y =>
+        //    {
+        //        var list1 = threadLocalNeighbors.Value ??= ArrayPool<double>.Shared.Rent(neighborCount); // (260403Ch) neighborCount はこの呼び出し中で固定
+        //        int pos = y * width;
+        //        fixed (double* s = &pixels[pos + radiusPlusOne], d = &results[pos + radiusPlusOne])
+        //        {
+        //            double* src = s, dst = d;
+        //            for (int x = radiusPlusOne; x < width - radiusPlusOne; x++, src++, dst++)
+        //            {
+        //                double sum = 0, sumSq = 0; // (260403Ch) ArrayPool の prefix だけを使うので LINQ 集計を外す
+        //                for (int i = 0; i < neighborCount; i++)
+        //                {
+        //                    var value = *(src + index[i]);
+        //                    list1[i] = value; // (260403Ch) 旧 list1 の役割を保ちつつ再利用する
+        //                    sum += value; // (260403Ch)
+        //                    sumSq += value * value; // (260403Ch)
+        //                }
+        //                // double average = list1.Average();
+        //                // double valiance = list1.Average(e => e * e) - average * average; // (260403Ch) 変更前
+        //                double average = sum / neighborCount; // (260403Ch)
+        //                double valiance = sumSq / neighborCount - average * average; // (260403Ch)
+        //
+        //                if ((*src - average) * (*src - average) > valiance * threshold * threshold)
+        //                    *dst = average;
+        //            }
+        //        }
+        //    });
+        //}
+        //finally
+        //{
+        //    foreach (var list1 in threadLocalNeighbors.Values.OfType<double[]>()) // (260403Ch)
+        //        ArrayPool<double>.Shared.Return(list1);
+        //    threadLocalNeighbors.Dispose(); // (260403Ch)
+        //}
+        #endregion
+        //261111Cl 変更: 書くだけだった list1 と、その ThreadLocal・ArrayPool を外した。和の取り方 (i の昇順) は同じなので結果はビット一致
+        var neighborCount = index.Length;
+        Parallel.For(radiusPlusOne, height - radiusPlusOne, y =>
         {
-            Parallel.For(radiusPlusOne, height - radiusPlusOne, y =>
+            var idx = index;// ループ内で配列の長さを使えるようローカルに取る
+            int pos = y * width;
+            fixed (double* s = &pixels[pos + radiusPlusOne], d = &results[pos + radiusPlusOne])
             {
-                var list1 = threadLocalNeighbors.Value ??= ArrayPool<double>.Shared.Rent(neighborCount); // (260403Ch) neighborCount はこの呼び出し中で固定
-                int pos = y * width;
-                fixed (double* s = &pixels[pos + radiusPlusOne], d = &results[pos + radiusPlusOne])
+                double* src = s, dst = d;
+                for (int x = radiusPlusOne; x < width - radiusPlusOne; x++, src++, dst++)
                 {
-                    double* src = s, dst = d;
-                    for (int x = radiusPlusOne; x < width - radiusPlusOne; x++, src++, dst++)
+                    double sum = 0, sumSq = 0;
+                    for (int i = 0; i < idx.Length; i++)
                     {
-                        double sum = 0, sumSq = 0; // (260403Ch) ArrayPool の prefix だけを使うので LINQ 集計を外す
-                        for (int i = 0; i < neighborCount; i++)
-                        {
-                            var value = *(src + index[i]);
-                            list1[i] = value; // (260403Ch) 旧 list1 の役割を保ちつつ再利用する
-                            sum += value; // (260403Ch)
-                            sumSq += value * value; // (260403Ch)
-                        }
-                        // double average = list1.Average();
-                        // double valiance = list1.Average(e => e * e) - average * average; // (260403Ch) 変更前
-                        double average = sum / neighborCount; // (260403Ch)
-                        double valiance = sumSq / neighborCount - average * average; // (260403Ch)
-
-                        if ((*src - average) * (*src - average) > valiance * threshold * threshold)
-                            *dst = average;
+                        var value = *(src + idx[i]);
+                        sum += value;
+                        sumSq += value * value;
                     }
+                    double average = sum / neighborCount;
+                    double valiance = sumSq / neighborCount - average * average;
+
+                    if ((*src - average) * (*src - average) > valiance * threshold * threshold)
+                        *dst = average;
                 }
-            });
-        }
-        finally
-        {
-            foreach (var list1 in threadLocalNeighbors.Values.OfType<double[]>()) // (260403Ch)
-                ArrayPool<double>.Shared.Return(list1);
-            threadLocalNeighbors.Dispose(); // (260403Ch)
-        }
+            }
+        });
         return results;
     }
 
@@ -273,17 +362,32 @@ public static class ImageProcess
 
         //隣り合っているピクセルより小さな値を持つ場合はtrue
         var mList = new List<(int x, int y, double dev)>();
-        Parallel.For(1, height - 1, y =>
-         {
-             for (int x = 1; x < width - 1; x++)
-             {
-                 var i = y * width + x;
-                 var v = d[i];
-                 if (v < 0 && v < d[i + 1] && v < d[i - 1] && v < d[i + width] && v < d[i - width] && v < d[i + 1 + width] && v < d[i - 1 + width] && v < d[i + 1 - width] && v < d[i - 1 - width])
-                     lock (lockObj)
-                         mList.Add((x, y, v));
-             }
-         });
+        #region 261111Cl 変更前: 候補ごとに lock して共有リストへ追加
+        //Parallel.For(1, height - 1, y =>
+        // {
+        //     for (int x = 1; x < width - 1; x++)
+        //     {
+        //         var i = y * width + x;
+        //         var v = d[i];
+        //         if (v < 0 && v < d[i + 1] && v < d[i - 1] && v < d[i + width] && v < d[i - width] && v < d[i + 1 + width] && v < d[i - 1 + width] && v < d[i + 1 - width] && v < d[i - 1 - width])
+        //             lock (lockObj)
+        //                 mList.Add((x, y, v));
+        //     }
+        // });
+        #endregion
+        //261111Cl 変更: スレッドごとのリストに集め、最後にまとめて連結する (lock はスレッドごとに 1 回)。
+        //  連結の順序はスレッドの実行順で変わるが、下のソートが (dev, y, x) の全順序なので、ソート後の mList と結果は同一
+        Parallel.For(1, height - 1, () => new List<(int x, int y, double dev)>(), (y, _, local) =>
+        {
+            for (int x = 1; x < width - 1; x++)
+            {
+                var i = y * width + x;
+                var v = d[i];
+                if (v < 0 && v < d[i + 1] && v < d[i - 1] && v < d[i + width] && v < d[i - width] && v < d[i + 1 + width] && v < d[i - 1 + width] && v < d[i + 1 - width] && v < d[i - 1 - width])
+                    local.Add((x, y, v));
+            }
+            return local;
+        }, local => { lock (lockObj) mList.AddRange(local); });
         // 260801Cl 変更: dev が等しいときに 0 を返す比較子だったため、並列追加 (上の lock) でばらついた mList の順序が
         // そのまま残り (List.Sort は不安定ソート)、下の貪欲選出 (最近接距離で間引き) の結果が実行ごとに変わっていた。
         // 同値の極小点は合成パターンや量子化された画像では珍しくなく、Spot ID の検出スポットが再現しない原因になる。

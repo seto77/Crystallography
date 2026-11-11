@@ -3,6 +3,7 @@ using System;
 using System.Collections.Generic;
 using System.Data;
 using System.Linq;
+using System.Numerics;// 261111Cl 追加 (ToDouble の INumberBase)
 
 namespace Crystallography;
 //public class HDF// (260715Ch) 旧: OpenRead した NativeFile の所有権を保持・解放できなかった
@@ -81,58 +82,127 @@ public class HDF : IDisposable// (260715Ch)
         public T Read<T>(int[] starts, int[] blocks) => Read<T>([.. starts.Select(s => (ulong)s)], [.. blocks.Select(b => (ulong)b)]);
 
 
+        #region 261111Cl 変更前: 20 の分岐がすべて [.. Read<T[]>().Select(e => (double)e)] (double でも無駄に複製していた)
+        ///// <summary>数値配列(1次元)データを読み込み、double配列に変換して返す</summary>
+        ///// <returns></returns>
+        //public double[] ReadAsDoubleArray()
+        //{
+        //    if (DataType == typeof(sbyte))
+        //        return [.. Read<sbyte[]>().Select(e => (double)e)];
+        //    else if (DataType == typeof(byte))
+        //        return [.. Read<byte[]>().Select(e => (double)e)];
+        //    else if (DataType == typeof(short))
+        //        return [.. Read<short[]>().Select(e => (double)e)];
+        //    else if (DataType == typeof(ushort))
+        //        return [.. Read<ushort[]>().Select(e => (double)e)];
+        //    else if (DataType == typeof(int))
+        //        return [.. Read<int[]>().Select(e => (double)e)];
+        //    else if (DataType == typeof(uint))
+        //        return [.. Read<uint[]>().Select(e => (double)e)];
+        //    else if (DataType == typeof(long))
+        //        return [.. Read<long[]>().Select(e => (double)e)];
+        //    else if (DataType == typeof(ulong))
+        //        return [.. Read<ulong[]>().Select(e => (double)e)];
+        //    else if (DataType == typeof(float))
+        //        return [.. Read<float[]>().Select(e => (double)e)];
+        //    else if (DataType == typeof(double))
+        //        return [.. Read<double[]>()];
+        //    else
+        //        return null;
+        //}
+        //
+        ///// <summary>数値配列(2次元以上)データを読み込み、double配列(1次元)に変換して返す</summary>
+        ///// <returns></returns>
+        //public double[] ReadAsDoubleArray(ulong[] starts, ulong[] blocks)
+        //{
+        //    if (DataType == typeof(sbyte))
+        //        return [.. Read<sbyte[]>(starts,blocks).Select(e => (double)e)];
+        //    else if (DataType == typeof(byte))
+        //        return [.. Read<byte[]>(starts, blocks).Select(e => (double)e)];
+        //    else if (DataType == typeof(short))
+        //        return [.. Read<short[]>(starts, blocks).Select(e => (double)e)];
+        //    else if (DataType == typeof(ushort))
+        //        return [.. Read<ushort[]>(starts, blocks).Select(e => (double)e)];
+        //    else if (DataType == typeof(int))
+        //        return [.. Read<int[]>(starts, blocks).Select(e => (double)e)];
+        //    else if (DataType == typeof(uint))
+        //        return [.. Read<uint[]>(starts, blocks).Select(e => (double)e)];
+        //    else if (DataType == typeof(long))
+        //        return [.. Read<long[]>(starts, blocks).Select(e => (double)e)];
+        //    else if (DataType == typeof(ulong))
+        //        return [.. Read<ulong[]>(starts, blocks).Select(e => (double)e)];
+        //    else if (DataType == typeof(float))
+        //        return [.. Read<float[]>(starts, blocks).Select(e => (double)e)];
+        //    else if (DataType == typeof(double))
+        //        return [.. Read<double[]>(starts, blocks)];
+        //    else
+        //        return null;
+        //}
+        #endregion
+
+        /// <summary>読み込んだ数値配列を double 配列へ変換する (値は (double)e のキャストと同じ)。double 配列は読み込んだものをそのまま返す。261111Cl 追加</summary>
+        private static double[] ToDouble<T>(T[] s) where T : INumberBase<T>
+        {
+            if (s is double[] d)
+                return d;
+            var r = GC.AllocateUninitializedArray<double>(s.Length);
+            for (int i = 0; i < s.Length; i++)
+                r[i] = double.CreateTruncating(s[i]);
+            return r;
+        }
+
         /// <summary>数値配列(1次元)データを読み込み、double配列に変換して返す</summary>
         /// <returns></returns>
-        public double[] ReadAsDoubleArray()
+        public double[] ReadAsDoubleArray()// 261111Cl 変更: 変換を ToDouble に一本化
         {
             if (DataType == typeof(sbyte))
-                return [.. Read<sbyte[]>().Select(e => (double)e)];
+                return ToDouble(Read<sbyte[]>());
             else if (DataType == typeof(byte))
-                return [.. Read<byte[]>().Select(e => (double)e)];
+                return ToDouble(Read<byte[]>());
             else if (DataType == typeof(short))
-                return [.. Read<short[]>().Select(e => (double)e)];
+                return ToDouble(Read<short[]>());
             else if (DataType == typeof(ushort))
-                return [.. Read<ushort[]>().Select(e => (double)e)];
+                return ToDouble(Read<ushort[]>());
             else if (DataType == typeof(int))
-                return [.. Read<int[]>().Select(e => (double)e)];
+                return ToDouble(Read<int[]>());
             else if (DataType == typeof(uint))
-                return [.. Read<uint[]>().Select(e => (double)e)];
+                return ToDouble(Read<uint[]>());
             else if (DataType == typeof(long))
-                return [.. Read<long[]>().Select(e => (double)e)];
+                return ToDouble(Read<long[]>());
             else if (DataType == typeof(ulong))
-                return [.. Read<ulong[]>().Select(e => (double)e)];
+                return ToDouble(Read<ulong[]>());
             else if (DataType == typeof(float))
-                return [.. Read<float[]>().Select(e => (double)e)];
+                return ToDouble(Read<float[]>());
             else if (DataType == typeof(double))
-                return [.. Read<double[]>()];
+                return Read<double[]>();
             else
                 return null;
         }
 
         /// <summary>数値配列(2次元以上)データを読み込み、double配列(1次元)に変換して返す</summary>
         /// <returns></returns>
-        public double[] ReadAsDoubleArray(ulong[] starts, ulong[] blocks)
+        public double[] ReadAsDoubleArray(ulong[] starts, ulong[] blocks)// 261111Cl 変更: 変換を ToDouble に一本化
         {
             if (DataType == typeof(sbyte))
-                return [.. Read<sbyte[]>(starts,blocks).Select(e => (double)e)];
+                return ToDouble(Read<sbyte[]>(starts, blocks));
             else if (DataType == typeof(byte))
-                return [.. Read<byte[]>(starts, blocks).Select(e => (double)e)];
+                return ToDouble(Read<byte[]>(starts, blocks));
             else if (DataType == typeof(short))
-                return [.. Read<short[]>(starts, blocks).Select(e => (double)e)];
+                return ToDouble(Read<short[]>(starts, blocks));
             else if (DataType == typeof(ushort))
-                return [.. Read<ushort[]>(starts, blocks).Select(e => (double)e)];
+                return ToDouble(Read<ushort[]>(starts, blocks));
             else if (DataType == typeof(int))
-                return [.. Read<int[]>(starts, blocks).Select(e => (double)e)];
+                return ToDouble(Read<int[]>(starts, blocks));
             else if (DataType == typeof(uint))
-                return [.. Read<uint[]>(starts, blocks).Select(e => (double)e)];
+                return ToDouble(Read<uint[]>(starts, blocks));
             else if (DataType == typeof(long))
-                return [.. Read<long[]>(starts, blocks).Select(e => (double)e)];
+                return ToDouble(Read<long[]>(starts, blocks));
             else if (DataType == typeof(ulong))
-                return [.. Read<ulong[]>(starts, blocks).Select(e => (double)e)];
+                return ToDouble(Read<ulong[]>(starts, blocks));
             else if (DataType == typeof(float))
-                return [.. Read<float[]>(starts, blocks).Select(e => (double)e)];
+                return ToDouble(Read<float[]>(starts, blocks));
             else if (DataType == typeof(double))
-                return [.. Read<double[]>(starts, blocks)];
+                return Read<double[]>(starts, blocks);
             else
                 return null;
         }

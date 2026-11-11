@@ -852,8 +852,11 @@ public class PseudoBitmap : IDisposable
             }
         });
 
-        FilterTemporary.Clear();
-        FilterTemporary.AddRange(new bool[Filter1.Count]);
+        //FilterTemporary.Clear();
+        //FilterTemporary.AddRange(new bool[Filter1.Count]);
+        //261111Cl 変更: 再描画のたびに Filter1.Count 個の bool[] (数千×数千画素で 16 MB) を確保していたのをやめ、要素数をそろえてその場で false に戻す (結果は同じ: 全要素 false・要素数 Filter1.Count)
+        CollectionsMarshal.SetCount(FilterTemporary, Filter1.Count);
+        CollectionsMarshal.AsSpan(FilterTemporary).Clear();
 
         destBmp.UnlockBits(bmpData);
 

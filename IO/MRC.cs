@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Runtime.InteropServices;// 261111Cl 追加
 
 namespace Crystallography
 {
@@ -668,21 +669,49 @@ namespace Crystallography
                     Images = null;
                 else
                 {
-                    var read = MODE switch
+                    #region 261111Cl 変更前: 容量指定なしの List に 1 画素ずつ Add していた
+                    //var read = MODE switch
+                    //{
+                    //    0 => new Func<double>(() => (double)br.ReadByte() - 128),
+                    //    1 => new Func<double>(() => (double)br.ReadInt16()),
+                    //    2 => new Func<double>(() => (double)br.ReadSingle()),
+                    //    6 => new Func<double>(() => (double)br.ReadUInt16()),
+                    //    _ => new Func<double>(() => 0.0)
+                    //};
+                    //Images = new List<List<double>>();
+                    //for (int z = 0; z < NZ; z++)
+                    //{
+                    //    Images.Add(new List<double>());
+                    //    for (int y = 0; y < NY; y++)
+                    //        for (int x = 0; x < NX; x++)
+                    //            Images[z].Add(read());
+                    //}
+                    #endregion
+                    //261111Cl 変更: 各フレームの List を画素数で確保して要素数をそろえ、その中身へ一括で読み込む (公開型 List<List<double>> は維持)。
+                    //  MODE 0 は (double)byte - 128 を表で引く。未対応の MODE は従来どおり読まずに 0。
+                    double[] table0 = null;
+                    if (MODE == 0)
                     {
-                        0 => new Func<double>(() => (double)br.ReadByte() - 128),
-                        1 => new Func<double>(() => (double)br.ReadInt16()),
-                        2 => new Func<double>(() => (double)br.ReadSingle()),
-                        6 => new Func<double>(() => (double)br.ReadUInt16()),
-                        _ => new Func<double>(() => 0.0)
-                    };
-                    Images = new List<List<double>>();
+                        table0 = new double[256];
+                        for (int i = 0; i < 256; i++)
+                            table0[i] = (double)i - 128;
+                    }
+                    int n = Math.Max(NX, 0) * Math.Max(NY, 0);//旧ループ (y < NY, x < NX) の回数と同じ
+                    Images = new List<List<double>>(Math.Max(NZ, 0));
                     for (int z = 0; z < NZ; z++)
                     {
-                        Images.Add(new List<double>());
-                        for (int y = 0; y < NY; y++)
-                            for (int x = 0; x < NX; x++)
-                                Images[z].Add(read());
+                        var image = new List<double>(n);
+                        Images.Add(image);
+                        CollectionsMarshal.SetCount(image, n);
+                        var span = CollectionsMarshal.AsSpan(image);
+                        switch (MODE)
+                        {
+                            case 0: ImageIO.ReadPixels<byte>(br.BaseStream, span, table: table0); break;
+                            case 1: ImageIO.ReadPixels<short>(br.BaseStream, span); break;
+                            case 2: ImageIO.ReadPixels<float>(br.BaseStream, span); break;
+                            case 6: ImageIO.ReadPixels<ushort>(br.BaseStream, span); break;
+                            default: span.Clear(); break;
+                        }
                     }
 
                 }

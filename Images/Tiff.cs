@@ -1,7 +1,9 @@
 ﻿using System;
+using System.Buffers;// 261111Cl 追加
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Runtime.InteropServices;// 261111Cl 追加
 using System.Text;
 
 namespace Crystallography;
@@ -156,14 +158,17 @@ public class Tiff
 
         if (sampleFormat != 3 && sampleFormat != 1)
         {
-            if (!srcData[0].Any(d => d % 1 != 0))
+            //if (!srcData[0].Any(d => d % 1 != 0))
+            //261111Cl 変更: 「全部が整数か」を double.IsInteger で判定する (NaN と ±∞ は d % 1 = NaN ≠ 0 で「整数でない」、IsInteger も false なので判定は同じ。-0.0 はどちらも整数)
+            if (Array.TrueForAll(srcData[0], double.IsInteger))
                 sampleFormat = 1;
             else if (srcData[0].Max() < float.MaxValue && srcData[0].Min() > float.MinValue)
                 sampleFormat = 3;
             else
                 return;
         }
-        var bw = new BinaryWriter(new FileStream(filename, FileMode.Create, FileAccess.ReadWrite));
+        //var bw = new BinaryWriter(new FileStream(filename, FileMode.Create, FileAccess.ReadWrite));
+        using var bw = new BinaryWriter(new FileStream(filename, FileMode.Create, FileAccess.ReadWrite));// 261111Cl 変更: 例外時もファイルを閉じる
 
         bw.Write((byte)0x49); bw.Write((byte)0x49);//バイトオーダー
         bw.Write((byte)0x2A); bw.Write((byte)0x00);//バージョン
@@ -187,15 +192,32 @@ public class Tiff
                 bw.Write(BitConverter.GetBytes((uint)(offset + data.Length * bytePerPixel)));
 
                 bw.BaseStream.Position = stripOffsets;
+                //if (bytePerPixel == 1)
+                //    for (int i = 0; i < data.Length; i++)
+                //        bw.Write((byte)data[i]);
+                //else if (bytePerPixel == 2)
+                //    for (int i = 0; i < data.Length; i++)
+                //        bw.Write(BitConverter.GetBytes((ushort)data[i]));
+                //else
+                //    for (int i = 0; i < data.Length; i++)
+                //        bw.Write(BitConverter.GetBytes(data[i]));
+                //261111Cl 変更: 画素ごとの BitConverter.GetBytes をやめ、型付きの配列にしてからバイト列として一度に書く (リトルエンディアン、出力はバイト単位で同一)
                 if (bytePerPixel == 1)
+                {
+                    var buf = GC.AllocateUninitializedArray<byte>(data.Length);
                     for (int i = 0; i < data.Length; i++)
-                        bw.Write((byte)data[i]);
+                        buf[i] = (byte)data[i];
+                    bw.Write(buf);
+                }
                 else if (bytePerPixel == 2)
+                {
+                    var buf = GC.AllocateUninitializedArray<ushort>(data.Length);
                     for (int i = 0; i < data.Length; i++)
-                        bw.Write(BitConverter.GetBytes((ushort)data[i]));
+                        buf[i] = (ushort)data[i];
+                    bw.Write(MemoryMarshal.AsBytes(buf.AsSpan()));
+                }
                 else
-                    for (int i = 0; i < data.Length; i++)
-                        bw.Write(BitConverter.GetBytes(data[i]));
+                    bw.Write(MemoryMarshal.AsBytes(data.AsSpan()));
             }
             else if (sampleFormat == 3)
             {
@@ -203,8 +225,9 @@ public class Tiff
                 //IFDのポインタを書き込み
                 bw.Write(BitConverter.GetBytes((uint)(offset + data.Length * bytePerPixel)));
                 bw.BaseStream.Position = stripOffsets;
-                for (int i = 0; i < data.Length; i++)
-                    bw.Write(BitConverter.GetBytes(data[i]));
+                //for (int i = 0; i < data.Length; i++)
+                //    bw.Write(BitConverter.GetBytes(data[i]));
+                bw.Write(MemoryMarshal.AsBytes(data.AsSpan()));// 261111Cl 変更: float 配列をバイト列として一度に書く
             }
 
             //IFDの総数
@@ -585,107 +608,169 @@ public class Tiff
                 #endregion
 
 
-                Func<double> toInt = () => 0;
-                if (bytePerPixel == 1)
-                    toInt = () => br.ReadByte();
-                else if (byteOrder == TiffByteOrder.Motorola)
-                {
+                //261111Cl 追加 (T33): 圧縮された画素の展開には対応していない。誤読した画像を黙って返さず、明確なエラーにする (タグが無い = 0 は非圧縮として扱う)
+                if (image.Compression != 0 && image.Compression != 1)
+                    throw new NotSupportedException($"Compressed TIFF (Compression = {image.Compression}) is not supported. Please save the image without compression.");
 
-                    if (bytePerPixel == 2 && image.SampleFormat == 1)
-                        toInt = () => br.ReadUInt16();
-                    else if (bytePerPixel == 2 && image.SampleFormat == 2)
-                        toInt = () => br.ReadInt16();
-                    else if (bytePerPixel == 4 && image.SampleFormat == 1)
-                        toInt = () => br.ReadUInt32();
-                    else if (bytePerPixel == 4 && image.SampleFormat == 2)
-                        toInt = () => br.ReadInt32();
-                }
-                else
-                {
-                    if (bytePerPixel == 2)
-                    {
-                        if (image.SampleFormat == 1)
-                            toInt = () =>
-                            {
-                                var temp = new byte[2];
-                                br.Read(temp, 0, 2);
-                                temp = temp.Reverse().ToArray();
-                                return BitConverter.ToUInt16(temp, 0);
-                            };
+                #region 261111Cl 変更前: 画素ごとに Func<double> を呼ぶ (MM の 16/32bit と浮動小数点は、画素ごとに byte[] を確保して反転していた)
+                //Func<double> toInt = () => 0;
+                //if (bytePerPixel == 1)
+                //    toInt = () => br.ReadByte();
+                //else if (byteOrder == TiffByteOrder.Motorola)
+                //{
+                //
+                //    if (bytePerPixel == 2 && image.SampleFormat == 1)
+                //        toInt = () => br.ReadUInt16();
+                //    else if (bytePerPixel == 2 && image.SampleFormat == 2)
+                //        toInt = () => br.ReadInt16();
+                //    else if (bytePerPixel == 4 && image.SampleFormat == 1)
+                //        toInt = () => br.ReadUInt32();
+                //    else if (bytePerPixel == 4 && image.SampleFormat == 2)
+                //        toInt = () => br.ReadInt32();
+                //}
+                //else
+                //{
+                //    if (bytePerPixel == 2)
+                //    {
+                //        if (image.SampleFormat == 1)
+                //            toInt = () =>
+                //            {
+                //                var temp = new byte[2];
+                //                br.Read(temp, 0, 2);
+                //                temp = temp.Reverse().ToArray();
+                //                return BitConverter.ToUInt16(temp, 0);
+                //            };
+                //
+                //        else
+                //            toInt = () =>
+                //            {
+                //                var temp = new byte[2];
+                //                br.Read(temp, 0, 2);
+                //                temp = temp.Reverse().ToArray();
+                //                return BitConverter.ToInt16(temp, 0);
+                //            };
+                //    }
+                //    else if (bytePerPixel == 4)
+                //    {
+                //        if (image.SampleFormat == 1)
+                //            toInt = () =>
+                //            {
+                //                var temp = new byte[4];
+                //                br.Read(temp, 0, 4);
+                //                temp = temp.Reverse().ToArray();
+                //                return BitConverter.ToUInt32(temp, 0);
+                //            };
+                //
+                //        else
+                //            toInt = () =>
+                //            {
+                //                var temp = new byte[4];
+                //                br.Read(temp, 0, 4);
+                //                temp = temp.Reverse().ToArray();
+                //                return BitConverter.ToInt32(temp, 0);
+                //            };
+                //    }
+                //}
+                //
+                //
+                //
+                //for (int i = 0, n = 0; i < image.StripByteCounts.Length; i++)
+                //{
+                //    br.BaseStream.Position = image.StripOffsets[i];
+                //    if (image.SampleFormat == 3)//浮動小数点データの時
+                //    {
+                //        for (int j = 0; j < image.StripByteCounts[i] / bytePerPixel; j++)
+                //            image.Value[n++] = toFloat(br, bytePerPixel, ByteOrder);
+                //    }
+                //    else//整数データの時 1の時は符号なし。2の時は符号アリ
+                //    {
+                //        var sign = image.SampleFormat == 2;
+                //        if (image.IsGray)
+                //        {
+                //
+                //            if (image.MDFileTag == 2)//gelファイルの時
+                //            {
+                //                for (int j = 0; j < image.StripByteCounts[i] / bytePerPixel; j++)
+                //                {
+                //                    var intensity = toInt();
+                //                    image.Value[n++] = intensity * intensity;
+                //                }
+                //            }
+                //            else
+                //            {
+                //                for (int j = 0; j < image.StripByteCounts[i] / bytePerPixel; j++)
+                //                    image.Value[n++] = toInt();
+                //            }
+                //        }
+                //        else
+                //        {
+                //            for (int j = 0; j < image.StripByteCounts[i] / bytePerPixel / bitsPerSampleLength; j++)
+                //            {
+                //                image.ValueRed[n] = (uint)toInt();
+                //                image.ValueGreen[n] = (uint)toInt();
+                //                image.ValueBlue[n] = (uint)toInt();
+                //                if (bitsPerSampleLength == 4)
+                //                    toInt();
+                //                n++;
+                //            }
+                //        }
+                //    }
+                //}
+                #endregion
 
-                        else
-                            toInt = () =>
-                            {
-                                var temp = new byte[2];
-                                br.Read(temp, 0, 2);
-                                temp = temp.Reverse().ToArray();
-                                return BitConverter.ToInt16(temp, 0);
-                            };
-                    }
-                    else if (bytePerPixel == 4)
-                    {
-                        if (image.SampleFormat == 1)
-                            toInt = () =>
-                            {
-                                var temp = new byte[4];
-                                br.Read(temp, 0, 4);
-                                temp = temp.Reverse().ToArray();
-                                return BitConverter.ToUInt32(temp, 0);
-                            };
-
-                        else
-                            toInt = () =>
-                            {
-                                var temp = new byte[4];
-                                br.Read(temp, 0, 4);
-                                temp = temp.Reverse().ToArray();
-                                return BitConverter.ToInt32(temp, 0);
-                            };
-                    }
-                }
-
-
+                //261111Cl 変更 (T1): ストリップ単位で一括で読む (ImageIO.ReadPixels: MemoryMarshal で型を変え、MM ならバイト順を反転してから double に広げる)。
+                //  型の選び方 (bytePerPixel と SampleFormat の組) は旧式と同じ。ファイル末尾での振る舞いも旧式と同じにする:
+                //  BinaryReader.ReadXxx で読んでいた 8bit と II の 16/32bit 整数は末尾で例外、BinaryReader.Read(byte[]) で読んでいた MM の 16/32bit 整数と浮動小数点は足りない分を 0。
+                //  F2 (挙動が変わる): 浮動小数点は旧式では常に 4 バイトずつ読んでいたため、64bit (double) と 16bit (half) の TIFF を誤読していた。幅に合わせて読む。
+                var bigEndian = byteOrder == TiffByteOrder.Intel;//列挙子の名前が逆: Intel = MM (ビッグエンディアン)、Motorola = II
+                var kind = image.SampleFormat == 3 ? bytePerPixel switch { 8 => SampleKind.F64, 2 => SampleKind.F16, _ => SampleKind.F32 }
+                    : bytePerPixel == 1 ? SampleKind.U8
+                    : !bigEndian ? (bytePerPixel, image.SampleFormat) switch { (2, 1) => SampleKind.U16, (2, 2) => SampleKind.S16, (4, 1) => SampleKind.U32, (4, 2) => SampleKind.S32, _ => SampleKind.None }
+                    : bytePerPixel == 2 ? (image.SampleFormat == 1 ? SampleKind.U16 : SampleKind.S16)
+                    : bytePerPixel == 4 ? (image.SampleFormat == 1 ? SampleKind.U32 : SampleKind.S32)
+                    : SampleKind.None;
 
                 for (int i = 0, n = 0; i < image.StripByteCounts.Length; i++)
                 {
                     br.BaseStream.Position = image.StripOffsets[i];
-                    if (image.SampleFormat == 3)//浮動小数点データの時
+                    if (image.SampleFormat == 3 || image.IsGray)//浮動小数点データ、またはグレーの整数データの時 (整数は 1 の時は符号なし。2 の時は符号アリ)
                     {
-                        for (int j = 0; j < image.StripByteCounts[i] / bytePerPixel; j++)
-                            image.Value[n++] = toFloat(br, bytePerPixel, ByteOrder);
+                        int count = Math.Max(0, image.StripByteCounts[i] / bytePerPixel);
+                        int fit = Math.Min(count, image.Value.Length - n);
+                        var dst = image.Value.AsSpan(n, fit);
+                        ReadSamples(br.BaseStream, dst, kind, bigEndian);
+                        if (image.SampleFormat != 3 && image.MDFileTag == 2)//gelファイルの時
+                            for (int j = 0; j < dst.Length; j++)
+                                dst[j] *= dst[j];
+                        n += fit;
+                        if (fit < count)//旧式と同じく、配列を超える分があれば IndexOutOfRangeException
+                            throw new IndexOutOfRangeException();
                     }
-                    else//整数データの時 1の時は符号なし。2の時は符号アリ
+                    else//RGB(A) の整数データ: 画素ごとに bitsPerSampleLength 個の標本。一時配列に読んで振り分ける
                     {
-                        var sign = image.SampleFormat == 2;
-                        if (image.IsGray)
+                        int count = Math.Max(0, image.StripByteCounts[i] / bytePerPixel / bitsPerSampleLength);
+                        int fit = Math.Min(count, image.ValueRed.Length - n);
+                        const int chunk = 1 << 14;
+                        var tmp = ArrayPool<double>.Shared.Rent(Math.Min(fit, chunk) * bitsPerSampleLength);
+                        try
                         {
-
-                            if (image.MDFileTag == 2)//gelファイルの時
+                            for (int p = 0; p < fit; p += chunk)
                             {
-                                for (int j = 0; j < image.StripByteCounts[i] / bytePerPixel; j++)
+                                int m = Math.Min(chunk, fit - p);
+                                var t = tmp.AsSpan(0, m * bitsPerSampleLength);
+                                ReadSamples(br.BaseStream, t, kind, bigEndian);
+                                for (int k = 0, q = n + p; k < m; k++, q++)
                                 {
-                                    var intensity = toInt();
-                                    image.Value[n++] = intensity * intensity;
+                                    image.ValueRed[q] = (uint)t[k * bitsPerSampleLength];
+                                    image.ValueGreen[q] = (uint)t[k * bitsPerSampleLength + 1];
+                                    image.ValueBlue[q] = (uint)t[k * bitsPerSampleLength + 2];
                                 }
                             }
-                            else
-                            {
-                                for (int j = 0; j < image.StripByteCounts[i] / bytePerPixel; j++)
-                                    image.Value[n++] = toInt();
-                            }
                         }
-                        else
-                        {
-                            for (int j = 0; j < image.StripByteCounts[i] / bytePerPixel / bitsPerSampleLength; j++)
-                            {
-                                image.ValueRed[n] = (uint)toInt();
-                                image.ValueGreen[n] = (uint)toInt();
-                                image.ValueBlue[n] = (uint)toInt();
-                                if (bitsPerSampleLength == 4)
-                                    toInt();
-                                n++;
-                            }
-                        }
+                        finally { ArrayPool<double>.Shared.Return(tmp); }
+                        n += fit;
+                        if (fit < count)
+                            throw new IndexOutOfRangeException();
                     }
                 }
                 Images.Add(image);
@@ -694,17 +779,40 @@ public class Tiff
         }
 
 
-        private static float toFloat(BinaryReader br, int byteCount, TiffByteOrder byteOrder)
+        //261111Cl 変更前: 浮動小数点の 1 画素読み (常に 4 バイト・画素ごとに byte[4] を確保)。ReadSamples に置き換えたので使っていない
+        //private static float toFloat(BinaryReader br, int byteCount, TiffByteOrder byteOrder)
+        //{
+        //    float intensity = 0;
+        //    var temp = new byte[4];
+        //    br.Read(temp, 0, 4);
+        //
+        //    if (byteOrder == TiffByteOrder.Intel) temp = temp.Reverse().ToArray();
+        //
+        //    intensity = BitConverter.ToSingle(temp, 0);
+        //
+        //    return intensity;
+        //}
+
+        /// <summary>標本の型 (一括読み込み用)。261111Cl 追加</summary>
+        private enum SampleKind { None, U8, U16, S16, U32, S32, F16, F32, F64 }
+
+        /// <summary>stream の現在位置から dst.Length 個の標本を読み、double にして dst に書く。261111Cl 追加
+        /// 8bit と II の整数はファイル末尾で EndOfStreamException (旧 BinaryReader.ReadXxx と同じ)、
+        /// MM の整数と浮動小数点は足りない分を 0 とする (旧 BinaryReader.Read(byte[], ..) と同じ)。None は読まずに 0 (旧 toInt の既定 () => 0 と同じ)。</summary>
+        private static void ReadSamples(Stream s, Span<double> dst, SampleKind kind, bool bigEndian)
         {
-            float intensity = 0;
-            var temp = new byte[4];
-            br.Read(temp, 0, 4);
-
-            if (byteOrder == TiffByteOrder.Intel) temp = temp.Reverse().ToArray();
-
-            intensity = BitConverter.ToSingle(temp, 0);
-
-            return intensity;
+            switch (kind)
+            {
+                case SampleKind.U8: ImageIO.ReadPixels<byte>(s, dst); break;
+                case SampleKind.U16: ImageIO.ReadPixels<ushort>(s, dst, bigEndian, zeroFillAtEnd: bigEndian); break;
+                case SampleKind.S16: ImageIO.ReadPixels<short>(s, dst, bigEndian, zeroFillAtEnd: bigEndian); break;
+                case SampleKind.U32: ImageIO.ReadPixels<uint>(s, dst, bigEndian, zeroFillAtEnd: bigEndian); break;
+                case SampleKind.S32: ImageIO.ReadPixels<int>(s, dst, bigEndian, zeroFillAtEnd: bigEndian); break;
+                case SampleKind.F16: ImageIO.ReadPixels<Half>(s, dst, bigEndian, zeroFillAtEnd: true); break;
+                case SampleKind.F32: ImageIO.ReadPixels<float>(s, dst, bigEndian, zeroFillAtEnd: true); break;
+                case SampleKind.F64: ImageIO.ReadPixels<double>(s, dst, bigEndian, zeroFillAtEnd: true); break;
+                default: dst.Clear(); break;
+            }
         }
 
         public static IFD ReadIFD(BinaryReader br, int index, TiffByteOrder byteOrder)
@@ -792,15 +900,20 @@ public class Tiff
                     case 3: ifd.Data[i] = (int)BitConverter.ToUInt16(data[i], 0); break;
                     case 4: ifd.Data[i] = (int)BitConverter.ToUInt32(data[i], 0); break;
                     case 5:
-                        double a1 = (double)(BitConverter.ToUInt32(data[i], 0));
-                        double a2 = (double)(BitConverter.ToUInt32(data[i], 4));
+                        //double a1 = (double)(BitConverter.ToUInt32(data[i], 0));
+                        //double a2 = (double)(BitConverter.ToUInt32(data[i], 4));
+                        //261111Cl 変更 (F1, 挙動が変わる): MM では上で 8 バイトをまとめて反転しているので、分子は後半 4 バイト・分母は前半 4 バイトに来る。
+                        //  旧式は MM で分母/分子 (逆数) を返していた。II は従来どおり
+                        double a1 = (double)(BitConverter.ToUInt32(data[i], byteOrder == TiffByteOrder.Intel ? 4 : 0));
+                        double a2 = (double)(BitConverter.ToUInt32(data[i], byteOrder == TiffByteOrder.Intel ? 0 : 4));
                         ifd.Data[i] = a1 / a2; break;
                     case 6: ifd.Data[i] = (sbyte)data[i][0]; break;
                     case 7: ifd.Data[i] = data[i][0]; break;
                     case 8: ifd.Data[i] = (int)BitConverter.ToInt16(data[i], 0); break;
                     case 9: ifd.Data[i] = (int)BitConverter.ToInt32(data[i], 0); break;
                     //case 10: ifd.Data[i] = (double)(BitConverter.ToInt32(data[i], 0) / BitConverter.ToInt32(data[i], 4)); break;// (260715Ch) 旧: SRATIONAL を整数除算して小数部を失っていた
-                    case 10: ifd.Data[i] = (double)BitConverter.ToInt32(data[i], 0) / BitConverter.ToInt32(data[i], 4); break;// (260715Ch)
+                    //case 10: ifd.Data[i] = (double)BitConverter.ToInt32(data[i], 0) / BitConverter.ToInt32(data[i], 4); break;// (260715Ch)
+                    case 10: ifd.Data[i] = (double)BitConverter.ToInt32(data[i], byteOrder == TiffByteOrder.Intel ? 4 : 0) / BitConverter.ToInt32(data[i], byteOrder == TiffByteOrder.Intel ? 0 : 4); break;// 261111Cl 変更 (F1): SRATIONAL も RATIONAL と同じく MM で分子と分母が入れ替わっていた
                     case 11: ifd.Data[i] = (double)BitConverter.ToSingle(data[i], 0); break;
                     case 12: ifd.Data[i] = (double)BitConverter.ToDouble(data[i], 0); break;
                 }

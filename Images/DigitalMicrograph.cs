@@ -2,6 +2,7 @@
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Runtime.InteropServices;// 261111Cl 追加
 
 namespace Crystallography;
 
@@ -93,6 +94,13 @@ public class DigitalMicrograph
         public object[] Values;
         public long TotalBytes;
 
+        /// <summary>要素数が <see cref="TypedArrayThreshold"/> 以上の単純な数値型の配列タグ (画像データなど) の値。型付きの配列 (float[], int[], ushort[] など) で持ち、このとき <see cref="Values"/> は null。
+        /// 小さな配列や数値以外のタグは従来どおり <see cref="Values"/> (object[]) に入り、このフィールドは null。261111Cl 追加</summary>
+        public Array TypedValues;
+
+        /// <summary>型付きの配列 (<see cref="TypedValues"/>) で持つ配列タグの要素数の下限。261111Cl 追加</summary>
+        public const int TypedArrayThreshold = 4096;
+
         public TagInfo(BinaryReader br, int version)
         {
             var readInt = version == 4 ?
@@ -156,9 +164,26 @@ public class DigitalMicrograph
                 {
                     if (Ninfo == 3)//単純な値を配列として持っている場合 info[1]: tag data type for all array members, info[2]: size of array
                     {
-                        Values = new object[Info[2]];
-                        for (int i = 0; i < Info[2]; i++)
-                            Values[i] = GetValue(br, (TagDataTypes)Info[1]);
+                        //261111Cl 変更 (T3): 大きな数値配列 (画像データ) は、1 要素ずつ object にボックス化せず、型付きの配列へ直接読む (DM のデータ部はリトルエンディアン)。
+                        //  4k² の float 画像で object[] は約 540 MB になっていた。値は GetValue の BinaryReader.ReadXxx と同じ
+                        TypedValues = Info[2] >= TypedArrayThreshold ? (TagDataTypes)Info[1] switch
+                        {
+                            TagDataTypes.SHORT => ReadArray<short>(br, Info[2]),
+                            TagDataTypes.LONG => ReadArray<int>(br, Info[2]),
+                            TagDataTypes.USHORT => ReadArray<ushort>(br, Info[2]),
+                            TagDataTypes.ULONG => ReadArray<uint>(br, Info[2]),
+                            TagDataTypes.FLOAT => ReadArray<float>(br, Info[2]),
+                            TagDataTypes.DOUBLE => ReadArray<double>(br, Info[2]),
+                            TagDataTypes.I1 => ReadArray<byte>(br, Info[2]),
+                            TagDataTypes.I8 => ReadArray<ulong>(br, Info[2]),
+                            _ => null,//BOOL・CHAR などは従来どおり Values へ
+                        } : null;
+                        if (TypedValues == null)
+                        {
+                            Values = new object[Info[2]];
+                            for (int i = 0; i < Info[2]; i++)
+                                Values[i] = GetValue(br, (TagDataTypes)Info[1]);
+                        }
                     }
                     else //グループを配列として持っている場合 ,info[0] = 20, info[1] = 15, info[2] = 常に0, info[3] = number of values in group, info[2*i+3] = tag data type for value i, info(ninfo) = size of info array
                     {
@@ -182,6 +207,14 @@ public class DigitalMicrograph
                         Values[0] = GetValue(br, (TagDataTypes)Info[0]);
                 }
             }
+        }
+
+        /// <summary>br の現在位置から count 個の T (リトルエンディアン) を型付き配列へ一括で読む。261111Cl 追加</summary>
+        private static T[] ReadArray<T>(BinaryReader br, long count) where T : unmanaged
+        {
+            var array = GC.AllocateUninitializedArray<T>(checked((int)count));
+            br.BaseStream.ReadExactly(MemoryMarshal.AsBytes(array.AsSpan()));//ファイルが尽きたら EndOfStreamException (旧 BinaryReader.ReadXxx と同じ)
+            return array;
         }
 
         public static object GetValue(BinaryReader br, TagDataTypes type)

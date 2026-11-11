@@ -1,10 +1,15 @@
 ﻿using System;
+using System.Buffers;// 261111Cl 追加
+using System.Buffers.Binary;// 261111Cl 追加
 using System.Collections.Generic;
 using System.Data;
 using System.Drawing;
 using System.Drawing.Imaging;
 using System.IO;
 using System.Linq;
+using System.Numerics;// 261111Cl 追加
+using System.Runtime.CompilerServices;// 261111Cl 追加
+using System.Runtime.InteropServices;// 261111Cl 追加
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Windows.Forms;
@@ -81,6 +86,54 @@ public static partial class ImageIO
         br.Close();
         br = new BinaryReader(new FileStream(str, FileMode.Open, FileAccess.Read));
         br.ReadBytes(count);
+    }
+
+    /// <summary>261111Cl 追加: stream の現在位置から dst.Length 個の T を 64K 要素ずつ一括で読み、double へ広げて dst に書く (画素ごとの BinaryReader 呼び出しの代わり)。
+    /// bigEndian = true ならバイト順を反転する (浮動小数点は同じ幅の整数として反転)。table を渡すと、値を添字にした table の値を書く。
+    /// 途中でファイルが尽きたときは、それまでに読めた完全な要素だけを書いてから EndOfStreamException を投げる (BinaryReader で 1 要素ずつ読んでいたときと同じ)。
+    /// zeroFillAtEnd = true なら例外を出さず、足りないバイトを 0 として扱う (BinaryReader.Read(byte[], ..) で読んでいた箇所と同じ)。
+    /// .NET の BinaryReader は先読みしないので、BinaryReader で読んでいる途中の BaseStream に対して呼んでよい。</summary>
+    internal static void ReadPixels<T>(Stream stream, Span<double> dst, bool bigEndian = false, ReadOnlySpan<double> table = default, bool zeroFillAtEnd = false)
+        where T : unmanaged, INumberBase<T>
+    {
+        const int chunk = 1 << 16;
+        if (dst.IsEmpty) return;
+        var buf = ArrayPool<T>.Shared.Rent(Math.Min(chunk, dst.Length));
+        try
+        {
+            for (int i = 0; i < dst.Length; i += chunk)
+            {
+                var s = buf.AsSpan(0, Math.Min(chunk, dst.Length - i));
+                var bytes = MemoryMarshal.AsBytes(s);
+                int got = stream.ReadAtLeast(bytes, bytes.Length, throwOnEndOfStream: false);
+                int n = s.Length;
+                if (got < bytes.Length)
+                {
+                    if (zeroFillAtEnd)
+                        bytes[got..].Clear();
+                    else
+                        n = got / Unsafe.SizeOf<T>();
+                }
+                var v = s[..n];
+                if (bigEndian)
+                    switch (Unsafe.SizeOf<T>())
+                    {
+                        case 2: { var u = MemoryMarshal.Cast<T, ushort>(v); BinaryPrimitives.ReverseEndianness(u, u); break; }
+                        case 4: { var u = MemoryMarshal.Cast<T, uint>(v); BinaryPrimitives.ReverseEndianness(u, u); break; }
+                        case 8: { var u = MemoryMarshal.Cast<T, ulong>(v); BinaryPrimitives.ReverseEndianness(u, u); break; }
+                    }
+                var d = dst.Slice(i, n);
+                if (table.IsEmpty)
+                    for (int k = 0; k < d.Length; k++)
+                        d[k] = double.CreateTruncating(v[k]);
+                else
+                    for (int k = 0; k < d.Length; k++)
+                        d[k] = table[int.CreateTruncating(v[k])];
+                if (n < s.Length)
+                    stream.ReadExactly(bytes[got..]);//ファイル末尾: 従来の BinaryReader と同じ EndOfStreamException を投げる
+            }
+        }
+        finally { ArrayPool<T>.Shared.Return(buf); }
     }
     #endregion
 
@@ -392,7 +445,9 @@ public static partial class ImageIO
             }
 
             using BinaryReader br = new(new FileStream(filename, FileMode.Open, FileAccess.Read));
-            var headers = new string(br.ReadChars(headersize)).Split(['{', '}', '\n', ';'], StringSplitOptions.RemoveEmptyEntries);
+            //var headers = new string(br.ReadChars(headersize)).Split(['{', '}', '\n', ';'], StringSplitOptions.RemoveEmptyEntries);
+            //261111Cl 変更: ヘッダはバイト列として読む (UTF-8 として読むと、非 ASCII のバイトで文字数とバイト数がずれる)
+            var headers = Encoding.Latin1.GetString(br.ReadBytes(headersize)).Split(['{', '}', '\n', ';'], StringSplitOptions.RemoveEmptyEntries);
             var little_endian = headers.First(h => h.StartsWith("BYTE_ORDER=")).Split(['='])[1] == "little_endian";
             var type = headers.First(h => h.StartsWith("TYPE=")).Split(separator)[1];
             var size1 = Convert.ToInt32(headers.First(h => h.StartsWith("SIZE1=")).Split(['='])[1]);
@@ -410,15 +465,20 @@ public static partial class ImageIO
             Ring.SequentialImageIntensities = [];
             Ring.SequentialImageNames = [];
 
-            var read = type == "UNSIGNED_SHORT" ? new Func<double>(() => br.ReadUInt16()) : new Func<double>(() => br.ReadSingle());
+            //var read = type == "UNSIGNED_SHORT" ? new Func<double>(() => br.ReadUInt16()) : new Func<double>(() => br.ReadSingle());
 
             for (int j = 0; j < numberOfFrame; j++)
             {
                 Ring.SequentialImageIntensities.Add([]);
                 br.BaseStream.Position = headersize + j * length * (type == "UNSIGNED_SHORT" ? 2 : 4);
                 Ring.SequentialImageIntensities[j] = new double[length];
-                for (int i = 0; i < length; i++)
-                    Ring.SequentialImageIntensities[j][i] = read();
+                //for (int i = 0; i < length; i++)
+                //    Ring.SequentialImageIntensities[j][i] = read();
+                //261111Cl 変更: 1 画素ずつの Func 呼び出しをやめ、一括で読む
+                if (type == "UNSIGNED_SHORT")
+                    ReadPixels<ushort>(br.BaseStream, Ring.SequentialImageIntensities[j]);
+                else
+                    ReadPixels<float>(br.BaseStream, Ring.SequentialImageIntensities[j]);
                 Ring.SequentialImageNames.Add(j.ToString("000"));
             }
 
@@ -461,7 +521,9 @@ public static partial class ImageIO
             }
 
             using BinaryReader br = new(new FileStream(filename, FileMode.Open, FileAccess.Read));
-            var headers = new string(br.ReadChars(headersize)).Split(['{', '}', '\n', ';'], StringSplitOptions.RemoveEmptyEntries);
+            //var headers = new string(br.ReadChars(headersize)).Split(['{', '}', '\n', ';'], StringSplitOptions.RemoveEmptyEntries);
+            //261111Cl 変更: ヘッダはバイト列として読む (UTF-8 として読むと、非 ASCII のバイトで文字数とバイト数がずれる)
+            var headers = Encoding.Latin1.GetString(br.ReadBytes(headersize)).Split(['{', '}', '\n', ';'], StringSplitOptions.RemoveEmptyEntries);
 
 
 
@@ -476,10 +538,17 @@ public static partial class ImageIO
             int imageWidth = size1, imageHeight = size2;
             long length = imageWidth * imageHeight;
 
-            Func<double> read = type switch
+            //Func<double> read = type switch
+            //{
+            //    "unsigned long int" => new Func<double>(() => br.ReadUInt32()),
+            //    "long int" => new Func<double>(() => br.ReadInt32()),
+            //    _ => throw new NotImplementedException()
+            //};
+            //261111Cl 変更: 型の判定 (未対応なら例外) は従来と同じ位置で行い、画素は下で一括で読む
+            bool isUnsigned = type switch
             {
-                "unsigned long int" => new Func<double>(() => br.ReadUInt32()),
-                "long int" => new Func<double>(() => br.ReadInt32()),
+                "unsigned long int" => true,
+                "long int" => false,
                 _ => throw new NotImplementedException()
             };
 
@@ -487,8 +556,12 @@ public static partial class ImageIO
 
             if (Ring.Intensity.Length != length)//前回と同じサイズではないとき
                 Ring.Intensity = new double[length];
-            for (int i = 0; i < length; i++)
-                Ring.Intensity[i] = read();
+            //for (int i = 0; i < length; i++)
+            //    Ring.Intensity[i] = read();
+            if (isUnsigned)// 261111Cl
+                ReadPixels<uint>(br.BaseStream, Ring.Intensity.AsSpan(0, (int)length));
+            else
+                ReadPixels<int>(br.BaseStream, Ring.Intensity.AsSpan(0, (int)length));
 
 
 
@@ -541,12 +614,15 @@ public static partial class ImageIO
                     Ring.Intensity = new double[length];
 
                 using var br = new BinaryReader(new FileStream(str, FileMode.Open, FileAccess.Read));
-                for (int n = 0; n < length; n++)
-                {
-                    //マイナスの値が入ることを考慮した変更 2024/02/27 辻野さんからのメール参考
-                    var val = (short)(256 * br.ReadByte() + br.ReadByte());
-                    Ring.Intensity[n] = val;
-                }
+                //for (int n = 0; n < length; n++)
+                //{
+                //    //マイナスの値が入ることを考慮した変更 2024/02/27 辻野さんからのメール参考
+                //    var val = (short)(256 * br.ReadByte() + br.ReadByte());
+                //    Ring.Intensity[n] = val;
+                //}
+                //261111Cl 変更: ビッグエンディアンの符号付き 16bit ((short)(256 * 上位 + 下位) と同じ) を一括で読む
+                //マイナスの値が入ることを考慮した変更 2024/02/27 辻野さんからのメール参考
+                ReadPixels<short>(br.BaseStream, Ring.Intensity.AsSpan(0, length), bigEndian: true);
                 br.Close();
 
                 //全く同じファイルサイズで、2064x1548と1548x2064のケースがある (20200410辻野さんへの対応)
@@ -577,38 +653,74 @@ public static partial class ImageIO
             #region 2020年に導入された、PFのRAWファイル形式 (references\ImageExsample\BL18c 柴咲さん  を参考せよ)
             else if (Check_PF_RAW(str))
             {
-                var br = new BinaryReader(new FileStream(str, FileMode.Open, FileAccess.Read));
-                var offsetToFirstImage = new string(br.ReadChars(4));
-                var gapBetweenImages = new string(br.ReadChars(4));
+                //var br = new BinaryReader(new FileStream(str, FileMode.Open, FileAccess.Read));
+                using var br = new BinaryReader(new FileStream(str, FileMode.Open, FileAccess.Read));// 261111Cl 変更: 例外時もファイルを閉じる
+                #region 261111Cl 変更前: ヘッダを UTF-8 の文字として読んでいた (非 ASCII のバイトで文字数とバイト数がずれる)
+                //var offsetToFirstImage = new string(br.ReadChars(4));
+                //var gapBetweenImages = new string(br.ReadChars(4));
+                //
+                ////保存ソフト型名
+                //var software = new string(br.ReadChars(16));
+                ////センサ型式
+                //var sensor = new string(br.ReadChars(20));
+                ////画像情報 予備
+                //var temp = new string(br.ReadChars(2));
+                ////画像情報 画像の補正状態
+                //var correction = new string(br.ReadChars(1));
+                ////画像情報 画像の種別
+                //var type = new string(br.ReadChars(1));
+                ////画像情報 Y方向ビニング
+                //var binning_Y = new string(br.ReadChars(1));
+                ////画像情報 X方向ビニング
+                //var binning_X = new string(br.ReadChars(1));
+                ////画像情報 読み出し方向
+                //var direction = new string(br.ReadChars(1));
+                ////画像情報 有効ビット幅
+                //var bitLength = new string(br.ReadChars(1));
+                //
+                ////画像取得時の積算回数
+                //var accumulation_number = new string(br.ReadChars(4)).ToInt();
+                //
+                ////露光時間(μS) ExposureTime
+                //var exposure_time = new string(br.ReadChars(8)).ToInt();
+                ////間隔(frame)
+                //var frame = new string(br.ReadChars(4)).ToInt();
+                ////格納画像枚数 Number of stored images
+                //var num_of_stored_images = new string(br.ReadChars(4)).ToInt();
+                #endregion
+                //261111Cl 変更: ヘッダの文字列はバイト列を読んで 1 バイト = 1 文字 (Latin1) にする
+                string readText(int n) => Encoding.Latin1.GetString(br.ReadBytes(n));
+                var offsetToFirstImage = readText(4);
+                var gapBetweenImages = readText(4);
 
                 //保存ソフト型名
-                var software = new string(br.ReadChars(16));
+                var software = readText(16);
                 //センサ型式
-                var sensor = new string(br.ReadChars(20));
+                var sensor = readText(20);
                 //画像情報 予備
-                var temp = new string(br.ReadChars(2));
+                var temp = readText(2);
                 //画像情報 画像の補正状態
-                var correction = new string(br.ReadChars(1));
+                var correction = readText(1);
                 //画像情報 画像の種別
-                var type = new string(br.ReadChars(1));
+                var type = readText(1);
                 //画像情報 Y方向ビニング
-                var binning_Y = new string(br.ReadChars(1));
+                var binning_Y = readText(1);
                 //画像情報 X方向ビニング
-                var binning_X = new string(br.ReadChars(1));
+                var binning_X = readText(1);
                 //画像情報 読み出し方向
-                var direction = new string(br.ReadChars(1));
+                var direction = readText(1);
                 //画像情報 有効ビット幅
-                var bitLength = new string(br.ReadChars(1));
+                var bitLength = readText(1);
 
-                //画像取得時の積算回数	
-                var accumulation_number = new string(br.ReadChars(4)).ToInt();
+                //画像取得時の積算回数
+                var accumulation_number = readText(4).ToInt();
 
                 //露光時間(μS) ExposureTime
-                var exposure_time = new string(br.ReadChars(8)).ToInt();
+                var exposure_time = readText(8).ToInt();
                 //間隔(frame)
-                var frame = new string(br.ReadChars(4)).ToInt();
+                var frame = readText(4).ToInt();
                 //格納画像枚数 Number of stored images
-                var num_of_stored_images = new string(br.ReadChars(4)).ToInt();
+                var num_of_stored_images = readText(4).ToInt();
                 //使用画素欠陥データ ファイル名
                 var filename_pixel_defects = Encoding.UTF8.GetString(br.ReadBytes(32));
                 //使用暗電流データ ファイル名
@@ -619,26 +731,35 @@ public static partial class ImageIO
                 Ring.SequentialImageIntensities = [];
                 Ring.SequentialImageNames = [];
 
-                var read = bitLength == "7" ? new Func<double>(() => br.ReadByte()) : new Func<double>(() => br.ReadInt16());
+                //var read = bitLength == "7" ? new Func<double>(() => br.ReadByte()) : new Func<double>(() => br.ReadInt16());
 
                 //画像サイズ (H)
-                var width = new string(br.ReadChars(8)).ToInt();
+                //var width = new string(br.ReadChars(8)).ToInt();
+                var width = readText(8).ToInt();// 261111Cl
                 //画像サイズ (V)
-                var height = new string(br.ReadChars(8)).ToInt();
+                //var height = new string(br.ReadChars(8)).ToInt();
+                var height = readText(8).ToInt();// 261111Cl
 
                 //画像読み込みループ
                 for (int i = 0; i < num_of_stored_images; i++)
                 {
-                    var num = new string(br.ReadChars(4)).ToInt();
-                    var time = new string(br.ReadChars(16));
+                    //var num = new string(br.ReadChars(4)).ToInt();
+                    //var time = new string(br.ReadChars(16));
+                    var num = readText(4).ToInt();// 261111Cl
+                    var time = readText(16);// 261111Cl
                     var option = Encoding.UTF8.GetString(br.ReadBytes(32));
 
                     Ring.SequentialImageNames.Add(num.ToString());
                     Ring.SequentialImageIntensities.Add([]);
                     Ring.SequentialImageIntensities[i] = new double[width * height];
-                    for (int y = 0; y < height; y++)
-                        for (int x = 0; x < width; x++)
-                            Ring.SequentialImageIntensities[i][y * width + x] = read();
+                    //for (int y = 0; y < height; y++)
+                    //    for (int x = 0; x < width; x++)
+                    //        Ring.SequentialImageIntensities[i][y * width + x] = read();
+                    //261111Cl 変更: 1 画素ずつの Func 呼び出しをやめ、一括で読む (有効ビット幅 "7" は 8bit、それ以外は符号付き 16bit)
+                    if (bitLength == "7")
+                        ReadPixels<byte>(br.BaseStream, Ring.SequentialImageIntensities[i]);
+                    else
+                        ReadPixels<short>(br.BaseStream, Ring.SequentialImageIntensities[i]);
                 }
 
                 if (Ring.Intensity.Length != Ring.SequentialImageIntensities[0].Length)//前回と同じサイズではないとき
@@ -719,25 +840,70 @@ public static partial class ImageIO
             int imageHeight = (int)(uint)t.Tag["ImageList"].Tag["1"].Tag["ImageData"].Tag["Dimensions"].Tag["1"].Values[0];
             Ring.SrcImgSize = new Size(imageWidth, imageHeight);
        
-            var obj = t.Tag["ImageList"].Tag["1"].Tag["ImageData"].Tag["Data"].Values;
-            if (obj != null && obj.Length != 0)
+            #region 261111Cl 変更前: 画素データを object[] (1 画素ずつボックス化) から型付き配列へ取り出していた
+            //var obj = t.Tag["ImageList"].Tag["1"].Tag["ImageData"].Tag["Data"].Values;
+            //if (obj != null && obj.Length != 0)
+            //{
+            //    // (261106Ch) dynamic の添字アクセスを型付き配列に分離。型変換・書込の順序は維持する。
+            //    Array intensity;
+            //    if (obj[0].GetType() == typeof(float))
+            //    {
+            //        if (obj.Length == imageHeight * imageWidth)
+            //            intensity = obj.Select(v => (float)v).ToArray();
+            //        else
+            //        {
+            //            Ring.DigitalMicrographProperty.IsFFT = true;
+            //            intensity = DecodeDigitalMicrographFft(obj.Select(v => (float)v).ToArray(), imageWidth, imageHeight);
+            //        }
+            //    }
+            //    else if (obj[0].GetType() == typeof(uint))
+            //        intensity = obj.Select(v => (uint)v).ToArray();
+            //    else if (obj[0].GetType() == typeof(int))
+            //        intensity = obj.Select(v => (int)v).ToArray();
+            //    else
+            //        return false;
+            //
+            //    CopyDigitalMicrographIntensity(intensity, imageWidth * imageHeight);
+            //}
+            #endregion
+            //261111Cl 変更 (T3): 大きな画素データは TagInfo.TypedValues に型付き配列で入る (ボックス化しない)。小さい画像は従来どおり Values (object[]) から型付き配列を作る。
+            //  F3 (挙動が変わる): 旧式は ushort / short / double / byte の画像を「未対応」として false を返していた。要素数が画素数と一致する 2 次元画像なら読む。
+            //  要素数が違うもの (スタック・複素 128bit など) は従来どおり未対応 (false)。
+            var dataTag = t.Tag["ImageList"].Tag["1"].Tag["ImageData"].Tag["Data"];
+            var data = dataTag.TypedValues;
+            var obj = dataTag.Values;
+            if (data == null && obj != null && obj.Length != 0)
             {
-                // (261106Ch) dynamic の添字アクセスを型付き配列に分離。型変換・書込の順序は維持する。
+                var t0 = obj[0].GetType();//旧式と同じく obj[0].GetType() で判定 (null なら例外)
+                if (t0 == typeof(float)) data = obj.Select(v => (float)v).ToArray();
+                else if (t0 == typeof(uint)) data = obj.Select(v => (uint)v).ToArray();
+                else if (t0 == typeof(int)) data = obj.Select(v => (int)v).ToArray();
+                else if (t0 == typeof(ushort)) data = obj.Select(v => (ushort)v).ToArray();
+                else if (t0 == typeof(short)) data = obj.Select(v => (short)v).ToArray();
+                else if (t0 == typeof(double)) data = obj.Select(v => (double)v).ToArray();
+                else if (t0 == typeof(byte)) data = obj.Select(v => (byte)v).ToArray();
+                else
+                    return false;
+            }
+            if (data != null && data.Length != 0)
+            {
                 Array intensity;
-                if (obj[0].GetType() == typeof(float))
+                var type = data.GetType();
+                if (type == typeof(float[]))
                 {
-                    if (obj.Length == imageHeight * imageWidth)
-                        intensity = obj.Select(v => (float)v).ToArray();
+                    var values = (float[])data;
+                    if (values.Length == imageHeight * imageWidth)
+                        intensity = values;
                     else
                     {
                         Ring.DigitalMicrographProperty.IsFFT = true;
-                        intensity = DecodeDigitalMicrographFft(obj.Select(v => (float)v).ToArray(), imageWidth, imageHeight);
+                        intensity = DecodeDigitalMicrographFft(values, imageWidth, imageHeight);
                     }
                 }
-                else if (obj[0].GetType() == typeof(uint))
-                    intensity = obj.Select(v => (uint)v).ToArray();
-                else if (obj[0].GetType() == typeof(int))
-                    intensity = obj.Select(v => (int)v).ToArray();
+                else if (type == typeof(uint[]) || type == typeof(int[]))//従来どおり (要素数は確かめない)
+                    intensity = data;
+                else if ((type == typeof(ushort[]) || type == typeof(short[]) || type == typeof(byte[]) || type == typeof(double[])) && data.Length == imageHeight * imageWidth)
+                    intensity = data;//F3: 新たに読む型は、要素数が画素数と一致する 2 次元画像だけ (スタックや複素数は従来どおり未対応)
                 else
                     return false;
 
@@ -802,6 +968,16 @@ public static partial class ImageIO
                 for (int i = 0; i < count; i++) Ring.Intensity[i] = values[i];
                 break;
             case double[] values:
+                for (int i = 0; i < count; i++) Ring.Intensity[i] = values[i];
+                break;
+            // 261111Cl 追加 (F3): ushort / short / byte の画像。ushort[] と short[] も CLR では互換なので、符号を実際の配列型で判定する
+            case ushort[] values when intensity.GetType() == typeof(ushort[]):
+                for (int i = 0; i < count; i++) Ring.Intensity[i] = values[i];
+                break;
+            case short[] values:
+                for (int i = 0; i < count; i++) Ring.Intensity[i] = values[i];
+                break;
+            case byte[] values when intensity.GetType() == typeof(byte[]):
                 for (int i = 0; i < count; i++) Ring.Intensity[i] = values[i];
                 break;
         }
@@ -889,26 +1065,47 @@ public static partial class ImageIO
         try
         {
             var img = Array.Empty<uint>();
-            var br = new BinaryReader(new FileStream(str, FileMode.Open, FileAccess.Read));
+            //var br = new BinaryReader(new FileStream(str, FileMode.Open, FileAccess.Read));
+            using var br = new BinaryReader(new FileStream(str, FileMode.Open, FileAccess.Read));// 261111Cl 変更: 例外時もファイルを閉じる
             int n = 0;
             int ver = 0;
             int imageWidth = 0, imageHeight = 0;
-            while (n < 10000)
+            #region 261111Cl 変更前: 先頭から 1 バイトずつシークして 17 文字読み、"CCP4 packed image" を探していた (最大 1 万回)
+            //while (n < 10000)
+            //{
+            //    br.BaseStream.Position = n++;
+            //    try
+            //    {
+            //        string s = new(br.ReadChars(17));
+            //        if (s.StartsWith("CCP4 packed image"))
+            //        {
+            //            if (br.ReadChar() == ',')
+            //                ver = 1;
+            //            else
+            //                ver = 2;
+            //            break;
+            //        }
+            //    }
+            //    catch { }
+            //}
+            #endregion
+            //261111Cl 変更 (T23): 先頭 10,017 バイト (開始位置 0〜9999 の 17 文字を含む範囲) を一度に読み、バイト列のまま探す。
+            //  見つかればその直後の 1 文字で版を決める (旧式と同じ位置)。見つからなければ旧式の最後の試行の直後 (9999 + 17) から続ける
             {
-                br.BaseStream.Position = n++;
-                try
+                var marker = "CCP4 packed image"u8;
+                var head = new byte[10000 - 1 + marker.Length];
+                int got = br.BaseStream.ReadAtLeast(head, head.Length, throwOnEndOfStream: false);
+                int idx = head.AsSpan(0, got).IndexOf(marker);
+                if (idx >= 0)
                 {
-                    string s = new(br.ReadChars(17));
-                    if (s.StartsWith("CCP4 packed image"))
-                    {
-                        if (br.ReadChar() == ',')
-                            ver = 1;
-                        else
-                            ver = 2;
-                        break;
-                    }
+                    br.BaseStream.Position = idx + marker.Length;
+                    if (br.ReadChar() == ',')
+                        ver = 1;
+                    else
+                        ver = 2;
                 }
-                catch { }
+                else
+                    br.BaseStream.Position = 10000 - 1 + marker.Length;
             }
             while (br.ReadChar() != 'X')
             { }
@@ -957,7 +1154,8 @@ public static partial class ImageIO
             Ring.Comments = "";
             Ring.SrcImgSize = new Size(t.ImageWidth, t.ImageLength);
 
-            Ring.Intensity = [.. t.Images[0].Value]; 
+            //Ring.Intensity = [.. t.Images[0].Value];
+            Ring.Intensity = t.Images[0].Value;// 261111Cl 変更 (T9): t はこの関数内だけのローカルで、読み込んだ配列は他から参照されないので複製せずに受け取る
 
             Ring.BitsPerPixels = t.BitsPerSampleGray;
             Ring.ImageType = Ring.ImageTypeEnum.RayonixSX200;
@@ -1040,7 +1238,8 @@ public static partial class ImageIO
             Ring.Comments = "";
             Ring.SrcImgSize = new Size(t.ImageWidth, t.ImageLength);
 
-            Ring.Intensity = [.. t.Images[0].Value];
+            //Ring.Intensity = [.. t.Images[0].Value];
+            Ring.Intensity = t.Images[0].Value;// 261111Cl 変更 (T9): t はローカルなので複製せずに受け取る
 
             Ring.BitsPerPixels = t.BitsPerSampleGray;
             Ring.ImageType = Ring.ImageTypeEnum.MCCD;
@@ -1276,7 +1475,8 @@ public static partial class ImageIO
         try
         {
             var img = Array.Empty<uint>();
-            BinaryReader br = new(new FileStream(str, FileMode.Open, FileAccess.Read));
+            //BinaryReader br = new(new FileStream(str, FileMode.Open, FileAccess.Read));
+            using BinaryReader br = new(new FileStream(str, FileMode.Open, FileAccess.Read));// 261111Cl 変更 (F8): 例外時もファイルを閉じる
 
             int ID = br.ReadUInt16();
             int headerSize = br.ReadUInt16();
@@ -1312,8 +1512,9 @@ public static partial class ImageIO
             {
                 Ring.SequentialImageIntensities.Add(new double[imageHeight * imageWidth]);
                 br.BaseStream.Position = headerSize + imageHeaderSize + j * imageWidth * imageHeight * 2;
-                for (int i = 0; i < imageHeight * imageWidth; i++)
-                    Ring.SequentialImageIntensities[j][i] = br.ReadUInt16();
+                //for (int i = 0; i < imageHeight * imageWidth; i++)
+                //    Ring.SequentialImageIntensities[j][i] = br.ReadUInt16();
+                ReadPixels<ushort>(br.BaseStream, Ring.SequentialImageIntensities[j]);// 261111Cl 変更: 一括で読む
                 Ring.SequentialImageNames.Add(j.ToString("000"));
             }
 
@@ -1364,17 +1565,32 @@ public static partial class ImageIO
             int length = imageWidth * imageHeight;
 
             Ring.Intensity=new double[length];
+            #region 261111Cl 変更前: 1 画素ずつ読んでいた
+            //if (data_length == 0)
+            //    for (int i = 0; i < length; i++)
+            //        Ring.Intensity[i]=br.ReadUInt16();
+            //else
+            //    for (int i = 0; i < length; i++)
+            //    {
+            //        var val = br.ReadUInt32();
+            //        if (val > uint.MaxValue / 2)
+            //            val = 0;
+            //        Ring.Intensity[i] = val;
+            //    }
+            #endregion
+            //261111Cl 変更: 一括で読む。32bit のとき uint.MaxValue / 2 を超える値を 0 にする処理は、読んだ後に同じ条件で行う (整数値の比較なので結果は同じ)
             if (data_length == 0)
-                for (int i = 0; i < length; i++)
-                    Ring.Intensity[i]=br.ReadUInt16();
+                ReadPixels<ushort>(br.BaseStream, Ring.Intensity);
             else
-                for (int i = 0; i < length; i++)
+            {
+                try { ReadPixels<uint>(br.BaseStream, Ring.Intensity); }
+                finally//ファイルが途中で尽きた場合も、読めた分は従来どおり 0 に置き換えた状態にする
                 {
-                    var val = br.ReadUInt32();
-                    if (val > uint.MaxValue / 2)
-                        val = 0;
-                    Ring.Intensity[i] = val;
+                    for (int i = 0; i < length; i++)
+                        if (Ring.Intensity[i] > uint.MaxValue / 2)
+                            Ring.Intensity[i] = 0;
                 }
+            }
 
 
             Ring.BitsPerPixels = data_length == 0 ? 16 : 32;
@@ -1420,7 +1636,7 @@ public static partial class ImageIO
                 if (fileType != 0 && fileType != 2 && fileType != 3)
                     return false;
 
-                readData = fileType switch { 0 => () => br.ReadByte(), 2 => () => br.ReadUInt16(), 3 => () => br.ReadUInt32(), _ => () => 0 };
+                //readData = fileType switch { 0 => () => br.ReadByte(), 2 => () => br.ReadUInt16(), 3 => () => br.ReadUInt32(), _ => () => 0 };// 261111Cl 変更: 画素は下のループで fileType に応じて一括で読む
                 br.ReadBytes(50);
 
                 Ring.SrcImgSize = new Size(imageWidth, imageHeight);
@@ -1439,8 +1655,15 @@ public static partial class ImageIO
             while (readHeader() && n < 10000)
             {
                 Ring.SequentialImageIntensities.Add(new double[length]);
-                for (int i = 0; i < length; i++)
-                    Ring.SequentialImageIntensities[n][i] = readData();
+                //for (int i = 0; i < length; i++)
+                //    Ring.SequentialImageIntensities[n][i] = readData();
+                //261111Cl 変更: 1 画素ずつの Func 呼び出しをやめ、一括で読む (readHeader が通るのは fileType が 0, 2, 3 のときだけ)
+                switch (fileType)
+                {
+                    case 0: ReadPixels<byte>(br.BaseStream, Ring.SequentialImageIntensities[n]); break;
+                    case 2: ReadPixels<ushort>(br.BaseStream, Ring.SequentialImageIntensities[n]); break;
+                    case 3: ReadPixels<uint>(br.BaseStream, Ring.SequentialImageIntensities[n]); break;
+                }
                 Ring.SequentialImageNames.Add(n.ToString("0000"));
                 n++;
                 //100GBを超えたら読み込み終了
@@ -1471,7 +1694,8 @@ public static partial class ImageIO
         StringBuilder sb = new() { Capacity = 100000 };
         try
         {
-            BinaryReader br = new(new FileStream(str, FileMode.Open, FileAccess.Read));
+            //BinaryReader br = new(new FileStream(str, FileMode.Open, FileAccess.Read));
+            using BinaryReader br = new(new FileStream(str, FileMode.Open, FileAccess.Read));// 261111Cl 変更 (F8): 例外時もファイルを閉じる
 
             //ヘッダ部分読み込み { から }までを読み込む
             br.BaseStream.Position = 2;
@@ -1510,10 +1734,11 @@ public static partial class ImageIO
 
             if (Ring.Intensity.Length != length)//前回と同じサイズではないとき
                 Ring.Intensity = new double[length];
-            int n = 0;
-            for (int y = 0; y < imageHeight; y++)
-                for (int x = 0; x < imageWidth; x++)
-                    Ring.Intensity[n++] = ((uint)(br.ReadByte() + br.ReadByte() * 256));
+            //int n = 0;
+            //for (int y = 0; y < imageHeight; y++)
+            //    for (int x = 0; x < imageWidth; x++)
+            //        Ring.Intensity[n++] = ((uint)(br.ReadByte() + br.ReadByte() * 256));
+            ReadPixels<ushort>(br.BaseStream, Ring.Intensity.AsSpan(0, length));// 261111Cl 変更: リトルエンディアンの 16bit (下位 + 上位 * 256 と同じ) を一括で読む
 
             Ring.BitsPerPixels = 16;
             Ring.ImageType = Ring.ImageTypeEnum.ADSC;
@@ -1535,7 +1760,8 @@ public static partial class ImageIO
     {
         try
         {
-            var br = new BinaryReader(new FileStream(str, FileMode.Open, FileAccess.Read));
+            //var br = new BinaryReader(new FileStream(str, FileMode.Open, FileAccess.Read));
+            using var br = new BinaryReader(new FileStream(str, FileMode.Open, FileAccess.Read));// 261111Cl 変更 (T22): 開き直しをやめたので using にする (例外時もファイルを閉じる)
 
             //ヘッダ部分読み込み
             Ring.Comments = "";
@@ -1583,21 +1809,34 @@ public static partial class ImageIO
             //イメージデータ読みこみ
             var length = num_x_pixs * num_y_pixs;
 
-            SetBytePosition(str, ref br, num_x_pixs * 2);
+            #region 261111Cl 変更前: ファイルを開き直して読み飛ばし、1 画素ずつ読んでから上下反転していた
+            //SetBytePosition(str, ref br, num_x_pixs * 2);
+            //
+            //if (Ring.Intensity.Length != length)//前回と同じサイズではないとき
+            //    Ring.Intensity = new double[length];
+            //int n = 0;
+            //for (int y = 0; y < num_y_pixs; y++)
+            //    for (int x = 0; x < num_x_pixs; x++)
+            //        Ring.Intensity[n++] = convertTable[(ushort)(256 * br.ReadByte() + br.ReadByte())];
+            ////画像を上下反転させるための処理
+            //for (int y = 0; y < num_y_pixs / 2; y++)
+            //    for (int x = 0; x < num_x_pixs; x++)
+            //    {
+            //        (Ring.Intensity[(num_y_pixs - y - 1) * num_x_pixs + x], Ring.Intensity[y * num_x_pixs + x])
+            //            = (Ring.Intensity[y * num_x_pixs + x], Ring.Intensity[(num_y_pixs - y - 1) * num_x_pixs + x]);
+            //    }
+            #endregion
+            //261111Cl 変更 (T22): 画像データはヘッダ 1 レコード (num_x_pixs * 2 バイト) の後から。開き直さず Position を合わせる。
+            //  各行 (ビッグエンディアン 16bit → 変換表) を、上下反転した後の行の位置へ直接読み込む (行の入れ替えと同じ結果)
+            br.BaseStream.Position = num_x_pixs * 2;
 
             if (Ring.Intensity.Length != length)//前回と同じサイズではないとき
                 Ring.Intensity = new double[length];
-            int n = 0;
+            var table = new double[65536];
+            for (int i = 0; i < table.Length; i++)
+                table[i] = convertTable[i];
             for (int y = 0; y < num_y_pixs; y++)
-                for (int x = 0; x < num_x_pixs; x++)
-                    Ring.Intensity[n++] = convertTable[(ushort)(256 * br.ReadByte() + br.ReadByte())];
-            //画像を上下反転させるための処理
-            for (int y = 0; y < num_y_pixs / 2; y++)
-                for (int x = 0; x < num_x_pixs; x++)
-                {
-                    (Ring.Intensity[(num_y_pixs - y - 1) * num_x_pixs + x], Ring.Intensity[y * num_x_pixs + x])
-                        = (Ring.Intensity[y * num_x_pixs + x], Ring.Intensity[(num_y_pixs - y - 1) * num_x_pixs + x]);
-                }
+                ReadPixels<ushort>(br.BaseStream, Ring.Intensity.AsSpan((num_y_pixs - y - 1) * num_x_pixs, num_x_pixs), bigEndian: true, table: table);
 
             Ring.BitsPerPixels = 16;
 
@@ -1664,8 +1903,9 @@ public static partial class ImageIO
                 Ring.Intensity = new double[length];
 
             // ヘッダ部分にData_type = unsigned short int;と書かれていた。
-            for (int i = 0; i < length; i++)
-                Ring.Intensity[i] = br.ReadUInt16();
+            //for (int i = 0; i < length; i++)
+            //    Ring.Intensity[i] = br.ReadUInt16();
+            ReadPixels<ushort>(br.BaseStream, Ring.Intensity.AsSpan(0, length));// 261111Cl 変更: 一括で読む
 
         }
         catch (Exception e)
@@ -1685,68 +1925,121 @@ public static partial class ImageIO
     {
         try
         {
-            BinaryReader br = new(new FileStream(str, FileMode.Open, FileAccess.Read));
+            //BinaryReader br = new(new FileStream(str, FileMode.Open, FileAccess.Read));
+            using BinaryReader br = new(new FileStream(str, FileMode.Open, FileAccess.Read));// 261111Cl 変更 (F8): 例外時もファイルを閉じる
             Ring.Comments = "";
             //ヘッダ部分読み込み
-            br.ReadBytes(8); var format = new string(br.ReadChars(72));
-            br.ReadBytes(8); var version = new string(br.ReadChars(72));
-            br.ReadBytes(8); var hdrblks = new string(br.ReadChars(72));
-            br.ReadBytes(8); var type = new string(br.ReadChars(72));
-            br.ReadBytes(8); var site = new string(br.ReadChars(72));
-            br.ReadBytes(8); var model = new string(br.ReadChars(72));
-            br.ReadBytes(8); var user = new string(br.ReadChars(72));
-            br.ReadBytes(8); var sample = new string(br.ReadChars(72));
-            br.ReadBytes(8); var setname = new string(br.ReadChars(72));
-            br.ReadBytes(8); var run = new string(br.ReadChars(72));
-            br.ReadBytes(8); var sampnum = new string(br.ReadChars(72));
-            br.ReadBytes(8); var title1 = new string(br.ReadChars(72));
-            br.ReadBytes(8); var title2 = new string(br.ReadChars(72));
-            br.ReadBytes(8); var title3 = new string(br.ReadChars(72));
-            br.ReadBytes(8); var title4 = new string(br.ReadChars(72));
-            br.ReadBytes(8); var title5 = new string(br.ReadChars(72));
-            br.ReadBytes(8); var title6 = new string(br.ReadChars(72));
-            br.ReadBytes(8); var title7 = new string(br.ReadChars(72));
-            br.ReadBytes(8); var title8 = new string(br.ReadChars(72));
-            br.ReadBytes(8); var ncounts = new string(br.ReadChars(72));
-            br.ReadBytes(8); var noverfl = new string(br.ReadChars(72));
-            br.ReadBytes(8); var minimum = new string(br.ReadChars(72));
-            br.ReadBytes(8); var maximum = new string(br.ReadChars(72));
-            br.ReadBytes(8); var nontime = new string(br.ReadChars(72));
-            br.ReadBytes(8); var nlate = new string(br.ReadChars(72));
-            br.ReadBytes(8); var filename = new string(br.ReadChars(72));
-            br.ReadBytes(8); var created = new string(br.ReadChars(72));
-            br.ReadBytes(8); var cumulat = new string(br.ReadChars(72));
-            br.ReadBytes(8); var elapsdr = new string(br.ReadChars(72));
-            br.ReadBytes(8); var elapsda = new string(br.ReadChars(72));
-            br.ReadBytes(8); var oscilla = new string(br.ReadChars(72));
-            br.ReadBytes(8); var nsteps = new string(br.ReadChars(72));
-            br.ReadBytes(8); var range = new string(br.ReadChars(72));
-            br.ReadBytes(8); var start = new string(br.ReadChars(72));
-            br.ReadBytes(8); var increme = new string(br.ReadChars(72));
-            br.ReadBytes(8); var number = new string(br.ReadChars(72));
-            br.ReadBytes(8); var nframes = new string(br.ReadChars(72));
-            br.ReadBytes(8); var angle = new string(br.ReadChars(72));
-            br.ReadBytes(8); var nover64 = new string(br.ReadChars(72));
-            br.ReadBytes(8); var npixelb = Convert.ToInt32(new string(br.ReadChars(72)));
-            br.ReadBytes(8); var nrows = Convert.ToInt32(new string(br.ReadChars(72)));
-            br.ReadBytes(8); var ncols = Convert.ToInt32(new string(br.ReadChars(72)));
+            #region 261111Cl 変更前: ヘッダを UTF-8 の文字として読んでいた (非 ASCII のバイトで文字数とバイト数がずれ、以降の項目がずれる)
+            //br.ReadBytes(8); var format = new string(br.ReadChars(72));
+            //br.ReadBytes(8); var version = new string(br.ReadChars(72));
+            //br.ReadBytes(8); var hdrblks = new string(br.ReadChars(72));
+            //br.ReadBytes(8); var type = new string(br.ReadChars(72));
+            //br.ReadBytes(8); var site = new string(br.ReadChars(72));
+            //br.ReadBytes(8); var model = new string(br.ReadChars(72));
+            //br.ReadBytes(8); var user = new string(br.ReadChars(72));
+            //br.ReadBytes(8); var sample = new string(br.ReadChars(72));
+            //br.ReadBytes(8); var setname = new string(br.ReadChars(72));
+            //br.ReadBytes(8); var run = new string(br.ReadChars(72));
+            //br.ReadBytes(8); var sampnum = new string(br.ReadChars(72));
+            //br.ReadBytes(8); var title1 = new string(br.ReadChars(72));
+            //br.ReadBytes(8); var title2 = new string(br.ReadChars(72));
+            //br.ReadBytes(8); var title3 = new string(br.ReadChars(72));
+            //br.ReadBytes(8); var title4 = new string(br.ReadChars(72));
+            //br.ReadBytes(8); var title5 = new string(br.ReadChars(72));
+            //br.ReadBytes(8); var title6 = new string(br.ReadChars(72));
+            //br.ReadBytes(8); var title7 = new string(br.ReadChars(72));
+            //br.ReadBytes(8); var title8 = new string(br.ReadChars(72));
+            //br.ReadBytes(8); var ncounts = new string(br.ReadChars(72));
+            //br.ReadBytes(8); var noverfl = new string(br.ReadChars(72));
+            //br.ReadBytes(8); var minimum = new string(br.ReadChars(72));
+            //br.ReadBytes(8); var maximum = new string(br.ReadChars(72));
+            //br.ReadBytes(8); var nontime = new string(br.ReadChars(72));
+            //br.ReadBytes(8); var nlate = new string(br.ReadChars(72));
+            //br.ReadBytes(8); var filename = new string(br.ReadChars(72));
+            //br.ReadBytes(8); var created = new string(br.ReadChars(72));
+            //br.ReadBytes(8); var cumulat = new string(br.ReadChars(72));
+            //br.ReadBytes(8); var elapsdr = new string(br.ReadChars(72));
+            //br.ReadBytes(8); var elapsda = new string(br.ReadChars(72));
+            //br.ReadBytes(8); var oscilla = new string(br.ReadChars(72));
+            //br.ReadBytes(8); var nsteps = new string(br.ReadChars(72));
+            //br.ReadBytes(8); var range = new string(br.ReadChars(72));
+            //br.ReadBytes(8); var start = new string(br.ReadChars(72));
+            //br.ReadBytes(8); var increme = new string(br.ReadChars(72));
+            //br.ReadBytes(8); var number = new string(br.ReadChars(72));
+            //br.ReadBytes(8); var nframes = new string(br.ReadChars(72));
+            //br.ReadBytes(8); var angle = new string(br.ReadChars(72));
+            //br.ReadBytes(8); var nover64 = new string(br.ReadChars(72));
+            //br.ReadBytes(8); var npixelb = Convert.ToInt32(new string(br.ReadChars(72)));
+            //br.ReadBytes(8); var nrows = Convert.ToInt32(new string(br.ReadChars(72)));
+            //br.ReadBytes(8); var ncols = Convert.ToInt32(new string(br.ReadChars(72)));
+            #endregion
+            //261111Cl 変更: ヘッダの文字列はバイト列を読んで 1 バイト = 1 文字 (Latin1) にする
+            string readText(int n) => Encoding.Latin1.GetString(br.ReadBytes(n));
+            br.ReadBytes(8); var format = readText(72);
+            br.ReadBytes(8); var version = readText(72);
+            br.ReadBytes(8); var hdrblks = readText(72);
+            br.ReadBytes(8); var type = readText(72);
+            br.ReadBytes(8); var site = readText(72);
+            br.ReadBytes(8); var model = readText(72);
+            br.ReadBytes(8); var user = readText(72);
+            br.ReadBytes(8); var sample = readText(72);
+            br.ReadBytes(8); var setname = readText(72);
+            br.ReadBytes(8); var run = readText(72);
+            br.ReadBytes(8); var sampnum = readText(72);
+            br.ReadBytes(8); var title1 = readText(72);
+            br.ReadBytes(8); var title2 = readText(72);
+            br.ReadBytes(8); var title3 = readText(72);
+            br.ReadBytes(8); var title4 = readText(72);
+            br.ReadBytes(8); var title5 = readText(72);
+            br.ReadBytes(8); var title6 = readText(72);
+            br.ReadBytes(8); var title7 = readText(72);
+            br.ReadBytes(8); var title8 = readText(72);
+            br.ReadBytes(8); var ncounts = readText(72);
+            br.ReadBytes(8); var noverfl = readText(72);
+            br.ReadBytes(8); var minimum = readText(72);
+            br.ReadBytes(8); var maximum = readText(72);
+            br.ReadBytes(8); var nontime = readText(72);
+            br.ReadBytes(8); var nlate = readText(72);
+            br.ReadBytes(8); var filename = readText(72);
+            br.ReadBytes(8); var created = readText(72);
+            br.ReadBytes(8); var cumulat = readText(72);
+            br.ReadBytes(8); var elapsdr = readText(72);
+            br.ReadBytes(8); var elapsda = readText(72);
+            br.ReadBytes(8); var oscilla = readText(72);
+            br.ReadBytes(8); var nsteps = readText(72);
+            br.ReadBytes(8); var range = readText(72);
+            br.ReadBytes(8); var start = readText(72);
+            br.ReadBytes(8); var increme = readText(72);
+            br.ReadBytes(8); var number = readText(72);
+            br.ReadBytes(8); var nframes = readText(72);
+            br.ReadBytes(8); var angle = readText(72);
+            br.ReadBytes(8); var nover64 = readText(72);
+            br.ReadBytes(8); var npixelb = Convert.ToInt32(readText(72));
+            br.ReadBytes(8); var nrows = Convert.ToInt32(readText(72));
+            br.ReadBytes(8); var ncols = Convert.ToInt32(readText(72));
             br.ReadBytes(7680 - 42 * 80);
 
             Ring.SrcImgSize = new Size(ncols, nrows);
 
-            var convertTable = new uint[65536];
-            for (uint i = 0; i < 65536; i++)
-                convertTable[i] = i;
+            //261111Cl 変更 (T24): 恒等変換 (i → i) の表 uint[65536] は不要なので作らない
+            //var convertTable = new uint[65536];
+            //for (uint i = 0; i < 65536; i++)
+            //    convertTable[i] = i;
 
             int length = ncols * nrows;
             Ring.Intensity = new double[length];
             //イメージデータ読みこみ
+            //if (npixelb == 1)
+            //    for (int i = 0; i < length; i++)
+            //        Ring.Intensity[i] = convertTable[br.ReadByte()];
+            //else if (npixelb == 2)
+            //    for (int i = 0; i < length; i++)
+            //        Ring.Intensity[i] = convertTable[(ushort)(br.ReadByte() + 256 * br.ReadByte())];
+            //261111Cl 変更: 一括で読む (2 バイトはリトルエンディアン: 下位 + 256 * 上位 と同じ)
             if (npixelb == 1)
-                for (int i = 0; i < length; i++)
-                    Ring.Intensity[i] = convertTable[br.ReadByte()];
+                ReadPixels<byte>(br.BaseStream, Ring.Intensity);
             else if (npixelb == 2)
-                for (int i = 0; i < length; i++)
-                    Ring.Intensity[i] = convertTable[(ushort)(br.ReadByte() + 256 * br.ReadByte())];
+                ReadPixels<ushort>(br.BaseStream, Ring.Intensity);
             else
             {
                 br.Close();
@@ -1772,11 +2065,14 @@ public static partial class ImageIO
     {
         try
         {
-            var br = new BinaryReader(new FileStream(str, FileMode.Open, FileAccess.Read)) /* 260718Cl: 読取専用処理につき ReadWrite→Read (書込ロック不要・読み取り専用ファイルも開ける) */;
+            //var br = new BinaryReader(new FileStream(str, FileMode.Open, FileAccess.Read)) /* 260718Cl: 読取専用処理につき ReadWrite→Read (書込ロック不要・読み取り専用ファイルも開ける) */;
+            using var br = new BinaryReader(new FileStream(str, FileMode.Open, FileAccess.Read)) /* 260718Cl: 読取専用処理につき ReadWrite→Read (書込ロック不要・読み取り専用ファイルも開ける) */;// 261111Cl 変更 (F8): 例外時もファイルを閉じる
             Ring.SrcImgSize = new Size(8000, 4000);
             Ring.Intensity = new double[Ring.SrcImgSize.Width * Ring.SrcImgSize.Height];
 
-            uint[] convertTable = new uint[65536];
+            //uint[] convertTable = new uint[65536];
+            //261111Cl 変更: 変換表は double で持つ (値は uint で計算してから double にするので従来と同じ)
+            var convertTable = new double[65536];
             for (uint i = 0; i < 65536; i++)
             {
                 if ((i & 0x8000) != 0)
@@ -1785,8 +2081,9 @@ public static partial class ImageIO
                     convertTable[i] = i;
             }
             //イメージデータ読みこみ
-            for (int i = 0; i < Ring.SrcImgSize.Width * Ring.SrcImgSize.Height; i++)
-                Ring.Intensity[i] = convertTable[(ushort)(256 * br.ReadByte() + br.ReadByte())];
+            //for (int i = 0; i < Ring.SrcImgSize.Width * Ring.SrcImgSize.Height; i++)
+            //    Ring.Intensity[i] = convertTable[(ushort)(256 * br.ReadByte() + br.ReadByte())];
+            ReadPixels<ushort>(br.BaseStream, Ring.Intensity, bigEndian: true, table: convertTable);// 261111Cl 変更: ビッグエンディアン 16bit を一括で読み、変換表を通す
 
             Ring.BitsPerPixels = 16;
 
@@ -1832,13 +2129,33 @@ public static partial class ImageIO
                 Ring.BitsPerPixels = 8;
 
                 //イメージデータ読みこみ
-                Byte[] src = BitmapConverter.ToByteGray(bitmap); //260712Cl 冗長な (Bitmap) キャスト除去
-                Ring.Intensity = new double[bitmap.Width * bitmap.Height];
-                int n = 0;
-                //for (int h = bitmap.Height - 1; h >= 0; h--)
-                for (int h = 0; h < bitmap.Height; h++)
-                    for (int w = 0; w < bitmap.Width; w++)
-                        Ring.Intensity[n++] = src[bitmap.Width * h + w];
+                //Byte[] src = BitmapConverter.ToByteGray(bitmap); //260712Cl 冗長な (Bitmap) キャスト除去
+                //Ring.Intensity = new double[bitmap.Width * bitmap.Height];
+                //int n = 0;
+                ////for (int h = bitmap.Height - 1; h >= 0; h--)
+                //for (int h = 0; h < bitmap.Height; h++)
+                //    for (int w = 0; w < bitmap.Width; w++)
+                //        Ring.Intensity[n++] = src[bitmap.Width * h + w];
+                //261111Cl 変更 (T30): 画素全体の byte[] と灰色の byte[] を経由せず、LockBits した各行から灰色を Ring.Intensity へ直接書く。
+                //  ここでの bitmap は必ず 24bppRgb。灰色の式は BitmapConverter.ToByteGray と同じ (byte)((B + G + R) / 3.0)
+                var rect = new Rectangle(0, 0, bitmap.Width, bitmap.Height);
+                var bmpData = bitmap.LockBits(rect, ImageLockMode.ReadOnly, bitmap.PixelFormat);
+                try
+                {
+                    int width = bitmap.Width, height = bitmap.Height;
+                    var intensity = GC.AllocateUninitializedArray<double>(width * height);
+                    unsafe
+                    {
+                        for (int h = 0, n = 0; h < height; h++)
+                        {
+                            var row = new ReadOnlySpan<byte>((byte*)bmpData.Scan0 + (long)bmpData.Stride * h, width * 3);
+                            for (int w = 0; w < width; w++, n++)
+                                intensity[n] = (byte)((row[w * 3] + row[w * 3 + 1] + row[w * 3 + 2]) / 3.0);
+                        }
+                    }
+                    Ring.Intensity = intensity;
+                }
+                finally { bitmap.UnlockBits(bmpData); }
 
                 Ring.ImageType = Ring.ImageTypeEnum.Unknown;
             }
@@ -1912,7 +2229,8 @@ public static partial class ImageIO
             Ring.SrcImgSize = new Size(numPixelX, numPixelY);
             int length = Ring.SrcImgSize.Width * Ring.SrcImgSize.Height;
             //イメージデータ読みこみ
-            var br = new BinaryReader(new FileStream(str, FileMode.Open, FileAccess.Read)) /* 260718Cl: 読取専用処理につき ReadWrite→Read (書込ロック不要・読み取り専用ファイルも開ける) */;
+            //var br = new BinaryReader(new FileStream(str, FileMode.Open, FileAccess.Read)) /* 260718Cl: 読取専用処理につき ReadWrite→Read (書込ロック不要・読み取り専用ファイルも開ける) */;
+            using var br = new BinaryReader(new FileStream(str, FileMode.Open, FileAccess.Read)) /* 260718Cl: 読取専用処理につき ReadWrite→Read (書込ロック不要・読み取り専用ファイルも開ける) */;// 261111Cl 変更 (F8): 例外時もファイルを閉じる
 
             // var x = latitude / Math.Pow(2, bitsPerPixel);
             var x = Math.ScaleB(latitude, -bitsPerPixel);
@@ -1933,13 +2251,18 @@ public static partial class ImageIO
 
             Ring.Intensity = new double[length];
 
+            //if (bitsPerPixel > 8)
+            //    for (int i = 0; i < length; i++)
+            //        Ring.Intensity[i] = convertTable[(ushort)(256 * br.ReadByte() + br.ReadByte())];
+            ////  Ring.Intensity.Add((uint)(256 * br.ReadByte() + br.ReadByte())) ;
+            //else
+            //    for (int i = 0; i < length; i++)
+            //        Ring.Intensity[i] = convertTable[br.ReadByte()];
+            //261111Cl 変更: 一括で読み、変換表を通す (8bit を超えるときはビッグエンディアン 16bit)
             if (bitsPerPixel > 8)
-                for (int i = 0; i < length; i++)
-                    Ring.Intensity[i] = convertTable[(ushort)(256 * br.ReadByte() + br.ReadByte())];
-            //  Ring.Intensity.Add((uint)(256 * br.ReadByte() + br.ReadByte())) ;
+                ReadPixels<ushort>(br.BaseStream, Ring.Intensity, bigEndian: true, table: convertTable);
             else
-                for (int i = 0; i < length; i++)
-                    Ring.Intensity[i] = convertTable[br.ReadByte()];
+                ReadPixels<byte>(br.BaseStream, Ring.Intensity, table: convertTable);
             //Ring.Scale = 1 *maxValue / uint.MaxValue;
 
             br.Close();
@@ -1984,15 +2307,16 @@ public static partial class ImageIO
             //var br = new BinaryReader(new FileStream(str, FileMode.Open, FileAccess.ReadWrite));// (260715Ch) 旧: 解析例外時に画像ファイルを解放しない
             using var br = new BinaryReader(new FileStream(str, FileMode.Open, FileAccess.Read));// (260715Ch), 260718Cl: 読取専用処理につき ReadWrite→Read
 
-            var convertTable = new uint[65536];
+            //var convertTable = new uint[65536];// 261111Cl 変更 (T24): 使っていない表なので作らない
 
             bool renew = Ring.Intensity.Length != length;//前回と同じサイズではないとき
-            int n = 0;
+            //int n = 0;
             if (renew)
                 Ring.Intensity = new double[length];
-            for (int y = 0; y < numPixelX; y++)
-                for (int x = 0; x < numPixelY; x++)
-                    Ring.Intensity[n++] = (ushort)(256 * br.ReadByte() + br.ReadByte());
+            //for (int y = 0; y < numPixelX; y++)
+            //    for (int x = 0; x < numPixelY; x++)
+            //        Ring.Intensity[n++] = (ushort)(256 * br.ReadByte() + br.ReadByte());
+            ReadPixels<ushort>(br.BaseStream, Ring.Intensity.AsSpan(0, numPixelX * numPixelY), bigEndian: true);// 261111Cl 変更: ビッグエンディアン 16bit を一括で読む (画素数は numPixelX * numPixelY = length)
 
             br.Close();
 
@@ -2021,7 +2345,15 @@ public static partial class ImageIO
             {
                 t.IsGray = true;
                 for (int j = 0; j < t.NumberOfFrames; j++)
-                    t.Images[j].Value = [.. t.Images[j].ValueRed.Select(intValue => (double)intValue)];
+                {
+                    //t.Images[j].Value = [.. t.Images[j].ValueRed.Select(intValue => (double)intValue)];
+                    //261111Cl 変更 (T9): LINQ をやめ、赤の値を double 配列へ直接変換する
+                    var red = t.Images[j].ValueRed;
+                    var value = GC.AllocateUninitializedArray<double>(red.Length);
+                    for (int i = 0; i < red.Length; i++)
+                        value[i] = red[i];
+                    t.Images[j].Value = value;
+                }
             }
             Ring.Comments = "";
             Ring.SrcImgSize = new Size(t.ImageWidth, t.ImageLength);
@@ -2035,7 +2367,8 @@ public static partial class ImageIO
             {
                 Ring.SequentialImageIntensities.Add([]);
                 if (t.Images[j].Value != null)
-                    Ring.SequentialImageIntensities[j] = [.. t.Images[j].Value];
+                    //Ring.SequentialImageIntensities[j] = [.. t.Images[j].Value];
+                    Ring.SequentialImageIntensities[j] = t.Images[j].Value;// 261111Cl 変更 (T9): t はローカルで、各フレームの配列は別々に確保されているので複製せずに受け取る
 
                 //hdfファイルに埋め込まれた情報の処理
                 if (!double.IsNaN(t.Images[j].XrayEnergy))
@@ -2056,11 +2389,18 @@ public static partial class ImageIO
             for (int j = 0; j < t.NumberOfFrames; j++)
             {
                 if (normarize == true && Ring.SequentialImagePulsePower[j] > 0)
-                    Ring.SequentialImageIntensities[j] = [.. Ring.SequentialImageIntensities[j].Select(d => d / Ring.SequentialImagePulsePower[j] / 10000)];
+                {
+                    //Ring.SequentialImageIntensities[j] = [.. Ring.SequentialImageIntensities[j].Select(d => d / Ring.SequentialImagePulsePower[j] / 10000)];
+                    //261111Cl 変更 (T9): 上で受け取った配列 (このフレーム専用) をその場で正規化する。式 d / P / 10000 は同じ
+                    var frame = Ring.SequentialImageIntensities[j];
+                    var p = Ring.SequentialImagePulsePower[j];
+                    for (int i = 0; i < frame.Length; i++)
+                        frame[i] = frame[i] / p / 10000;
+                }
             }
             Ring.PulsePowerNormarized = normarize == true;
 
-            Ring.Intensity = [.. Ring.SequentialImageIntensities[0]];
+            Ring.Intensity = [.. Ring.SequentialImageIntensities[0]];//複製のまま (Ring.Intensity は後で書き換えられることがあるので、フレーム 0 と共有しない)
 
             //Ring.BitsPerPixels = t.BitsPerSampleGray;
             Ring.ImageType = Ring.ImageTypeEnum.Tiff;
