@@ -451,7 +451,9 @@ public static partial class ImageIO
             //var little_endian = headers.First(h => h.StartsWith("BYTE_ORDER=")).Split(['='])[1] == "little_endian";// 261111Cl 変更前: 読むだけで使っていなかった
             //261111Cl 変更 (作者承認・挙動が変わる): BYTE_ORDER の値が big_endian (大小無視) のときだけビッグエンディアンで読む。little_endian や認識できない値は従来どおりリトルエンディアン
             //  (BYTE_ORDER 行が無いときは、従来どおり First が例外を出して false)
-            var bigEndian = headers.First(h => h.StartsWith("BYTE_ORDER=")).Split(['='])[1].Trim().Equals("big_endian", StringComparison.OrdinalIgnoreCase);
+            //var bigEndian = headers.First(h => h.StartsWith("BYTE_ORDER=")).Split(['='])[1].Trim().Equals("big_endian", StringComparison.OrdinalIgnoreCase);// 261112Cl 変更前
+            //261112Cl 変更 (作者承認・挙動が変わる): BYTE_ORDER 行が無いときは例外 (読み込み失敗) にせず、リトルエンディアンとして読む
+            var bigEndian = headers.FirstOrDefault(h => h.StartsWith("BYTE_ORDER="))?.Split(['='])[1].Trim().Equals("big_endian", StringComparison.OrdinalIgnoreCase) ?? false;
             var type = headers.First(h => h.StartsWith("TYPE=")).Split(separator)[1];
             var size1 = Convert.ToInt32(headers.First(h => h.StartsWith("SIZE1=")).Split(['='])[1]);
             var size2 = Convert.ToInt32(headers.First(h => h.StartsWith("SIZE2=")).Split(['='])[1]);
@@ -537,7 +539,9 @@ public static partial class ImageIO
             //var little_endian = headers.First(h => h.StartsWith("BYTE_ORDER=")).Contains("little_endian");// 261111Cl 変更前: 読むだけで使っていなかった
             //261111Cl 変更 (作者承認・挙動が変わる): BYTE_ORDER の値 (実ファイルは "BYTE_ORDER= little_endian" と = の後に空白がある) が big_endian (大小無視) のときだけ
             //  ビッグエンディアンで読む。little_endian や認識できない値は従来どおりリトルエンディアン (BYTE_ORDER 行が無いときは、従来どおり First が例外を出して false)
-            var bigEndian = headers.First(h => h.StartsWith("BYTE_ORDER=")).Split(['='])[1].Trim().Equals("big_endian", StringComparison.OrdinalIgnoreCase);
+            //var bigEndian = headers.First(h => h.StartsWith("BYTE_ORDER=")).Split(['='])[1].Trim().Equals("big_endian", StringComparison.OrdinalIgnoreCase);// 261112Cl 変更前
+            //261112Cl 変更 (作者承認・挙動が変わる): BYTE_ORDER 行が無いときは例外 (読み込み失敗) にせず、リトルエンディアンとして読む
+            var bigEndian = headers.FirstOrDefault(h => h.StartsWith("BYTE_ORDER="))?.Split(['='])[1].Trim().Equals("big_endian", StringComparison.OrdinalIgnoreCase) ?? false;
             var size1 = Convert.ToInt32(headers.First(h => h.StartsWith("SIZE1=")).Split(['='])[1]);
             var size2 = Convert.ToInt32(headers.First(h => h.StartsWith("SIZE2=")).Split(['='])[1]);
 

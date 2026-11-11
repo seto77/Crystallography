@@ -668,6 +668,10 @@ namespace Crystallography
                 //  NSYMBT バイトの拡張ヘッダ (EXTTYP が CCP4, MRCO, SERI, AGAR, FEI1, FEI2, HDF5 のどれでも同じ) の後から始まる。
                 //  従来は FEI1 のときだけ上で 1024 + NSYMBT へ移り、それ以外は LABEL を読み終えた位置 (ふつう 1024) から読んでいたため、
                 //  拡張ヘッダを持つ FEI1 以外のファイル (SerialEM の SERI、FEI2 など) では画素がずれていた。負の NSYMBT (壊れたヘッダ) は 0 とみなす (従来の読み出し位置)。
+                //261112Cl 追加 (作者承認・挙動が変わる): IMOD の印 (152 バイト目 imodStamp = 1146047817) があり、符号付きの旗 (156 バイト目 imodFlags の bit0) が 0 なら、
+                //  MODE 0 は符号なし 8bit (0〜255) として書かれている (IMOD の定義。古い IMOD や SerialEM のファイル)。それ以外は MRC2014 どおり符号付き
+                br.BaseStream.Position = 152;
+                bool unsignedMode0 = br.ReadInt32() == 1146047817 && (br.ReadInt32() & 1) == 0;
                 br.BaseStream.Position = 1024L + Math.Max(NSYMBT, 0);
 
                 //ここから画像を読み込み
@@ -715,7 +719,11 @@ namespace Crystallography
                         switch (MODE)
                         {
                             //case 0: ImageIO.ReadPixels<byte>(br.BaseStream, span, table: table0); break;
-                            case 0: ImageIO.ReadPixels<sbyte>(br.BaseStream, span); break;// 261111Cl 変更: 符号付き 8bit (MRC2014)
+                            //case 0: ImageIO.ReadPixels<sbyte>(br.BaseStream, span); break;// 261111Cl 変更: 符号付き 8bit (MRC2014)
+                            case 0:// 261112Cl 変更: IMOD の符号なしの旗があれば byte、それ以外は符号付き 8bit (MRC2014)
+                                if (unsignedMode0) ImageIO.ReadPixels<byte>(br.BaseStream, span);
+                                else ImageIO.ReadPixels<sbyte>(br.BaseStream, span);
+                                break;
                             case 1: ImageIO.ReadPixels<short>(br.BaseStream, span); break;
                             case 2: ImageIO.ReadPixels<float>(br.BaseStream, span); break;
                             case 6: ImageIO.ReadPixels<ushort>(br.BaseStream, span); break;
