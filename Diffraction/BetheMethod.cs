@@ -407,17 +407,20 @@ public partial class BetheMethod
     public Beam[] Beams;
 
     [NonSerialized]
-    public readonly BackgroundWorker bwCBED = new();
+    // public readonly BackgroundWorker bwCBED = new(); // 261111Cl 変更前
+    public readonly BackgroundWorker bwCBED; // 261111Cl 変更: コンストラクタで作る (初期化子と二重に作っていた。BackgroundWorker はファイナライザ付きの Component)
     public event ProgressChangedEventHandler CBED_ProgressChanged;
     public event RunWorkerCompletedEventHandler CBED_Completed;
 
     [NonSerialized]
-    public readonly BackgroundWorker bwEBSDNew = new(); // (260327Ch) 旧 bwEBSD の後継としてこちらを EBSD の本命 worker にする
+    // public readonly BackgroundWorker bwEBSDNew = new(); // (260327Ch) 旧 bwEBSD の後継としてこちらを EBSD の本命 worker にする // 261111Cl 変更前
+    public readonly BackgroundWorker bwEBSDNew; // (260327Ch) 旧 bwEBSD の後継としてこちらを EBSD の本命 worker にする // 261111Cl 変更: コンストラクタで作る (二重に作っていた)
     public event ProgressChangedEventHandler EBSD_ProgressChanged;
     public event RunWorkerCompletedEventHandler EBSD_Completed;
 
     [NonSerialized]
-    public readonly BackgroundWorker bwSTEM = new();
+    // public readonly BackgroundWorker bwSTEM = new(); // 261111Cl 変更前
+    public readonly BackgroundWorker bwSTEM; // 261111Cl 変更: コンストラクタで作る (二重に作っていた)
     public event ProgressChangedEventHandler StemProgressChanged;
     public event RunWorkerCompletedEventHandler StemCompleted;
 
