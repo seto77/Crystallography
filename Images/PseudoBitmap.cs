@@ -665,15 +665,24 @@ public class PseudoBitmap : IDisposable
 
         # region 描画する画素位置をソース画像位置に変換するローカル関数
         double srcX = srcRect.X + 0.5, srcY = srcRect.Y + 0.5, w = srcRect.Width / width, h = srcRect.Height / height;
-        Func<int, int, (int X, int Y)> getSrcPosition;
-        if (HorizontalFlip & VerticalFlip)
-            getSrcPosition = (x, y) => ((int)(srcX + (width - x) * w), (int)(srcY + (height - y) * h));
-        else if (!HorizontalFlip & VerticalFlip)
-            getSrcPosition = (x, y) => ((int)(srcX + x * w), (int)(srcY + (height - y) * h));
-        else if (HorizontalFlip & !VerticalFlip)
-            getSrcPosition = (x, y) => ((int)(srcX + (width - x) * w), (int)(srcY + y * h));
+        #region 261111Cl 変更前: 画素ごとに Func を呼んでいた
+        //Func<int, int, (int X, int Y)> getSrcPosition;
+        //if (HorizontalFlip & VerticalFlip)
+        //    getSrcPosition = (x, y) => ((int)(srcX + (width - x) * w), (int)(srcY + (height - y) * h));
+        //else if (!HorizontalFlip & VerticalFlip)
+        //    getSrcPosition = (x, y) => ((int)(srcX + x * w), (int)(srcY + (height - y) * h));
+        //else if (HorizontalFlip & !VerticalFlip)
+        //    getSrcPosition = (x, y) => ((int)(srcX + (width - x) * w), (int)(srcY + y * h));
+        //else
+        //    getSrcPosition = (x, y) => ((int)(srcX + x * w), (int)(srcY + y * h));
+        #endregion
+        //261111Cl 変更: X の元座標は表 (width 個) を 1 回だけ作り、Y は行ごとに計算する (スレッド本体の中)。式は従来と同じ
+        var srcXs = new int[width];
+        if (HorizontalFlip)
+            for (int x = 0; x < width; x++) srcXs[x] = (int)(srcX + (width - x) * w);
         else
-            getSrcPosition = (x, y) => ((int)(srcX + x * w), (int)(srcY + y * h));
+            for (int x = 0; x < width; x++) srcXs[x] = (int)(srcX + x * w);
+        bool verticalFlip = VerticalFlip;
         #endregion
 
         #region  入力値doubleを表示する値に変換するローカル関数
@@ -705,6 +714,15 @@ public class PseudoBitmap : IDisposable
             var rawIndex = x is >= -2147483648.0 and < 2147483648.0 ? (int)x : int.MinValue;// 261111Cl 変更: .NET 8 以前の (int)x と同じ
             return ColorScale[Math.Min(Math.Max(0, rawIndex), length - 1)].B;
         }
+
+        //261111Cl 追加: 色表の添字 (getValueR/G/B と同じ式)。グレーの源では R/G/B で 3 回計算していたのを 1 回にする
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+        static int toIndex(double rawValue, double minValue, double coeff, int length)
+        {
+            var x = (rawValue - minValue) * coeff + 0.5;
+            var rawIndex = x is >= -2147483648.0 and < 2147483648.0 ? (int)x : int.MinValue;// .NET 8 以前の (int)x と同じ (NaN・範囲外は添字 0)
+            return Math.Min(Math.Max(0, rawIndex), length - 1);
+        }
         #endregion
 
         int range = (int)(1 / zoom / 2 + 0.5);
@@ -712,7 +730,7 @@ public class PseudoBitmap : IDisposable
 
         int step = AlphaEnabled ? 4 : 3;
         int nResidual = bmpData.Stride - destBmp.Width * step;
-        double filter;
+        //double filter; //261111Cl 変更前: 全スレッドで 1 個を共有していた (FFT_Filter が 0 でないと競合する)。スレッド本体の中へ移した
 
         int thread = Environment.ProcessorCount;
 
@@ -721,43 +739,243 @@ public class PseudoBitmap : IDisposable
         //thread = 1;
 #endif
         int yStep = height / thread + 1;
+        #region 261111Cl 変更前 (画素ループ)
+        //Parallel.For(0, thread, t =>
+        //{
+        //    byte* p = (byte*)(void*)bmpData.Scan0;
+        //    p += t * yStep * bmpData.Stride;
+        //
+        //    byte r = 0, g = 0, b = 0;
+        //
+        //    (int X, int Y) beforePt = (int.MinValue, int.MinValue);
+        //    for (int y = t * yStep; y < Math.Min((t + 1) * yStep, height); y++)
+        //    {
+        //        for (int x = 0; x < width; x++)
+        //        {
+        //            var pt = getSrcPosition(x, y);
+        //            if (pt.X == beforePt.X && pt.Y == beforePt.Y)
+        //            {
+        //                for (int i = 0; i < step; i++)
+        //                    p[i] = p[i - step];
+        //            }
+        //            else if ((uint)pt.X < (uint)Width && (uint)pt.Y < (uint)Height)//描画域内のとき
+        //            {
+        //                var srcPosition = pt.X + pt.Y * Width;
+        //                if (increase > 0)//補完モード
+        //                {
+        //                    double rSum = 0, gSum = 0, bSum = 0, count = 0;
+        //
+        //                    for (int j = Math.Max(0, pt.Y - range); j <= Math.Min(pt.Y + range, Height - 1); j += increase)
+        //                        for (int i = Math.Max(0, pt.X - range); i <= Math.Min(pt.X + range, Width - 1); i += increase)
+        //                        {
+        //                            var tempPosition = i + j * Width;
+        //
+        //                            if (IsSrcGray)
+        //                                bSum += SrcValuesGray[tempPosition];
+        //                            else
+        //                            {
+//#pragma warning disable CS0618 // 261111Cl 追加: SrcValuesR/G/B は [Obsolete] (4 アプリで未使用)
+        //                                bSum += SrcValuesB[tempPosition];
+        //                                if (!GrayScale)
+        //                                {
+        //                                    gSum += SrcValuesG[tempPosition];
+        //                                    rSum += SrcValuesR[tempPosition];
+        //                                }
+//#pragma warning restore CS0618
+        //                            }
+        //                            count++;
+        //                        }
+        //                    if (count > 0)
+        //                    {
+        //                        b = getValueB(bSum / count);
+        //                        if (GrayScale)
+        //                            g = r = b;
+        //                        else
+        //                        {
+        //                            if (IsSrcGray)
+        //                                gSum = rSum = bSum;
+        //                            g = getValueG(gSum / count);
+        //                            r = getValueR(rSum / count);
+        //                        }
+        //                    }
+        //                }
+        //                else
+        //                {
+        //                    if (IsSrcGray)
+        //                    {
+        //                        b = getValueB(SrcValuesGray[srcPosition]);
+        //                        if (GrayScale)
+        //                            g = r = b;
+        //                        else
+        //                        {
+        //                            g = getValueG(SrcValuesGray[srcPosition]);
+        //                            r = getValueR(SrcValuesGray[srcPosition]);
+        //                        }
+        //                    }
+        //                    else
+        //                    {
+//#pragma warning disable CS0618 // 261111Cl 追加: SrcValuesR/G/B は [Obsolete] (4 アプリで未使用)
+        //                        b = getValueB(SrcValuesB[srcPosition]);
+        //                        if (GrayScale)
+        //                            g = r = b;
+        //                        else
+        //                        {
+        //                            g = getValueG(SrcValuesG[srcPosition]);
+        //                            r = getValueR(SrcValuesR[srcPosition]);
+        //                        }
+//#pragma warning restore CS0618
+        //                    }
+        //                }
+        //
+        //                if (IsNegative)
+        //                {
+        //                    b = (byte)(byte.MaxValue - b); g = (byte)(byte.MaxValue - g); r = (byte)(byte.MaxValue - r);
+        //                }
+        //
+        //                p[0] = b;
+        //                p[1] = g;
+        //                p[2] = r;
+        //
+        //                if (AlphaEnabled)
+        //                    p[3] = (srcPosition < FilterAlfha.Count) ? FilterAlfha[srcPosition] : (byte)255;
+        //
+        //                #region 各種フィルター
+//#pragma warning disable CS0618 // 261111Cl 追加: FFT_Filter は [Obsolete] (4 アプリで未使用)
+        //                if (FFT_Filter != null && FFT_Filter.Count > 0 && (filter = FFT_Filter[srcPosition]) != 0)//もしフィルターされていたら全体を1/2にして(0,127,127)をたす
+//#pragma warning restore CS0618
+        //                { //BG
+        //                    p[0] = (byte)(p[0] * (2 - filter) * 0.5 + 127 * filter);
+        //                    p[1] = (byte)(p[1] * (2 - filter) * 0.5 + 127 * filter);
+        //                    p[2] = (byte)(p[2] * (2 - filter) * 0.5);
+        //                }
+        //
+        //                if (FilterTemporary != null && FilterTemporary.Count > 0 && FilterTemporary[srcPosition])//もし一時フィルターされていたら全体を1/2にして(127,127,0)をたす
+        //                {//GR
+        //                    p[0] = (byte)(p[0] * 0.8);
+        //                    p[1] = (byte)(p[1] * 0.8 + 51);
+        //                    p[2] = (byte)(p[2] * 0.8 + 51);
+        //                }
+        //                if (Filter1Visible && Filter1 != null && Filter1[srcPosition])//もし飽和点にいろをつけるなら
+        //                {//R
+        //                    p[0] = (byte)(p[0] * 0.8);
+        //                    p[1] = (byte)(p[1] * 0.8);
+        //                    p[2] = (byte)(p[2] * 0.8 + 51);
+        //                }
+        //                if (Filter2Visible && Filter2 != null && Filter2[srcPosition])
+        //                {//B
+        //                    p[0] = (byte)(p[0] * 0.8 + 51);
+        //                    p[1] = (byte)(p[1] * 0.8);
+        //                    p[2] = (byte)(p[2] * 0.8);
+        //                }
+        //                if (Filter3Visible && Filter3 != null && Filter3[srcPosition])//もしスポットだったら全体を1/2にして(0,127,127)をたす
+        //                {//BG
+        //                    p[0] = (byte)(p[0] * 0.8 + 51);
+        //                    p[1] = (byte)(p[1] * 0.8 + 51);
+        //                    p[2] = (byte)(p[2] * 0.8);
+        //                }
+        //                if (Filter4Visible && Filter4 != null && Filter4[srcPosition])//もし範囲外だったら全体を2/3にして(0,85,0)をたす
+        //                {//G
+        //                    p[0] = (byte)(p[0] * 0.8);
+        //                    p[1] = (byte)(p[1] * 0.8 + 51);
+        //                    p[2] = (byte)(p[2] * 0.8);
+        //                }
+        //                if (Filter5Visible && Filter5 != null && Filter5[srcPosition])//もし範囲外だったら全体を2/3にして(0,85,0)をたす
+        //                {//BR
+        //                    // 260718Cl: p[1]=p[2]*0.8; p[2]=(書換後の)p[1]*0.8+51 という自己二重依存のチャネル取り違えを、他フィルタと同じ自チャネル参照に修正
+        //                    p[0] = (byte)(p[0] * 0.8 + 51);
+        //                    p[1] = (byte)(p[1] * 0.8);
+        //                    p[2] = (byte)(p[2] * 0.8 + 51);
+        //                }
+        //                #endregion
+        //
+        //            }
+        //            else//描画域がはみ出したとき
+        //            {
+        //                p[0] = 0; p[1] = 127; p[2] = 0;
+        //                if (AlphaEnabled)
+        //                    p[3] = (byte)255;
+        //            }
+        //
+        //            p += step;
+        //
+        //            beforePt = pt;
+        //        }
+        //        p += nResidual;
+        //    }
+        //});
+        #endregion
+
+        //261111Cl 変更: 画素ループの改修 (出力は従来と同じ。ただし下の不具合修正の分だけ変わる)
+        //  - 元座標は X の表 (srcXs) と行ごとの Y で求める (画素ごとの Func 呼び出しをやめた)
+        //  - グレーの源では色表の添字を 1 回だけ計算して色を 1 回読む (旧は R/G/B で 3 回)
+        //  - Filter1〜5・FilterTemporary・FilterAlfha は List<T> のインデクサでなく Span で読む
+        //  - 不具合修正 (挙動が変わる): 「前の画素と同じ元座標なら複写」の比較 (旧 beforePt) を行ごとにリセットする。旧は行をまたいで
+        //    持ち越したため、1 行全体が元画像の 1 列に入るほど拡大すると、行頭で p[i - step] が前の行の stride の詰め物を読んでいた
+        //  - 直接モード (縮小なし) で元画像の行が前の行と同じなら、出力も同じなので行ごと複写する
+        var colorScale = ColorScale;
+        var srcGray = SrcValuesGray;
+        double minValue = MinValue;
+        int srcWidth = Width, srcHeight = Height, stride = bmpData.Stride, rowBytes = width * step;
+        bool isSrcGray = IsSrcGray, grayScale = GrayScale, isNegative = IsNegative, alphaEnabled = AlphaEnabled;
         Parallel.For(0, thread, t =>
         {
+            // Span はラムダに取り込めないので、スレッド本体の中で取る
+            ReadOnlySpan<int> xs = srcXs;
+            ReadOnlySpan<bool> filterTemporary = CollectionsMarshal.AsSpan(FilterTemporary);
+            ReadOnlySpan<bool> filter1 = CollectionsMarshal.AsSpan(Filter1), filter2 = CollectionsMarshal.AsSpan(Filter2), filter3 = CollectionsMarshal.AsSpan(Filter3),
+                filter4 = CollectionsMarshal.AsSpan(Filter4), filter5 = CollectionsMarshal.AsSpan(Filter5);
+            bool useFilter1 = Filter1Visible && Filter1 != null, useFilter2 = Filter2Visible && Filter2 != null, useFilter3 = Filter3Visible && Filter3 != null,
+                useFilter4 = Filter4Visible && Filter4 != null, useFilter5 = Filter5Visible && Filter5 != null;
+            ReadOnlySpan<byte> filterAlpha = CollectionsMarshal.AsSpan(FilterAlfha);
+            double filter;
+
             byte* p = (byte*)(void*)bmpData.Scan0;
-            p += t * yStep * bmpData.Stride;
+            p += t * yStep * stride;
 
             byte r = 0, g = 0, b = 0;
 
-            (int X, int Y) beforePt = (int.MinValue, int.MinValue);
-            for (int y = t * yStep; y < Math.Min((t + 1) * yStep, height); y++)
+            int yStart = t * yStep, yEnd = Math.Min((t + 1) * yStep, height), beforeSy = 0;
+            for (int y = yStart; y < yEnd; y++)
             {
-                for (int x = 0; x < width; x++)
+                int sy = verticalFlip ? (int)(srcY + (height - y) * h) : (int)(srcY + y * h);
+                if (increase == 0 && y > yStart && sy == beforeSy)
+                {// 直接モードで元画像の行が前の行と同じ → 前の行をそのまま複写
+                    Buffer.MemoryCopy(p - stride, p, rowBytes, rowBytes);
+                    p += stride;
+                    continue;
+                }
+                beforeSy = sy;
+                bool rowInside = (uint)sy < (uint)srcHeight;
+                int rowOffset = rowInside ? sy * srcWidth : 0;
+
+                int beforeSx = 0;
+                for (int x = 0; x < xs.Length; x++)
                 {
-                    var pt = getSrcPosition(x, y);
-                    if (pt.X == beforePt.X && pt.Y == beforePt.Y)
+                    int sx = xs[x];
+                    if (x > 0 && sx == beforeSx)// 前の画素と同じ元座標なら複写 (比較は行ごとにリセット)
                     {
                         for (int i = 0; i < step; i++)
                             p[i] = p[i - step];
                     }
-                    else if ((uint)pt.X < (uint)Width && (uint)pt.Y < (uint)Height)//描画域内のとき
+                    else if (rowInside && (uint)sx < (uint)srcWidth)//描画域内のとき
                     {
-                        var srcPosition = pt.X + pt.Y * Width;
+                        var srcPosition = sx + rowOffset;
                         if (increase > 0)//補完モード
                         {
                             double rSum = 0, gSum = 0, bSum = 0, count = 0;
-
-                            for (int j = Math.Max(0, pt.Y - range); j <= Math.Min(pt.Y + range, Height - 1); j += increase)
-                                for (int i = Math.Max(0, pt.X - range); i <= Math.Min(pt.X + range, Width - 1); i += increase)
+                            int jEnd = Math.Min(sy + range, srcHeight - 1), iStart = Math.Max(0, sx - range), iEnd = Math.Min(sx + range, srcWidth - 1);
+                            for (int j = Math.Max(0, sy - range); j <= jEnd; j += increase)
+                                for (int i = iStart; i <= iEnd; i += increase)
                                 {
-                                    var tempPosition = i + j * Width;
+                                    var tempPosition = i + j * srcWidth;
 
-                                    if (IsSrcGray)
-                                        bSum += SrcValuesGray[tempPosition];
+                                    if (isSrcGray)
+                                        bSum += srcGray[tempPosition];
                                     else
                                     {
-#pragma warning disable CS0618 // 261111Cl 追加: SrcValuesR/G/B は [Obsolete] (4 アプリで未使用)
+#pragma warning disable CS0618 // SrcValuesR/G/B は [Obsolete] (4 アプリで未使用)。扱いは従来どおり
                                         bSum += SrcValuesB[tempPosition];
-                                        if (!GrayScale)
+                                        if (!grayScale)
                                         {
                                             gSum += SrcValuesG[tempPosition];
                                             rSum += SrcValuesR[tempPosition];
@@ -768,36 +986,46 @@ public class PseudoBitmap : IDisposable
                                 }
                             if (count > 0)
                             {
-                                b = getValueB(bSum / count);
-                                if (GrayScale)
-                                    g = r = b;
+                                if (isSrcGray)
+                                {// 旧は gSum = rSum = bSum として R/G/B で同じ添字を 3 回計算していた
+                                    var c = colorScale[toIndex(bSum / count, minValue, coeff, length)];
+                                    if (grayScale)
+                                        g = r = b = c.B;
+                                    else
+                                    {
+                                        b = c.B; g = c.G; r = c.R;
+                                    }
+                                }
                                 else
                                 {
-                                    if (IsSrcGray)
-                                        gSum = rSum = bSum;
-                                    g = getValueG(gSum / count);
-                                    r = getValueR(rSum / count);
+                                    b = getValueB(bSum / count);
+                                    if (grayScale)
+                                        g = r = b;
+                                    else
+                                    {
+                                        g = getValueG(gSum / count);
+                                        r = getValueR(rSum / count);
+                                    }
                                 }
                             }
                         }
                         else
                         {
-                            if (IsSrcGray)
+                            if (isSrcGray)
                             {
-                                b = getValueB(SrcValuesGray[srcPosition]);
-                                if (GrayScale)
-                                    g = r = b;
+                                var c = colorScale[toIndex(srcGray[srcPosition], minValue, coeff, length)];
+                                if (grayScale)
+                                    g = r = b = c.B;
                                 else
                                 {
-                                    g = getValueG(SrcValuesGray[srcPosition]);
-                                    r = getValueR(SrcValuesGray[srcPosition]);
+                                    b = c.B; g = c.G; r = c.R;
                                 }
                             }
                             else
                             {
-#pragma warning disable CS0618 // 261111Cl 追加: SrcValuesR/G/B は [Obsolete] (4 アプリで未使用)
+#pragma warning disable CS0618 // SrcValuesR/G/B は [Obsolete] (4 アプリで未使用)。扱いは従来どおり
                                 b = getValueB(SrcValuesB[srcPosition]);
-                                if (GrayScale)
+                                if (grayScale)
                                     g = r = b;
                                 else
                                 {
@@ -808,7 +1036,7 @@ public class PseudoBitmap : IDisposable
                             }
                         }
 
-                        if (IsNegative)
+                        if (isNegative)
                         {
                             b = (byte)(byte.MaxValue - b); g = (byte)(byte.MaxValue - g); r = (byte)(byte.MaxValue - r);
                         }
@@ -817,11 +1045,11 @@ public class PseudoBitmap : IDisposable
                         p[1] = g;
                         p[2] = r;
 
-                        if (AlphaEnabled)
-                            p[3] = (srcPosition < FilterAlfha.Count) ? FilterAlfha[srcPosition] : (byte)255;
+                        if (alphaEnabled)
+                            p[3] = (srcPosition < filterAlpha.Length) ? filterAlpha[srcPosition] : (byte)255;
 
                         #region 各種フィルター
-#pragma warning disable CS0618 // 261111Cl 追加: FFT_Filter は [Obsolete] (4 アプリで未使用)
+#pragma warning disable CS0618 // FFT_Filter は [Obsolete] (4 アプリで未使用)。扱いは従来どおり
                         if (FFT_Filter != null && FFT_Filter.Count > 0 && (filter = FFT_Filter[srcPosition]) != 0)//もしフィルターされていたら全体を1/2にして(0,127,127)をたす
 #pragma warning restore CS0618
                         { //BG
@@ -830,37 +1058,37 @@ public class PseudoBitmap : IDisposable
                             p[2] = (byte)(p[2] * (2 - filter) * 0.5);
                         }
 
-                        if (FilterTemporary != null && FilterTemporary.Count > 0 && FilterTemporary[srcPosition])//もし一時フィルターされていたら全体を1/2にして(127,127,0)をたす
+                        if (filterTemporary.Length > 0 && filterTemporary[srcPosition])//もし一時フィルターされていたら全体を1/2にして(127,127,0)をたす
                         {//GR
                             p[0] = (byte)(p[0] * 0.8);
                             p[1] = (byte)(p[1] * 0.8 + 51);
                             p[2] = (byte)(p[2] * 0.8 + 51);
                         }
-                        if (Filter1Visible && Filter1 != null && Filter1[srcPosition])//もし飽和点にいろをつけるなら
+                        if (useFilter1 && filter1[srcPosition])//もし飽和点にいろをつけるなら
                         {//R
                             p[0] = (byte)(p[0] * 0.8);
                             p[1] = (byte)(p[1] * 0.8);
                             p[2] = (byte)(p[2] * 0.8 + 51);
                         }
-                        if (Filter2Visible && Filter2 != null && Filter2[srcPosition])
+                        if (useFilter2 && filter2[srcPosition])
                         {//B
                             p[0] = (byte)(p[0] * 0.8 + 51);
                             p[1] = (byte)(p[1] * 0.8);
                             p[2] = (byte)(p[2] * 0.8);
                         }
-                        if (Filter3Visible && Filter3 != null && Filter3[srcPosition])//もしスポットだったら全体を1/2にして(0,127,127)をたす
+                        if (useFilter3 && filter3[srcPosition])//もしスポットだったら全体を1/2にして(0,127,127)をたす
                         {//BG
                             p[0] = (byte)(p[0] * 0.8 + 51);
                             p[1] = (byte)(p[1] * 0.8 + 51);
                             p[2] = (byte)(p[2] * 0.8);
                         }
-                        if (Filter4Visible && Filter4 != null && Filter4[srcPosition])//もし範囲外だったら全体を2/3にして(0,85,0)をたす
+                        if (useFilter4 && filter4[srcPosition])//もし範囲外だったら全体を2/3にして(0,85,0)をたす
                         {//G
                             p[0] = (byte)(p[0] * 0.8);
                             p[1] = (byte)(p[1] * 0.8 + 51);
                             p[2] = (byte)(p[2] * 0.8);
                         }
-                        if (Filter5Visible && Filter5 != null && Filter5[srcPosition])//もし範囲外だったら全体を2/3にして(0,85,0)をたす
+                        if (useFilter5 && filter5[srcPosition])//もし範囲外だったら全体を2/3にして(0,85,0)をたす
                         {//BR
                             // 260718Cl: p[1]=p[2]*0.8; p[2]=(書換後の)p[1]*0.8+51 という自己二重依存のチャネル取り違えを、他フィルタと同じ自チャネル参照に修正
                             p[0] = (byte)(p[0] * 0.8 + 51);
@@ -873,13 +1101,13 @@ public class PseudoBitmap : IDisposable
                     else//描画域がはみ出したとき
                     {
                         p[0] = 0; p[1] = 127; p[2] = 0;
-                        if (AlphaEnabled)
+                        if (alphaEnabled)
                             p[3] = (byte)255;
                     }
 
                     p += step;
 
-                    beforePt = pt;
+                    beforeSx = sx;
                 }
                 p += nResidual;
             }
