@@ -15,7 +15,7 @@ using System.Buffers; // 261111Cl 追加: SearchValues (対称操作式の文字
 using System.Text;
 using System.Text.RegularExpressions; // 260427Cl 追加: 対称操作式の暗黙乗算変換に使用 (261111Cl: その用途は無くなった。CifNumberWithUncertaintyRegex で使う)
 using System.Threading;
-using ZLinq;
+// using ZLinq; // 261111Cl 削除: ZLinq を外したため
 using V3 = OpenTK.Mathematics.Vector3d;
 #endregion
 

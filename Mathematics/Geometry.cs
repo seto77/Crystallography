@@ -5,7 +5,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Runtime.InteropServices;
 using V3d = OpenTK.Mathematics.Vector3d;
-using ZLinq;
+// using ZLinq; // 261111Cl 削除: ZLinq を外したため
 namespace Crystallography;
 
 public static class Geometry
@@ -962,12 +962,14 @@ public static class Geometry
     /// <summary>点集合から最小二乗法による平面パラメータdouble[]{a,b,c,d} (但し、平面方程式 a x + b y + c z + d = 0) を返す</summary>
     /// <param name="points"></param>
     /// <returns>double[]{a,b,c,d} (但し、平面方程式 a x + b y + c z + d = 0)</returns>
-    public static (double A, double B, double C, double D) GetPlaneEquationFromPoints(IEnumerable<V3d> points) => GetPlaneEquationFromPoints(points.AsValueEnumerable());
+    // public static (double A, double B, double C, double D) GetPlaneEquationFromPoints(IEnumerable<V3d> points) => GetPlaneEquationFromPoints(points.AsValueEnumerable()); // 261111Cl 変更前 (ZLinq)
+    public static (double A, double B, double C, double D) GetPlaneEquationFromPoints(IEnumerable<V3d> points) => GetPlaneEquationFromPoints((ReadOnlySpan<V3d>)(points as V3d[] ?? [.. points])); // 261111Cl 変更: ZLinq を外したので、一度だけ配列にして span 版へ (旧も points を 3 回列挙していた)
 
     /// <summary>点集合から最小二乗法による平面パラメータdouble[]{a,b,c,d} (但し、平面方程式 a x + b y + c z + d = 0) を返す</summary>
     /// <param name="points"></param>
     /// <returns>double[]{a,b,c,d} (但し、平面方程式 a x + b y + c z + d = 0)</returns>
-    public static (double A, double B, double C, double D) GetPlaneEquationFromPoints(ValueEnumerable<ZLinq.Linq.FromEnumerable<V3d>,V3d> points)
+    // public static (double A, double B, double C, double D) GetPlaneEquationFromPoints(ValueEnumerable<ZLinq.Linq.FromEnumerable<V3d>,V3d> points) // 261111Cl 変更前 (ZLinq の型が公開シグネチャに出ていた)
+    public static (double A, double B, double C, double D) GetPlaneEquationFromPoints(ReadOnlySpan<V3d> points) // 261111Cl 変更: ZLinq を外したので ReadOnlySpan<V3d> に (和の順序は旧と同じ)
     {
         //http://sysplan.nams.kyushu-u.ac.jp/gen/edu/Algorithms/PlaneFitting/index.html
         //pdfはCrystallograpy/資料フォルダ
@@ -975,12 +977,19 @@ public static class Geometry
         var ave = new V3d();
         foreach (var p in points)
             ave += p;
-        ave /= points.Count();
+        // ave /= points.Count(); // 261111Cl 変更前
+        ave /= points.Length; // 261111Cl 変更
 
-        var mtx = new DenseMatrix(points.Count(), 3);
+        // var mtx = new DenseMatrix(points.Count(), 3); // 261111Cl 変更前
+        var mtx = new DenseMatrix(points.Length, 3); // 261111Cl 変更
         int n = 0;
-        foreach (var p in points.Select(p => p - ave))
+        // foreach (var p in points.Select(p => p - ave)) // 261111Cl 変更前
+        //     mtx.SetRow(n++, [p.X, p.Y, p.Z]);
+        foreach (var q in points) // 261111Cl 変更: span なので Select を使わず差を直接取る
+        {
+            var p = q - ave;
             mtx.SetRow(n++, [p.X, p.Y, p.Z]);
+        }
 
         var evd = mtx.TransposeThisAndMultiply(mtx).Evd(Symmetricity.Symmetric);
         var index = evd.EigenValues.AbsoluteMinimumIndex();

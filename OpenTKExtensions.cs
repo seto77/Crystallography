@@ -1,7 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Linq;
-using ZLinq;
+// using ZLinq; // 261111Cl 削除: ZLinq を外したため
 using C4 = OpenTK.Mathematics.Color4;
 using M3d = OpenTK.Mathematics.Matrix3d;
 using M3f = OpenTK.Mathematics.Matrix3;
@@ -186,9 +186,9 @@ public static class TkEx
 
     #region その他の静的メソッド
     // 260514Cl: V3d 版と同じく ValueEnumerable<> overload を追加し、foreach 中で count++ する 1-pass に変更。
-    public static V3f Average(IEnumerable<V3f> vectors) => Average(vectors.AsValueEnumerable());
-
-    public static V3f Average(ValueEnumerable<ZLinq.Linq.FromEnumerable<V3f>, V3f> vectors)
+    // public static V3f Average(IEnumerable<V3f> vectors) => Average(vectors.AsValueEnumerable()); // 261111Cl 変更前 (ZLinq)
+    // 261111Cl 変更: ZLinq を外したので、IEnumerable 版が 1 回の走査を直接行う (本体は旧の ValueEnumerable 版と同じ)
+    public static V3f Average(IEnumerable<V3f> vectors)
     {
         float x = 0, y = 0, z = 0;
         int count = 0;
@@ -202,10 +202,40 @@ public static class TkEx
         return new V3f(x / count, y / count, z / count);
     }
 
-    public static V3d Average(IEnumerable<V3d> vectors)  => Average(vectors.AsValueEnumerable());
+    // public static V3f Average(ValueEnumerable<ZLinq.Linq.FromEnumerable<V3f>, V3f> vectors) // 261111Cl 変更前 (ZLinq の型が公開シグネチャに出ていた)
+    public static V3f Average(ReadOnlySpan<V3f> vectors) // 261111Cl 変更: ReadOnlySpan<V3f> に (和の順序は同じ)
+    {
+        float x = 0, y = 0, z = 0;
+        int count = 0;
+        foreach (var v in vectors)
+        {
+            x += v.X;
+            y += v.Y;
+            z += v.Z;
+            count++;
+        }
+        return new V3f(x / count, y / count, z / count);
+    }
+
+    // public static V3d Average(IEnumerable<V3d> vectors)  => Average(vectors.AsValueEnumerable()); // 261111Cl 変更前 (ZLinq)
+    // 261111Cl 変更: ZLinq を外したので、IEnumerable 版が 1 回の走査を直接行う (本体は旧の ValueEnumerable 版と同じ)
+    public static V3d Average(IEnumerable<V3d> vectors)
+    {
+        double x = 0, y = 0, z = 0;
+        int count = 0;
+        foreach (var v in vectors)
+        {
+            x += v.X;
+            y += v.Y;
+            z += v.Z;
+            count++;
+        }
+        return new V3d(x / count, y / count, z / count);
+    }
 
     // 260514Cl: foreach 中で count++ する 1-pass に変更 (旧版は和算 foreach の後に Count() で 2 回走査)。
-    public static V3d Average(ValueEnumerable<ZLinq.Linq.FromEnumerable<V3d>, V3d> vectors)
+    // public static V3d Average(ValueEnumerable<ZLinq.Linq.FromEnumerable<V3d>, V3d> vectors) // 261111Cl 変更前 (ZLinq の型が公開シグネチャに出ていた)
+    public static V3d Average(ReadOnlySpan<V3d> vectors) // 261111Cl 変更: ReadOnlySpan<V3d> に (和の順序は同じ)
     {
         double x = 0, y = 0, z = 0;
         int count = 0;

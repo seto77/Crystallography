@@ -771,7 +771,8 @@ public static class EbsdBandDetector
             rightOffset = rightEdge - (halfRange + bestShift); //正値
             widthWork = rightOffset - leftOffset;
             //勾配の鋭さ (プロファイル振幅比) を品質に
-            var (smoothMin, smoothMax) = smooth.MinMax(); //260724Cl (/simplify): Max()+Min() の 2 走査 → SimdLinq MinMax 1 走査
+            // var (smoothMin, smoothMax) = smooth.MinMax(); //260724Cl (/simplify): Max()+Min() の 2 走査 → SimdLinq MinMax 1 走査 // 261111Cl 変更前
+            var (smoothMin, smoothMax) = smooth.MinMaxIgnoreNaN(); // 261111Cl 変更: SimdLinq を外したので、NaN を除いた最小・最大 (作者判断)
             double amp = smoothMax - smoothMin;
             widthQuality = amp > 1E-9 ? Math.Clamp((leftVal + rightVal) / amp, 0, 1) : 0;
         }

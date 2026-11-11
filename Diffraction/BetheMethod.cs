@@ -15,7 +15,7 @@ using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Xml.Serialization;
-using ZLinq;
+// using ZLinq; // 261111Cl 削除: ZLinq を外したため
 using static System.Buffers.ArrayPool<System.Numerics.Complex>;
 using static System.Numerics.Complex;
 using DMat = MathNet.Numerics.LinearAlgebra.Complex.DenseMatrix;
@@ -584,7 +584,8 @@ public partial class BetheMethod
             Beams = Find_gVectors(BaseRotation, vecK0);
 
             //入射面での波動関数を定義
-            psi0 = new DVec([.. ValueEnumerable.Range(0, Beams.Length).Select(g => g == 0 ? One : 0)]);
+            // psi0 = new DVec([.. ValueEnumerable.Range(0, Beams.Length).Select(g => g == 0 ? One : 0)]); // 261111Cl 変更前
+            psi0 = new DVec([.. Enumerable.Range(0, Beams.Length).Select(g => g == 0 ? One : 0)]); // 261111Cl 変更: ZLinq を外したので標準 LINQ
             //ポテンシャルマトリックスを初期化
             uDictionary.Clear();
             potentialMatrix = getPotentialMatrix(Beams);
@@ -2625,7 +2626,8 @@ public partial class BetheMethod
         // 公開の逆行列は保持し、厚さを変えるたびの dense GEMV と一時ベクトルを省く。
         //ガンマの対称行列×アルファを作成
         // var gamma_alpha = new DVec([.. ValueEnumerable.Range(0, dim).Select(n => Exp(TwoPiI * EigenValues[n] * thickness) * alpha[n])]); // 261106Ch 変更前
-        var gamma_alpha = new DVec([.. ValueEnumerable.Range(0, dim).Select(n => Exp(TwoPiI * EigenValues[n] * thickness) * EigenVectorsInverse[n])]);
+        // var gamma_alpha = new DVec([.. ValueEnumerable.Range(0, dim).Select(n => Exp(TwoPiI * EigenValues[n] * thickness) * EigenVectorsInverse[n])]); // 261111Cl 変更前
+        var gamma_alpha = new DVec([.. Enumerable.Range(0, dim).Select(n => Exp(TwoPiI * EigenValues[n] * thickness) * EigenVectorsInverse[n])]); // 261111Cl 変更: ZLinq を外したので標準 LINQ
 
         //出射面での境界条件を考慮した位相にする (20230827)
         var p = new DiagonalMatrix(dim, dim, [.. Beams.Select(b => Exp(PiI * b.P * thickness))]);
@@ -2728,7 +2730,8 @@ public partial class BetheMethod
                 var inverseValues = EigenVectorsInversePED[k].Values;
                 //ガンマの対称行列×アルファを作成
                 // var gamma_alpha = new DVec([.. ValueEnumerable.Range(0, len).Select(n => Exp(TwoPiI * EigenValuesPED[k][n] * thickness) * alpha[n])]); // 261106Ch 変更前
-                var gamma_alpha = new DVec([.. ValueEnumerable.Range(0, len).Select(n => Exp(TwoPiI * EigenValuesPED[k][n] * thickness) * inverseValues[n])]);
+                // var gamma_alpha = new DVec([.. ValueEnumerable.Range(0, len).Select(n => Exp(TwoPiI * EigenValuesPED[k][n] * thickness) * inverseValues[n])]); // 261111Cl 変更前
+                var gamma_alpha = new DVec([.. Enumerable.Range(0, len).Select(n => Exp(TwoPiI * EigenValuesPED[k][n] * thickness) * inverseValues[n])]); // 261111Cl 変更: ZLinq を外したので標準 LINQ
                 //深さZにおけるψを求める
                 var psi_atZ = EigenVectorsPED[k].Multiply(gamma_alpha);
                 for (int i = 0; i < BeamsPED[k].Length && i < len; i++)
@@ -2950,7 +2953,8 @@ public partial class BetheMethod
         int dLen = defocusses.Length, tLen = thicknesses.Length, bLen = Beams.Length;
 
         //入射面での波動関数を定義
-        var psi0 = ValueEnumerable.Range(0, Beams.Length).Select(g => g == 0 ? -One : 0).ToArray();
+        // var psi0 = ValueEnumerable.Range(0, Beams.Length).Select(g => g == 0 ? -One : 0).ToArray(); // 261111Cl 変更前
+        var psi0 = Enumerable.Range(0, Beams.Length).Select(g => g == 0 ? -One : 0).ToArray(); // 261111Cl 変更: ZLinq を外したので標準 LINQ
         //ポテンシャルマトリックスを初期化
         uDictionary.Clear();
         var potentialMatrix = getPotentialMatrix(Beams);
@@ -3006,7 +3010,8 @@ public partial class BetheMethod
             var slices = Math.Max(1, (int)((Thicknesses[t] - start) / sliceThickness));
             tStep[t] = (Thicknesses[t] - start) / slices;
             // _thick[t] = [.. ValueEnumerable.Range(1, slices).Select(e => start + tStep[t] * e)]; // 261111Cl 変更前 (各スライスの右端)
-            _thick[t] = [.. ValueEnumerable.Range(1, slices).Select(e => start + tStep[t] * (depthPhase ? e - 0.5 : e))]; // 261111Cl 変更: 既定はスライスの中点 (中点則、codex2 第 40 回)
+            // _thick[t] = [.. ValueEnumerable.Range(1, slices).Select(e => start + tStep[t] * (depthPhase ? e - 0.5 : e))]; // 261111Cl 変更: 既定はスライスの中点 (中点則、codex2 第 40 回) // 261111Cl 変更前
+            _thick[t] = [.. Enumerable.Range(1, slices).Select(e => start + tStep[t] * (depthPhase ? e - 0.5 : e))]; // 261111Cl 変更: 既定はスライスの中点 (中点則、codex2 第 40 回) // 261111Cl 変更: ZLinq を外したので標準 LINQ
         }
         var sliceTotal = 0;
         var sliceOffset = new int[Thicknesses.Length];
@@ -3295,7 +3300,8 @@ public partial class BetheMethod
         var threadLocalIElas = new ThreadLocal<Complex[]>(() => null, true); // (260403Ch) 弾性項の一時配列はスレッドごとに使い回す
         // 260420Cl 追加: qIndex 毎のロックを事前確保して I_Elas/sum の加算を per-qIndex で直列化する。
         // 旧 lockObj1 (単一ロック) では全スレッドが qIndex 違いでも待機していたが、衝突するのは同一 qIndex 時のみのため粒度を細かくする。
-        var qIndexLocks = ValueEnumerable.Range(0, qList.Count).Select(_ => new Lock()).ToArray();
+        // var qIndexLocks = ValueEnumerable.Range(0, qList.Count).Select(_ => new Lock()).ToArray(); // 261111Cl 変更前
+        var qIndexLocks = Enumerable.Range(0, qList.Count).Select(_ => new Lock()).ToArray(); // 261111Cl 変更: ZLinq を外したので標準 LINQ
         try
         {
             tcP.ForAll(kIndex =>
@@ -4162,7 +4168,8 @@ public partial class BetheMethod
         var gList = beams.Select(b => (b.Ureal, b.Uimag, b.Vec.ToPointD)).ToList();
         //imagesを初期化
 
-        var images = ValueEnumerable.Range(0, 4).Select(d => new double[width * height]).ToArray();
+        // var images = ValueEnumerable.Range(0, 4).Select(d => new double[width * height]).ToArray(); // 261111Cl 変更前
+        var images = Enumerable.Range(0, 4).Select(d => new double[width * height]).ToArray(); // 261111Cl 変更: ZLinq を外したので標準 LINQ
 
         var shift = Crystal.RotationMatrix * (Crystal.A_Axis + Crystal.B_Axis + Crystal.C_Axis) / 2;
         double cX = width / 2.0, cY = height / 2.0;

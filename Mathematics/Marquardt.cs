@@ -3,7 +3,7 @@ using System;
 using System.Linq;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
-using ZLinq;
+// using ZLinq; // 261111Cl 削除: ZLinq を外したため
 using static System.Math;
 using DMat = MathNet.Numerics.LinearAlgebra.Double.DenseMatrix;
 using DVec = MathNet.Numerics.LinearAlgebra.Double.DenseVector;
@@ -84,7 +84,8 @@ public class Marquardt
         private readonly double[] steps;
 
         /// <summary>261111Cl 追加: 数値微分の刻み 10^-9 〜 10^10 (20 個)。旧はインスタンスごとに ZLinq で作っていた。同じ式 (Math.Pow) で 1 回だけ作り、全インスタンスで共有する (読むだけなので共有して安全)</summary>
-        private static readonly double[] defaultSteps = ValueEnumerable.Range(-9, 20).Select(n => Pow(10, n)).ToArray();
+        // private static readonly double[] defaultSteps = ValueEnumerable.Range(-9, 20).Select(n => Pow(10, n)).ToArray(); // 261111Cl 変更前
+        private static readonly double[] defaultSteps = Enumerable.Range(-9, 20).Select(n => Pow(10, n)).ToArray(); // 261111Cl 変更: ZLinq を外したので標準 LINQ
 
         /// <summary>コンストラクタ</summary>
         /// <param name="formula"></param>

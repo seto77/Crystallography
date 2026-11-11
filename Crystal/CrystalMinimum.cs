@@ -5,7 +5,7 @@ using System.Collections.Frozen;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
-using ZLinq;
+// using ZLinq; // 261111Cl 削除: ZLinq を外したため
 using System.Text;
 using System.Windows.Forms;
 

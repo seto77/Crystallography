@@ -281,8 +281,9 @@ public class Statistics
         int range = (values.Length + partition - 1) / partition;//一つ当たりの個数
         if (range <= 0) range = 1;
 
-        var max = values.Max();
-        var min = values.Min();
+        // var max = values.Max(); // 261111Cl 変更前 (SimdLinq。NaN の扱いが位置で変わっていた)
+        // var min = values.Min();
+        var (min, max) = values.MinMaxIgnoreNaN(); // 261111Cl 変更: NaN を除いた最小・最大 (作者判断。画素値の頻度分布に使う)
 
         // 261111Cl divisions > 0 のとき、丸め後の値は idx*(max-min)/divisions+min (idx = 0..divisions) に限られるので、
         //          画素ごとの SortedList 操作をやめて int[divisions+1] のビンで数える。キーは旧来と同じ式で作るのでビット一致し、

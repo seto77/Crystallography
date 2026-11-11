@@ -2269,7 +2269,20 @@ public static class Ring
                         tt3 = twoThetaVertex[x - xMin + (y - yMin + 1) * (xMax - xMin + 1)];
                     double minTwoTheta, maxTwoTheta;
                     if (double.IsNaN(tt0) || double.IsNaN(tt1) || double.IsNaN(tt2) || double.IsNaN(tt3))
-                        (minTwoTheta, maxTwoTheta) = new[] { tt0, tt1, tt2, tt3 }.MinMax();
+                    {
+                        // (minTwoTheta, maxTwoTheta) = new[] { tt0, tt1, tt2, tt3 }.MinMax(); // 261111Cl 変更前 (SimdLinq)
+                        // 261111Cl 変更: SimdLinq を外したので、旧の SimdLinq MinMax (4 要素・Vector256 の経路) をスカラーで正確に再現する。
+                        //   旧: 4 値を 1 本の Vector256 に載せ、レーン 0 (tt0) から始めて「より小さい / 大きいなら置き換える」で畳んでいた。
+                        //   NaN は比較が偽なので、tt0 が NaN なら結果も NaN、tt1〜tt3 の NaN は無視される (配列を確保しない以外は旧と同じ)。
+                        //   ※ AVX2 の無い CPU (Vector128 の経路) では旧の結果が異なっていたが、その環境は対象外とする。
+                        minTwoTheta = maxTwoTheta = tt0;
+                        if (tt1 < minTwoTheta) minTwoTheta = tt1;
+                        if (tt1 > maxTwoTheta) maxTwoTheta = tt1;
+                        if (tt2 < minTwoTheta) minTwoTheta = tt2;
+                        if (tt2 > maxTwoTheta) maxTwoTheta = tt2;
+                        if (tt3 < minTwoTheta) minTwoTheta = tt3;
+                        if (tt3 > maxTwoTheta) maxTwoTheta = tt3;
+                    }
                     else
                     {
                         minTwoTheta = Math.Min(Math.Min(tt0, tt1), Math.Min(tt2, tt3));

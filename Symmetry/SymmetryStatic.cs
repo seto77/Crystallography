@@ -2,7 +2,7 @@
 using System.Collections.Generic;
 using System.Linq;
 using SO = Crystallography.SymmetryOperation;
-using ZLinq;
+// using ZLinq; // 261111Cl 削除: ZLinq を外したため
 
 namespace Crystallography;
 
@@ -859,7 +859,8 @@ new(-4,-1,(0,1,0),((3.0/8.0),(1.0/8.0),(3.0/8.0)),(0,0,0)),//487
         }
         #endregion
 
-        SpaceGroupListWithoutSpace = StrArray.AsValueEnumerable().Select(s => s[3].Replace(" ", "")).ToArray();
+        // SpaceGroupListWithoutSpace = StrArray.AsValueEnumerable().Select(s => s[3].Replace(" ", "")).ToArray(); // 261111Cl 変更前
+        SpaceGroupListWithoutSpace = StrArray.Select(s => s[3].Replace(" ", "")).ToArray(); // 261111Cl 変更: ZLinq を外したので標準 LINQ
 
         Symmetries = new Symmetry[TotalSpaceGroupNumber];
         for (int i = 0; i < Symmetries.Length; i++)

@@ -258,10 +258,38 @@ public static class DoubleEx
     /// <returns></returns>
     public static double ToDegrees(in this double d) => d * deg;
 
+    // 261111Cl: SimdLinq を外したので内側の e.Max() は標準 LINQ (NaN を無視し、全部 NaN のときだけ NaN)。Max は書き換え不要
     public static double Max(this double[][] d) => d.Max(e => e.Max());
-    public static double Min(this double[][] d) => d.Min(e => e.Min());
+    // public static double Min(this double[][] d) => d.Min(e => e.Min()); // 261111Cl 変更前 (内側は SimdLinq。NaN の扱いが位置で変わっていた)
+    public static double Min(this double[][] d) => d.Select(e => e.MinMaxIgnoreNaN().Min).ToArray().MinMaxIgnoreNaN().Min; // 261111Cl 変更: NaN を除いた最小 (標準の Min は NaN を返すため)
     public static double Max(this double[][][] d) => d.Max(e => e.Max());
-    public static double Min(this double[][][] d) => d.Min(e => e.Min());
+    // public static double Min(this double[][][] d) => d.Min(e => e.Min()); // 261111Cl 変更前
+    public static double Min(this double[][][] d) => d.Select(e => e.Min()).ToArray().MinMaxIgnoreNaN().Min; // 261111Cl 変更: NaN を除いた最小
+
+    /// <summary>261111Cl 追加: NaN を除いた最小値と最大値を 1 回の走査で求める (画素・強度・プロファイルなど NaN を含みうる配列の表示範囲用)。
+    /// <para>全部 NaN なら (NaN, NaN)、空なら InvalidOperationException (旧の SimdLinq MinMax / Enumerable.Min と同じ)。±∞ は値として扱う。
+    /// 等しい値 (+0 と -0) は先に現れた方を返す (Enumerable.Min/Max と同じ)。NaN が無い配列では Enumerable.Min/Max とビット一致。</para>
+    /// <para>旧の SimdLinq の Min/Max/MinMax は、NaN の位置によって NaN を返したり、NaN と同じ SIMD レーンの正しい値まで捨てたりしていた (位置依存)。</para></summary>
+    public static (double Min, double Max) MinMaxIgnoreNaN(this ReadOnlySpan<double> source)
+    {
+        if (source.IsEmpty) throw new InvalidOperationException("Sequence contains no elements");
+        double min = double.PositiveInfinity, max = double.NegativeInfinity;
+        foreach (var v in source)
+        {
+            // NaN は比較が常に偽なので、どちらの更新にも入らない
+            if (v < min) min = v;
+            if (v > max) max = v;
+        }
+        // NaN 以外の値が 1 つでもあれば min ≦ max。初期値のままなら全部 NaN
+        return min > max ? (double.NaN, double.NaN) : (min, max);
+    }
+
+    /// <summary>261111Cl 追加: <see cref="MinMaxIgnoreNaN(ReadOnlySpan{double})"/> の配列版 (null は ArgumentNullException。旧の SimdLinq と同じ)</summary>
+    public static (double Min, double Max) MinMaxIgnoreNaN(this double[] source)
+    {
+        ArgumentNullException.ThrowIfNull(source);
+        return MinMaxIgnoreNaN(new ReadOnlySpan<double>(source));
+    }
 }
 #endregion
 

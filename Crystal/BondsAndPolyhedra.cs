@@ -4,7 +4,7 @@ using System.Collections.Frozen;
 using System.Drawing;
 using System.Linq;
 using System.Xml.Serialization;
-using ZLinq;
+// using ZLinq; // 261111Cl 削除: ZLinq を外したため
 //using MemoryPack;
 
 namespace Crystallography;
@@ -204,11 +204,16 @@ public partial class Bonds
 
         //260317Cl 変更: Enumerable.Range → ValueEnumerable.Range
         var cationNum = new List<int>();
-        cationNum.AddRange(ValueEnumerable.Range(3, 5).ToArray());
-        cationNum.AddRange(ValueEnumerable.Range(11, 5).ToArray());
-        cationNum.AddRange(ValueEnumerable.Range(19, 15).ToArray());
-        cationNum.AddRange(ValueEnumerable.Range(37, 15).ToArray());
-        cationNum.AddRange(ValueEnumerable.Range(55, 20).ToArray());
+        // cationNum.AddRange(ValueEnumerable.Range(3, 5).ToArray()); // 261111Cl 変更前
+        cationNum.AddRange(Enumerable.Range(3, 5).ToArray()); // 261111Cl 変更: ZLinq を外したので標準 LINQ
+        // cationNum.AddRange(ValueEnumerable.Range(11, 5).ToArray()); // 261111Cl 変更前
+        cationNum.AddRange(Enumerable.Range(11, 5).ToArray()); // 261111Cl 変更: ZLinq を外したので標準 LINQ
+        // cationNum.AddRange(ValueEnumerable.Range(19, 15).ToArray()); // 261111Cl 変更前
+        cationNum.AddRange(Enumerable.Range(19, 15).ToArray()); // 261111Cl 変更: ZLinq を外したので標準 LINQ
+        // cationNum.AddRange(ValueEnumerable.Range(37, 15).ToArray()); // 261111Cl 変更前
+        cationNum.AddRange(Enumerable.Range(37, 15).ToArray()); // 261111Cl 変更: ZLinq を外したので標準 LINQ
+        // cationNum.AddRange(ValueEnumerable.Range(55, 20).ToArray()); // 261111Cl 変更前
+        cationNum.AddRange(Enumerable.Range(55, 20).ToArray()); // 261111Cl 変更: ZLinq を外したので標準 LINQ
         VestaCations = [.. cationNum.Select(n => $"{n}: {AtomStatic.AtomicName(n)}")];
         VestaCationSet = VestaCations.ToFrozenSet(StringComparer.Ordinal);
     }

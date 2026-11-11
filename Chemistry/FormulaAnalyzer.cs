@@ -5,7 +5,7 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
 using System.Text.RegularExpressions;
-using ZLinq;
+// using ZLinq; // 261111Cl 削除: ZLinq を外したため
 
 public sealed record SiteGroup(string Name, string[] Elements);
 public sealed class SiteBasedParameterization
@@ -58,7 +58,8 @@ public sealed class SiteBasedParameterization
 
         // 4) extent 候補生成（サイト群内の部分和を中心に）→二値性で上位を選ぶ
         //260317Cl 変更: Enumerable.Range → ValueEnumerable.Range
-        var endmemberComps = ValueEnumerable.Range(0, space.V.ColumnCount)
+        // var endmemberComps = ValueEnumerable.Range(0, space.V.ColumnCount) // 261111Cl 変更前
+        var endmemberComps = Enumerable.Range(0, space.V.ColumnCount) // 261111Cl 変更: ZLinq を外したので標準 LINQ
                                        .Select(j => space.V.Column(j))
                                        .ToArray();
 
@@ -692,7 +693,8 @@ public sealed class InterpretableParameterizer
     {
         // 端成分組成（列ベクトル）
         //260317Cl 変更: Enumerable.Range → ValueEnumerable.Range
-        var endmemberComps = ValueEnumerable.Range(0, space.V.ColumnCount)
+        // var endmemberComps = ValueEnumerable.Range(0, space.V.ColumnCount) // 261111Cl 変更前
+        var endmemberComps = Enumerable.Range(0, space.V.ColumnCount) // 261111Cl 変更: ZLinq を外したので標準 LINQ
                                        .Select(j => space.V.Column(j))
                                        .ToArray();
 
@@ -860,7 +862,8 @@ public sealed class InterpretableParameterizer
         for (int size = 1; size <= maxSize; size++)
         {
             //260317Cl 変更: Enumerable.Range → ValueEnumerable.Range
-            foreach (var comb in Combinations(ValueEnumerable.Range(0, n).ToArray(), size))
+            // foreach (var comb in Combinations(ValueEnumerable.Range(0, n).ToArray(), size)) // 261111Cl 変更前
+            foreach (var comb in Combinations(Enumerable.Range(0, n).ToArray(), size)) // 261111Cl 変更: ZLinq を外したので標準 LINQ
                 yield return comb;
         }
     }

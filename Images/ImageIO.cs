@@ -14,7 +14,7 @@ using System.Text;
 using System.Text.RegularExpressions;
 using System.Windows.Forms;
 using System.Xml.Serialization;
-using ZLinq;
+// using ZLinq; // 261111Cl 削除: ZLinq を外したため
 
 namespace Crystallography;
 //260317Cl 変更: GeneratedRegex使用のためpartial化
@@ -1300,7 +1300,8 @@ public static partial class ImageIO
 
             //260317Cl 変更: Enumerable.Range → ValueEnumerable.Range
             //260712Cl off-by-one 修正: Range 第2引数は要素数なので num+1 だとフレーム数 num より1個多い名前が生成されていた
-            Ring.SequentialImageNames = [.. ValueEnumerable.Range(1, num).Select(e => e.ToString("000"))];
+            // Ring.SequentialImageNames = [.. ValueEnumerable.Range(1, num).Select(e => e.ToString("000"))]; // 261111Cl 変更前
+            Ring.SequentialImageNames = [.. Enumerable.Range(1, num).Select(e => e.ToString("000"))]; // 261111Cl 変更: ZLinq を外したので標準 LINQ
             Ring.Intensity = Ring.SequentialImageIntensities[0];
         }
 

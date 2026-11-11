@@ -237,7 +237,8 @@ public static class EbsdPatternScorer
         var validAll = new bool[w * h];
         Array.Fill(validAll, true);
         var bg = EbsdBandDetector.GaussianBlurGrid(dst, validAll, w, h, 0.10 * Math.Min(w, h));
-        double floor = Math.Max(1E-10, dst.Average() * 0.05);
+        // double floor = Math.Max(1E-10, dst.Average() * 0.05); // 261111Cl 変更前
+        double floor = Math.Max(1E-10, System.Numerics.Tensors.TensorPrimitives.Sum<double>(dst) / dst.Length * 0.05); // 261111Cl 変更: 画素数規模の double 配列の和は TensorPrimitives.Sum (作者判断。和の順序が変わり丸めだけ異なる)
         for (int i = 0; i < dst.Length; i++)
             dst[i] /= Math.Max(bg[i], floor);
         NormalizeInPlace(dst);
@@ -288,7 +289,8 @@ public static class EbsdPatternScorer
         var validAll = new bool[w * h];
         Array.Fill(validAll, true);
         var bg = EbsdBandDetector.GaussianBlurGrid(src, validAll, w, h, 0.10 * Math.Min(w, h));
-        double floor = Math.Max(1E-10, src.Average() * 0.05);
+        // double floor = Math.Max(1E-10, src.Average() * 0.05); // 261111Cl 変更前
+        double floor = Math.Max(1E-10, System.Numerics.Tensors.TensorPrimitives.Sum<double>(src) / src.Length * 0.05); // 261111Cl 変更: 画素数規模の double 配列の和は TensorPrimitives.Sum (作者判断。和の順序が変わり丸めだけ異なる)
         var v = new double[w * h];
         for (int i = 0; i < v.Length; i++) v[i] = Math.Log(Math.Max(src[i], floor * 0.01) / Math.Max(bg[i], floor));
         var g1 = EbsdBandDetector.GaussianBlurGrid(v, validAll, w, h, dogSigma1);

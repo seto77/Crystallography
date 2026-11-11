@@ -162,7 +162,8 @@ public class Tiff
             //261111Cl 変更: 「全部が整数か」を double.IsInteger で判定する (NaN と ±∞ は d % 1 = NaN ≠ 0 で「整数でない」、IsInteger も false なので判定は同じ。-0.0 はどちらも整数)
             if (Array.TrueForAll(srcData[0], double.IsInteger))
                 sampleFormat = 1;
-            else if (srcData[0].Max() < float.MaxValue && srcData[0].Min() > float.MinValue)
+            // else if (srcData[0].Max() < float.MaxValue && srcData[0].Min() > float.MinValue) // 261111Cl 変更前 (SimdLinq。NaN の扱いが位置で変わっていた)
+            else if (srcData[0].MinMaxIgnoreNaN() is var (srcMin, srcMax) && srcMax < float.MaxValue && srcMin > float.MinValue) // 261111Cl 変更: NaN を除いた最小・最大 (作者判断。NaN は float でも表せる)
                 sampleFormat = 3;
             else
                 return;

@@ -120,13 +120,14 @@
     <!--<PackageReference Include="NativeMemoryArray" Version="1.2.2" />--><!-- 260407Cl 未使用のため削除 -->
     <PackageReference Include="OpenTK" Version="4.9.4" />
     <PackageReference Include="PureHDF" Version="2.2.0" />
-    <PackageReference Include="SimdLinq" Version="1.3.2" />
+    <!--<PackageReference Include="SimdLinq" Version="1.3.2" />--><!-- 261111Cl 削除 (作者判断): 標準 LINQ (.NET 8 以降 Min/Max はベクトル化済み) に戻す。NaN を含みうる配列の最小・最大は ExtensionMethods.MinMaxIgnoreNaN で明示する -->
     <!--<PackageReference Include="DynamicExpresso.Core" Version="2.19.6" />--><!-- 260427Cl System.Linq.Dynamic.Core から置換 (用途: 対称操作式パース) --><!-- 261111Cl 削除: 対称操作式は AffineGen.Parse で読む (ConvertCrystalData.ConvertFromCIF) -->
-    <PackageReference Include="ZLinq" Version="1.6.1" /><!-- 261105Cl 1.5.6 から更新 (Crystallography / Crystallography.Controls で版を揃える) -->
+    <!--<PackageReference Include="ZLinq" Version="1.6.1" />--><!-- 261105Cl 1.5.6 から更新 (Crystallography / Crystallography.Controls で版を揃える) --><!-- 261111Cl 削除 (作者判断): 標準 LINQ / ループに戻す -->
+    <PackageReference Include="System.Numerics.Tensors" Version="11.0.0" /><!-- 261111Cl 追加 (作者判断): 画素数規模の double 配列の和に TensorPrimitives.Sum を使う -->
   </ItemGroup>
 
   <ItemGroup>
-    <Using Include="SimdLinq" />
+    <!--<Using Include="SimdLinq" />--><!-- 261111Cl 削除: SimdLinq を外したため -->
   </ItemGroup>
 
 </Project>
