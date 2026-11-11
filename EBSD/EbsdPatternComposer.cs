@@ -1,6 +1,7 @@
 #region using
 using System;
 using System.Threading.Tasks;
+using VecD = System.Numerics.Vector<double>; //261111Cl 追加: タップの和の SIMD 化 (EvaluatePathLengthWeights)
 #endregion
 
 namespace Crystallography;
@@ -64,6 +65,8 @@ public sealed class EbsdPatternComposer
         double v01 = (o01 && has ? other : plane)[k01], v11 = (o11 && has ? other : plane)[k11];
         return (1 - fw) * (1 - fh) * v00 + fw * (1 - fh) * v10 + (1 - fw) * fh * v01 + fw * fh * v11;
     }
+    /// <summary>261111Cl 追加: 単一スライスの Apply で Parallel.For 1 回の仕事にする画素数 (旧は画素ごとにデリゲートを呼んでいた)</summary>
+    const int SingleSliceBlock = 4096;
     int lookupGridSize; // 260325Cl: Apply で idx+gridSize の復元に使用
     MasterPattern.Types lookupGridType; // 260331Cl: 六方格子モードかどうか
 
@@ -556,8 +559,27 @@ public sealed class EbsdPatternComposer
                 if (flatA != null) fANum += omega * flatA[b];
                 omegaSum += omega;
                 int o = b * eLen;
-                for (int e = 0; e < eLen; e++) { double g = omega * flatG[o + e]; n[e] += g; lam[e] += g * flatL[o + e]; }
-                if (flatGA != null) for (int e = 0; e < eLen; e++) nA[e] += omega * flatGA[o + e]; //260927Cl 追加 (電子ごとの A): 同じ ω で G_A も内挿
+                //for (int e = 0; e < eLen; e++) { double g = omega * flatG[o + e]; n[e] += g; lam[e] += g * flatL[o + e]; } //261111Cl 変更前
+                //if (flatGA != null) for (int e = 0; e < eLen; e++) nA[e] += omega * flatGA[o + e]; //260927Cl 追加 (電子ごとの A): 同じ ω で G_A も内挿 //261111Cl 変更前
+                //261111Cl 変更: Vector<double> 化。要素ごとの演算 (g = ω·G、n + g、λ + g·L) と順序は旧と同じで、
+                //  .NET の JIT は a + b·c を FMA へ勝手に縮約しないのでビット一致 (端数の要素は旧のスカラーのまま)
+                var gRow = flatG.AsSpan(o, eLen); var lRow = flatL.AsSpan(o, eLen);
+                var vOmega = new VecD(omega);
+                int e0 = 0;
+                for (; e0 <= eLen - VecD.Count; e0 += VecD.Count)
+                {
+                    var g = vOmega * new VecD(gRow.Slice(e0));
+                    (new VecD(n.Slice(e0)) + g).CopyTo(n.Slice(e0));
+                    (new VecD(lam.Slice(e0)) + g * new VecD(lRow.Slice(e0))).CopyTo(lam.Slice(e0));
+                }
+                for (int e = e0; e < eLen; e++) { double g = omega * gRow[e]; n[e] += g; lam[e] += g * lRow[e]; }
+                if (flatGA != null) //260927Cl 追加 (電子ごとの A): 同じ ω で G_A も内挿
+                {
+                    var gaRow = flatGA.AsSpan(o, eLen);
+                    int e1 = 0;
+                    for (; e1 <= eLen - VecD.Count; e1 += VecD.Count) (new VecD(nA.Slice(e1)) + vOmega * new VecD(gaRow.Slice(e1))).CopyTo(nA.Slice(e1));
+                    for (int e = e1; e < eLen; e++) nA[e] += omega * gaRow[e];
+                }
             }
         for (int e = 0; e < eLen; e++) lam[e] = n[e] > 0 ? lam[e] / n[e] : EbsdMonteCarloDistribution.UniformDepthLambdaNm;
         if (flatGA != null) { var ae = s.AEff.AsSpan(0, eLen); for (int e = 0; e < eLen; e++) ae[e] = n[e] > 0 ? nA[e] / n[e] : double.NaN; } //260927Cl 追加: 画素の実効 A = N_A/N
@@ -1062,7 +1084,10 @@ public sealed class EbsdPatternComposer
             return;
 
         var factors = new double[mp.PlaneCount];
-        for (int planeIndex = 0; planeIndex < mp.PlaneCount; planeIndex++)
+        //for (int planeIndex = 0; planeIndex < mp.PlaneCount; planeIndex++) //261111Cl 変更前
+        //261111Cl 変更: 平面ごとに並列化。各平面の和はその平面の中だけで、旧と同じ順 (+Z の全セル → −Z の全セル) に取るのでビット一致
+        //  (平面をまたいで足す量は無いので、部分和の合算も要らない)
+        Parallel.For(0, mp.PlaneCount, planeIndex =>
         {
             double globalSum = 0.0;
 
@@ -1077,7 +1102,8 @@ public sealed class EbsdPatternComposer
                     globalSum += negativePlane[i];
 
             factors[planeIndex] = globalSum > 1e-30 ? 1.0 / globalSum : 0.0; // (260325Ch) 全球積算強度が 0 の slice は 0 扱いにする
-        }
+        //} //261111Cl 変更前
+        }); //261111Cl 変更
 
         globalNormalizationFactors = factors;
         globalNormalizationSource = mp;
@@ -1114,33 +1140,75 @@ public sealed class EbsdPatternComposer
             var hasPos = posPlane != null && posPlane.Length >= requiredPlaneLength; //260725Ch
             var hasNeg = negPlane != null && negPlane.Length >= requiredPlaneLength;
 
+            //261111Cl 変更: 画素ごとにデリゲートを呼んでいた Parallel.For(0, totalPixels, i => …) を、SingleSliceBlock 画素ずつのブロック単位にした。
+            //  各画素の式は旧と同じ (画素どうしは独立) なのでビット一致。旧コードは下の #region に残す
+            #region 261111Cl 変更前
+            //if (isHexGrid) // 260331Cl
+            //{
+            //    Parallel.For(0, totalPixels, i =>
+            //    {
+            //        float* plane = pPosZ0[i] ? pPos0 : pNeg0;
+            //        bool hasPlane = pPosZ0[i] ? hasPos : hasNeg;
+            //        if (!hasPlane) { pVal0[i] = 0; return; }
+            //        int i3 = i * 3;
+            //        pVal0[i] = scaleFactor * (pWt0[i3] * plane[pIdx0[i3]]
+            //                 + pWt0[i3 + 1] * plane[pIdx0[i3 + 1]]
+            //                 + pWt0[i3 + 2] * plane[pIdx0[i3 + 2]]);
+            //    });
+            //}
+            //else
+            //{
+            //    Parallel.For(0, totalPixels, i =>
+            //    {
+            //        float* plane = pPosZ0[i] ? pPos0 : pNeg0;
+            //        bool hasPlane = pPosZ0[i] ? hasPos : hasNeg;
+            //        if (!hasPlane) { pVal0[i] = 0; return; }
+            //        int idx = pIdx0[i];
+            //        int i2 = i * 2;
+            //        float fw = pWt0[i2], fh = pWt0[i2 + 1];
+            //        float w0 = (1 - fw), w1 = fw;
+            //        if (idx < 0) { pVal0[i] = scaleFactor * SeamBilinear(plane, pPosZ0[i] ? (hasNeg ? pNeg0 : null) : (hasPos ? pPos0 : null), ~idx, gs, fw, fh); return; } // 261107Cl 継ぎ目の画素
+            //        pVal0[i] = scaleFactor * ((w0 * plane[idx] + w1 * plane[idx + 1]) * (1 - fh)
+            //                 + (w0 * plane[idx + gs] + w1 * plane[idx + gs + 1]) * fh);
+            //    });
+            //}
+            #endregion
+            int blockCount = (totalPixels + SingleSliceBlock - 1) / SingleSliceBlock; //261111Cl 追加
             if (isHexGrid) // 260331Cl
             {
-                Parallel.For(0, totalPixels, i =>
+                Parallel.For(0, blockCount, b =>
                 {
-                    float* plane = pPosZ0[i] ? pPos0 : pNeg0;
-                    bool hasPlane = pPosZ0[i] ? hasPos : hasNeg;
-                    if (!hasPlane) { pVal0[i] = 0; return; }
-                    int i3 = i * 3;
-                    pVal0[i] = scaleFactor * (pWt0[i3] * plane[pIdx0[i3]]
-                             + pWt0[i3 + 1] * plane[pIdx0[i3 + 1]]
-                             + pWt0[i3 + 2] * plane[pIdx0[i3 + 2]]);
+                    int end = Math.Min(totalPixels, (b + 1) * SingleSliceBlock);
+                    for (int i = b * SingleSliceBlock; i < end; i++)
+                    {
+                        float* plane = pPosZ0[i] ? pPos0 : pNeg0;
+                        bool hasPlane = pPosZ0[i] ? hasPos : hasNeg;
+                        if (!hasPlane) { pVal0[i] = 0; continue; }
+                        int i3 = i * 3;
+                        pVal0[i] = scaleFactor * (pWt0[i3] * plane[pIdx0[i3]]
+                                 + pWt0[i3 + 1] * plane[pIdx0[i3 + 1]]
+                                 + pWt0[i3 + 2] * plane[pIdx0[i3 + 2]]);
+                    }
                 });
             }
             else
             {
-                Parallel.For(0, totalPixels, i =>
+                Parallel.For(0, blockCount, b =>
                 {
-                    float* plane = pPosZ0[i] ? pPos0 : pNeg0;
-                    bool hasPlane = pPosZ0[i] ? hasPos : hasNeg;
-                    if (!hasPlane) { pVal0[i] = 0; return; }
-                    int idx = pIdx0[i];
-                    int i2 = i * 2;
-                    float fw = pWt0[i2], fh = pWt0[i2 + 1];
-                    float w0 = (1 - fw), w1 = fw;
-                    if (idx < 0) { pVal0[i] = scaleFactor * SeamBilinear(plane, pPosZ0[i] ? (hasNeg ? pNeg0 : null) : (hasPos ? pPos0 : null), ~idx, gs, fw, fh); return; } // 261107Cl 継ぎ目の画素
-                    pVal0[i] = scaleFactor * ((w0 * plane[idx] + w1 * plane[idx + 1]) * (1 - fh)
-                             + (w0 * plane[idx + gs] + w1 * plane[idx + gs + 1]) * fh);
+                    int end = Math.Min(totalPixels, (b + 1) * SingleSliceBlock);
+                    for (int i = b * SingleSliceBlock; i < end; i++)
+                    {
+                        float* plane = pPosZ0[i] ? pPos0 : pNeg0;
+                        bool hasPlane = pPosZ0[i] ? hasPos : hasNeg;
+                        if (!hasPlane) { pVal0[i] = 0; continue; }
+                        int idx = pIdx0[i];
+                        int i2 = i * 2;
+                        float fw = pWt0[i2], fh = pWt0[i2 + 1];
+                        float w0 = (1 - fw), w1 = fw;
+                        if (idx < 0) { pVal0[i] = scaleFactor * SeamBilinear(plane, pPosZ0[i] ? (hasNeg ? pNeg0 : null) : (hasPos ? pPos0 : null), ~idx, gs, fw, fh); continue; } // 261107Cl 継ぎ目の画素
+                        pVal0[i] = scaleFactor * ((w0 * plane[idx] + w1 * plane[idx + 1]) * (1 - fh)
+                                 + (w0 * plane[idx + gs] + w1 * plane[idx + gs + 1]) * fh);
+                    }
                 });
             }
         }
@@ -1338,52 +1406,113 @@ public sealed class EbsdPatternComposer
             var hasPosPrev = posPlanePrevious != null && posPlanePrevious.Length >= requiredPlaneLength;
             var hasNegPrev = negPlanePrevious != null && negPlanePrevious.Length >= requiredPlaneLength;
 
+            //261111Cl 変更: 画素ごとにデリゲートを呼んでいた Parallel.For(0, totalPixels, i => …) を、SingleSliceBlock 画素ずつのブロック単位にした。
+            //  各画素の式は旧と同じ (画素どうしは独立) なのでビット一致。旧コードは下の #region に残す
+            #region 261111Cl 変更前
+            //if (isHexGrid) // 260331Cl
+            //{
+            //    Parallel.For(0, totalPixels, i =>
+            //    {
+            //        float* plane = pPosZ0[i] ? pPos0 : pNeg0;
+            //        float* planePrev = pPosZ0[i] ? pPosPrev0 : pNegPrev0;
+            //        bool hasPlane = pPosZ0[i] ? hasPos : hasNeg;
+            //        bool hasPlanePrev = pPosZ0[i] ? hasPosPrev : hasNegPrev;
+            //        if (!hasPlane) { pVal0[i] = 0; return; }
+            //        int i3 = i * 3;
+            //        double intensity = pWt0[i3] * plane[pIdx0[i3]]
+            //                         + pWt0[i3 + 1] * plane[pIdx0[i3 + 1]]
+            //                         + pWt0[i3 + 2] * plane[pIdx0[i3 + 2]];
+            //        if (hasPlanePrev)
+            //            intensity -= pWt0[i3] * planePrev[pIdx0[i3]]
+            //                       + pWt0[i3 + 1] * planePrev[pIdx0[i3 + 1]]
+            //                       + pWt0[i3 + 2] * planePrev[pIdx0[i3 + 2]];
+            //        pVal0[i] = Math.Max(0.0, intensity);
+            //    });
+            //}
+            //else
+            //{
+            //    Parallel.For(0, totalPixels, i =>
+            //    {
+            //        float* plane = pPosZ0[i] ? pPos0 : pNeg0;
+            //        float* planePrev = pPosZ0[i] ? pPosPrev0 : pNegPrev0;
+            //        bool hasPlane = pPosZ0[i] ? hasPos : hasNeg;
+            //        bool hasPlanePrev = pPosZ0[i] ? hasPosPrev : hasNegPrev;
+            //        if (!hasPlane) { pVal0[i] = 0; return; }
+            //        int idx = pIdx0[i];
+            //        int i2 = i * 2;
+            //        float fw = pWt0[i2], fh = pWt0[i2 + 1];
+            //        float w0 = (1 - fw), w1 = fw;
+            //        if (idx < 0) // 261107Cl 継ぎ目の画素
+            //        {
+            //            double si = SeamBilinear(plane, pPosZ0[i] ? (hasNeg ? pNeg0 : null) : (hasPos ? pPos0 : null), ~idx, gs, fw, fh);
+            //            if (hasPlanePrev) si -= SeamBilinear(planePrev, pPosZ0[i] ? (hasNegPrev ? pNegPrev0 : null) : (hasPosPrev ? pPosPrev0 : null), ~idx, gs, fw, fh);
+            //            pVal0[i] = Math.Max(0.0, si);
+            //            return;
+            //        }
+            //        double intensity = (w0 * plane[idx] + w1 * plane[idx + 1]) * (1 - fh)
+            //                         + (w0 * plane[idx + gs] + w1 * plane[idx + gs + 1]) * fh;
+            //        if (hasPlanePrev)
+            //            intensity -= (w0 * planePrev[idx] + w1 * planePrev[idx + 1]) * (1 - fh)
+            //                       + (w0 * planePrev[idx + gs] + w1 * planePrev[idx + gs + 1]) * fh;
+            //        pVal0[i] = Math.Max(0.0, intensity);
+            //    });
+            //}
+            #endregion
+            int blockCount = (totalPixels + SingleSliceBlock - 1) / SingleSliceBlock; //261111Cl 追加
             if (isHexGrid) // 260331Cl
             {
-                Parallel.For(0, totalPixels, i =>
+                Parallel.For(0, blockCount, b =>
                 {
-                    float* plane = pPosZ0[i] ? pPos0 : pNeg0;
-                    float* planePrev = pPosZ0[i] ? pPosPrev0 : pNegPrev0;
-                    bool hasPlane = pPosZ0[i] ? hasPos : hasNeg;
-                    bool hasPlanePrev = pPosZ0[i] ? hasPosPrev : hasNegPrev;
-                    if (!hasPlane) { pVal0[i] = 0; return; }
-                    int i3 = i * 3;
-                    double intensity = pWt0[i3] * plane[pIdx0[i3]]
-                                     + pWt0[i3 + 1] * plane[pIdx0[i3 + 1]]
-                                     + pWt0[i3 + 2] * plane[pIdx0[i3 + 2]];
-                    if (hasPlanePrev)
-                        intensity -= pWt0[i3] * planePrev[pIdx0[i3]]
-                                   + pWt0[i3 + 1] * planePrev[pIdx0[i3 + 1]]
-                                   + pWt0[i3 + 2] * planePrev[pIdx0[i3 + 2]];
-                    pVal0[i] = Math.Max(0.0, intensity);
+                    int end = Math.Min(totalPixels, (b + 1) * SingleSliceBlock);
+                    for (int i = b * SingleSliceBlock; i < end; i++)
+                    {
+                        float* plane = pPosZ0[i] ? pPos0 : pNeg0;
+                        float* planePrev = pPosZ0[i] ? pPosPrev0 : pNegPrev0;
+                        bool hasPlane = pPosZ0[i] ? hasPos : hasNeg;
+                        bool hasPlanePrev = pPosZ0[i] ? hasPosPrev : hasNegPrev;
+                        if (!hasPlane) { pVal0[i] = 0; continue; }
+                        int i3 = i * 3;
+                        double intensity = pWt0[i3] * plane[pIdx0[i3]]
+                                         + pWt0[i3 + 1] * plane[pIdx0[i3 + 1]]
+                                         + pWt0[i3 + 2] * plane[pIdx0[i3 + 2]];
+                        if (hasPlanePrev)
+                            intensity -= pWt0[i3] * planePrev[pIdx0[i3]]
+                                       + pWt0[i3 + 1] * planePrev[pIdx0[i3 + 1]]
+                                       + pWt0[i3 + 2] * planePrev[pIdx0[i3 + 2]];
+                        pVal0[i] = Math.Max(0.0, intensity);
+                    }
                 });
             }
             else
             {
-                Parallel.For(0, totalPixels, i =>
+                Parallel.For(0, blockCount, b =>
                 {
-                    float* plane = pPosZ0[i] ? pPos0 : pNeg0;
-                    float* planePrev = pPosZ0[i] ? pPosPrev0 : pNegPrev0;
-                    bool hasPlane = pPosZ0[i] ? hasPos : hasNeg;
-                    bool hasPlanePrev = pPosZ0[i] ? hasPosPrev : hasNegPrev;
-                    if (!hasPlane) { pVal0[i] = 0; return; }
-                    int idx = pIdx0[i];
-                    int i2 = i * 2;
-                    float fw = pWt0[i2], fh = pWt0[i2 + 1];
-                    float w0 = (1 - fw), w1 = fw;
-                    if (idx < 0) // 261107Cl 継ぎ目の画素
+                    int end = Math.Min(totalPixels, (b + 1) * SingleSliceBlock);
+                    for (int i = b * SingleSliceBlock; i < end; i++)
                     {
-                        double si = SeamBilinear(plane, pPosZ0[i] ? (hasNeg ? pNeg0 : null) : (hasPos ? pPos0 : null), ~idx, gs, fw, fh);
-                        if (hasPlanePrev) si -= SeamBilinear(planePrev, pPosZ0[i] ? (hasNegPrev ? pNegPrev0 : null) : (hasPosPrev ? pPosPrev0 : null), ~idx, gs, fw, fh);
-                        pVal0[i] = Math.Max(0.0, si);
-                        return;
+                        float* plane = pPosZ0[i] ? pPos0 : pNeg0;
+                        float* planePrev = pPosZ0[i] ? pPosPrev0 : pNegPrev0;
+                        bool hasPlane = pPosZ0[i] ? hasPos : hasNeg;
+                        bool hasPlanePrev = pPosZ0[i] ? hasPosPrev : hasNegPrev;
+                        if (!hasPlane) { pVal0[i] = 0; continue; }
+                        int idx = pIdx0[i];
+                        int i2 = i * 2;
+                        float fw = pWt0[i2], fh = pWt0[i2 + 1];
+                        float w0 = (1 - fw), w1 = fw;
+                        if (idx < 0) // 261107Cl 継ぎ目の画素
+                        {
+                            double si = SeamBilinear(plane, pPosZ0[i] ? (hasNeg ? pNeg0 : null) : (hasPos ? pPos0 : null), ~idx, gs, fw, fh);
+                            if (hasPlanePrev) si -= SeamBilinear(planePrev, pPosZ0[i] ? (hasNegPrev ? pNegPrev0 : null) : (hasPosPrev ? pPosPrev0 : null), ~idx, gs, fw, fh);
+                            pVal0[i] = Math.Max(0.0, si);
+                            continue;
+                        }
+                        double intensity = (w0 * plane[idx] + w1 * plane[idx + 1]) * (1 - fh)
+                                         + (w0 * plane[idx + gs] + w1 * plane[idx + gs + 1]) * fh;
+                        if (hasPlanePrev)
+                            intensity -= (w0 * planePrev[idx] + w1 * planePrev[idx + 1]) * (1 - fh)
+                                       + (w0 * planePrev[idx + gs] + w1 * planePrev[idx + gs + 1]) * fh;
+                        pVal0[i] = Math.Max(0.0, intensity);
                     }
-                    double intensity = (w0 * plane[idx] + w1 * plane[idx + 1]) * (1 - fh)
-                                     + (w0 * plane[idx + gs] + w1 * plane[idx + gs + 1]) * fh;
-                    if (hasPlanePrev)
-                        intensity -= (w0 * planePrev[idx] + w1 * planePrev[idx + 1]) * (1 - fh)
-                                   + (w0 * planePrev[idx + gs] + w1 * planePrev[idx + gs + 1]) * fh;
-                    pVal0[i] = Math.Max(0.0, intensity);
                 });
             }
         }
@@ -1506,17 +1635,26 @@ public sealed class EbsdPatternComposer
                             double aE = cohA == null ? 1.0 : (flatGA != null && !double.IsNaN(aEff[ei]) ? aEff[ei] : cohA[ei]); //260927Cl 電子ごとの A (G_A/G の内挿)。無ければ節点の A
                             //260921Cl: sphereMeans[ei] も ei にしか依らないので一緒に出す (aE を出したときの取りこぼし)
                             double sMean = sphereMeans == null ? 0 : sphereMeans[ei];
+                            //261111Cl 追加: 直前の di で補間した値 (= この di の planePrevious の補間値) を持ち越し、同じ補間を 2 回しない。
+                            //  直前の di を読み飛ばした (重み 0・平面なし) ときだけ計算し直す。式は旧と同じなのでビット一致
+                            double prevInterp = 0; bool hasPrevInterp = false;
                             for (int di = 0; di < dLen; di++)
                             {
+                                bool reusePrev = hasPrevInterp; hasPrevInterp = false; //261111Cl 追加
                                 int wIdx = ei * dLen + di;
                                 double weight = wv[wIdx]; //260921Cl (/simplify): 旧 16 項和は EvaluateBinWeights で画素ごとに 1 回だけ評価
                                 if (weight < 1e-15) continue;
                                 var plane = posZ ? posPlanes[wIdx] : negPlanes[wIdx];//260718Cl 事前展開した配列を参照
                                 if (plane == null || plane.Length == 0) continue;
                                 var planePrevious = di > 0 ? posZ ? posPlanes[wIdx - 1] : negPlanes[wIdx - 1] : null;//260718Cl 事前展開した配列を参照 (di>0 なら wIdx-1 = 同 energy の di-1)
-                                double intensity = hw0 * plane[hIdx0] + hw1 * plane[hIdx1] + hw2 * plane[hIdx2];
+                                //double intensity = hw0 * plane[hIdx0] + hw1 * plane[hIdx1] + hw2 * plane[hIdx2]; //261111Cl 変更前
+                                //if (planePrevious != null && planePrevious.Length > 0)
+                                //    intensity -= hw0 * planePrevious[hIdx0] + hw1 * planePrevious[hIdx1] + hw2 * planePrevious[hIdx2];
+                                double interp = hw0 * plane[hIdx0] + hw1 * plane[hIdx1] + hw2 * plane[hIdx2]; //261111Cl 変更
+                                double intensity = interp;
                                 if (planePrevious != null && planePrevious.Length > 0)
-                                    intensity -= hw0 * planePrevious[hIdx0] + hw1 * planePrevious[hIdx1] + hw2 * planePrevious[hIdx2];
+                                    intensity -= reusePrev ? prevInterp : hw0 * planePrevious[hIdx0] + hw1 * planePrevious[hIdx1] + hw2 * planePrevious[hIdx2]; //261111Cl 変更: 直前の補間値を再利用
+                                prevInterp = interp; hasPrevInterp = true; //261111Cl 追加
                                 sum += weight * Math.Max(0.0, intensity) / depthWidths[di] * aE; //260920Cl 変更: A(E) を末尾に掛ける (無効時は 1.0 なので丸めも含めて従来と同一) //260726Cl: 区間平均 ΔM/Δt
                                 //if (hasA) acc.Add(weight / depthWidths[di], weight * planeMeans[wIdx], aE); //260921Cl 追加 (planeMeans は既に /Δt 済みなので m = weight·M̄) //260921Cl 変更前 (深さ写像 A2)
                                 //260921Cl 変更 (深さ写像 A2、Codex 指摘): W は区間質量のまま (Δt で割ると不等間隔格子で Ā·W/SA が格子の切り方に依存する。等間隔なら従来と同じ)
@@ -1541,8 +1679,12 @@ public sealed class EbsdPatternComposer
                             double aE = cohA == null ? 1.0 : (flatGA != null && !double.IsNaN(aEff[ei]) ? aEff[ei] : cohA[ei]); //260927Cl 電子ごとの A (G_A/G の内挿)。無ければ節点の A
                             //260921Cl: sphereMeans[ei] も ei にしか依らないので一緒に出す (aE を出したときの取りこぼし)
                             double sMean = sphereMeans == null ? 0 : sphereMeans[ei];
+                            //261111Cl 追加: 直前の di で補間した値 (= この di の planePrevious の補間値) を持ち越し、同じ補間を 2 回しない。
+                            //  直前の di を読み飛ばした (重み 0・平面なし) ときだけ計算し直す。式は旧と同じなのでビット一致
+                            double prevInterp = 0; bool hasPrevInterp = false;
                             for (int di = 0; di < dLen; di++)
                             {
+                                bool reusePrev = hasPrevInterp; hasPrevInterp = false; //261111Cl 追加
                                 int wIdx = ei * dLen + di;
                                 double weight = wv[wIdx]; //260921Cl (/simplify): 旧 16 項和は EvaluateBinWeights で画素ごとに 1 回だけ評価
                                 if (weight < 1e-15) continue;
@@ -1551,15 +1693,25 @@ public sealed class EbsdPatternComposer
                                 var planePrevious = di > 0 ? posZ ? posPlanes[wIdx - 1] : negPlanes[wIdx - 1] : null;//260718Cl 事前展開した配列を参照 (di>0 なら wIdx-1 = 同 energy の di-1)
                                 // double intensity = (mpW0 * plane[idx] + mpW1 * plane[idx + 1]) * mpFh1 // 261107Cl 変更前
                                 //                  + (mpW0 * plane[idx + gs] + mpW1 * plane[idx + gs + 1]) * mpFh;
-                                double intensity = idx < 0 ? SeamBilinear(plane, posZ ? negPlanes[wIdx] : posPlanes[wIdx], ~idx, gs, mpFw, mpFh) // 261107Cl 継ぎ目の画素
-                                                 : (mpW0 * plane[idx] + mpW1 * plane[idx + 1]) * mpFh1
-                                                 + (mpW0 * plane[idx + gs] + mpW1 * plane[idx + gs + 1]) * mpFh;
+                                //double intensity = idx < 0 ? SeamBilinear(plane, posZ ? negPlanes[wIdx] : posPlanes[wIdx], ~idx, gs, mpFw, mpFh) // 261107Cl 継ぎ目の画素 //261111Cl 変更前
+                                //                 : (mpW0 * plane[idx] + mpW1 * plane[idx + 1]) * mpFh1
+                                //                 + (mpW0 * plane[idx + gs] + mpW1 * plane[idx + gs + 1]) * mpFh;
+                                //if (planePrevious != null && planePrevious.Length > 0)
+                                //    // intensity -= (mpW0 * planePrevious[idx] + mpW1 * planePrevious[idx + 1]) * mpFh1 // 261107Cl 変更前
+                                //    //          + (mpW0 * planePrevious[idx + gs] + mpW1 * planePrevious[idx + gs + 1]) * mpFh;
+                                //    intensity -= idx < 0 ? SeamBilinear(planePrevious, posZ ? negPlanes[wIdx - 1] : posPlanes[wIdx - 1], ~idx, gs, mpFw, mpFh) // 261107Cl 継ぎ目の画素
+                                //             : (mpW0 * planePrevious[idx] + mpW1 * planePrevious[idx + 1]) * mpFh1
+                                //             + (mpW0 * planePrevious[idx + gs] + mpW1 * planePrevious[idx + gs + 1]) * mpFh;
+                                double interp = idx < 0 ? SeamBilinear(plane, posZ ? negPlanes[wIdx] : posPlanes[wIdx], ~idx, gs, mpFw, mpFh) // 261107Cl 継ぎ目の画素 //261111Cl 変更
+                                              : (mpW0 * plane[idx] + mpW1 * plane[idx + 1]) * mpFh1
+                                              + (mpW0 * plane[idx + gs] + mpW1 * plane[idx + gs + 1]) * mpFh;
+                                double intensity = interp;
                                 if (planePrevious != null && planePrevious.Length > 0)
-                                    // intensity -= (mpW0 * planePrevious[idx] + mpW1 * planePrevious[idx + 1]) * mpFh1 // 261107Cl 変更前
-                                    //          + (mpW0 * planePrevious[idx + gs] + mpW1 * planePrevious[idx + gs + 1]) * mpFh;
-                                    intensity -= idx < 0 ? SeamBilinear(planePrevious, posZ ? negPlanes[wIdx - 1] : posPlanes[wIdx - 1], ~idx, gs, mpFw, mpFh) // 261107Cl 継ぎ目の画素
+                                    intensity -= reusePrev ? prevInterp //261111Cl 変更: 直前の補間値を再利用
+                                             : idx < 0 ? SeamBilinear(planePrevious, posZ ? negPlanes[wIdx - 1] : posPlanes[wIdx - 1], ~idx, gs, mpFw, mpFh) // 261107Cl 継ぎ目の画素
                                              : (mpW0 * planePrevious[idx] + mpW1 * planePrevious[idx + 1]) * mpFh1
                                              + (mpW0 * planePrevious[idx + gs] + mpW1 * planePrevious[idx + gs + 1]) * mpFh;
+                                prevInterp = interp; hasPrevInterp = true; //261111Cl 追加
                                 sum += weight * Math.Max(0.0, intensity) / depthWidths[di] * aE; //260920Cl 変更: A(E) を末尾に掛ける (無効時は 1.0 なので丸めも含めて従来と同一) //260726Cl: 区間平均 ΔM/Δt
                                 //if (hasA) acc.Add(weight / depthWidths[di], weight * planeMeans[wIdx], aE); //260921Cl 追加 (planeMeans は既に /Δt 済みなので m = weight·M̄) //260921Cl 変更前 (深さ写像 A2)
                                 //260921Cl 変更 (深さ写像 A2、Codex 指摘): W は区間質量のまま (Δt で割ると不等間隔格子で Ā·W/SA が格子の切り方に依存する。等間隔なら従来と同じ)
