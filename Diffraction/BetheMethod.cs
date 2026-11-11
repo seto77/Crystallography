@@ -5054,29 +5054,36 @@ public partial class BetheMethod
         //  キャッシュは BFS の発見の順で |g| の厳密な順ではないので、上限で止めると同じ |g| の殻 (対称で等価なビーム) の一部だけが候補に入り、
         //  評価値の小さいビーム (エワルド球に近い HOLZ のビームなど) で殻の一部だけが選ばれて、晶帯軸で対称が崩れていた
         //  (Si [001] で (−11,−17,1) の殻の 8 本のうち 3 本だけ、など。200 kV で N の約 5 %、BeamBoundaryTieTests)。
-        //  残りのキャッシュから、集めた候補のどれかと |g| が相対 1e-9 で等しく、エワルドの条件を満たすものを足す。途中まで入った殻が無ければ従来と同じ。
+        //  残りのキャッシュから、集めた候補のどれかと |g| が相対 1e-9 で等しく、かつ評価値も同点 (下の tieTol) で、エワルドの条件を満たすものを足す
+        //  (= その向きで等価なビーム。晶帯軸を外れた向きでは同じ |g| でも評価値が違うので足さず、従来と同じ候補になる。
+        //  |g| だけで足すと、乱数の向きでも立方晶で約 4 割の場合にビームが 1〜6 本入れ替わった)。
         //  診断 (倍率の指定あり) は従来どおり、ちょうど N × 倍率 個のまま
         if (!diagnostic && count == limit)
         {
-            var lens = new double[count];
+            var lens = new (double gLen, double rating)[count];
             for (int c = 0; c < count; c++)
-                lens[c] = gCache[beamsSpan[c].cacheIndex].gLen;
+                lens[c] = (gCache[beamsSpan[c].cacheIndex].gLen, beamsSpan[c].rating);
             Array.Sort(lens);
-            double maxLen = lens[^1] * (1 + 1E-9);
+            double maxLen = lens[^1].gLen * (1 + 1E-9);
             List<(int cacheIndex, double rating)> shellRest = null;
             for (int i = beamsSpan[count - 1].cacheIndex + 1; i < gCache.Length; i++)
             {
                 var (_, gX, gY, gZ, gLen) = gCache[i];
                 if (gLen > maxLen)
                     continue;
-                int pos = Array.BinarySearch(lens, gLen);
-                if (pos < 0) pos = ~pos;
-                if (!((pos < lens.Length && Math.Abs(lens[pos] - gLen) <= 1E-9 * gLen) || (pos > 0 && Math.Abs(lens[pos - 1] - gLen) <= 1E-9 * gLen)))
-                    continue;
                 double vX = gX + kX, vY = gY + kY, vZ = gZ + kZ;
                 double q = k0_2 - Dot3(vX, vX, vY, vY, vZ, vZ);
-                if (Math.Abs(q) < maxQ && Dot3(sX, vX, sY, vY, sZ, vZ) > 0)
-                    (shellRest ??= []).Add((i, gLen * q * q));
+                if (!(Math.Abs(q) < maxQ && Dot3(sX, vX, sY, vY, sZ, vZ) > 0))
+                    continue;
+                double rating = gLen * q * q, lo = gLen * (1 - 1E-9);
+                // 同じ |g| (相対 1e-9) の候補の中に、評価値が同点のものがあるか
+                int pos = Array.BinarySearch(lens, (lo, double.NegativeInfinity));
+                if (pos < 0) pos = ~pos;
+                bool tied = false;
+                for (int c = pos; c < lens.Length && lens[c].gLen <= gLen * (1 + 1E-9) && !tied; c++)
+                    tied = Math.Abs(lens[c].rating - rating) <= tieTol(rating);
+                if (tied)
+                    (shellRest ??= []).Add((i, rating));
             }
             if (shellRest != null)
             {
