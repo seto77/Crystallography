@@ -2937,7 +2937,8 @@ public partial class BetheMethod
             {
                 "q" => cand.OrderBy(e => Math.Abs(e.Q)),
                 "gxy" => cand.OrderBy(e => e.Vec.X * e.Vec.X + e.Vec.Y * e.Vec.Y).ThenBy(e => Math.Abs(e.Q)),
-                _ => cand.OrderBy(e => e.Vec.Length2), // 既定 = |g| の小さい順
+                // _ => cand.OrderBy(e => e.Vec.Length2), // 既定 = |g| の小さい順 // 261111Cl 変更前 (夕方)
+                _ => cand.OrderBy(e => e.Vec.Length2).ThenBy(e => e.Index), // 既定 = |g| の小さい順 // 261111Cl 変更 (夕方): 同じ |g| の順を指数で決める (候補の並びに依らない)
             };
             var selList = ordered.ToList();
             int take = Math.Min(MaxNumOfBloch + 1, selList.Count);
@@ -2947,7 +2948,8 @@ public partial class BetheMethod
                 double cut = selList[take].Vec.Length2;
                 while (take > 1 && Math.Abs(selList[take - 1].Vec.Length2 - cut) <= 1e-9 * cut) take--;
             }
-            Beams = [.. selList.Take(take).OrderBy(e => e.Vec.Length2)];
+            // Beams = [.. selList.Take(take).OrderBy(e => e.Vec.Length2)]; // 261111Cl 変更前 (夕方)
+            Beams = [.. selList.Take(take).OrderBy(e => e.Vec.Length2).ThenBy(e => e.Index)]; // 261111Cl 変更 (夕方): 同じ |g| の順を指数で決める
             //261111Cl 追加 (研究用、RECIPRO_STEM_BEAMSEL=gd): |g| の順の N 本に、CBED と同じ選び方の N 本のうち ADF の検出器に落ちうるビーム
             //  (|g_xy| が 内角 − 収束角 〜 外角 + 収束角) を足す。HOLZ の環が検出器の中にある結晶 (磁鉄鉱 [001] 40〜120 mrad で環は約 77 mrad) では、
             //  |g| の順は N が環に届くまで HAADF の弾性の分 (磁鉄鉱で約 6 %) を欠く (設計書 §23)
@@ -5004,7 +5006,10 @@ public partial class BetheMethod
         // var limit = maxNumOfBloch * 8; // 261028Cl 変更前
         // var limit = maxNumOfBloch * candidateMultiplier; // 261028Cl 変更前 (m1a2 impl の版)
         var limit = maxNumOfBloch * (diagnostic ? candidateMultiplier : 8); // 261028Cl 変更: 候補の上限 = 従来 8N、診断 N × 倍率
-        var pool = ArrayPool<(int cacheIndex, float rating)>.Shared.Rent(limit); // cacheIndex slot にキャッシュインデックスを格納
+        // var pool = ArrayPool<(int cacheIndex, float rating)>.Shared.Rent(limit); // cacheIndex slot にキャッシュインデックスを格納 // 261111Cl 変更前
+        //261111Cl 変更: 評価値を double で選ぶ。float では別の値の組どうしが同じ値に丸まり、境で選ばれる組が候補の並び
+        //  (QuickSelect の同値の扱い) に依存しうる。下の末尾の同点の組の判定は double でしているので、それに揃える
+        var pool = ArrayPool<(int cacheIndex, double rating)>.Shared.Rent(limit); // cacheIndex slot にキャッシュインデックスを格納
         var beamsSpan = pool.AsSpan(0, limit);
 
         double k0_2 = vecK0.Length2, k0 = vecK0.Length;
@@ -5026,7 +5031,8 @@ public partial class BetheMethod
                 double q = k0_2 - Dot3(vX, vX, vY, vY, vZ, vZ);
 
                 if (Math.Abs(q) < maxQ && Dot3(sX, vX, sY, vY, sZ, vZ) > 0)
-                    beamsSpan[count++] = (i, (float)(gLen * q * q)); // キャッシュインデックスを格納
+                    // beamsSpan[count++] = (i, (float)(gLen * q * q)); // キャッシュインデックスを格納 // 261111Cl 変更前
+                    beamsSpan[count++] = (i, gLen * q * q); // キャッシュインデックスを格納 // 261111Cl 変更: double
             }
             // 上限に届いた・従来・キャッシュがエワルドの殻 (|v| < k0 + shift なので |g| < 2k0 + shift) を覆い切った・上限の大きさ、のどれかなら終わり
             if (count == limit || !diagnostic || snapshot.CoverRadius >= 2 * k0 + shift || gCache.Length >= MaxDiagnosticCacheLength)
@@ -5040,6 +5046,48 @@ public partial class BetheMethod
                     gCacheSnapshot = snapshot = Build_gCache(baseRotation, grown, true);
             }
             gCache = snapshot.Items;
+        }
+        //261111Cl 追加: 候補の上限 (従来 8N) で止めたとき、途中まで入った |g| の殻の残りも候補に足す (同じ |g| の組を候補の段で丸ごと採る)。
+        //  キャッシュは BFS の発見の順で |g| の厳密な順ではないので、上限で止めると同じ |g| の殻 (対称で等価なビーム) の一部だけが候補に入り、
+        //  評価値の小さいビーム (エワルド球に近い HOLZ のビームなど) で殻の一部だけが選ばれて、晶帯軸で対称が崩れていた
+        //  (Si [001] で (−11,−17,1) の殻の 8 本のうち 3 本だけ、など。200 kV で N の約 5 %、BeamBoundaryTieTests)。
+        //  残りのキャッシュから、集めた候補のどれかと |g| が相対 1e-9 で等しく、エワルドの条件を満たすものを足す。途中まで入った殻が無ければ従来と同じ。
+        //  診断 (倍率の指定あり) は従来どおり、ちょうど N × 倍率 個のまま
+        if (!diagnostic && count == limit)
+        {
+            var lens = new double[count];
+            for (int c = 0; c < count; c++)
+                lens[c] = gCache[beamsSpan[c].cacheIndex].gLen;
+            Array.Sort(lens);
+            double maxLen = lens[^1] * (1 + 1E-9);
+            List<(int cacheIndex, double rating)> shellRest = null;
+            for (int i = beamsSpan[count - 1].cacheIndex + 1; i < gCache.Length; i++)
+            {
+                var (_, gX, gY, gZ, gLen) = gCache[i];
+                if (gLen > maxLen)
+                    continue;
+                int pos = Array.BinarySearch(lens, gLen);
+                if (pos < 0) pos = ~pos;
+                if (!((pos < lens.Length && Math.Abs(lens[pos] - gLen) <= 1E-9 * gLen) || (pos > 0 && Math.Abs(lens[pos - 1] - gLen) <= 1E-9 * gLen)))
+                    continue;
+                double vX = gX + kX, vY = gY + kY, vZ = gZ + kZ;
+                double q = k0_2 - Dot3(vX, vX, vY, vY, vZ, vZ);
+                if (Math.Abs(q) < maxQ && Dot3(sX, vX, sY, vY, sZ, vZ) > 0)
+                    (shellRest ??= []).Add((i, gLen * q * q));
+            }
+            if (shellRest != null)
+            {
+                if (count + shellRest.Count > pool.Length)
+                {
+                    var bigger = ArrayPool<(int cacheIndex, double rating)>.Shared.Rent(count + shellRest.Count);
+                    pool.AsSpan(0, count).CopyTo(bigger);
+                    ArrayPool<(int cacheIndex, double rating)>.Shared.Return(pool);
+                    pool = bigger;
+                }
+                foreach (var e in shellRest)
+                    pool[count++] = e;
+                beamsSpan = pool.AsSpan(0, count);
+            }
         }
         beamsSpan = beamsSpan[..count];
         // 261028Cl 追加 (査読 M1): 候補探索の結果を記録する (記録だけで結果は変えない)。上限に届かず殻も覆い切っていない = 候補の範囲がキャッシュの大きさで決まった
@@ -5071,9 +5119,13 @@ public partial class BetheMethod
         }
         // 261028Cl 追加: 診断用 (IncludeGroup) では、N+1 本に入らなかった残りの候補を、借りた配列を返す前に写しておく (既定の DropGroup では写さない)
         var restCandidates = tieMode == BeamBoundaryTieMode.IncludeGroup ? beamsSpan[count..].ToArray() : null;
-        ArrayPool<(int key, float rating)>.Shared.Return(pool);
+        // ArrayPool<(int key, float rating)>.Shared.Return(pool); // 261111Cl 変更前
+        ArrayPool<(int key, double rating)>.Shared.Return(pool); // 261111Cl 変更: double
 
-        beams.Sort(static (a, b) => a.Rating.CompareTo(b.Rating));
+        // beams.Sort(static (a, b) => a.Rating.CompareTo(b.Rating)); // 261111Cl 変更前
+        //261111Cl 変更: 同じ評価値の順を指数で決める。不安定な並べ替えなので、同値の順が QuickSelect の出力の並びに依存し、
+        //  共有の QuickSelect の同値の扱いの変更 (Crystallography 6b0d049) で STEM-EDX のビームの並びが変わった (集合は同じ)
+        beams.Sort(static (a, b) => a.Rating.CompareTo(b.Rating) is var c && c != 0 ? c : a.Index.CompareTo(b.Index));
 
         #region 接平面内座標が同じものを削除
         const double duplicateTol = 1E-6;
@@ -5097,9 +5149,13 @@ public partial class BetheMethod
         beams = beams[..uniqueCount];
         #endregion
 
+        //261111Cl 追加: 同点とみなす幅。従来の絶対 1e-6 に、評価値に比例する分を足す。評価値 |g|·Q² の丸めの誤差は q = k0² − |k0+g|² の桁落ち
+        //  (約 4e-11 nm⁻²) の 2|g||Q| 倍で、評価値が 1e7 を超えると対称で等価なビームどうしの差が 1e-6 を超えうる (組が切れて一部だけ残る)
+        static double tieTol(double r) => 1E-6 + 1E-11 * Math.Abs(r);
         int n = beams.Length - 1;
         for (int i = beams.Length - 1; i >= 1; i--)
-            if (Math.Abs(beams[i].Rating - beams[i - 1].Rating) > 1E-6)
+            // if (Math.Abs(beams[i].Rating - beams[i - 1].Rating) > 1E-6) // 261111Cl 変更前
+            if (Math.Abs(beams[i].Rating - beams[i - 1].Rating) > tieTol(beams[i].Rating)) // 261111Cl 変更
             {
                 n = i;
                 break;
@@ -5110,13 +5166,15 @@ public partial class BetheMethod
         {
             // 末尾の組の始まり j (beams[j..] は隣どうしの Rating の差が 1e-6 以下でつながる)。上の n と同じ判定だが、全部が同点のときは j = 0 になる
             int j = beams.Length - 1;
-            while (j >= 1 && !(Math.Abs(beams[j].Rating - beams[j - 1].Rating) > 1E-6))
+            // while (j >= 1 && !(Math.Abs(beams[j].Rating - beams[j - 1].Rating) > 1E-6)) // 261111Cl 変更前
+            while (j >= 1 && !(Math.Abs(beams[j].Rating - beams[j - 1].Rating) > tieTol(beams[j].Rating))) // 261111Cl 変更: 上の n と同じ幅
                 j--;
             if (j < beams.Length - 1) // 組が 2 本以上 = N 本目以前とつながって境をまたぐ。組が番兵 1 本だけなら下の従来の返り値 (番兵だけを落とす)
             {
                 // N+1 本に入らなかった残りの候補から、組につながるものを足す: Rating (Beam.Rating と同じ式 |g|·Q²) が [組の最小 − 1e-6, 組の最大 + 1e-6] にあるもの。
                 // 昇順に見て、足すたびに組の最大を伸ばす。接平面内座標の重複は上と同じ鍵で除く。候補探索の上限 (従来 8N、診断 N × 倍率) の外にある組の残りは足せない
-                double lo = beams[j].Rating - 1E-6, hi = beams[^1].Rating;
+                // double lo = beams[j].Rating - 1E-6, hi = beams[^1].Rating; // 261111Cl 変更前
+                double lo = beams[j].Rating - tieTol(beams[j].Rating), hi = beams[^1].Rating; // 261111Cl 変更: 上と同じ幅
                 var extra = new List<(double Rating, int CacheIndex)>();
                 foreach (var (cacheIndex, _) in restCandidates)
                 {
@@ -5130,7 +5188,8 @@ public partial class BetheMethod
                 var included = new List<Beam>(beams.ToArray());
                 foreach (var (rating, cacheIndex) in extra)
                 {
-                    if (rating > hi + 1E-6)
+                    // if (rating > hi + 1E-6) // 261111Cl 変更前
+                    if (rating > hi + tieTol(hi)) // 261111Cl 変更: 上と同じ幅
                         break;
                     var (key, gX, gY, gZ, _) = gCache[cacheIndex];
                     var g = new Vector3DBase(gX, gY, gZ);

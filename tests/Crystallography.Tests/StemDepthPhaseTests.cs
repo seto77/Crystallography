@@ -88,7 +88,8 @@ public class StemDepthPhaseTests
             Assert.True(Math.Abs(img[1][0][i] - img[0][0][i]) <= 1e-12 * scale, $"幅 0 の区間で像が変わった (画素 {i})");
     }
 
-    private const string SiCifText = """
+    // 261111Cl 変更: private → internal (BeamBoundaryTieTests でも使う)
+    internal const string SiCifText = """
 data_Si
 _chemical_name_common Si
 _cell_length_a 5.4309
