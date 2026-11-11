@@ -2948,6 +2948,20 @@ public partial class BetheMethod
                 while (take > 1 && Math.Abs(selList[take - 1].Vec.Length2 - cut) <= 1e-9 * cut) take--;
             }
             Beams = [.. selList.Take(take).OrderBy(e => e.Vec.Length2)];
+            //261111Cl 追加 (研究用、RECIPRO_STEM_BEAMSEL=gd): |g| の順の N 本に、CBED と同じ選び方の N 本のうち ADF の検出器に落ちうるビーム
+            //  (|g_xy| が 内角 − 収束角 〜 外角 + 収束角) を足す。HOLZ の環が検出器の中にある結晶 (磁鉄鉱 [001] 40〜120 mrad で環は約 77 mrad) では、
+            //  |g| の順は N が環に届くまで HAADF の弾性の分 (磁鉄鉱で約 6 %) を欠く (設計書 §23)
+            if (stemBeamSel == "gd")
+            {
+                double lam = UniversalConstants.Convert.EnergyToElectronWaveLength(AccVoltage), convR = Math.Sin(convergenceAngle) / lam;
+                double lo = Math.Max(0, Math.Sin(detAngleInner) / lam - convR), hi = Math.Sin(detAngleOuter) / lam + convR;
+                var seen = new HashSet<(int H, int K, int L)>(Beams.Select(b => b.Index));
+                Beams = [.. Beams.Concat(Find_gVectors(BaseRotation, vecK0).Where(b =>
+                {
+                    double gxy = Math.Sqrt(b.Vec.X * b.Vec.X + b.Vec.Y * b.Vec.Y);
+                    return gxy >= lo && gxy <= hi && seen.Add(b.Index);
+                })).OrderBy(e => e.Vec.Length2)];
+            }
         }
 
         int dLen = defocusses.Length, tLen = thicknesses.Length, bLen = Beams.Length;
