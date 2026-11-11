@@ -318,8 +318,16 @@ public static class Ring
 
         // 261111Cl 画素ごとには指数 k = (uint)Math.Log(I, 1.2) (旧式と同じ式) だけを求め、スレッドごとの int[] で数える。
         //          キー (uint)Math.Pow(1.2, k) は最後に k ごとに 1 回だけ計算し、同じキーになる k は合算する (旧実装と同じ集計結果)。
-        //          .NET 9 以降の飽和変換により: NaN・負・0・0<I<1 → k=0 → キー 1、+∞ → k=uint.MaxValue → キー uint.MaxValue。
+        //          .NET 9 以降の飽和変換により: NaN・負・0・0<I<1 → k=0 → キー 1、+∞ → k=uint.MaxValue → キー uint.MaxValue。 (← 261111Cl fmt: この 2 行は下の変更で .NET 8 の区分に戻した)
         //          1.2^k は k≥122 で uint の範囲を超え、キーは uint.MaxValue に飽和する。よって k≥kMax(=255) は 1 つのビンにまとめても結果は同じ。
+        // 261111Cl 変更 (作者承認・.NET 8 以前の区分に戻す): 2 か所の (uint)double を、.NET 8 以前の x64 (RyuJIT) の変換を明示的に書いたものに置き換える。
+        //          旧 RyuJIT は x64 で double→uint を「64bit 整数への切り捨て変換 (cvttsd2si r64) の下位 32bit」として出力していた。
+        //          cvttsd2si は NaN と long の範囲外 (|x| ≥ 2^63) で 0x8000000000000000 を返すので、その下位 32bit は 0。よって
+        //          旧の (uint)x = (NaN または |x| ≥ 2^63) ? 0 : unchecked((uint)(long)x)  (-2^63 ちょうども下位 32bit は 0 で同じ)。
+        //          これで: I が NaN・0 以下・+∞ → log は NaN か ±∞ → k=0 → キー 1。log が (-1, 0) (I がおよそ 1/1.2 〜 1) → k=0 → キー 1。
+        //          log ≦ -1 (0 < I ≦ およそ 1/1.2。境目は Math.Log の丸めで決まる) → k = 2^32 - m (巨大) → 1.2^k = +∞ → キー 0。
+        //          I ≧ 1 → k = floor(log) (0〜3893)。キーは 1.2^k < 2^63 (k ≦ 239) なら long へ切り捨てた値の下位 32bit (k ≧ 122 は 2^32 で折り返す)、k ≧ 240 は 0。
+        //          k ≧ kMax(=255) のビン (巨大な k を含む) は全部キー 0 (1.2^255 ≈ 1.5e20 ≧ 2^63) なので、1 つのビンにまとめても結果は同じ。
         const int kMax = 255;
         var intensity = Intensity;
         var total = new int[kMax + 1];
@@ -329,7 +337,11 @@ public static class Ring
             int end = i == thread - 1 ? intensity.Length : intensity.Length / thread * (i + 1);
             var counts = new int[kMax + 1];
             for (int j = start; j < end; j++)
-                counts[Math.Min((uint)Math.Log(intensity[j], unit), (uint)kMax)]++;
+            {
+                //counts[Math.Min((uint)Math.Log(intensity[j], unit), (uint)kMax)]++;
+                var lg = Math.Log(intensity[j], unit);// 261111Cl 変更: 下の (uint) を .NET 8 以前の x64 の変換で
+                counts[Math.Min(lg is >= -9223372036854775808.0 and < 9223372036854775808.0 ? unchecked((uint)(long)lg) : 0u, (uint)kMax)]++;
+            }
             lock (lockObj)
                 for (int k = 0; k <= kMax; k++)
                     total[k] += counts[k];
@@ -337,7 +349,9 @@ public static class Ring
         for (int k = 0; k <= kMax; k++)
             if (total[k] > 0)
             {
-                uint value = (uint)Math.Pow(unit, k);
+                //uint value = (uint)Math.Pow(unit, k);
+                var pw = Math.Pow(unit, k);// 261111Cl 変更: 下の (uint) を .NET 8 以前の x64 の変換で (k ≧ 122 は折り返し、k ≧ 240 と +∞ は 0)
+                uint value = pw is >= -9223372036854775808.0 and < 9223372036854775808.0 ? unchecked((uint)(long)pw) : 0u;
                 Frequency[value] = Frequency.TryGetValue(value, out var fv) ? fv + total[k] : total[k];
             }
     }

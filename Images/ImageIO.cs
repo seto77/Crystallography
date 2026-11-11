@@ -448,7 +448,10 @@ public static partial class ImageIO
             //var headers = new string(br.ReadChars(headersize)).Split(['{', '}', '\n', ';'], StringSplitOptions.RemoveEmptyEntries);
             //261111Cl 変更: ヘッダはバイト列として読む (UTF-8 として読むと、非 ASCII のバイトで文字数とバイト数がずれる)
             var headers = Encoding.Latin1.GetString(br.ReadBytes(headersize)).Split(['{', '}', '\n', ';'], StringSplitOptions.RemoveEmptyEntries);
-            var little_endian = headers.First(h => h.StartsWith("BYTE_ORDER=")).Split(['='])[1] == "little_endian";
+            //var little_endian = headers.First(h => h.StartsWith("BYTE_ORDER=")).Split(['='])[1] == "little_endian";// 261111Cl 変更前: 読むだけで使っていなかった
+            //261111Cl 変更 (作者承認・挙動が変わる): BYTE_ORDER の値が big_endian (大小無視) のときだけビッグエンディアンで読む。little_endian や認識できない値は従来どおりリトルエンディアン
+            //  (BYTE_ORDER 行が無いときは、従来どおり First が例外を出して false)
+            var bigEndian = headers.First(h => h.StartsWith("BYTE_ORDER=")).Split(['='])[1].Trim().Equals("big_endian", StringComparison.OrdinalIgnoreCase);
             var type = headers.First(h => h.StartsWith("TYPE=")).Split(separator)[1];
             var size1 = Convert.ToInt32(headers.First(h => h.StartsWith("SIZE1=")).Split(['='])[1]);
             var size2 = Convert.ToInt32(headers.First(h => h.StartsWith("SIZE2=")).Split(['='])[1]);
@@ -475,10 +478,14 @@ public static partial class ImageIO
                 //for (int i = 0; i < length; i++)
                 //    Ring.SequentialImageIntensities[j][i] = read();
                 //261111Cl 変更: 1 画素ずつの Func 呼び出しをやめ、一括で読む
-                if (type == "UNSIGNED_SHORT")
-                    ReadPixels<ushort>(br.BaseStream, Ring.SequentialImageIntensities[j]);
+                //if (type == "UNSIGNED_SHORT")
+                //    ReadPixels<ushort>(br.BaseStream, Ring.SequentialImageIntensities[j]);
+                //else
+                //    ReadPixels<float>(br.BaseStream, Ring.SequentialImageIntensities[j]);
+                if (type == "UNSIGNED_SHORT")// 261111Cl 変更: BYTE_ORDER に従う
+                    ReadPixels<ushort>(br.BaseStream, Ring.SequentialImageIntensities[j], bigEndian: bigEndian);
                 else
-                    ReadPixels<float>(br.BaseStream, Ring.SequentialImageIntensities[j]);
+                    ReadPixels<float>(br.BaseStream, Ring.SequentialImageIntensities[j], bigEndian: bigEndian);
                 Ring.SequentialImageNames.Add(j.ToString("000"));
             }
 
@@ -527,7 +534,10 @@ public static partial class ImageIO
 
 
 
-            var little_endian = headers.First(h => h.StartsWith("BYTE_ORDER=")).Contains("little_endian");
+            //var little_endian = headers.First(h => h.StartsWith("BYTE_ORDER=")).Contains("little_endian");// 261111Cl 変更前: 読むだけで使っていなかった
+            //261111Cl 変更 (作者承認・挙動が変わる): BYTE_ORDER の値 (実ファイルは "BYTE_ORDER= little_endian" と = の後に空白がある) が big_endian (大小無視) のときだけ
+            //  ビッグエンディアンで読む。little_endian や認識できない値は従来どおりリトルエンディアン (BYTE_ORDER 行が無いときは、従来どおり First が例外を出して false)
+            var bigEndian = headers.First(h => h.StartsWith("BYTE_ORDER=")).Split(['='])[1].Trim().Equals("big_endian", StringComparison.OrdinalIgnoreCase);
             var size1 = Convert.ToInt32(headers.First(h => h.StartsWith("SIZE1=")).Split(['='])[1]);
             var size2 = Convert.ToInt32(headers.First(h => h.StartsWith("SIZE2=")).Split(['='])[1]);
 
@@ -558,10 +568,14 @@ public static partial class ImageIO
                 Ring.Intensity = new double[length];
             //for (int i = 0; i < length; i++)
             //    Ring.Intensity[i] = read();
-            if (isUnsigned)// 261111Cl
-                ReadPixels<uint>(br.BaseStream, Ring.Intensity.AsSpan(0, (int)length));
+            //if (isUnsigned)// 261111Cl
+            //    ReadPixels<uint>(br.BaseStream, Ring.Intensity.AsSpan(0, (int)length));
+            //else
+            //    ReadPixels<int>(br.BaseStream, Ring.Intensity.AsSpan(0, (int)length));
+            if (isUnsigned)// 261111Cl 変更: BYTE_ORDER に従う
+                ReadPixels<uint>(br.BaseStream, Ring.Intensity.AsSpan(0, (int)length), bigEndian: bigEndian);
             else
-                ReadPixels<int>(br.BaseStream, Ring.Intensity.AsSpan(0, (int)length));
+                ReadPixels<int>(br.BaseStream, Ring.Intensity.AsSpan(0, (int)length), bigEndian: bigEndian);
 
 
 
@@ -885,6 +899,11 @@ public static partial class ImageIO
                 else
                     return false;
             }
+            //261111Cl 追加 (作者承認・挙動が変わる): 画像データが 3 次元 (Dimensions が w, h, n の 3 つ) で、要素数が w×h×n のスタックなら、先頭フレーム (先頭の w×h 個) を読む (2 枚目以降は使わない)。
+            //  従来は要素数が w×h と合わないため、float は FFT と誤認して例外、ushort / short / byte / double は false になっていた (uint / int は要素数を確かめず、もともと先頭の w×h 個を読んでいた)。
+            var dimensions = t.Tag["ImageList"].Tag["1"].Tag["ImageData"].Tag["Dimensions"].Tag;
+            long frames = dimensions.Count == 3 && dimensions.TryGetValue("2", out var dimension2) ? Convert.ToInt64(dimension2.Values[0]) : 1;
+            bool isStack = frames > 1 && data != null && data.Length == (long)imageWidth * imageHeight * frames;
             if (data != null && data.Length != 0)
             {
                 Array intensity;
@@ -892,7 +911,8 @@ public static partial class ImageIO
                 if (type == typeof(float[]))
                 {
                     var values = (float[])data;
-                    if (values.Length == imageHeight * imageWidth)
+                    //if (values.Length == imageHeight * imageWidth)
+                    if (values.Length == imageHeight * imageWidth || isStack)// 261111Cl 変更: スタックは先頭フレームを読む (FFT ではない)
                         intensity = values;
                     else
                     {
@@ -902,8 +922,10 @@ public static partial class ImageIO
                 }
                 else if (type == typeof(uint[]) || type == typeof(int[]))//従来どおり (要素数は確かめない)
                     intensity = data;
-                else if ((type == typeof(ushort[]) || type == typeof(short[]) || type == typeof(byte[]) || type == typeof(double[])) && data.Length == imageHeight * imageWidth)
-                    intensity = data;//F3: 新たに読む型は、要素数が画素数と一致する 2 次元画像だけ (スタックや複素数は従来どおり未対応)
+                //else if ((type == typeof(ushort[]) || type == typeof(short[]) || type == typeof(byte[]) || type == typeof(double[])) && data.Length == imageHeight * imageWidth)
+                //    intensity = data;//F3: 新たに読む型は、要素数が画素数と一致する 2 次元画像だけ (スタックや複素数は従来どおり未対応)
+                else if ((type == typeof(ushort[]) || type == typeof(short[]) || type == typeof(byte[]) || type == typeof(double[])) && (data.Length == imageHeight * imageWidth || isStack))
+                    intensity = data;//261111Cl 変更: 2 次元画像に加えて、3 次元のスタックも先頭フレームを読む (CopyDigitalMicrographIntensity が先頭の w×h 個を写す)。複素数は従来どおり未対応
                 else
                     return false;
 
@@ -1640,8 +1662,12 @@ public static partial class ImageIO
                 br.ReadBytes(50);
 
                 Ring.SrcImgSize = new Size(imageWidth, imageHeight);
+                //if (commentLength > 0)
+                //    Ring.Comments += new string(br.ReadChars(commentLength)).Replace(",", "\r\n");
+                //261111Cl 変更 (作者承認・挙動が変わる): commentLength はバイト数。ReadChars は文字数で読むため、コメントに複数バイトの文字 (UTF-8 の日本語など) があると
+                //  余分にバイトを読み、以降の画素と次のフレームの位置がずれていた。commentLength バイトを読んでから UTF-8 として解釈する (ASCII なら従来と同じ文字列)
                 if (commentLength > 0)
-                    Ring.Comments += new string(br.ReadChars(commentLength)).Replace(",", "\r\n");
+                    Ring.Comments += Encoding.UTF8.GetString(br.ReadBytes(commentLength)).Replace(",", "\r\n");
 
                 length = imageWidth * imageHeight;
                 return true;
@@ -1718,6 +1744,8 @@ public static partial class ImageIO
 
             int imageWidth = Convert.ToInt32(tags["SIZE1"]);
             int imageHeight = Convert.ToInt32(tags["SIZE2"]);
+            //261111Cl 追加 (作者承認・挙動が変わる): BYTE_ORDER の値が big_endian (大小無視) のときだけビッグエンディアンで読む。無い・認識できない値は従来どおりリトルエンディアン
+            bool bigEndian = tags.TryGetValue("BYTE_ORDER", out var byteOrder) && byteOrder.Trim().Equals("big_endian", StringComparison.OrdinalIgnoreCase);
 
             br.BaseStream.Position = Convert.ToInt32(tags["HEADER_BYTES"]);
 
@@ -1738,7 +1766,8 @@ public static partial class ImageIO
             //for (int y = 0; y < imageHeight; y++)
             //    for (int x = 0; x < imageWidth; x++)
             //        Ring.Intensity[n++] = ((uint)(br.ReadByte() + br.ReadByte() * 256));
-            ReadPixels<ushort>(br.BaseStream, Ring.Intensity.AsSpan(0, length));// 261111Cl 変更: リトルエンディアンの 16bit (下位 + 上位 * 256 と同じ) を一括で読む
+            //ReadPixels<ushort>(br.BaseStream, Ring.Intensity.AsSpan(0, length));// 261111Cl 変更: リトルエンディアンの 16bit (下位 + 上位 * 256 と同じ) を一括で読む
+            ReadPixels<ushort>(br.BaseStream, Ring.Intensity.AsSpan(0, length), bigEndian: bigEndian);// 261111Cl 変更: BYTE_ORDER に従う (little_endian なら従来と同じ)
 
             Ring.BitsPerPixels = 16;
             Ring.ImageType = Ring.ImageTypeEnum.ADSC;

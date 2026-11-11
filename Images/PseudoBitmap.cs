@@ -16,7 +16,9 @@ public class PseudoBitmap : IDisposable
 {
     public void Dispose()
     {
+#pragma warning disable CS0618 // 261111Cl 追加: SrcBitmap は [Obsolete] (4 アプリで未使用)。削除までは従来どおり解放する
         SrcBitmap?.Dispose();
+#pragma warning restore CS0618
         destBmp?.Dispose();
     }
 
@@ -244,8 +246,10 @@ public class PseudoBitmap : IDisposable
 
         IsSrcGray = true;
 
+#pragma warning disable CS0618 // 261111Cl 追加: SrcValuesR/G/B は [Obsolete] (4 アプリで未使用)
         SrcValuesR.Clear();
         SrcValuesG = SrcValuesB = SrcValuesR;
+#pragma warning restore CS0618
 
         if (scale == null || scale.Length < 2)
             ColorScale = ColorScaleGrayLiner;
@@ -263,6 +267,7 @@ public class PseudoBitmap : IDisposable
 
     #region 初期化関連
 
+    [Obsolete("261111Cl: 4 アプリで未使用。将来削除予定")]
     private static Complex[][] initComplex(int width, int height)
     {
         Complex[][] complex = new Complex[height][];
@@ -295,8 +300,10 @@ public class PseudoBitmap : IDisposable
         FilterTemporary.Clear();
         FilterTemporary.AddRange(new bool[Height * Width]);
 
+#pragma warning disable CS0618 // 261111Cl 追加: FFT_Filter は [Obsolete] (4 アプリで未使用)
         if (Height * Width < 3001 * 3001)
             FFT_Filter = Enumerable.Repeat(0f, Height * Width).ToList();
+#pragma warning restore CS0618
 
     }
 
@@ -372,11 +379,16 @@ public class PseudoBitmap : IDisposable
 
     public int Height { get; set; }//高さ
 
+    [Obsolete("261111Cl: 4 アプリで未使用。将来削除予定")]
     public Complex[][] ComplexGray;//元画像の複素数;
+    [Obsolete("261111Cl: 4 アプリで未使用。将来削除予定")]
     public Complex[][] ComplexR;//元画像Rの複素数;
+    [Obsolete("261111Cl: 4 アプリで未使用。将来削除予定")]
     public Complex[][] ComplexG;//元画像Gの複素数;
+    [Obsolete("261111Cl: 4 アプリで未使用。将来削除予定")]
     public Complex[][] ComplexB;//元画像Bの複素数;
 
+    [Obsolete("261111Cl: 4 アプリで未使用。将来削除予定")]
     public List<float> FFT_Filter = [];
     public List<bool> FilterTemporary = [];
     public List<bool> Filter1 = [], Filter2 = [], Filter3 = [], Filter4 = [], Filter5 = [];
@@ -387,6 +399,7 @@ public class PseudoBitmap : IDisposable
 
     public (byte R, byte G, byte B)[] ColorScale;
 
+    [Obsolete("261111Cl: 4 アプリで未使用。将来削除予定")]
     public List<uint> SrcValuesR = [], SrcValuesG = [], SrcValuesB = [];
 
     /// <summary>グレースケールの画像データ (BlurModeが有効の時は、フィルター後のデータ)</summary>
@@ -420,6 +433,7 @@ public class PseudoBitmap : IDisposable
 
     public bool IsNegative = false;
 
+    [Obsolete("261111Cl: 4 アプリで未使用。将来削除予定")]
     public Bitmap SrcBitmap;//実画像のときの元画像
 
     /// <summary>画像に関連付けた情報 (なんでも)</summary>
@@ -483,6 +497,7 @@ public class PseudoBitmap : IDisposable
     /// <param name="x">xピクセル値</param>
     /// <param name="y">yピクセル値</param>
     /// <returns></returns>
+    [Obsolete("261111Cl: 4 アプリで未使用。将来削除予定")]
     public Color GetPixelColor(int x, int y)
     {
         if (x < 0 || Width <= x || y < 0 || Height <= y || this.RealImage == false) return Color.FromArgb(0, 0, 0);
@@ -492,6 +507,7 @@ public class PseudoBitmap : IDisposable
         return Color.FromArgb(ColorScale[index].R, ColorScale[index].G, ColorScale[index].B);
     }
 
+    [Obsolete("261111Cl: 4 アプリで未使用。将来削除予定")]
     public Color GetPixelColor(double x, double y) => GetPixelColor((int)(x + 0.5), (int)(y + 0.5));
 
     public double GetPixelRawValue(PointD pt) => GetPixelRawValue(pt.X, pt.Y);
@@ -568,7 +584,9 @@ public class PseudoBitmap : IDisposable
         if (x < 0 || Width <= x || y < 0 || Height <= y || this.RealImage == true)
             return [new(), new(), new()];
         else
+#pragma warning disable CS0618 // 261111Cl 追加: ComplexGray/R/G/B は [Obsolete] (4 アプリで未使用)
             return this.GrayScale ? ([ComplexGray[y][x], ComplexGray[y][x], ComplexGray[y][x]]) : ([ComplexR[y][x], ComplexG[y][x], ComplexB[y][x]]);
+#pragma warning restore CS0618
     }
 
     public Complex[] GetPixelComplex(double x, double y) => GetPixelComplex((int)Math.Round(x), (int)Math.Round(y));
@@ -659,23 +677,32 @@ public class PseudoBitmap : IDisposable
         #endregion
 
         #region  入力値doubleを表示する値に変換するローカル関数
+        //261111Cl 変更 (作者承認・.NET 8 以前の見た目に戻す): (int)x は .NET 8 以前の x64 では cvttsd2si で、NaN と int の範囲外 (正負とも) を int.MinValue にしていた
+        //  (下の丸めで添字 0 = 最暗色)。.NET 9 以降は飽和変換になり、正の範囲外 (MaxValue == MinValue のときの +∞ など) が int.MaxValue (最明色) に変わった。
+        //  旧の変換を明示的に書いて、NaN と範囲外は int.MinValue (添字 0) に戻す。範囲内 (-2^31 ≦ x < 2^31) の値は (int)x のまま。
         var length = ColorScale.Length;
         var coeff = length / (MaxValue - MinValue);
         byte getValueR(double rawValue)
         {
-            var rawIndex = (int)((rawValue - MinValue) * coeff + 0.5);
+            //var rawIndex = (int)((rawValue - MinValue) * coeff + 0.5);
+            var x = (rawValue - MinValue) * coeff + 0.5;// 261111Cl 変更
+            var rawIndex = x is >= -2147483648.0 and < 2147483648.0 ? (int)x : int.MinValue;// 261111Cl 変更: .NET 8 以前の (int)x と同じ
             return ColorScale[Math.Min(Math.Max(0, rawIndex), length - 1)].R;
         }
 
         byte getValueG(double rawValue)
         {
-            var rawIndex = (int)((rawValue - MinValue) * coeff + 0.5);
+            //var rawIndex = (int)((rawValue - MinValue) * coeff + 0.5);
+            var x = (rawValue - MinValue) * coeff + 0.5;// 261111Cl 変更
+            var rawIndex = x is >= -2147483648.0 and < 2147483648.0 ? (int)x : int.MinValue;// 261111Cl 変更: .NET 8 以前の (int)x と同じ
             return ColorScale[Math.Min(Math.Max(0, rawIndex), length - 1)].G;
         }
 
         byte getValueB(double rawValue)
         {
-            var rawIndex = (int)((rawValue - MinValue) * coeff + 0.5);
+            //var rawIndex = (int)((rawValue - MinValue) * coeff + 0.5);
+            var x = (rawValue - MinValue) * coeff + 0.5;// 261111Cl 変更
+            var rawIndex = x is >= -2147483648.0 and < 2147483648.0 ? (int)x : int.MinValue;// 261111Cl 変更: .NET 8 以前の (int)x と同じ
             return ColorScale[Math.Min(Math.Max(0, rawIndex), length - 1)].B;
         }
         #endregion
@@ -728,12 +755,14 @@ public class PseudoBitmap : IDisposable
                                         bSum += SrcValuesGray[tempPosition];
                                     else
                                     {
+#pragma warning disable CS0618 // 261111Cl 追加: SrcValuesR/G/B は [Obsolete] (4 アプリで未使用)
                                         bSum += SrcValuesB[tempPosition];
                                         if (!GrayScale)
                                         {
                                             gSum += SrcValuesG[tempPosition];
                                             rSum += SrcValuesR[tempPosition];
                                         }
+#pragma warning restore CS0618
                                     }
                                     count++;
                                 }
@@ -766,6 +795,7 @@ public class PseudoBitmap : IDisposable
                             }
                             else
                             {
+#pragma warning disable CS0618 // 261111Cl 追加: SrcValuesR/G/B は [Obsolete] (4 アプリで未使用)
                                 b = getValueB(SrcValuesB[srcPosition]);
                                 if (GrayScale)
                                     g = r = b;
@@ -774,6 +804,7 @@ public class PseudoBitmap : IDisposable
                                     g = getValueG(SrcValuesG[srcPosition]);
                                     r = getValueR(SrcValuesR[srcPosition]);
                                 }
+#pragma warning restore CS0618
                             }
                         }
 
@@ -790,7 +821,9 @@ public class PseudoBitmap : IDisposable
                             p[3] = (srcPosition < FilterAlfha.Count) ? FilterAlfha[srcPosition] : (byte)255;
 
                         #region 各種フィルター
+#pragma warning disable CS0618 // 261111Cl 追加: FFT_Filter は [Obsolete] (4 アプリで未使用)
                         if (FFT_Filter != null && FFT_Filter.Count > 0 && (filter = FFT_Filter[srcPosition]) != 0)//もしフィルターされていたら全体を1/2にして(0,127,127)をたす
+#pragma warning restore CS0618
                         { //BG
                             p[0] = (byte)(p[0] * (2 - filter) * 0.5 + 127 * filter);
                             p[1] = (byte)(p[1] * (2 - filter) * 0.5 + 127 * filter);
@@ -867,6 +900,7 @@ public class PseudoBitmap : IDisposable
     /// <param name="bmp"></param>
     /// <param name="angle"></param>
     /// <returns></returns>
+    [Obsolete("261111Cl: 4 アプリで未使用。将来削除予定")]
     public void Rotate(double angle)
     {
         //var destBitmap = new Bitmap(SrcBitmap.Width, SrcBitmap.Height, PixelFormat.Format24bppRgb); // 旧: ローカル Bitmap が未解放

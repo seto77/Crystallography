@@ -664,6 +664,12 @@ namespace Crystallography
                 #endregion
 
                 #region 画像強度を読み込み
+                //261111Cl 追加 (作者承認・挙動が変わる): MRC2014 (https://www.ccpem.ac.uk/mrc_format/mrc2014.php) では、画素データは 1024 バイトの基本ヘッダと
+                //  NSYMBT バイトの拡張ヘッダ (EXTTYP が CCP4, MRCO, SERI, AGAR, FEI1, FEI2, HDF5 のどれでも同じ) の後から始まる。
+                //  従来は FEI1 のときだけ上で 1024 + NSYMBT へ移り、それ以外は LABEL を読み終えた位置 (ふつう 1024) から読んでいたため、
+                //  拡張ヘッダを持つ FEI1 以外のファイル (SerialEM の SERI、FEI2 など) では画素がずれていた。負の NSYMBT (壊れたヘッダ) は 0 とみなす (従来の読み出し位置)。
+                br.BaseStream.Position = 1024L + Math.Max(NSYMBT, 0);
+
                 //ここから画像を読み込み
                 if (NX * NY * NZ == 0)
                     Images = null;
@@ -689,13 +695,15 @@ namespace Crystallography
                     #endregion
                     //261111Cl 変更: 各フレームの List を画素数で確保して要素数をそろえ、その中身へ一括で読み込む (公開型 List<List<double>> は維持)。
                     //  MODE 0 は (double)byte - 128 を表で引く。未対応の MODE は従来どおり読まずに 0。
-                    double[] table0 = null;
-                    if (MODE == 0)
-                    {
-                        table0 = new double[256];
-                        for (int i = 0; i < 256; i++)
-                            table0[i] = (double)i - 128;
-                    }
+                    //double[] table0 = null;
+                    //if (MODE == 0)
+                    //{
+                    //    table0 = new double[256];
+                    //    for (int i = 0; i < 256; i++)
+                    //        table0[i] = (double)i - 128;
+                    //}
+                    //261111Cl 変更 (作者承認・挙動が変わる): MODE 0 は MRC2014 (https://www.ccpem.ac.uk/mrc_format/mrc2014.php) の定義どおり
+                    //  符号付き 8bit 整数 (sbyte, -128〜127) として読む。従来の byte - 128 は、バイト 0x00〜0x7F を -128〜-1、0x80〜0xFF を 0〜127 にずらしていた。
                     int n = Math.Max(NX, 0) * Math.Max(NY, 0);//旧ループ (y < NY, x < NX) の回数と同じ
                     Images = new List<List<double>>(Math.Max(NZ, 0));
                     for (int z = 0; z < NZ; z++)
@@ -706,7 +714,8 @@ namespace Crystallography
                         var span = CollectionsMarshal.AsSpan(image);
                         switch (MODE)
                         {
-                            case 0: ImageIO.ReadPixels<byte>(br.BaseStream, span, table: table0); break;
+                            //case 0: ImageIO.ReadPixels<byte>(br.BaseStream, span, table: table0); break;
+                            case 0: ImageIO.ReadPixels<sbyte>(br.BaseStream, span); break;// 261111Cl 変更: 符号付き 8bit (MRC2014)
                             case 1: ImageIO.ReadPixels<short>(br.BaseStream, span); break;
                             case 2: ImageIO.ReadPixels<float>(br.BaseStream, span); break;
                             case 6: ImageIO.ReadPixels<ushort>(br.BaseStream, span); break;
