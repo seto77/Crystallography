@@ -2,7 +2,8 @@
 
 namespace Crystallography.Tests;
 
-/// <summary>261111Cl 新規: Find_gVectors の境の同値の組 (評価値の小さい順に N+1 本を選び、末尾の同点の組を丸ごと捨てる)。
+/// <summary>261111Cl 新規: Find_gVectors の境の同値の組 (評価値の小さい順に N+1 本を選び、末尾の同点の組を丸ごと扱う。
+/// 261112Cl: 既定は丸ごと採る (IncludeGroup、作者の判断)。それまでは丸ごと捨てる (DropGroup))。
 /// 共有の QuickSelect の同値の扱いが変わったとき (Crystallography 6b0d049)、STEM-EDX のビームの並びが変わった。
 /// 晶帯軸 [001] の Si で、選んだ集合が 4mm (入射方向を保つ点群の操作) で閉じている (同値の組を途中で切らない) ことと、
 /// 並びが (評価値, 指数) の順で決まる (候補の並びに依らない) ことを、多くの N で確かめる</summary>

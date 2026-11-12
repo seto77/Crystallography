@@ -61,10 +61,13 @@ public enum AbsorptionElasticModel
 /// </summary>
 public enum BeamBoundaryTieMode
 {
-    /// <summary>従来 (既定): 末尾の組を丸ごと落とす。N+1 本目は境を見るための番兵で、N 本目と同点ならその組ごと外れる (結果は N 本以下)。</summary>
+    // /// <summary>従来 (既定): 末尾の組を丸ごと落とす。N+1 本目は境を見るための番兵で、N 本目と同点ならその組ごと外れる (結果は N 本以下)。</summary> // 261112Cl 変更前
+    /// <summary>261112Cl まで既定: 末尾の組を丸ごと落とす。N+1 本目は境を見るための番兵で、N 本目と同点ならその組ごと外れる (結果は N 本以下)。</summary>
     DropGroup,
-    /// <summary>診断用: 末尾の組が N 本目以前とつながる (境をまたぐ) とき、組を丸ごと入れる。N+1 本に入らなかった残りの候補のうち
-    /// 同じ組につながるものも足す (N を少し越えてよい)。組が N+1 本目だけなら従来と同じ (番兵だけを落として N 本)。</summary>
+    // /// <summary>診断用: 末尾の組が N 本目以前とつながる (境をまたぐ) とき、組を丸ごと入れる。N+1 本に入らなかった残りの候補のうち // 261112Cl 変更前
+    // /// 同じ組につながるものも足す (N を少し越えてよい)。組が N+1 本目だけなら従来と同じ (番兵だけを落として N 本)。</summary>
+    /// <summary>261112Cl から既定 (作者の判断): 末尾の組が N 本目以前とつながる (境をまたぐ) とき、組を丸ごと入れる。N+1 本に入らなかった残りの候補のうち
+    /// 同じ組につながるものも足す (N を少し越えてよい)。組が N+1 本目だけなら DropGroup と同じ (番兵だけを落として N 本)。</summary>
     IncludeGroup,
 }
 
@@ -264,11 +267,12 @@ public partial class BetheMethod
     private static long beamCandidateExhaustedCount; // 261028Cl 追加
 
     /// <summary>
-    /// 261028Cl 追加 (診断用のグローバル設定。既定 DropGroup = 従来): Find_gVectors で選んだ maxNumOfBloch + 1 本の末尾の同点の組の扱い。
+    /// 261028Cl 追加 (グローバル設定。261112Cl 既定を IncludeGroup に変更、作者の判断。それまでは DropGroup): Find_gVectors で選んだ maxNumOfBloch + 1 本の末尾の同点の組の扱い。
     /// 意味は <see cref="Crystallography.BeamBoundaryTieMode"/> enum 参照。<see cref="BeamCandidateMultiplier"/> と同じく static で、
-    /// 呼び出しの冒頭で 1 回だけ読む (並列の呼び出しが読むだけなら安全)。⚠ 計算の走行中には変えないこと。
+    /// 呼び出しの冒頭で 1 回だけ読む (並列の呼び出しが読むだけなら安全)。⚠ 計算の走行中には変えないこと。STEM の |g| の順 (StemDoWork) の境もこれに従う。
     /// </summary>
-    public static BeamBoundaryTieMode BeamBoundaryTieMode { get; set; } = BeamBoundaryTieMode.DropGroup;
+    // public static BeamBoundaryTieMode BeamBoundaryTieMode { get; set; } = BeamBoundaryTieMode.DropGroup; // 261112Cl 変更前
+    public static BeamBoundaryTieMode BeamBoundaryTieMode { get; set; } = BeamBoundaryTieMode.IncludeGroup; // 261112Cl 変更 (作者の判断: 境の同値の組は全部採る)
 
     /// <summary>261107Cl 追加 (研究用の口、既定 null = 何もしない): 後方散乱の源に元素ごとの倍率 κ(Z, E[keV]) を掛ける。
     /// 掛ける所は EBSD のマスターの局所源 σ_n と、annular (inner/outer を指定した) 吸収因子の原子ごとの寄与 (= 後方 TDS 行列 CreateMasterPatternMuBack)。
@@ -2946,10 +2950,19 @@ public partial class BetheMethod
             var selList = ordered.ToList();
             int take = Math.Min(MaxNumOfBloch + 1, selList.Count);
             // 既定 (|g| の順) は、同じ |g| の殻を途中で切らない (切ると像の対称が崩れる。CBED と同じ選び方も末尾の同点の組は丸ごと落とす)
+            // if (stemBeamSel is not ("q" or "gxy") && take < selList.Count) // 261112Cl 変更前
+            // {
+            //     double cut = selList[take].Vec.Length2;
+            //     while (take > 1 && Math.Abs(selList[take - 1].Vec.Length2 - cut) <= 1e-9 * cut) take--;
+            // }
+            //261112Cl 変更: 境をまたぐ殻は BeamBoundaryTieMode に従う (既定 IncludeGroup = 丸ごと採る、DropGroup = 丸ごと捨てる)
             if (stemBeamSel is not ("q" or "gxy") && take < selList.Count)
             {
                 double cut = selList[take].Vec.Length2;
-                while (take > 1 && Math.Abs(selList[take - 1].Vec.Length2 - cut) <= 1e-9 * cut) take--;
+                if (BeamBoundaryTieMode == BeamBoundaryTieMode.IncludeGroup)
+                    while (take < selList.Count && Math.Abs(selList[take].Vec.Length2 - selList[take - 1].Vec.Length2) <= 1e-9 * cut) take++;
+                else
+                    while (take > 1 && Math.Abs(selList[take - 1].Vec.Length2 - cut) <= 1e-9 * cut) take--;
             }
             // Beams = [.. selList.Take(take).OrderBy(e => e.Vec.Length2)]; // 261111Cl 変更前 (夕方)
             Beams = [.. selList.Take(take).OrderBy(e => e.Vec.Length2).ThenBy(e => e.Index)]; // 261111Cl 変更 (夕方): 同じ |g| の順を指数で決める
@@ -5171,7 +5184,7 @@ public partial class BetheMethod
                 break;
             }
 
-        #region 261028Cl 追加: 末尾の同点の組を丸ごと入れる (診断用の BeamBoundaryTieMode.IncludeGroup。既定の DropGroup はここを通らない)
+        #region 261028Cl 追加: 末尾の同点の組を丸ごと入れる (BeamBoundaryTieMode.IncludeGroup、261112Cl から既定。DropGroup はここを通らない)
         if (tieMode == BeamBoundaryTieMode.IncludeGroup)
         {
             // 末尾の組の始まり j (beams[j..] は隣どうしの Rating の差が 1e-6 以下でつながる)。上の n と同じ判定だが、全部が同点のときは j = 0 になる
@@ -5213,6 +5226,9 @@ public partial class BetheMethod
                     double q = k0_2 - Dot3(vX, vX, vY, vY, vZ, vZ), p = 2 * Dot3(sX, vX, sY, vY, sZ, vZ);
                     included.Add(new Beam((h, k, l), g, getU(AccVoltage, (h, k, l), g), (q, p)));
                 }
+                // return [.. included]; // 261112Cl 変更前
+                //261112Cl 変更: 足した分も (評価値, 指数) の順に並べる (DropGroup の返り値と同じ順。IncludeGroup を既定にしたので)
+                included.Sort(static (a, b) => a.Rating.CompareTo(b.Rating) is var c && c != 0 ? c : a.Index.CompareTo(b.Index));
                 return [.. included];
             }
         }
