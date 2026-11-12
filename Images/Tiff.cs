@@ -458,6 +458,8 @@ public class Tiff
                         case 259:
                             image.Compression = (int)iFD[i].Data[0]; break;
                         case 262:
+                            // 261112Cl 注記: 0 (WhiteIsZero) でも値は反転しない (作者判断 261112)。FLA/Typhoon の MD gel・Rad-icon・PF の IP などの検出器の画像が
+                            //  この印付きで、保存された値がそのまま強度 (大きいほど強い) になっている。反転すると強度が逆になる。
                             image.PhotometricInterpretation = (int)iFD[i].Data[0]; break;
                         case 270:
                             break;
@@ -498,6 +500,10 @@ public class Tiff
                         case 284:
                             image.ResolutionUnit = (int)iFD[i].Data[0]; break;
                         case 320:
+                            // 261112Cl 追加: 色表の配列を確保する (以前は確保していなかったので、下の if が常に偽で色表を読んでいなかった)
+                            image.ColorMapRed = new int[iFD[i].Data.Length / 3];
+                            image.ColorMapGreen = new int[iFD[i].Data.Length / 3];
+                            image.ColorMapBlue = new int[iFD[i].Data.Length / 3];
                             for (int j = 0; j < iFD[i].Data.Length / 3; j++)
                             {
                                 if (image.ColorMapRed != null)
@@ -724,11 +730,19 @@ public class Tiff
                 //  BinaryReader.ReadXxx で読んでいた 8bit と II の 16/32bit 整数は末尾で例外、BinaryReader.Read(byte[]) で読んでいた MM の 16/32bit 整数と浮動小数点は足りない分を 0。
                 //  F2 (挙動が変わる): 浮動小数点は旧式では常に 4 バイトずつ読んでいたため、64bit (double) と 16bit (half) の TIFF を誤読していた。幅に合わせて読む。
                 var bigEndian = byteOrder == TiffByteOrder.Intel;//列挙子の名前が逆: Intel = MM (ビッグエンディアン)、Motorola = II
+                //var kind = image.SampleFormat == 3 ? bytePerPixel switch { 8 => SampleKind.F64, 2 => SampleKind.F16, _ => SampleKind.F32 } // 261112Cl 変更前
+                //    : bytePerPixel == 1 ? SampleKind.U8
+                //    : !bigEndian ? (bytePerPixel, image.SampleFormat) switch { (2, 1) => SampleKind.U16, (2, 2) => SampleKind.S16, (4, 1) => SampleKind.U32, (4, 2) => SampleKind.S32, _ => SampleKind.None }
+                //    : bytePerPixel == 2 ? (image.SampleFormat == 1 ? SampleKind.U16 : SampleKind.S16)
+                //    : bytePerPixel == 4 ? (image.SampleFormat == 1 ? SampleKind.U32 : SampleKind.S32)
+                //    : SampleKind.None;
+                // 261112Cl 変更: 64 bit 整数 (符号なし・符号あり) も読む (以前は None で全画素 0 になっていた)。ほかの組は変更前と同じ
                 var kind = image.SampleFormat == 3 ? bytePerPixel switch { 8 => SampleKind.F64, 2 => SampleKind.F16, _ => SampleKind.F32 }
                     : bytePerPixel == 1 ? SampleKind.U8
-                    : !bigEndian ? (bytePerPixel, image.SampleFormat) switch { (2, 1) => SampleKind.U16, (2, 2) => SampleKind.S16, (4, 1) => SampleKind.U32, (4, 2) => SampleKind.S32, _ => SampleKind.None }
+                    : !bigEndian ? (bytePerPixel, image.SampleFormat) switch { (2, 1) => SampleKind.U16, (2, 2) => SampleKind.S16, (4, 1) => SampleKind.U32, (4, 2) => SampleKind.S32, (8, 1) => SampleKind.U64, (8, 2) => SampleKind.S64, _ => SampleKind.None }
                     : bytePerPixel == 2 ? (image.SampleFormat == 1 ? SampleKind.U16 : SampleKind.S16)
                     : bytePerPixel == 4 ? (image.SampleFormat == 1 ? SampleKind.U32 : SampleKind.S32)
+                    : bytePerPixel == 8 ? (image.SampleFormat == 1 ? SampleKind.U64 : SampleKind.S64)
                     : SampleKind.None;
 
                 for (int i = 0, n = 0; i < image.StripByteCounts.Length; i++)
@@ -774,6 +788,22 @@ public class Tiff
                             throw new IndexOutOfRangeException();
                     }
                 }
+
+                // 261112Cl 追加: パレット画像 (PhotometricInterpretation = 3) は、画素値 (色表の添字) を色表の色の輝度に置き換える (以前は添字をそのまま強度にしていた)。
+                //  輝度は BT.601 の重み (0.299, 0.587, 0.114) で、目盛りは 0〜255 (色表の値 / 257)。灰色の色表 (i 番目が i×257) なら値は変わらない。
+                if (image.PhotometricInterpretation == 3 && image.ColorMapRed is { Length: > 0 } && image.Value != null)
+                {
+                    var lum = new double[image.ColorMapRed.Length];
+                    for (int k = 0; k < lum.Length; k++)
+                    {
+                        int r = image.ColorMapRed[k], g = image.ColorMapGreen[k], b = image.ColorMapBlue[k];
+                        lum[k] = (r == g && g == b ? r : 0.299 * r + 0.587 * g + 0.114 * b) / 257.0;
+                    }
+                    var v = image.Value;
+                    for (int k = 0; k < v.Length; k++)
+                        if (v[k] >= 0 && v[k] < lum.Length)
+                            v[k] = lum[(int)v[k]];
+                }
                 Images.Add(image);
             }
             br.Close();
@@ -795,7 +825,8 @@ public class Tiff
         //}
 
         /// <summary>標本の型 (一括読み込み用)。261111Cl 追加</summary>
-        private enum SampleKind { None, U8, U16, S16, U32, S32, F16, F32, F64 }
+        //private enum SampleKind { None, U8, U16, S16, U32, S32, F16, F32, F64 } // 261112Cl 変更前
+        private enum SampleKind { None, U8, U16, S16, U32, S32, F16, F32, F64, U64, S64 } // 261112Cl 変更: 64 bit 整数を追加
 
         /// <summary>stream の現在位置から dst.Length 個の標本を読み、double にして dst に書く。261111Cl 追加
         /// 8bit と II の整数はファイル末尾で EndOfStreamException (旧 BinaryReader.ReadXxx と同じ)、
@@ -812,6 +843,8 @@ public class Tiff
                 case SampleKind.F16: ImageIO.ReadPixels<Half>(s, dst, bigEndian, zeroFillAtEnd: true); break;
                 case SampleKind.F32: ImageIO.ReadPixels<float>(s, dst, bigEndian, zeroFillAtEnd: true); break;
                 case SampleKind.F64: ImageIO.ReadPixels<double>(s, dst, bigEndian, zeroFillAtEnd: true); break;
+                case SampleKind.U64: ImageIO.ReadPixels<ulong>(s, dst, bigEndian, zeroFillAtEnd: bigEndian); break; // 261112Cl 追加
+                case SampleKind.S64: ImageIO.ReadPixels<long>(s, dst, bigEndian, zeroFillAtEnd: bigEndian); break; // 261112Cl 追加
                 default: dst.Clear(); break;
             }
         }

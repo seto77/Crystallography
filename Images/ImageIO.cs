@@ -1538,7 +1538,8 @@ public static partial class ImageIO
             for (int j = 0; j < numberOfFrame; j++)
             {
                 Ring.SequentialImageIntensities.Add(new double[imageHeight * imageWidth]);
-                br.BaseStream.Position = headerSize + imageHeaderSize + j * imageWidth * imageHeight * 2;
+                //br.BaseStream.Position = headerSize + imageHeaderSize + j * imageWidth * imageHeight * 2; // 261112Cl 変更前: int の積が 2 GB を超えると桁あふれして負の位置になっていた
+                br.BaseStream.Position = headerSize + imageHeaderSize + (long)j * imageWidth * imageHeight * 2; // 261112Cl 変更: long で計算する
                 //for (int i = 0; i < imageHeight * imageWidth; i++)
                 //    Ring.SequentialImageIntensities[j][i] = br.ReadUInt16();
                 ReadPixels<ushort>(br.BaseStream, Ring.SequentialImageIntensities[j]);// 261111Cl 変更: 一括で読む
@@ -2383,9 +2384,13 @@ public static partial class ImageIO
                     //t.Images[j].Value = [.. t.Images[j].ValueRed.Select(intValue => (double)intValue)];
                     //261111Cl 変更 (T9): LINQ をやめ、赤の値を double 配列へ直接変換する
                     var red = t.Images[j].ValueRed;
+                    var green = t.Images[j].ValueGreen; // 261112Cl 追加
+                    var blue = t.Images[j].ValueBlue; // 261112Cl 追加
                     var value = GC.AllocateUninitializedArray<double>(red.Length);
                     for (int i = 0; i < red.Length; i++)
-                        value[i] = red[i];
+                        //value[i] = red[i]; // 261112Cl 変更前: 赤だけを強度にしていた
+                        // 261112Cl 変更: 輝度 (BT.601 の重み) にする。R = G = B の画素は値が変わらない
+                        value[i] = red[i] == green[i] && green[i] == blue[i] ? red[i] : 0.299 * red[i] + 0.587 * green[i] + 0.114 * blue[i];
                     t.Images[j].Value = value;
                 }
             }

@@ -22,6 +22,7 @@ namespace Crystallography
         /// 3: transform : complex 16-bit integers;
         /// 4: transform : complex 32-bit reals;
         /// 6: 16-bit unsigned integer;
+        /// 12: 16-bit float (IEEE 754 half);   (261112Cl 追記: 3・4 は振幅として読む。12 も読む)
         /// </summary>
         public int MODE { get; set; }
         /// <summary>location of first column in unit cell</summary>
@@ -469,7 +470,21 @@ namespace Crystallography
         {
             try
             {
-                using var br = new BinaryReader(new FileStream(filename, FileMode.Open, FileAccess.Read));
+                //using var br = new BinaryReader(new FileStream(filename, FileMode.Open, FileAccess.Read)); // 261112Cl 変更前
+                // 261112Cl 変更 (作者承認・挙動が変わる): バイト順の印 MACHST (212 バイト目) が 0x11 0x11 ならビッグエンディアン (MRC2014)。
+                //  以前は常にリトルエンディアンとして読み、ビッグエンディアンのファイルではヘッダも画素も誤読していた。
+                //  基本ヘッダ (1024 バイト) を先に読み、ビッグエンディアンなら数値の欄 (4 バイトの整数・実数) だけを反転してから、従来と同じ順に読む。
+                //  文字の欄 (EXTTYP 104・MAP 208・MACHST 212・LABEL 224〜) は反転しない。拡張ヘッダ (FEI1) からはファイルを直接読む。
+                using var file = new BinaryReader(new FileStream(filename, FileMode.Open, FileAccess.Read));
+                var header = file.ReadBytes(1024);
+                if (header.Length < 1024)
+                    throw new EndOfStreamException();//従来と同じく、短すぎるファイルは読めない (下の catch で Images = null)
+                bool bigEndian = header[212] == 0x11 && header[213] == 0x11;
+                if (bigEndian)
+                    foreach (var (start, end) in new[] { (0, 104), (108, 208), (216, 224) })
+                        for (int p = start; p < end; p += 4)
+                            Array.Reverse(header, p, 4);
+                var br = new BinaryReader(new MemoryStream(header));
 
                 #region 基本ヘッダ
                 NX = br.ReadInt32();//position: 0
@@ -525,6 +540,8 @@ namespace Crystallography
                 LABEL = new string(br.ReadChars(800)).TrimEnd(new[] { '\0' });//224
 
                 #endregion
+
+                br = file; // 261112Cl 追加: ここから先 (拡張ヘッダと画素) はファイルから読む
 
                 #region FEI1ヘッダ
                 if (EXTTYP == "FEI1")
@@ -670,8 +687,9 @@ namespace Crystallography
                 //  拡張ヘッダを持つ FEI1 以外のファイル (SerialEM の SERI、FEI2 など) では画素がずれていた。負の NSYMBT (壊れたヘッダ) は 0 とみなす (従来の読み出し位置)。
                 //261112Cl 追加 (作者承認・挙動が変わる): IMOD の印 (152 バイト目 imodStamp = 1146047817) があり、符号付きの旗 (156 バイト目 imodFlags の bit0) が 0 なら、
                 //  MODE 0 は符号なし 8bit (0〜255) として書かれている (IMOD の定義。古い IMOD や SerialEM のファイル)。それ以外は MRC2014 どおり符号付き
-                br.BaseStream.Position = 152;
-                bool unsignedMode0 = br.ReadInt32() == 1146047817 && (br.ReadInt32() & 1) == 0;
+                //br.BaseStream.Position = 152; // 261112Cl 変更前
+                //bool unsignedMode0 = br.ReadInt32() == 1146047817 && (br.ReadInt32() & 1) == 0;
+                bool unsignedMode0 = BitConverter.ToInt32(header, 152) == 1146047817 && (BitConverter.ToInt32(header, 156) & 1) == 0; // 261112Cl 変更: バイト順をそろえた基本ヘッダから読む
                 br.BaseStream.Position = 1024L + Math.Max(NSYMBT, 0);
 
                 //ここから画像を読み込み
@@ -724,9 +742,31 @@ namespace Crystallography
                                 if (unsignedMode0) ImageIO.ReadPixels<byte>(br.BaseStream, span);
                                 else ImageIO.ReadPixels<sbyte>(br.BaseStream, span);
                                 break;
-                            case 1: ImageIO.ReadPixels<short>(br.BaseStream, span); break;
-                            case 2: ImageIO.ReadPixels<float>(br.BaseStream, span); break;
-                            case 6: ImageIO.ReadPixels<ushort>(br.BaseStream, span); break;
+                            //case 1: ImageIO.ReadPixels<short>(br.BaseStream, span); break; // 261112Cl 変更前
+                            //case 2: ImageIO.ReadPixels<float>(br.BaseStream, span); break;
+                            //case 6: ImageIO.ReadPixels<ushort>(br.BaseStream, span); break;
+                            // 261112Cl 変更: ビッグエンディアンのファイルはバイト順を反転して読む
+                            case 1: ImageIO.ReadPixels<short>(br.BaseStream, span, bigEndian); break;
+                            case 2: ImageIO.ReadPixels<float>(br.BaseStream, span, bigEndian); break;
+                            case 6: ImageIO.ReadPixels<ushort>(br.BaseStream, span, bigEndian); break;
+                            // 261112Cl 追加: 半精度実数 (MODE 12)
+                            case 12: ImageIO.ReadPixels<Half>(br.BaseStream, span, bigEndian); break;
+                            // 261112Cl 追加: 複素数 (MODE 3 = 16 bit 整数の組、MODE 4 = 32 bit 実数の組) は振幅 √(実部² + 虚部²) にする (以前は読まずに 0)
+                            case 3 or 4:
+                                {
+                                    const int chunk = 1 << 15;
+                                    var pair = new double[2 * Math.Min(chunk, Math.Max(n, 1))];
+                                    for (int i = 0; i < n; i += chunk)
+                                    {
+                                        int m = Math.Min(chunk, n - i);
+                                        var t = pair.AsSpan(0, 2 * m);
+                                        if (MODE == 3) ImageIO.ReadPixels<short>(br.BaseStream, t, bigEndian);
+                                        else ImageIO.ReadPixels<float>(br.BaseStream, t, bigEndian);
+                                        for (int k = 0; k < m; k++)
+                                            span[i + k] = Math.Sqrt(t[2 * k] * t[2 * k] + t[2 * k + 1] * t[2 * k + 1]);
+                                    }
+                                }
+                                break;
                             default: span.Clear(); break;
                         }
                     }
