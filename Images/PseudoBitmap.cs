@@ -579,6 +579,7 @@ public class PseudoBitmap : IDisposable
     /// <param name="x"></param>
     /// <param name="y"></param>
     /// <returns></returns>
+    [Obsolete("261112Cl: 4 アプリで未使用。将来削除予定")] // 261112Cl 追加
     public Complex[] GetPixelComplex(int x, int y)
     {
         if (x < 0 || Width <= x || y < 0 || Height <= y || this.RealImage == true)
@@ -589,6 +590,7 @@ public class PseudoBitmap : IDisposable
 #pragma warning restore CS0618
     }
 
+    [Obsolete("261112Cl: 4 アプリで未使用。将来削除予定")] // 261112Cl 追加
     public Complex[] GetPixelComplex(double x, double y) => GetPixelComplex((int)Math.Round(x), (int)Math.Round(y));
 
     /// <summary>等倍のイメージを取得する</summary>

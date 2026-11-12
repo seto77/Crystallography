@@ -257,6 +257,7 @@ public class Statistics
     /// <param name="mu">平均値</param>
     /// <param name="sigma">標準偏差</param>
     /// <returns>指定した対数正規分布に即した乱数</returns>
+    [Obsolete("261112Cl: 4 アプリで未使用。将来削除予定")] // 261112Cl 追加
     public static double LogNormalDistribution(double mu, double sigma)
     {
         if (mu <= 0)
