@@ -2957,7 +2957,7 @@ new(4.86738014,0.319974401,4.58872425,
         internal double ElasticFactorWithTail(double s2, bool useTail = true)
         {
             //260922Cl 追加: TemariHybrid (Temari の TDS 監査 分岐 2)。中性原子 (Valence = 0) の 0 ≤ s ≤ 6 Å⁻¹ だけ Temari の f_e [Å] に替える。
-            //  s > 6 は下の従来経路へ落ちる (s ≥ 2.5 なので純 Mott–Bethe)。s = 6 での値の跳び (≤ 0.041 %) は監査が許した形 (raw) なので合わせない。
+            //  s > 6 は下の従来経路へ落ちる (s ≥ 2.5 なので純 Mott–Bethe)。s = 6 での値の跳び (最大 0.17 % (Pr)、0.041 % を超えるのは 86 元素中 45。261117Cl 訂正: 旧注釈「≤ 0.041 %」は誤り。2026-11-16 に全元素で実測) は監査が許した形 (raw) なので合わせない。
             //  ⚠ イオン (Valence ≠ 0) は従来どおり — Temari は「イオンはこの表からは導出できない」と明記している。
             //  ⚠ AtomicNumber は AttachTail を呼ばれたエントリ (電子用の Peng と 8 Gaussian) だけが持つ。0 なら TemariScattering が null を返す。
             //  ⚠ useTail = false (検証専用の入口) は純 Peng のまま。TemariFactor.Fe は s > 6 で例外を投げるので、s² ≤ 36 の判定を先に置く。
@@ -2988,7 +2988,7 @@ new(4.86738014,0.319974401,4.58872425,
         }
 
         /// <summary>261107Cl 追加: <see cref="ElasticFactorWithTail"/> が滑らかでない s [Å⁻¹] の一覧 (昇順)。
-        /// テールの継ぎ目 (<see cref="TailJoinLow"/>・<see cref="TailJoinHigh"/>、smoothstep なので 2 階微分が跳ぶ)、TemariHybrid の切替 (中性原子の s = 6、値が ≤ 0.041 % 跳ぶ)、
+        /// テールの継ぎ目 (<see cref="TailJoinLow"/>・<see cref="TailJoinHigh"/>、smoothstep なので 2 階微分が跳ぶ)、TemariHybrid の切替 (中性原子の s = 6、値が最大 0.17 % 跳ぶ。261117Cl 訂正: 旧「≤ 0.041 %」)、
         /// Mott–Bethe 側の f_x の [0, Z] へのクランプが効き始める s (元素ごとに一度だけ探す)。annular の θ 積分を折れ目で区切るのに使う
         /// (EBSD 見直し G6: 区切らないと 10 keV・30 keV の後方の積分が θ 30 点で最大 4e-5 しか収束しなかった)</summary>
         private double[] KinkS => kinkS ??= FindKinkS();
