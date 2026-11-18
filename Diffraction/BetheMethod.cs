@@ -4563,7 +4563,11 @@ public partial class BetheMethod
     /// <summary>g=0 のuの値を得る</summary>
     /// <param name="voltage"></param>
     /// <returns></returns>
-    public (Complex Real, Complex Imag) getU(double voltage) => getU(voltage, new Beam((0, 0, 0), new Vector3DBase(0, 0, 0)));
+    // public (Complex Real, Complex Imag) getU(double voltage) => getU(voltage, new Beam((0, 0, 0), new Vector3DBase(0, 0, 0))); // 261118Cl 変更前
+    // 261118Cl 変更 (codex2 第 2 回の単位 2): uDictionary の鍵には電圧が入らないので、キャッシュから読むと前の計算の電圧の U0 を返しうる。
+    //   RunAlchemi は読む前に Clear していなかったので、同じ BetheMethod で先に別の電圧の SAED を計算すると U0 が 14 % 違い、
+    //   ALCHEMI の結果が相対 4.6e-6 ずれた (tools/AlchemiCheck staleu0)。U0 は 1 回の計算で 1 度しか読まないので、常にその電圧で評価する
+    public (Complex Real, Complex Imag) getU(double voltage) => getU(voltage, new Beam((0, 0, 0), new Vector3DBase(0, 0, 0)), cache: false);
 
     /// <summary>260923Cl 追加: Bloch 波の平均吸収長 λ_abs(E) = K/(2π U'_0) [nm] (強度の減衰、経路長) をエネルギー格子 [keV] ごとに返す。
     /// U'_0 は g = 0 の吸収ポテンシャル (熱散漫、<see cref="AbsorptionElasticModel"/> に従う)、K は真空の波数 (結晶内との差は U₀/2K² ≈ 10⁻⁴)。
