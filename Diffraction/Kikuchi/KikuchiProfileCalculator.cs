@@ -380,8 +380,12 @@ public static class KikuchiProfileCalculator
             throw;
         }
         // 261118Cl 追加 (codex2 第 12 回): 上位の族を選ぶ前に、全部の候補の生値の数値の失敗 (非有限など) を拾う (旧は失敗した族も Valid のまま選ばれ、GUI は成功として表示した)
-        if (CombineNumericStats(profiles) is { RunState: NumericRunState.Failed, FirstFailure: { } failure })
-            throw new NumericFailureException(failure, $"Kikuchi numeric failure for band {profiles[failure.Direction]?.Family.Text} at sample #{failure.DepthIndex}: {failure}");
+        // if (CombineNumericStats(profiles) is { RunState: NumericRunState.Failed, FirstFailure: { } failure }) // 261118Cl 変更前 (codex2 第 13 回: 合わせる集計は方向を族の番号に上書きし、+g/−g が消えた)
+        //     throw new NumericFailureException(failure, $"Kikuchi numeric failure for band {profiles[failure.Direction]?.Family.Text} at sample #{failure.DepthIndex}: {failure}");
+        for (int k = 0; k < profiles.Length; k++)
+            if (profiles[k]?.NumericStats is { FirstFailure: { } failure }) // 族ごとの集計の方向 = 0 (+g・systematic row) / 1 (−g)
+                throw new NumericFailureException(failure with { Direction = k },
+                    $"Kikuchi numeric failure for band {profiles[k].Family.Text} ({(opt.RowOrder > 0 ? "row" : failure.Direction == 1 ? "-g" : "+g")}) at sample #{failure.DepthIndex}: {failure}");
 
         double Rank(KikuchiBandProfile p) =>
             p.DynamicalRank * (previousSelection != null && previousSelection.Contains(p.Family.Index) ? 1.15 : 1.0);
@@ -697,7 +701,8 @@ public static class KikuchiProfileCalculator
             throw Failed(NumericStage.Integrator, NativeWrapper.NativeSolveStatus.NonFiniteOutput, $"non-finite integral with {panels} panels (thickness {thickness})");
         while (true)
         {
-            panels *= 2;
+            // panels *= 2; // 261118Cl 変更前 (codex2 第 13 回: 2^15 < panels < 2^16 から倍にすると上限を越えた)
+            panels = Math.Min(2 * panels, 1 << 16);
             double next = Integrate(panels);
             if (!double.IsFinite(next))
                 throw Failed(NumericStage.Integrator, NativeWrapper.NativeSolveStatus.NonFiniteOutput, $"non-finite integral with {panels} panels (thickness {thickness})");
