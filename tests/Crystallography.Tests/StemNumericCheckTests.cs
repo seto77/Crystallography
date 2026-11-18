@@ -2,13 +2,27 @@ using Xunit;
 
 namespace Crystallography.Tests;
 
+/// <summary>261118Cl 追加: 検査つきの native の入口が要る Theory (無ければ Skip。CRYSTALLOGRAPHY_REQUIRE_NUMERIC_CHECKS=1 なら走らせて落とす)</summary>
+public sealed class NativeNumericTheoryAttribute : TheoryAttribute
+{
+    public NativeNumericTheoryAttribute()
+    {
+        if (!NativeWrapper.NumericChecksAvailable && Environment.GetEnvironmentVariable("CRYSTALLOGRAPHY_REQUIRE_NUMERIC_CHECKS") != "1")
+            Skip = "Crystallography.Native with the numeric-check entry points is required: " + NativeWrapper.NumericChecksUnavailableReason;
+    }
+}
+
 /// <summary>261118Cl 新規 (codex2 第 7・8 回の順の 4): STEM の検査つきの伝播 (全スライスの CBEDSolver_EigenChecked と Eigen2Checked) の失敗の伝わり方。
-/// EVD の未収束を注入すると、その方向で NumericFailureException (段 = EVD) になって完了の Error に届き、正常な run は完了すること</summary>
+/// EVD の未収束を注入すると、その方向で NumericFailureException (段 = EVD) になって完了の Error に届き、正常な run は完了すること (261118Cl 第 9 回: 全スライスの方式と Eigen2 の方式の両方)</summary>
 [Collection("Bethe global settings")]
 public class StemNumericCheckTests
 {
-    private static Exception Run(NativeWrapper.NumericCheckFlags flags)
+    private static Exception Run(NativeWrapper.NumericCheckFlags flags, string allSlice = null)
     {
+        var savedEnv = Environment.GetEnvironmentVariable("RECIPRO_STEM_ALLSLICE"); // 261118Cl (codex2 第 9 回): 全スライスの方式と Eigen2 の方式を明示して両方を通す
+        Environment.SetEnvironmentVariable("RECIPRO_STEM_ALLSLICE", allSlice);
+        try
+        {
         var (crystal, rot) = BetheEigenReuseTests.TiltedSi();
         var bethe = new BetheMethod(crystal) { StemCheckFlagsForTest = flags };
         const int div = 3;
@@ -29,18 +43,24 @@ public class StemNumericCheckTests
         finally { SynchronizationContext.SetSynchronizationContext(context); }
         Assert.True(done.Wait(TimeSpan.FromMinutes(5)), "STEM did not finish");
         return error;
+        }
+        finally { Environment.SetEnvironmentVariable("RECIPRO_STEM_ALLSLICE", savedEnv); }
     }
 
-    [NativeNumericFact]
-    public void NormalRun_Completes()
+    [NativeNumericTheory]
+    [InlineData("1")]
+    [InlineData("0")]
+    public void NormalRun_Completes(string allSlice)
     {
-        Assert.Null(Run(NativeWrapper.NumericCheckFlags.None));
+        Assert.Null(Run(NativeWrapper.NumericCheckFlags.None, allSlice));
     }
 
-    [NativeNumericFact]
-    public void EvdFailure_FailsTheRun_WithTheDirection()
+    [NativeNumericTheory]
+    [InlineData("1")]
+    [InlineData("0")]
+    public void EvdFailure_FailsTheRun_WithTheDirection(string allSlice)
     {
-        var ex = Assert.IsType<NumericFailureException>(Run(NativeWrapper.NumericCheckFlags.TestForceNoConvergence));
+        var ex = Assert.IsType<NumericFailureException>(Run(NativeWrapper.NumericCheckFlags.TestForceNoConvergence, allSlice));
         Assert.Equal(NumericStage.Evd, ex.Failure.Stage);
         Assert.Equal(NativeWrapper.NativeSolveStatus.EvdNoConvergence, ex.Failure.Status);
         Assert.Contains("STEM numeric failure at 200 kV", ex.Message);

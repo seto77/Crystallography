@@ -20,7 +20,7 @@ public class CbedNumericCheckTests
         return dirs;
     }
 
-    private static (Exception Error, BetheMethod.CbedSimulationResult Result, BetheMethod Owner) Run(BetheMethod.Solver solver, Action<BetheMethod> configure = null)
+    private static (Exception Error, BetheMethod.CbedSimulationResult Result, BetheMethod Owner) Run(BetheMethod.Solver solver, Action<BetheMethod> configure = null, double[] thickness = null)
     {
         var (crystal, rot) = BetheEigenReuseTests.TiltedSi();
         var bethe = new BetheMethod(crystal);
@@ -31,7 +31,7 @@ public class CbedNumericCheckTests
         bethe.CBED_Completed += C;
         try
         {
-            bethe.RunCBED(24, 200, rot, [30, 60], Grid(8, 2e-3), false, solver, 4);
+            bethe.RunCBED(24, 200, rot, thickness ?? [30, 60], Grid(8, 2e-3), false, solver, 4);
             Assert.True(done.Wait(TimeSpan.FromMinutes(5)), "CBED did not finish");
         }
         finally { bethe.CBED_Completed -= C; }
@@ -71,7 +71,27 @@ public class CbedNumericCheckTests
         Assert.Null(error);
         var s = result.NumericStats;
         Assert.Equal(BetheMethod.EigenEnabled ? "native-matexp" : "managed-MathNet-evd", s.IntegratorBackend);
+        if (BetheMethod.EigenEnabled) Assert.Equal("none (matrix exponential, output checked)", s.EvdBackend); // 261118Cl (codex2 第 9 回): 行列指数は EVD を使わない
         Assert.True(s.Directions > 0);
         Assert.Null(s.FirstFailure);
+    }
+
+    /// <summary>261118Cl 追加 (codex2 第 9 回): 有限でも値が違う場合を見分ける。Auto (行列指数) と Eigen_Eigen (検査つきの EVD) の円盤の振幅が一致し、
+    /// 厚さが不等間隔なら Auto は EVD へ振り替わる (経路の記録も)</summary>
+    [NativeNumericFact]
+    public void Auto_AgreesWithEigen_AndFallsBackForNonUniformThickness()
+    {
+        var auto = Run(BetheMethod.Solver.Auto).Result;
+        var eigen = Run(BetheMethod.Solver.Eigen_Eigen).Result;
+        double max = 0, diff = 0;
+        for (int t = 0; t < auto.Disks.Length; t++)
+            for (int g = 0; g < auto.Disks[t].Length; g++)
+            {
+                var a = auto.Disks[t][g].RawAmplitudes; var b = eigen.Disks[t][g].RawAmplitudes;
+                for (int r = 0; r < a.Length; r++) { max = Math.Max(max, b[r].Magnitude); diff = Math.Max(diff, (a[r] - b[r]).Magnitude); }
+            }
+        Assert.True(diff <= 1e-8 * max, $"matrix exponential vs EVD: max |Δψ| {diff:e2} of max |ψ| {max:e2}");
+        var nonUniform = Run(BetheMethod.Solver.Auto, thickness: [20, 45, 60]).Result;
+        Assert.Equal("native-checked", nonUniform.NumericStats.IntegratorBackend);
     }
 }

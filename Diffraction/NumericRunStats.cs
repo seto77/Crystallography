@@ -15,8 +15,23 @@ namespace Crystallography;
 /// <summary>261118Cl 追加: 集計する物理量 (源)。KikuchiI・KikuchiIRef は菊池のプロファイルの I と参照強度 I_ref (261118Cl 追加)</summary>
 public enum NumericQuantity { EbsdLocal, EbsdTds, EbsdReinjection, EbsdTotal, KikuchiI, KikuchiIRef }
 
-/// <summary>261118Cl 追加: 段。並びは同じ方向の中の先後 (EVD → 境界 → 積分 → 値の検査)。ValueCheck は観測した値の有限性 (solver の状態ではない)</summary>
-public enum NumericStage { Evd, Boundary, Integrator, ValueCheck }
+/// <summary>261118Cl 追加: 段。並びは同じ方向の中の先後 (EVD → 境界 → 積分 → 値の検査)。ValueCheck は観測した値の有限性 (solver の状態ではない)。
+/// 261118Cl 追加 (codex2 第 9 回): Input = 入口 (入力の非有限・引数)、Unknown = 段の分からない失敗 (native の関数全体の catch: OutOfMemory・Unknown)</summary>
+public enum NumericStage { Evd, Boundary, Integrator, ValueCheck, Input, Unknown }
+
+/// <summary>261118Cl 追加 (codex2 第 9 回): 検査つきの伝播 (CBEDSolver_EigenChecked・CBEDSolver_Eigen2Checked) の状態から、失敗した段と、
+/// native の順序 (入口 → EVD → α の LU → 伝播と出力) から成功が確定する前の段を返す。入口・不明の失敗では前の段を成功と数えない</summary>
+internal static class NumericStages
+{
+    internal static (NumericStage Failed, NumericStage[] SucceededBefore) OfCheckedPropagation(NativeWrapper.NativeSolveStatus status) => status switch
+    {
+        NativeWrapper.NativeSolveStatus.EvdNoConvergence or NativeWrapper.NativeSolveStatus.NonFiniteEigen => (NumericStage.Evd, []),
+        NativeWrapper.NativeSolveStatus.Singular or NativeWrapper.NativeSolveStatus.NonFiniteSolve => (NumericStage.Boundary, [NumericStage.Evd]),
+        NativeWrapper.NativeSolveStatus.NonFiniteOutput => (NumericStage.Integrator, [NumericStage.Evd, NumericStage.Boundary]),
+        NativeWrapper.NativeSolveStatus.NonFiniteInput or NativeWrapper.NativeSolveStatus.Args => (NumericStage.Input, []),
+        _ => (NumericStage.Unknown, []),
+    };
+}
 
 /// <summary>261118Cl 追加: 源の値をどの段階で観測したか (Raw = 丸めの前の生値、AfterClamp = 負・NaN を 0 にする丸めの後)</summary>
 [Flags]
@@ -230,9 +245,10 @@ public sealed class NumericRunStats
     public string Summary()
     {
         var sb = new StringBuilder($"{Kind} {RunState.ToString().ToLowerInvariant()}: directions {Directions} (no beams {NoBeamDirections}); integrator {IntegratorBackend}, EVD {EvdBackend}, native {NativeLibrary}, raw {(RawCapable ? "capable" : "not capable")}; stages");
-        foreach (var stage in new[] { NumericStage.Evd, NumericStage.Boundary, NumericStage.Integrator })
+        foreach (var stage in new[] { NumericStage.Evd, NumericStage.Boundary, NumericStage.Integrator, NumericStage.Input, NumericStage.Unknown })
         {
             var counts = Statuses.Where(kv => kv.Key.Stage == stage).OrderBy(kv => (int)kv.Key.Status).ToArray();
+            if (counts.Length == 0 && stage is NumericStage.Input or NumericStage.Unknown) continue; // 261118Cl (第 9 回): 入口・不明は失敗があるときだけ出す
             sb.Append(stage == NumericStage.Evd ? " " : ", ").Append(stage).Append(' ')
               .Append(counts.Length == 0 ? "unchecked" : string.Join("/", counts.Select(kv => $"{kv.Key.Status} {kv.Value}")));
         }
