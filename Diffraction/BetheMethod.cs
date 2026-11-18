@@ -429,10 +429,15 @@ public partial class BetheMethod
     /// <summary>261106Ch 追加: 固有解を実際に作った条件。共有の AccVoltage/BaseRotation は別の計算でも更新されるため、
     /// 再利用の根拠にできない。方位・表面は参照でなく値を保存し、Surface のその場の書換えも検出する。</summary>
     [Serializable]
+    // private sealed record DiffractionEigenSettings(int MaxNumOfBloch, double Voltage,
+    //     (double, double, double, double, double, double, double, double, double) Rotation,
+    //     (double, double, double) Surface, ElasticIonModel IonModel, AbsorptionElasticModel AbsorptionModel,
+    //     int CandidateMultiplier, BeamBoundaryTieMode BoundaryTieMode); // 261118Cl 変更前
+    // 261118Cl 変更 (殻の打ち切りの採否の測定で発見): 候補の打ち切り方もビームの組を決めるので、固有解を使い回す条件に入れる (入れないと方式を替えても前の組の解を使う)
     private sealed record DiffractionEigenSettings(int MaxNumOfBloch, double Voltage,
         (double, double, double, double, double, double, double, double, double) Rotation,
         (double, double, double) Surface, ElasticIonModel IonModel, AbsorptionElasticModel AbsorptionModel,
-        int CandidateMultiplier, BeamBoundaryTieMode BoundaryTieMode);
+        int CandidateMultiplier, BeamBoundaryTieMode BoundaryTieMode, BeamCandidateCutMode CandidateCut = BeamCandidateCutMode.Legacy);
     private DiffractionEigenSettings eigenSettings, pedEigenSettings; // 261106Ch 追加
 
     public DVec[] EigenValuesPED { get; set; }
@@ -3159,8 +3164,10 @@ public partial class BetheMethod
     /// <returns></returns>
     public Beam[] GetDifractedBeamAmpriltudes(int maxNumOfBloch, double voltage, Matrix3D rotation, double thickness)
     {
+        // var settings = new DiffractionEigenSettings(maxNumOfBloch, voltage, rotation.Tuple, Surface.Tuple,
+        //     ElasticIonModel, AbsorptionElasticModel, BeamCandidateMultiplier, BeamBoundaryTieMode); // 261106Ch 追加 // 261118Cl 変更前
         var settings = new DiffractionEigenSettings(maxNumOfBloch, voltage, rotation.Tuple, Surface.Tuple,
-            ElasticIonModel, AbsorptionElasticModel, BeamCandidateMultiplier, BeamBoundaryTieMode); // 261106Ch 追加
+            ElasticIonModel, AbsorptionElasticModel, BeamCandidateMultiplier, BeamBoundaryTieMode, pinnedRunSettings?.CandidateCut ?? BeamCandidateCut); // 261118Cl 変更: 打ち切り方も
         // if (AccVoltage != voltage) // 261106Ch 変更前: 模型の切替後も以前の U と固有解が残った
         // 261106Ch: U は hkl・電圧・模型の関数。方位・表面・N だけの変更では再計算せず従来の cache 利得を保つ。
         if (AccVoltage != voltage || eigenSettings == null || settings.IonModel != eigenSettings.IonModel
@@ -3252,8 +3259,10 @@ public partial class BetheMethod
     /// <returns></returns>
     public Beam[] GetPrecessionElectronDiffraction(int maxNumOfBloch, double voltage, Matrix3D baseRotation, double thickness, double semiangle, int step)
     {
+        // var settings = new DiffractionEigenSettings(maxNumOfBloch, voltage, baseRotation.Tuple, Surface.Tuple,
+        //     ElasticIonModel, AbsorptionElasticModel, BeamCandidateMultiplier, BeamBoundaryTieMode); // 261106Ch 追加 // 261118Cl 変更前
         var settings = new DiffractionEigenSettings(maxNumOfBloch, voltage, baseRotation.Tuple, Surface.Tuple,
-            ElasticIonModel, AbsorptionElasticModel, BeamCandidateMultiplier, BeamBoundaryTieMode); // 261106Ch 追加
+            ElasticIonModel, AbsorptionElasticModel, BeamCandidateMultiplier, BeamBoundaryTieMode, pinnedRunSettings?.CandidateCut ?? BeamCandidateCut); // 261118Cl 変更: 打ち切り方も
         //波数を計算
         var kvac = UniversalConstants.Convert.EnergyToElectronWaveNumber(voltage);
         //U0を計算
