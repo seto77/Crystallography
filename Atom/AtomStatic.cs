@@ -2954,7 +2954,9 @@ new(4.86738014,0.319974401,4.58872425,
         /// <returns>f_e (単位: Å)。従来の被積分関数と同じく Å で返す (呼び出し側が末尾でまとめて nm² へ換算する)</returns>
         /// <remarks>⚠ <see cref="Prms"/> を持つ Gauss 系のエントリでのみ意味を持つ。Kirkland 用 (Lorentzian) の
         /// エントリは <see cref="Prms"/> が空で、そもそも <see cref="AttachTail"/> も呼ばれないので純 Peng 側 (= 0) へ落ちる。</remarks>
-        internal double ElasticFactorWithTail(double s2, bool useTail = true)
+        //261118Cl シグネチャ変更 (model 追加。codex2 第 3 回: 吸収の模型を呼び出し側で 1 度だけ読んで渡す。null = 従来どおり BetheMethod.AbsorptionElasticModel を読む)。
+        //旧: internal double ElasticFactorWithTail(double s2, bool useTail = true)
+        internal double ElasticFactorWithTail(double s2, bool useTail = true, AbsorptionElasticModel? model = null)
         {
             //260922Cl 追加: TemariHybrid (Temari の TDS 監査 分岐 2)。中性原子 (Valence = 0) の 0 ≤ s ≤ 6 Å⁻¹ だけ Temari の f_e [Å] に替える。
             //  s > 6 は下の従来経路へ落ちる (s ≥ 2.5 なので純 Mott–Bethe)。s = 6 での値の跳び (最大 0.17 % (Pr)、0.041 % を超えるのは 86 元素中 45。261117Cl 訂正: 旧注釈「≤ 0.041 %」は誤り。2026-11-16 に全元素で実測) は監査が許した形 (raw) なので合わせない。
@@ -2962,7 +2964,8 @@ new(4.86738014,0.319974401,4.58872425,
             //  ⚠ AtomicNumber は AttachTail を呼ばれたエントリ (電子用の Peng と 8 Gaussian) だけが持つ。0 なら TemariScattering が null を返す。
             //  ⚠ useTail = false (検証専用の入口) は純 Peng のまま。TemariFactor.Fe は s > 6 で例外を投げるので、s² ≤ 36 の判定を先に置く。
             //  ⚠ s² は丸めで僅かに負になりうる (FactorImaginary の q0 − d) ので 0 へ寄せてから平方根を取る (Fe は負の s でも例外)。
-            if (useTail && Valence == 0 && s2 <= TemariSMax2 && BetheMethod.AbsorptionElasticModel == AbsorptionElasticModel.TemariHybrid
+            //if (useTail && Valence == 0 && s2 <= TemariSMax2 && BetheMethod.AbsorptionElasticModel == AbsorptionElasticModel.TemariHybrid // 261118Cl 変更前
+            if (useTail && Valence == 0 && s2 <= TemariSMax2 && (model ?? BetheMethod.AbsorptionElasticModel) == AbsorptionElasticModel.TemariHybrid // 261118Cl 変更: 渡された模型を優先
                 && TemariScattering(AtomicNumber) is { } temari)
                 return temari.Fe(s2 > 0 ? Math.Sqrt(s2) : 0);
 
@@ -3062,11 +3065,15 @@ new(4.86738014,0.319974401,4.58872425,
         /// <param name="m">温度因子 m (単位: nm^2), NaNの場合はゼロにして計算</param>
         /// <param name="useTail">false にすると高 s テールを使わず旧来の Gauss だけの弾性散乱因子で積分する (数値積分そのものの検証用)。260811Cl 追加</param>
         /// <returns> 戻り値が無次元量</returns>
+        /// <param name="model">261118Cl 追加: 弾性散乱因子の模型。null なら <see cref="BetheMethod.AbsorptionElasticModel"/> を入口で 1 度だけ読む
+        /// (求積点ごとに読み直さないので、積分の途中で設定が変わっても 1 つの値の中で模型が混ざらない)</param>
         //260811Cl シグネチャ変更 (useTail 追加)。旧: public double FactorImaginary(double kV, double s2, double m)
-        public double FactorImaginary(double kV, double s2, double m, bool useTail = true)
+        //261118Cl シグネチャ変更 (model 追加)。旧: public double FactorImaginary(double kV, double s2, double m, bool useTail = true)
+        public double FactorImaginary(double kV, double s2, double m, bool useTail = true, AbsorptionElasticModel? model = null)
         {
             if (double.IsNaN(m) || m == 0)
                 return 0;
+            var mdl = model ?? BetheMethod.AbsorptionElasticModel; // 261118Cl 追加
 
             var gamma = 1 + UniversalConstants.e0 * kV * 1E3 / UniversalConstants.m0 / UniversalConstants.c2;
             var k0 = UniversalConstants.Convert.EnergyToElectronWaveNumber(kV);
@@ -3092,7 +3099,8 @@ new(4.86738014,0.319974401,4.58872425,
                 foreach (var (cos, weight) in PhiFolded)
                 {
                     double d = dAmp * cos;
-                    phiSum += weight * ElasticFactorWithTail((q0 - d) / 100, useTail) * ElasticFactorWithTail((q0 + d) / 100, useTail);
+                    //phiSum += weight * ElasticFactorWithTail((q0 - d) / 100, useTail) * ElasticFactorWithTail((q0 + d) / 100, useTail); // 261118Cl 変更前
+                    phiSum += weight * ElasticFactorWithTail((q0 - d) / 100, useTail, mdl) * ElasticFactorWithTail((q0 + d) / 100, useTail, mdl); // 261118Cl 変更: 入口で読んだ模型
                 }
                 return phiSum * dw * sinθ;
                 //旧 (260811Cl): φ を [0, π] で毎回求積し、DW 項も φ 点ごとに評価していた
@@ -3272,9 +3280,11 @@ new(4.86738014,0.319974401,4.58872425,
         //260812Cl シグネチャ変更 (useTail 追加)。旧: public double FactorImaginaryAnnular(double kV, Vector3DBase g, double m, double inner, double outer, int nTheta = 60, int nPhi = 20)
         //  false にすると高 s テールを使わず旧来の Gauss だけで積分する。**検証専用** (改修が検出器条件ごとに
         //  どれだけ効くかを、同じ求積・同じ経路で比べるため)。本番は既定の true を使う。
-        public double FactorImaginaryAnnular(double kV, Vector3DBase g, double m, double inner, double outer, int nTheta = 60, int nPhi = 20, bool useTail = true)
+        //261118Cl シグネチャ変更 (model 追加。意味は FactorImaginary と同じ)。旧: public double FactorImaginaryAnnular(double kV, Vector3DBase g, double m, double inner, double outer, int nTheta = 60, int nPhi = 20, bool useTail = true)
+        public double FactorImaginaryAnnular(double kV, Vector3DBase g, double m, double inner, double outer, int nTheta = 60, int nPhi = 20, bool useTail = true, AbsorptionElasticModel? model = null)
         {
             if (double.IsNaN(m)) return 0;
+            var mdl = model ?? BetheMethod.AbsorptionElasticModel; // 261118Cl 追加
             var gamma = 1 + UniversalConstants.e0 * kV * 1E3 / UniversalConstants.m0 / UniversalConstants.c2;
             var k0 = UniversalConstants.Convert.EnergyToElectronWaveNumber(kV);
 
@@ -3302,7 +3312,8 @@ new(4.86738014,0.319974401,4.58872425,
                     //260811Cl 変更: Gauss 和の直書きから ElasticFactorWithTail へ (高 s テールの復活)。
                     //  引数は s² [Å⁻²] = (nm⁻² の kMinusG)/100。旧コードが exp(−kMinusG·B/100) と書いていたのと同じ換算。
                     //旧: foreach (var (A, B) in Prms) { f_kMinusG += A * Math.Exp(-kMinusG * B / 100); f_kPlusG += A * Math.Exp(-kPlusG * B / 100); }
-                    double f_kMinusG = ElasticFactorWithTail(kMinusG / 100, useTail), f_kPlusG = ElasticFactorWithTail(kPlusG / 100, useTail);
+                    //double f_kMinusG = ElasticFactorWithTail(kMinusG / 100, useTail), f_kPlusG = ElasticFactorWithTail(kPlusG / 100, useTail); // 261118Cl 変更前
+                    double f_kMinusG = ElasticFactorWithTail(kMinusG / 100, useTail, mdl), f_kPlusG = ElasticFactorWithTail(kPlusG / 100, useTail, mdl); // 261118Cl 変更: 入口で読んだ模型
                     return f_kMinusG * f_kPlusG * (1 - Math.Exp(m * (gLen2 - kMinusG - kPlusG)));
                 }, 0, 2 * Math.PI, nPhi) * sinθ;
             }, k0, inner, outer, nTheta); // 261107Cl 変更: 折れ目 (テールの継ぎ目・Temari の切替・f_x のクランプ) の角で区切る
@@ -3326,9 +3337,11 @@ new(4.86738014,0.319974401,4.58872425,
         /// <returns></returns>
         //260812Cl シグネチャ変更 (useTail 追加。意味は局所版と同じ・検証専用)。
         //旧: public double FactorImaginaryAnnular(double kV, Vector3DBase g, Vector3DBase h, double m, double inner, double outer, int nTheta = 60, int nPhi = 20)
-        public double FactorImaginaryAnnular(double kV, Vector3DBase g, Vector3DBase h, double m, double inner, double outer, int nTheta = 60, int nPhi = 20, bool useTail = true)
+        //261118Cl シグネチャ変更 (model 追加)。旧: public double FactorImaginaryAnnular(double kV, Vector3DBase g, Vector3DBase h, double m, double inner, double outer, int nTheta = 60, int nPhi = 20, bool useTail = true)
+        public double FactorImaginaryAnnular(double kV, Vector3DBase g, Vector3DBase h, double m, double inner, double outer, int nTheta = 60, int nPhi = 20, bool useTail = true, AbsorptionElasticModel? model = null)
         {
             if (double.IsNaN(m)) return 0;
+            var mdl = model ?? BetheMethod.AbsorptionElasticModel; // 261118Cl 追加
             var gamma = 1 + UniversalConstants.e0 * kV * 1E3 / UniversalConstants.m0 / UniversalConstants.c2;
             var k0 = UniversalConstants.Convert.EnergyToElectronWaveNumber(kV);
 
@@ -3353,7 +3366,8 @@ new(4.86738014,0.319974401,4.58872425,
                     double k_h = (dx2 * dx2 + dy2 * dy2 + dz2 * dz2) / 400;
                     //260811Cl 変更: 局所版と同じく高 s テールを持つ弾性散乱因子へ (k_g / k_h は既に s² [Å⁻²])。
                     //旧: foreach (var (A, B) in Prms) { f_k_g += A * Math.Exp(-k_g * B); f_k_h += A * Math.Exp(-k_h * B); }
-                    double f_k_g = ElasticFactorWithTail(k_g, useTail), f_k_h = ElasticFactorWithTail(k_h, useTail);
+                    //double f_k_g = ElasticFactorWithTail(k_g, useTail), f_k_h = ElasticFactorWithTail(k_h, useTail); // 261118Cl 変更前
+                    double f_k_g = ElasticFactorWithTail(k_g, useTail, mdl), f_k_h = ElasticFactorWithTail(k_h, useTail, mdl); // 261118Cl 変更: 入口で読んだ模型
                     return f_k_g * f_k_h * 0.01 * (1 - Math.Exp(m * (g_h - k_g * 100 - k_h * 100)));
                 }, 0, 2 * Math.PI, nPhi) * sinθ;
             }, k0, inner, outer, nTheta); // 261107Cl 変更: 折れ目 (テールの継ぎ目・Temari の切替・f_x のクランプ) の角で区切る

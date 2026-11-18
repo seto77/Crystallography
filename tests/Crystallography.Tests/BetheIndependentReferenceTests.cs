@@ -47,7 +47,8 @@ public class BetheIndependentReferenceTests(Xunit.Abstractions.ITestOutputHelper
 
     [Theory]
     [MemberData(nameof(Crystals))]
-    public void Amplitudes_MatchRk4OfTheSameMatrix(string name)
+    // public void Amplitudes_MatchRk4OfTheSameMatrix(string name) // 261118Cl 変更前 (比べているのは強度なので名前を直した。codex2 第 3 回)
+    public void Intensities_MatchRk4OfTheSameMatrix(string name)
     {
         var crystal = name == "Si" ? Silicon(0.46) : GaAs(0.6); // 吸収あり (U′≠0)
         const double t = 30;
@@ -78,7 +79,14 @@ public class BetheIndependentReferenceTests(Xunit.Abstractions.ITestOutputHelper
         // dψ/dz = 2πi A ψ、ψ(0) = e₀ を RK4 で積分。刻みを半分にして参照自身の収束を確かめる
         var coarse = Rk4(a, t, 4000);
         var fine = Rk4(a, t, 8000);
-        double maxI = beams.Max(b => b.Psi.Magnitude * b.Psi.Magnitude);
+        // double maxI = beams.Max(b => b.Psi.Magnitude * b.Psi.Magnitude); // 261118Cl 変更前: 製品側の最大で規格化し、有限性は見ていなかった
+        // 261118Cl 変更 (codex2 第 3 回): 製品・粗い刻み・細かい刻みの全ビームで実部と虚部が有限であることを先に確かめる
+        //   (Enumerable.Max は一部のビームだけ NaN でも、有限な他のビームで比較が通りうる)。規格化は細かい刻みの参照の最大強度で
+        for (int i = 0; i < n; i++)
+            foreach (var (label, c) in new[] { ("SAED", beams[i].Psi), ("RK4 coarse", coarse[i]), ("RK4 fine", fine[i]) })
+                Assert.True(double.IsFinite(c.Real) && double.IsFinite(c.Imaginary), $"{name}: {label} の振幅が非有限 (ビーム {i} {beams[i].Index})");
+        double maxI = fine.Max(c => c.Magnitude * c.Magnitude);
+        Assert.True(double.IsFinite(maxI) && maxI > 0, $"{name}: 参照の最大強度が正の有限値でない ({maxI})");
         double refConv = Enumerable.Range(0, n).Max(i => Math.Abs(coarse[i].Magnitude * coarse[i].Magnitude - fine[i].Magnitude * fine[i].Magnitude)) / maxI;
         Assert.True(refConv < 1e-11, $"{name}: RK4 参照が収束していない (刻み半分との差 {refConv:e2})");
 

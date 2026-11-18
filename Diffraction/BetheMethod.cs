@@ -1766,13 +1766,18 @@ public partial class BetheMethod
                 double sigmaScale = 2 * Math.PI / kvac * gammaRel / Math.PI / Crystal.Volume;
                 var zeroVec = new Vector3DBase(0, 0, 0);
                 int siteIndex = 0;
+                // 261118Cl 追加 (codex2 第 3 回): 模型と研究用の倍率は区画の入口で 1 度だけ読む (原子ごとに読み直さない)
+                var ionModel = _elasticIonModel; var absModel = AbsorptionElasticModel; var researchScale = BackscatterSourceScaleForResearch;
                 foreach (var atoms in Crystal.Atoms)
                 {
                     double m = Math.Max(atoms.Dsf?.BisoEffective ?? 0, DiffuseScatteringFactor.BisoFloorNm2); // getU の g=0 と同じ m [nm²] (選択規則は Dsf.BisoEffective に集約)。B 未設定の原子は下限で持ち上げるので、その場合 Σσ_n は (2π/k)U'_0,back (=0) より大きい
-                    int sub = _elasticIonModel == ElasticIonModel.Neutral ? 0 : atoms.SubNumberElectron;
-                    var fBack = AtomStatic.ElectronScatteringPeng[atoms.AtomicNumber][sub].FactorImaginaryAnnular(AccVoltage, zeroVec, m, Math.PI / 2, Math.PI, 30, 12);
+                    // int sub = _elasticIonModel == ElasticIonModel.Neutral ? 0 : atoms.SubNumberElectron; // 261118Cl 変更前
+                    // var fBack = AtomStatic.ElectronScatteringPeng[atoms.AtomicNumber][sub].FactorImaginaryAnnular(AccVoltage, zeroVec, m, Math.PI / 2, Math.PI, 30, 12); // 261118Cl 変更前
+                    int sub = ionModel == ElasticIonModel.Neutral ? 0 : atoms.SubNumberElectron; // 261118Cl 変更
+                    var fBack = AtomStatic.ElectronScatteringPeng[atoms.AtomicNumber][sub].FactorImaginaryAnnular(AccVoltage, zeroVec, m, Math.PI / 2, Math.PI, 30, 12, model: absModel); // 261118Cl 変更
                     double sigma = sigmaScale * atoms.Occ * fBack;
-                    if (BackscatterSourceScaleForResearch != null) sigma *= BackscatterSourceScaleForResearch(atoms.AtomicNumber, AccVoltage); // 261107Cl 追加 (研究用の口、既定 null)
+                    // if (BackscatterSourceScaleForResearch != null) sigma *= BackscatterSourceScaleForResearch(atoms.AtomicNumber, AccVoltage); // 261107Cl 追加 (研究用の口、既定 null) // 261118Cl 変更前
+                    if (researchScale != null) sigma *= researchScale(atoms.AtomicNumber, AccVoltage); // 261118Cl 変更: 入口で読んだ参照
                     foreach (var _ in atoms.Atom)
                         sigmaArray[siteIndex++] = sigma;
                 }
@@ -4466,12 +4471,17 @@ public partial class BetheMethod
         var key1 = compose(g.Index);
         var key2 = h is null ? int.MaxValue : compose(h.Index);
         // 261118Cl 追加 (codex2 第 2 回の単位 3): 鍵に電圧・積分角度・求積点数・模型を入れる (条件 UContext ごとの入れ物 + index の組)。研究用の元素ごとの倍率が掛かる annular は値の同一性を保証できないので迂回する
+        // 261118Cl (codex2 第 3 回): 模型 (弾性のイオン・吸収) は uCtx を作るときに 1 度だけ読み、下の評価はすべて uCtx の値を使う (評価の途中で設定が変わっても、鍵と値の模型が食い違わない)。
+        //   研究用の倍率も 1 度だけ読み、判定と呼び出しで同じ参照を使う。入れ物は入口で 1 度だけ取り、探すところから格納までそれを使う
+        //   (途中で Clear されたら、値は捨てられる古い世代へ入り、新しい世代には入らない)
         var uCtx = UContextOf(kV, inner, outer, nTheta, nPhi);
-        bool useCache = cache && !(BackscatterSourceScaleForResearch != null && !double.IsNaN(inner * outer));
+        var researchScale = BackscatterSourceScaleForResearch;
+        bool annular = !double.IsNaN(inner * outer);
+        var bucket = cache && !(researchScale != null && annular) ? uDictionary.Get(uCtx) : null;
         // if (!uDictionary.TryGetValue((key1, key2), out (Complex real, Complex imag) U)) // 261109Cl 変更前: cache:false でも読み出しはしていた (鍵に電圧・積分角度が無いので、前の電圧や後方散乱の値を拾いうる)
         (Complex real, Complex imag) U = default;
         // if (!cache || !uDictionary.TryGetValue((key1, key2), out U)) // 261109Cl 変更 (codex2 第18回): cache:false は読み書きとも迂回 // 261118Cl 変更前
-        if (!useCache || !uDictionary.TryGetValue(uCtx, key1, key2, out U)) // 261118Cl 変更: 完全な鍵
+        if (bucket == null || !bucket.Map.TryGetValue((key1, key2), out U)) // 261118Cl 変更: 完全な鍵 (入口で得た入れ物)
         {
             var index = h is null ? g.Index : g.Index.Minus(h.Index);// (g.H - h.H, g.K - h.K, g.L - h.L) ;
 
@@ -4483,13 +4493,15 @@ public partial class BetheMethod
             //  g≠0 の裸単極子は単位胞電荷中性 Σq=0 を前提とし、非中性では周期格子の正味電荷で ill-defined になるため。
             //  有限部分 (es.Factor) は Σq に依らず well-defined なので維持。判定は uDictionary キャッシュミス時 (= 計算実体時) に毎回行うので
             //  原子編集 (AddAtoms/DeleteAtoms) にも追従し、static モデルの per-instance キャッシュとも鮮度が一致する。
-            bool addMonopole = _elasticIonModel == ElasticIonModel.IonFull && Math.Abs(NetCellCharge()) <= 1e-6;
+            // bool addMonopole = _elasticIonModel == ElasticIonModel.IonFull && Math.Abs(NetCellCharge()) <= 1e-6; // 261118Cl 変更前
+            bool addMonopole = uCtx.Ion == ElasticIonModel.IonFull && Math.Abs(NetCellCharge()) <= 1e-6; // 261118Cl 変更: 入口で読んだ模型
 
             Complex fReal = 0, fImag = 0;
             foreach (var atoms in Crystal.Atoms)
             {
                 //260613Cl ElasticIonModel 分岐: Neutral=中性原子(sub→0 強制, [z][0] は常に中性エントリ) / IonScreened(旧挙動)=割当イオンの有限部分 / IonFull=有限+g≠0 単極子
-                int sub = _elasticIonModel == ElasticIonModel.Neutral ? 0 : atoms.SubNumberElectron;
+                // int sub = _elasticIonModel == ElasticIonModel.Neutral ? 0 : atoms.SubNumberElectron; // 261118Cl 変更前
+                int sub = uCtx.Ion == ElasticIonModel.Neutral ? 0 : atoms.SubNumberElectron; // 261118Cl 変更: 入口で読んだ模型
                 var es = AtomStatic.ElectronScatteringPeng[atoms.AtomicNumber][sub];//5 gaussian
                 //var es = AtomStatic.ElectronScatteringPeng[atoms.AtomicNumber][atoms.SubNumberElectron];//260613Cl 旧: 常に割当イオン (= IonScreened 固定)
                 //var es = AtomStatic.ElectronScatteringEightGaussian[atoms.AtomicNumber];//8 gaussian
@@ -4522,10 +4534,15 @@ public partial class BetheMethod
                                 m = 0;
 
                             // imag = m == 0 ? 0 : double.IsNaN(inner * outer) ? es.FactorImaginary(kV, s2, m) : // 261110Cl 変更前
-                            imag = m == 0 ? 0 : double.IsNaN(inner * outer) ? FactorImaginaryMemo(es, atoms.AtomicNumber, sub, kV, s2, m) : // 261110Cl 変更: (元素, 電圧, s², m) で記憶 (値は同じ)
-                                h is null ? es.FactorImaginaryAnnular(kV, g.Vec, m, inner, outer, nTheta, nPhi) : es.FactorImaginaryAnnular(kV, g.Vec, h.Vec, m, inner, outer, nTheta, nPhi);//非弾性散乱因子 答えは無次元
-                            if (BackscatterSourceScaleForResearch != null && !double.IsNaN(inner * outer)) // 261107Cl 追加 (研究用の口、既定 null): annular の分だけ元素ごとの倍率
-                                imag *= BackscatterSourceScaleForResearch(atoms.AtomicNumber, kV);
+                            // imag = m == 0 ? 0 : double.IsNaN(inner * outer) ? FactorImaginaryMemo(es, atoms.AtomicNumber, sub, kV, s2, m) : // 261110Cl 変更: (元素, 電圧, s², m) で記憶 (値は同じ) // 261118Cl 変更前
+                            //     h is null ? es.FactorImaginaryAnnular(kV, g.Vec, m, inner, outer, nTheta, nPhi) : es.FactorImaginaryAnnular(kV, g.Vec, h.Vec, m, inner, outer, nTheta, nPhi);//非弾性散乱因子 答えは無次元
+                            // if (BackscatterSourceScaleForResearch != null && !double.IsNaN(inner * outer)) // 261107Cl 追加 (研究用の口、既定 null): annular の分だけ元素ごとの倍率
+                            //     imag *= BackscatterSourceScaleForResearch(atoms.AtomicNumber, kV);
+                            // 261118Cl 変更 (codex2 第 3 回): 吸収の模型と研究用の倍率は入口で読んだ値を渡す
+                            imag = m == 0 ? 0 : !annular ? FactorImaginaryMemo(es, atoms.AtomicNumber, sub, kV, s2, m, uCtx.Absorption) :
+                                h is null ? es.FactorImaginaryAnnular(kV, g.Vec, m, inner, outer, nTheta, nPhi, model: uCtx.Absorption) : es.FactorImaginaryAnnular(kV, g.Vec, h.Vec, m, inner, outer, nTheta, nPhi, model: uCtx.Absorption);//非弾性散乱因子 答えは無次元
+                            if (researchScale != null && annular) // 261107Cl 追加 (研究用の口、既定 null): annular の分だけ元素ごとの倍率
+                                imag *= researchScale(atoms.AtomicNumber, kV);
                         }
                     }
                     var d = Exp(-m * s2 + TwoPiI * (atom * index)) * atoms.Occ; //20240524 位相項 (TwoPiI・・・)の符号をプラスに変更 (これで、対称心の結晶の計算が上手くいくはず 三菱・中村)
@@ -4541,8 +4558,8 @@ public partial class BetheMethod
             // if (kV > 0) // 261108Cl 変更前
             // if (kV > 0 && cache) // 261118Cl 変更前
             //     uDictionary.TryAdd((key1, key2), U);
-            if (kV > 0 && useCache) // 261118Cl 変更: 完全な鍵で格納
-                uDictionary.TryAdd(uCtx, key1, key2, U);
+            if (kV > 0 && bucket != null) // 261118Cl 変更: 完全な鍵で格納 (入口で得た入れ物へ)
+                bucket.Map.TryAdd((key1, key2), U);
         }
         return U;
     }
@@ -4551,11 +4568,14 @@ public partial class BetheMethod
     /// 件数が上限を超えたら空にする (プロセス全体で共有、スレッドに安全)。弾性の因子の模型 (AbsorptionElasticModel、プロセス全体の切り替え) も鍵に入れる</summary>
     static readonly ConcurrentDictionary<(int z, int sub, double kV, double s2, double m, AbsorptionElasticModel model), double> s_factorImaginaryMemo = new();
     const int FactorImaginaryMemoLimit = 2_000_000;
-    static double FactorImaginaryMemo(AtomStatic.ES es, int z, int sub, double kV, double s2, double m)
+    // static double FactorImaginaryMemo(AtomStatic.ES es, int z, int sub, double kV, double s2, double m) // 261118Cl 変更前 (模型は鍵を作るときと積分の求積点で別々に読んでいた)
+    static double FactorImaginaryMemo(AtomStatic.ES es, int z, int sub, double kV, double s2, double m, AbsorptionElasticModel model) // 261118Cl 変更 (codex2 第 3 回): 模型は呼び出し側で読んだ値を鍵と積分の両方に使う
     {
-        var key = (z, sub, kV, s2, m, AbsorptionElasticModel);
+        // var key = (z, sub, kV, s2, m, AbsorptionElasticModel); // 261118Cl 変更前
+        var key = (z, sub, kV, s2, m, model);
         if (s_factorImaginaryMemo.TryGetValue(key, out var v)) return v;
-        v = es.FactorImaginary(kV, s2, m);
+        // v = es.FactorImaginary(kV, s2, m); // 261118Cl 変更前
+        v = es.FactorImaginary(kV, s2, m, model: model);
         if (s_factorImaginaryMemo.Count >= FactorImaginaryMemoLimit) s_factorImaginaryMemo.Clear();
         s_factorImaginaryMemo.TryAdd(key, v);
         return v;
@@ -4609,7 +4629,7 @@ public partial class BetheMethod
         const int key2 = int.MaxValue; // h = null に相当するキー
         // キャッシュヒット → Beam 生成なしで即返却 (= 割り当てゼロ)
         // if (uDictionary.TryGetValue((key1, key2), out (Complex real, Complex imag) U)) // 261118Cl 変更前
-        if (uDictionary.TryGetValue(UContextOf(kV, double.NaN, double.NaN, 60, 20), key1, key2, out (Complex real, Complex imag) U)) // 261118Cl 変更: 完全な鍵 (全立体角・この電圧・今の模型)
+        if (uDictionary.Get(UContextOf(kV, double.NaN, double.NaN, 60, 20)).Map.TryGetValue((key1, key2), out (Complex real, Complex imag) U)) // 261118Cl 変更: 完全な鍵 (全立体角・この電圧・今の模型)
             return U;
         // キャッシュミス (初回のみ) → 既存メソッドに委譲。一時 Beam は 1 度だけ生成される。
         return getU(kV, new Beam(index, vec));
@@ -4630,7 +4650,7 @@ public partial class BetheMethod
         var key1 = compose(index);
         const int key2 = int.MaxValue; // h = null に相当するキー
         // if (uDictionary.TryGetValue((key1, key2), out (Complex real, Complex imag) U)) // 261118Cl 変更前: 角度範囲を区別せず、同じ index の全立体角の値を返しえた (A1 と同じ型)
-        if (BackscatterSourceScaleForResearch == null && uDictionary.TryGetValue(UContextOf(kV, inner, outer, nTheta, nPhi), key1, key2, out (Complex real, Complex imag) U)) // 261118Cl 変更: 角度範囲・求積点数まで含む鍵
+        if (BackscatterSourceScaleForResearch == null && uDictionary.Get(UContextOf(kV, inner, outer, nTheta, nPhi)).Map.TryGetValue((key1, key2), out (Complex real, Complex imag) U)) // 261118Cl 変更: 角度範囲・求積点数まで含む鍵
             return U; // cache hit → vec 計算・割り当てゼロ
         return getU(kV, new Beam(index, vq + vi - vj), null, inner, outer, nTheta, nPhi); // miss 時のみ vec/Beam を生成
     }
@@ -4660,29 +4680,37 @@ public partial class BetheMethod
     /// <summary>261118Cl 追加: getU のキャッシュ。条件 (<see cref="UContext"/>) ごとの入れ物の中を、従来どおり index の組 (int 2 つ) で引く。
     /// 1 回の計算の中では条件が変わらないので、直前に使った入れ物を覚えて条件の比較だけで済ませる (ハッシュは入れ物を替えるときだけ)。
     /// 9 つの欄の鍵を毎回ハッシュする形では、キャッシュに当たる getU が 5.2 → 8.4 ns に遅くなった (BenchmarkDotNet、UCacheKeyBenchmark)。
-    /// 直前の入れ物はクラスの参照 (volatile) で持つので、並列の読み書きで途中の値を読まない。Clear はその記憶も消す</summary>
+    /// <para>261118Cl 変更 (codex2 第 3 回): 入れ物の一覧と「直前の入れ物」をまとめて 1 つの世代 (<see cref="Generation"/>) にし、Clear は世代の参照を
+    /// 新しいものへ差し替えるだけにした。以前は Clear (一覧を空にし、直前を null に) と、別のスレッドの「入れ物を取る → 直前に書く」が重なると、
+    /// 消したはずの入れ物が直前として戻りえた。また getU は格納のときに入れ物を取り直していたので、Clear の前の条件で計算した値が新しい一覧へ入りえた。
+    /// 今は getU が入口で <see cref="Get"/> を 1 度だけ呼び、探すところから格納までその入れ物を使う。Clear と重なった値は古い世代に入り、読まれずに捨てられる</para></summary>
     private sealed class UCache
     {
-        private sealed class Bucket(UContext ctx)
+        public sealed class Bucket(UContext ctx)
         {
             public readonly UContext Ctx = ctx;
             public readonly ConcurrentDictionary<(int Key1, int Key2), (Complex Real, Complex Imag)> Map = new();
         }
-        private readonly ConcurrentDictionary<UContext, Bucket> buckets = new();
-        private volatile Bucket last;
-
-        private Bucket Get(in UContext ctx)
+        private sealed class Generation
         {
-            var b = last;
+            public readonly ConcurrentDictionary<UContext, Bucket> Buckets = new();
+            public volatile Bucket Last;
+        }
+        private volatile Generation gen = new();
+
+        /// <summary>条件 ctx の入れ物を今の世代から得る。呼び出し側は、得た入れ物を探すところから格納まで使い続けること</summary>
+        public Bucket Get(in UContext ctx)
+        {
+            var g = gen;
+            var b = g.Last;
             if (b != null && b.Ctx.Same(ctx)) return b;
-            b = buckets.GetOrAdd(ctx, static c => new Bucket(c));
-            last = b;
+            b = g.Buckets.GetOrAdd(ctx, static c => new Bucket(c));
+            g.Last = b;
             return b;
         }
 
-        public bool TryGetValue(in UContext ctx, int key1, int key2, out (Complex Real, Complex Imag) u) => Get(ctx).Map.TryGetValue((key1, key2), out u);
-        public void TryAdd(in UContext ctx, int key1, int key2, (Complex Real, Complex Imag) u) => Get(ctx).Map.TryAdd((key1, key2), u);
-        public void Clear() { last = null; buckets.Clear(); }
+        /// <summary>世代ごと差し替える (古い世代を使っている途中の getU は、そのまま古い世代へ書いて終わる)</summary>
+        public void Clear() => gen = new Generation();
     }
 
     #region STEM-EDX U_ion (260801Cl 追加)
