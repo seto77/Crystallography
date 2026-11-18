@@ -137,9 +137,13 @@ public sealed class KikuchiBandProfile
     internal NumericStatsAccumulator RawAccumulator { get; init; }
     /// <summary>261118Cl 追加: 積分の経路 (managed-2beam / managed-row)</summary>
     internal string RawBackend { get; init; } = "";
+    /// <summary>261118Cl 追加 (codex2 第 8 回): 固有値の経路 (2 ビームは managed-closed-form、系統列は native-legacy-unchecked か managed-MathNet)</summary>
+    internal string RawEvdBackend { get; init; } = "";
     private NumericRunStats numericStats;
-    /// <summary>261118Cl 追加: I・I_ref の生値の集計 (初めて読んだときに作る。無効のプロファイルは null)</summary>
-    public NumericRunStats NumericStats => RawAccumulator == null ? null : numericStats ??= new NumericRunStats("Kikuchi", NumericRunState.Completed, RawBackend, RawBackend, true, RawAccumulator);
+    /// <summary>261118Cl 追加: I・I_ref の生値の集計 (初めて読んだときに作る。無効のプロファイルは null)。
+    /// 261118Cl (codex2 第 8 回): 観測した生値に NaN・±∞ があれば run の状態は Failed で、最初の失敗の場所 (サンプル点 = 深さの番号) を持つ (見える値 C は従来どおり 0 にする)</summary>
+    public NumericRunStats NumericStats => RawAccumulator == null ? null
+        : numericStats ??= new NumericRunStats("Kikuchi", RawAccumulator.FirstFailure is null ? NumericRunState.Completed : NumericRunState.Failed, RawBackend, RawEvdBackend, true, RawAccumulator);
 
     //260806Cl /simplify2 削除: Interpolate(double)。renderer が補間をインライン化して以降呼び出しゼロで、
     //正しさに敏感なインデックス計算の複製 (ドリフト危険) になっていた。必要になったら renderer 側の実装を移す。
@@ -257,6 +261,7 @@ public static class KikuchiProfileCalculator
         var iArr = new double[n];
         var irefArr = new double[n];
         var rawI = new double[n]; var rawIRef = new double[n]; // 261118Cl 追加 (codex2 第 7 回・実験 (b)): 正規化の前の生値
+        var rawIMinus = opt.RowOrder > 0 ? null : new double[n]; // 261118Cl 追加 (codex2 第 8 回): 2 ビームは ±g を足す前に別々に観測する (片方の負を他方の正が隠さない)
         double maxIref = 0;
         //260807Cl: row 経路は ±g が同じ基底に入るので直進チャネルが 1 本。2 ビーム経路は
         //±g 2 メンバーの和なので 2 本。差し引く参照強度の本数がここで決まる
@@ -277,7 +282,8 @@ public static class KikuchiProfileCalculator
                 var dM = ComputePoint(snap, geo, xs[i], thickness, opt, -1);
                 iArr[i] = dP.I + dM.I;
                 irefArr[i] = dP.IRef; // I_ref は直進チャネルのみで member 非依存 (dM.IRef と同値)
-                rawI[i] = dP.RawI + dM.RawI; rawIRef[i] = dP.RawIRef; // 261118Cl 追加
+                // rawI[i] = dP.RawI + dM.RawI; rawIRef[i] = dP.RawIRef; // 261118Cl 追加 (1 時間より前の版)
+                rawI[i] = dP.RawI; rawIMinus[i] = dM.RawI; rawIRef[i] = dP.RawIRef; // 261118Cl 変更 (第 8 回): +g と −g を別々に
             }
             maxIref = Math.Max(maxIref, irefArr[i]);
         }
@@ -297,6 +303,7 @@ public static class KikuchiProfileCalculator
         foreach (var r in rawIRef) if (double.IsFinite(r) && r > rawScale) rawScale = r;
         var rawScales = new double[n]; Array.Fill(rawScales, rawScale);
         rawAcc.Observe(NumericQuantity.KikuchiI, NumericObservation.Raw, rawI, 0, 0, rawScales);
+        if (rawIMinus != null) rawAcc.Observe(NumericQuantity.KikuchiI, NumericObservation.Raw, rawIMinus, 0, 1, rawScales); // 261118Cl (第 8 回): −g の系 (方向の番号 1)
         rawAcc.Observe(NumericQuantity.KikuchiIRef, NumericObservation.Raw, rawIRef, 0, 0, rawScales);
         return new KikuchiBandProfile
         {
@@ -307,6 +314,7 @@ public static class KikuchiProfileCalculator
             DynamicalRank = Math.Sqrt(sumSq / n),
             Valid = true,
             RawAccumulator = rawAcc, RawBackend = row != null ? "managed-row" : "managed-2beam", // 261118Cl 追加
+            RawEvdBackend = row == null ? "managed-closed-form" : NativeWrapper.Enabled ? "native-legacy-unchecked" : "managed-MathNet", // 261118Cl 追加 (第 8 回。系統列の EVD の分岐は ComputeRowPoint と同じ判定)
         };
     }
 
@@ -352,7 +360,7 @@ public static class KikuchiProfileCalculator
     public static NumericRunStats CombineNumericStats(IReadOnlyList<KikuchiBandProfile> profiles)
     {
         var total = new NumericStatsAccumulator();
-        var backends = new SortedSet<string>();
+        var backends = new SortedSet<string>(); var evdBackends = new SortedSet<string>(); bool failed = false;
         for (int k = 0; k < profiles.Count; k++)
         {
             if (profiles[k]?.RawAccumulator is not { } a) continue;
@@ -367,10 +375,9 @@ public static class KikuchiProfileCalculator
             if (a.FirstFailure is { } ff) shifted.RecordFailure(ff with { Direction = k });
             shifted.Directions = 1;
             total.Merge(shifted);
-            backends.Add(profiles[k].RawBackend);
+            backends.Add(profiles[k].RawBackend); evdBackends.Add(profiles[k].RawEvdBackend); failed |= a.FirstFailure is not null;
         }
-        var backend = string.Join("+", backends);
-        return new NumericRunStats("Kikuchi", NumericRunState.Completed, backend, backend, true, total);
+        return new NumericRunStats("Kikuchi", failed ? NumericRunState.Failed : NumericRunState.Completed, string.Join("+", backends), string.Join("+", evdBackends), true, total); // 261118Cl (第 8 回): 失敗を伝える・EVD を分ける
     }
 
     #endregion

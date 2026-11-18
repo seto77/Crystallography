@@ -32,7 +32,9 @@ public class KikuchiRawStatsTests
             Assert.Equal("Kikuchi", s.Kind);
             Assert.Equal(rowOrder > 0 ? "managed-row" : "managed-2beam", s.IntegratorBackend);
             Assert.Equal(NumericObservation.Raw, s.Quantities[NumericQuantity.KikuchiI].Observation);
-            Assert.Equal(p.X.Length, s.Quantities[NumericQuantity.KikuchiI].Evaluated);
+            Assert.Equal(p.X.Length * (rowOrder > 0 ? 1 : 2), s.Quantities[NumericQuantity.KikuchiI].Evaluated); // 2 ビームは ±g を別々に観測 (codex2 第 8 回)
+            Assert.Equal(rowOrder > 0 ? (NativeWrapper.Enabled ? "native-legacy-unchecked" : "managed-MathNet") : "managed-closed-form", s.EvdBackend);
+            Assert.Equal(NumericRunState.Completed, s.RunState);
             Assert.Equal(p.X.Length, s.Quantities[NumericQuantity.KikuchiIRef].Evaluated);
             Assert.Contains("KikuchiI raw", s.Summary());
             Assert.DoesNotContain("Ebsd", s.Summary()); // 種類の違う源は出さない
@@ -40,7 +42,7 @@ public class KikuchiRawStatsTests
         Assert.Null(profiles.FirstOrDefault(p => !p.Valid)?.NumericStats);
         var combined = KikuchiProfileCalculator.CombineNumericStats(profiles);
         Assert.Equal(valid.Length, combined.Directions);
-        Assert.Equal(valid.Sum(p => p.X.Length), combined.Quantities[NumericQuantity.KikuchiI].Evaluated);
+        Assert.Equal(valid.Sum(p => p.X.Length * (rowOrder > 0 ? 1 : 2)), combined.Quantities[NumericQuantity.KikuchiI].Evaluated);
         if (rowOrder == 0)
             foreach (var x in new[] { -1.5, -1.0, -0.3, 0.0, 0.7, 1.0 })
             {
