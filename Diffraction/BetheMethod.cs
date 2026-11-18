@@ -615,9 +615,15 @@ public partial class BetheMethod
         if (thickCopy.Length == 0 || thickCopy.Any(t => !double.IsFinite(t))) throw new ArgumentException("thickness must have at least one finite value", nameof(thickness));
         int n = dirsCopy.Length, width = (int)Math.Round(Math.Sqrt(n));
         if (n == 0 || width * width != n) throw new ArgumentException($"the number of beam directions ({n}) must be a positive square number", nameof(beamDirections));
-        foreach (var d in dirsCopy)
-            if (d is null || !double.IsFinite(d.X) || !double.IsFinite(d.Y) || !double.IsFinite(d.Z) || d.Length2 == 0)
-                throw new ArgumentException("each beam direction must be a finite non-zero vector", nameof(beamDirections));
+        // 261118Cl 変更 (レビュー wf_f13be5ce-81b): 有限で 0 でないことを求めるのは円の中 (計算する) の方向だけ。円の外の方向は計算しないので、
+        //   収束半角が大きく四隅が NaN になる格子 (以前は計算できた) も受け付ける。null はどこでも拒む (位置の計算で読む)
+        for (int i = 0; i < n; i++)
+        {
+            var d = dirsCopy[i];
+            if (d is null) throw new ArgumentException("beam directions must not contain null", nameof(beamDirections));
+            if (CbedInside(i, width) && (!double.IsFinite(d.X) || !double.IsFinite(d.Y) || !double.IsFinite(d.Z) || d.Length2 == 0))
+                throw new ArgumentException("each beam direction inside the disk must be a finite non-zero vector", nameof(beamDirections));
+        }
         if (new[] { rotCopy.E11, rotCopy.E12, rotCopy.E13, rotCopy.E21, rotCopy.E22, rotCopy.E23, rotCopy.E31, rotCopy.E32, rotCopy.E33 }.Any(x => !double.IsFinite(x)))
             throw new ArgumentException("rotation must be finite", nameof(rotation));
 

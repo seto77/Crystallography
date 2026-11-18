@@ -142,7 +142,7 @@ public static partial class NativeWrapper
     {
         RequireNumericChecks();
         int tDim = thickness?.Length ?? 0;
-        RequireLength(potential, (long)dim * dim, nameof(potential)); RequireLength(psi0, dim, nameof(psi0)); RequireLength(result, (long)dim * tDim, nameof(result)); RequireDiag(diag);
+        RequireLength(potential, (long)dim * dim, nameof(potential)); RequireLength(psi0, dim, nameof(psi0)); if (tDim > 0) RequireLength(result, (long)dim * tDim, nameof(result)); RequireDiag(diag); // 261118Cl: 厚さが空なら result は読まない (native と同じ約束)
         fixed (Complex* p = potential, s = psi0, r = result)
         fixed (double* t = thickness, d = diag)
             return (NativeSolveStatus)_CBEDSolver_EigenChecked(dim, (double*)p, (double*)s, tDim, t, (double*)r, (int)flags, d, diag?.Length ?? 0);
@@ -155,7 +155,7 @@ public static partial class NativeWrapper
         RequireNumericChecks();
         int tDim = thickness?.Length ?? 0;
         RequireLength(potential, (long)dim * dim, nameof(potential)); RequireLength(psi0, dim, nameof(psi0)); RequireLength(values, dim, nameof(values));
-        RequireLength(vectors, (long)dim * dim, nameof(vectors)); RequireLength(alphas, dim, nameof(alphas)); RequireLength(tg, (long)dim * tDim, nameof(tg)); RequireDiag(diag);
+        RequireLength(vectors, (long)dim * dim, nameof(vectors)); RequireLength(alphas, dim, nameof(alphas)); if (tDim > 0) RequireLength(tg, (long)dim * tDim, nameof(tg)); RequireDiag(diag); // 261118Cl: 厚さが空なら tg は読まない
         fixed (Complex* p = potential, s = psi0, v = values, w = vectors, a = alphas, g = tg)
         fixed (double* t = thickness, d = diag)
             return (NativeSolveStatus)_CBEDSolver_Eigen2Checked(dim, (double*)p, (double*)s, tDim, t, (double*)v, (double*)w, (double*)a, (double*)g, (int)flags, d, diag?.Length ?? 0);

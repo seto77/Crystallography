@@ -153,6 +153,7 @@ public class NativeNumericChecksTests
         var r2 = new Complex[2];
         Assert.Equal(NativeWrapper.NativeSolveStatus.NonFiniteOutput, NativeWrapper.CBEDSolver_EigenChecked(2, grow, [1, 0], [1000.0], r2));
         Assert.False(double.IsFinite(r2[0].Real) && double.IsFinite(r2[0].Imaginary)); // NaN で埋めずに、計算した非有限の値が残る (行列の積の 0×∞ で他の成分も NaN になりうる)
+        Assert.Contains(r2, z => BitConverter.DoubleToInt64Bits(z.Real) != 0x7ff8000000000000L || BitConverter.DoubleToInt64Bits(z.Imaginary) != 0x7ff8000000000000L); // 261118Cl (レビュー): 埋める NaN (正の quiet NaN) だけではない = 計算した値が残っている
     }
 
     /// <summary>261118Cl 追加 (codex2 第 6 回): _CBEDSolver_Eigen2Checked 自体。正常なら Vα = ψ₀ (境界の残差) と厚さ 0 の Tg = ψ₀、強制の未収束なら 4 つの出力が全部 NaN</summary>
@@ -199,6 +200,47 @@ public class NativeNumericChecksTests
         Assert.Equal(NativeWrapper.NativeSolveStatus.Ok, NativeWrapper.InverseChecked(b, vectors, new Complex[b * b], diag: diag));
         Assert.Equal(1.0, diag[0]); // 単位行列のピボットの比
         Assert.True(double.IsNaN(diag[1]) && double.IsNaN(diag[2]) && double.IsNaN(diag[3]), "書かなかった欄は NaN");
+    }
+
+    /// <summary>261118Cl 追加 (レビュー wf_f13be5ce-81b): 局所の源の独立の参照。2 つの EBSD の入口を共通の本体にしたので、局所の値を別の式で縛る。
+    /// I(t) = ∫₀ᵗ Σ_n σ_n |Σ_j B_nj e^{2πiγ_j z}|² dz (B = P·C·diag(α)) を深さの Simpson で積分し、生値の入口と旧の入口 (正の値) と比べる。非等間隔の厚さ</summary>
+    [NativeNumericFact]
+    public void EbsdLocalSource_MatchesSimpsonOfTheWavefield()
+    {
+        Assert.True(NativeWrapper.NumericChecksAvailable, NativeWrapper.NumericChecksUnavailableReason);
+        const int b = 6, nAtoms = 3;
+        var r = RandomMatrix(b, 21, 0.0);
+        var a = new Complex[b * b]; // 実対称 (エルミート) に吸収 (対角の正の虚部) を足す = 固有値の虚部が正で、深さで減衰する
+        for (int i = 0; i < b; i++) for (int j = 0; j < b; j++) a[j * b + i] = (r[j * b + i] + r[i * b + j]) / 2;
+        for (int i = 0; i < b; i++) a[i * b + i] += new Complex(0, 0.004 * (1 + i));
+        var values = new Complex[b]; var vectors = new Complex[b * b];
+        Assert.Equal(NativeWrapper.NativeSolveStatus.Ok, NativeWrapper.EigenSolverChecked(b, a, values, vectors));
+        var psi0 = new Complex[b]; psi0[0] = 1; var alpha = new Complex[b];
+        Assert.Equal(NativeWrapper.NativeSolveStatus.Ok, NativeWrapper.PartialPivLuSolveChecked(b, vectors, psi0, alpha));
+        var rng = new Random(22);
+        var phase = new Complex[nAtoms * b]; for (int i = 0; i < phase.Length; i++) phase[i] = Complex.FromPolarCoordinates(1, rng.NextDouble() * 6.28);
+        double[] sigma = [0.4, 0.25, 0.1], thick = [3.0, 8.0];
+        var raw = new double[thick.Length];
+        Assert.Equal(NativeWrapper.NativeSolveStatus.Ok, NativeWrapper.EBSDSolverRaw(b, values, vectors, alpha, phase, sigma, thick, raw));
+        var legacy = NativeWrapper.EBSDSolver(b, values, vectors, alpha, phase, sigma, thick);
+        // B(n,j) = Σ_g P(n,g) C(g,j) α_j (P は列優先 nAtoms × b、C は列優先 b × b)
+        var B = new Complex[nAtoms, b];
+        for (int n = 0; n < nAtoms; n++) for (int j = 0; j < b; j++) { Complex s = 0; for (int g = 0; g < b; g++) s += phase[g * nAtoms + n] * vectors[j * b + g]; B[n, j] = s * alpha[j]; }
+        double Density(double z)
+        {
+            double sum = 0;
+            for (int n = 0; n < nAtoms; n++) { Complex psi = 0; for (int j = 0; j < b; j++) psi += B[n, j] * Complex.Exp(new Complex(0, 2 * Math.PI) * values[j] * z); sum += sigma[n] * (psi * Complex.Conjugate(psi)).Real; }
+            return sum;
+        }
+        for (int ti = 0; ti < thick.Length; ti++)
+        {
+            const int steps = 4000; double h = thick[ti] / steps, s = 0;
+            for (int i = 0; i <= steps; i++) s += (i == 0 || i == steps ? 1 : i % 2 == 0 ? 2 : 4) * Density(i * h);
+            double reference = s * h / 3;
+            output.WriteLine($"t {thick[ti]}: native raw {raw[ti]:r}, Simpson {reference:r}, rel {(raw[ti] - reference) / reference:e2}");
+            Assert.True(Math.Abs(raw[ti] - reference) <= 1e-9 * Math.Abs(reference), $"t {thick[ti]}: raw {raw[ti]} vs Simpson {reference}");
+            Assert.True(reference > 0 && Math.Abs(legacy[ti] - reference) <= 1e-9 * reference, $"t {thick[ti]}: legacy {legacy[ti]} vs Simpson {reference}");
+        }
     }
 
     /// <summary>旧の EBSD の入口 = 生値に旧の意味の丸めを当てたもの (ビット単位)。負の σ と NaN の σ で丸めを通す</summary>

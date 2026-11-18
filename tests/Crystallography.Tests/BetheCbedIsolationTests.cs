@@ -23,17 +23,18 @@ public class BetheCbedIsolationTests
     private static (Crystal Crystal, Matrix3D Rotation) Si() => BetheEigenReuseTests.TiltedSi();
 
     /// <summary>CBED を走らせて完了を待つ。onFirstProgress は最初の進捗の通知で 1 度だけ (計算のスレッドとは別のスレッドで) 呼ぶ</summary>
+    // 261118Cl 変更 (レビュー wf_f13be5ce-81b): 取消は起動の直後に出す (cancelImmediately、決定的)。最初の進捗の処理が終わるのを待ってから戻る
     private static (BetheMethod.CbedSimulationResult Result, RunWorkerCompletedEventArgsLite Done) Run(BetheMethod bethe, Matrix3D rot, Vector3DBase[] dirs, double[] thick,
-        Action onFirstProgress = null, bool cancelAtFirstProgress = false)
+        Action onFirstProgress = null, bool cancelImmediately = false, bool releasePreviousResult = false)
     {
         using var done = new ManualResetEventSlim();
+        using var handlerDone = new ManualResetEventSlim();
         RunWorkerCompletedEventArgsLite lite = default;
         int fired = 0;
         void P(object s, System.ComponentModel.ProgressChangedEventArgs e)
         {
             if (Interlocked.Exchange(ref fired, 1) != 0) return;
-            if (cancelAtFirstProgress) bethe.CancelCBED();
-            onFirstProgress?.Invoke();
+            try { onFirstProgress?.Invoke(); } finally { handlerDone.Set(); }
         }
         void C(object s, System.ComponentModel.RunWorkerCompletedEventArgs e)
         {
@@ -44,8 +45,10 @@ public class BetheCbedIsolationTests
         bethe.CBED_ProgressChanged += P; bethe.CBED_Completed += C;
         try
         {
-            bethe.RunCBED(40, 200, rot, thick, dirs, false, BetheMethod.Solver.Eigen_Eigen, 4);
+            bethe.RunCBED(40, 200, rot, thick, dirs, false, BetheMethod.Solver.Eigen_Eigen, 4, releasePreviousResult: releasePreviousResult);
+            if (cancelImmediately) bethe.CancelCBED();
             Assert.True(done.Wait(TimeSpan.FromMinutes(5)), "CBED did not finish");
+            if (Volatile.Read(ref fired) != 0) Assert.True(handlerDone.Wait(TimeSpan.FromMinutes(1)), "the progress handler did not finish");
         }
         finally { bethe.CBED_ProgressChanged -= P; bethe.CBED_Completed -= C; }
         return (lite.Result, lite);
@@ -110,13 +113,16 @@ public class BetheCbedIsolationTests
         var dirs = Grid(12, 2e-3); double[] thick = [30, 60];
         var expected = Run(new BetheMethod(crystal), rot, dirs, thick).Result;
         var owner = new BetheMethod(crystal);
-        Exception second = null;
+        Exception second = null; int validBefore = -1, validAfter = -2;
         var (actual, done) = Run(owner, rot, dirs, thick, onFirstProgress: () =>
         {
+            validBefore = owner.RotationArrayValidLength;
             try { owner.RunCBED(16, 300, Matrix3D.Rot(new Vector3DBase(1, 0, 0), 0.1), [5], Grid(4, 1e-3), false); }
             catch (Exception ex) { second = ex; }
+            validAfter = owner.RotationArrayValidLength;
         });
         Assert.IsType<InvalidOperationException>(second);
+        Assert.Equal(validBefore, validAfter); // 261118Cl (レビュー): 門が最初の書き込みの前で拒む (BackgroundWorker の busy の例外だけでは、分母が書き換わる)
         Assert.Null(done.Error);
         AssertSameCbed(expected, actual, "CBED after a rejected second start");
     }
@@ -128,12 +134,32 @@ public class BetheCbedIsolationTests
         var dirs = Grid(12, 2e-3); double[] thick = [30, 60];
         var owner = new BetheMethod(crystal);
         var first = Run(owner, rot, dirs, thick).Result;
-        var (_, cancelled) = Run(owner, Matrix3D.Rot(new Vector3DBase(1, 1, 0), 0.01) * rot, dirs, thick, cancelAtFirstProgress: true);
+        var (_, cancelled) = Run(owner, Matrix3D.Rot(new Vector3DBase(1, 1, 0), 0.01) * rot, Grid(32, 2e-3), thick, cancelImmediately: true); // 261118Cl (レビュー): 解いている途中で決定的に止まる
         Assert.True(cancelled.Cancelled);
         Assert.Same(first, owner.ResultCbed); // 取消では前回の結果のまま
         Assert.Same(first.Disks, owner.Disks);
         var rerun = Run(owner, rot, dirs, thick).Result; // 直後の再実行
         AssertSameCbed(first, rerun, "rerun after cancel");
+    }
+
+    /// <summary>261118Cl 追加 (レビュー): releasePreviousResult は起動の後に前回の結果を手放し、所有元の Disks は前回の CBED の配列と同じときだけ消す</summary>
+    [Fact]
+    public void ReleasePreviousResult_ReleasesOnlyItsOwnDisks()
+    {
+        var (crystal, rot) = Si();
+        var dirs = Grid(32, 2e-3); double[] thick = [30, 60];
+        var owner = new BetheMethod(crystal);
+        var first = Run(owner, rot, dirs, thick).Result;
+        BetheMethod.CbedSimulationResult resultDuring = first; BetheMethod.CBED_Disk[][] disksDuring = first.Disks;
+        var second = Run(owner, rot, dirs, thick, releasePreviousResult: true, onFirstProgress: () => { resultDuring = owner.ResultCbed; disksDuring = owner.Disks; }).Result;
+        Assert.Null(resultDuring); Assert.Null(disksDuring); // 計算中は前回の結果を持たない
+        Assert.Same(second, owner.ResultCbed);
+        // 所有元の Disks が CBED のものでない (同じ所有元の EBSD など) ときは消さない
+        var other = new BetheMethod.CBED_Disk[1][];
+        owner.Disks = other;
+        BetheMethod.CBED_Disk[][] kept = null;
+        Run(owner, rot, dirs, thick, releasePreviousResult: true, onFirstProgress: () => kept = owner.Disks);
+        Assert.Same(other, kept);
     }
 
     [Fact]
