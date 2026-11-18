@@ -2061,6 +2061,10 @@ public partial class BetheMethod
         }
         EbsdNumericStats = null;
         var runState = NumericRunState.Failed; // 最後の電圧まで終えたら Completed (取消は e.Cancel で見る)
+        // 261118Cl 追加 (codex2 第 8 回 §5「出荷前の穴」): 模型・候補の打ち切り方などの全体の設定を構築の開始時に固定する (σ_n・後方源の 3 点・getU が
+        //   同じ模型を使う。走行中に画面で模型を替えても混ざらない)。既に固定されていればそのまま、終わったら元に戻す
+        var previousPinned = pinnedRunSettings;
+        pinnedRunSettings ??= RunSettings.Capture();
         try
         {
         // var beamDirectionsP = BeamDirections.AsParallel().WithDegreeOfParallelism(thread); // (260321Ch) 旧実装: PLINQ の Select(...).ToArray() を使っていた
@@ -2159,7 +2163,8 @@ public partial class BetheMethod
                 var zeroVec = new Vector3DBase(0, 0, 0);
                 int siteIndex = 0;
                 // 261118Cl 追加 (codex2 第 3 回): 模型と研究用の倍率は区画の入口で 1 度だけ読む (原子ごとに読み直さない)
-                var ionModel = _elasticIonModel; var absModel = AbsorptionElasticModel; var researchScale = BackscatterSourceScaleForResearch;
+                // var ionModel = _elasticIonModel; var absModel = AbsorptionElasticModel; var researchScale = BackscatterSourceScaleForResearch; // 261118Cl 変更前
+                var ionModel = pinnedRunSettings?.Ion ?? _elasticIonModel; var absModel = pinnedRunSettings?.Absorption ?? AbsorptionElasticModel; var researchScale = BackscatterSourceScaleForResearch; // 261118Cl 変更 (第 8 回): 構築の開始時に固定した模型
                 foreach (var atoms in Crystal.Atoms)
                 {
                     double m = Math.Max(atoms.Dsf?.BisoEffective ?? 0, DiffuseScatteringFactor.BisoFloorNm2); // getU の g=0 と同じ m [nm²] (選択規則は Dsf.BisoEffective に集約)。B 未設定の原子は下限で持ち上げるので、その場合 Σσ_n は (2π/k)U'_0,back (=0) より大きい
@@ -2770,7 +2775,11 @@ public partial class BetheMethod
             var first = ae.Flatten().InnerExceptions.Cast<NumericFailureException>().Aggregate((a, b) => NumericFailure.Compare(b.Failure, a.Failure) < 0 ? b : a);
             System.Runtime.ExceptionServices.ExceptionDispatchInfo.Throw(first);
         }
-        finally { EbsdNumericStats = numeric.Build(e.Cancel ? NumericRunState.Cancelled : runState); } // 261118Cl 追加: 取消・失敗でも集計を残す (第 7 回: run の終わり方も)
+        finally
+        {
+            EbsdNumericStats = numeric.Build(e.Cancel ? NumericRunState.Cancelled : runState); // 261118Cl 追加: 取消・失敗でも集計を残す (第 7 回: run の終わり方も)
+            pinnedRunSettings = previousPinned; // 261118Cl 追加 (第 8 回): 固定を元に戻す
+        }
     }
 
     /// <summary>

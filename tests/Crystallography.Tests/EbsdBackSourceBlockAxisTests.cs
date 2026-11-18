@@ -12,6 +12,7 @@ public class EbsdBackSourceBlockAxisTests
 {
     private static double[][] Run(Crystal crystal, Vector3DBase[] dirs, int block, bool correction, Func<BetheMethod, Vector3DBase, Vector3DBase, int, BetheMethod.Beam[]> hook)
     {
+        bool savedAxis = BetheMethod.MasterBackSourceAxisCorrection; var savedHook = BetheMethod.EbsdBeamSelectionResearchHook; // 261118Cl (codex2 第 8 回): 元の値に戻す (既定が変わっても他の試験を壊さない)
         BetheMethod.MasterBackSourceAxisCorrection = correction;
         BetheMethod.EbsdBeamSelectionResearchHook = hook;
         try
@@ -26,7 +27,7 @@ public class EbsdBackSourceBlockAxisTests
             Assert.Equal(correction ? BetheMethod.BackSourceAxisIncident : BetheMethod.BackSourceAxisCrystalZ, bethe.EbsdBackSourceAxisUsed);
             return [.. Enumerable.Range(0, 2).Select(t => bethe.Disks[0][t].Amplitudes.Take(dirs.Length).Select(a => a.Real * a.Real + a.Imaginary * a.Imaginary).ToArray())];
         }
-        finally { BetheMethod.MasterBackSourceAxisCorrection = false; BetheMethod.EbsdBeamSelectionResearchHook = null; }
+        finally { BetheMethod.MasterBackSourceAxisCorrection = savedAxis; BetheMethod.EbsdBeamSelectionResearchHook = savedHook; }
     }
 
     private static double MaxRel(double[][] a, double[][] b, IEnumerable<int> idx) =>
@@ -63,5 +64,26 @@ public class EbsdBackSourceBlockAxisTests
             double rel = MaxRel(product, reference, nonCenters);
             Assert.True(rel < 1e-10, $"correction={correction}: block {bs} vs block 1 with the representative beams, non-center pixels max rel {rel:e2}");
         }
+    }
+
+    /// <summary>261118Cl 追加 (codex2 第 8 回 §5): 後方源の軸の方式の記録が、マスターパターンのファイルの保存と読込で往復し、
+    /// 記録の無い旧いヘッダは "" (方式の記録なし) として読めること</summary>
+    [Fact]
+    public void BackSourceAxisRecord_RoundTripsThroughTheFile()
+    {
+        int g = 4;
+        float[][] Planes() => [Enumerable.Range(0, g * g).Select(i => (float)i).ToArray()];
+        var mp = new MasterPattern(g, [20.0], [10.0], Planes(), Planes(), MasterPattern.Types.Square) { BackSourceAxis = BetheMethod.BackSourceAxisIncident };
+        var path = Path.Combine(Path.GetTempPath(), $"rpmp_axis_{Guid.NewGuid():N}.rpmp");
+        try
+        {
+            MasterPatternFile.Save(mp, path, new MasterPatternFileInfo());
+            var loaded = MasterPatternFile.Load(path, loadElectrons: false);
+            Assert.Equal(BetheMethod.BackSourceAxisIncident, loaded.Info.BackSourceAxis);
+            Assert.Equal(BetheMethod.BackSourceAxisIncident, loaded.MasterPattern.BackSourceAxis);
+        }
+        finally { File.Delete(path); }
+        var old = System.Text.Json.JsonSerializer.Deserialize<MasterPatternFileInfo>("{}");
+        Assert.Equal("", old.BackSourceAxis);
     }
 }
