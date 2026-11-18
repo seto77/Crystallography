@@ -76,6 +76,7 @@ Si1 Si 0 0 0 0.46
         return dirs;
     }
 
+    // 261118Cl: CBED の出射のビームは ResultCbed.Beams (RunCBED は所有元の Beams を書かなくなった。codex2 の単位 5)
     private static BetheMethod RunLegacy(Crystal crystal, Matrix3D rot, Vector3DBase[] dirs, double[] thick, bool symmetry, int n)
     {
         var bethe = new BetheMethod(crystal) { CbedLegacyUseSymmetry = symmetry };
@@ -102,16 +103,16 @@ Si1 Si 0 0 0 0.46
         double[] thick = [30, 60];
         var full = RunLegacy(crystal, rot, dirs, thick, false, n);
         var sym = RunLegacy(crystal, rot, dirs, thick, true, n);
-        if (n >= 200) Assert.Contains(full.Beams, b => Math.Abs(b.Vec.Z) > 1); // HOLZ のビームが組にある
+        if (n >= 200) Assert.Contains(full.ResultCbed.Beams, b => Math.Abs(b.Vec.Z) > 1); // HOLZ のビームが組にある
         Assert.Equal("", full.CbedSymmetryDetail);
         Assert.StartsWith("symmetry 2 ", sym.CbedSymmetryDetail);
-        Assert.Equal(full.Beams.Select(b => b.Index), sym.Beams.Select(b => b.Index));
+        Assert.Equal(full.ResultCbed.Beams.Select(b => b.Index), sym.ResultCbed.Beams.Select(b => b.Index));
         for (int t = 0; t < thick.Length; t++)
-            for (int g = 0; g < full.Beams.Length; g++)
+            for (int g = 0; g < full.ResultCbed.Beams.Length; g++)
             {
                 var a = full.Disks[t][g].RawAmplitudes; var b = sym.Disks[t][g].RawAmplitudes;
                 for (int r = 0; r < a.Length; r++)
-                    Assert.True((a[r] - b[r]).Magnitude <= 1e-10, $"beam {full.Beams[g].Index}, pixel {r}, t {thick[t]}: {a[r]} vs {b[r]}");
+                    Assert.True((a[r] - b[r]).Magnitude <= 1e-10, $"beam {full.ResultCbed.Beams[g].Index}, pixel {r}, t {thick[t]}: {a[r]} vs {b[r]}");
             }
     }
 
@@ -128,10 +129,10 @@ Si1 Si 0 0 0 0.46
         Assert.StartsWith("symmetry m(", sym.CbedSymmetryDetail);
         Assert.DoesNotContain("symmetry 2", sym.CbedSymmetryDetail);
         Assert.DoesNotContain(" 2 ", sym.CbedSymmetryDetail);
-        for (int g = 0; g < full.Beams.Length; g++)
+        for (int g = 0; g < full.ResultCbed.Beams.Length; g++)
         {
             var a = full.Disks[0][g].RawAmplitudes; var b = sym.Disks[0][g].RawAmplitudes;
-            for (int r = 0; r < a.Length; r++) Assert.True((a[r] - b[r]).Magnitude <= 1e-10, $"beam {full.Beams[g].Index}, pixel {r}");
+            for (int r = 0; r < a.Length; r++) Assert.True((a[r] - b[r]).Magnitude <= 1e-10, $"beam {full.ResultCbed.Beams[g].Index}, pixel {r}");
         }
     }
 
@@ -171,14 +172,14 @@ Si1 Si 0 0 0 0.46
         var sym = Run(true);
         Assert.Equal("", full.CbedSymmetryDetail);
         Assert.StartsWith("symmetry 2 ", sym.CbedSymmetryDetail);
-        var idx = sym.Beams.Select((b, i) => (b.Index, i)).ToDictionary(x => x.Index, x => x.i);
+        var idx = sym.ResultCbed.Beams.Select((b, i) => (b.Index, i)).ToDictionary(x => x.Index, x => x.i);
         for (int t = 0; t < thick.Length; t++)
-            for (int g = 0; g < full.Beams.Length; g++)
+            for (int g = 0; g < full.ResultCbed.Beams.Length; g++)
             {
-                Assert.True(idx.TryGetValue(full.Beams[g].Index, out var g1), $"beam {full.Beams[g].Index} missing");
+                Assert.True(idx.TryGetValue(full.ResultCbed.Beams[g].Index, out var g1), $"beam {full.ResultCbed.Beams[g].Index} missing");
                 var a = full.Disks[t][g].RawAmplitudes; var b = sym.Disks[t][g1].RawAmplitudes;
                 for (int r = 0; r < a.Length; r++)
-                    Assert.True((a[r] - b[r]).Magnitude <= 1e-5, $"beam {full.Beams[g].Index}, pixel {r}, t {thick[t]}: {a[r]} vs {b[r]}");
+                    Assert.True((a[r] - b[r]).Magnitude <= 1e-5, $"beam {full.ResultCbed.Beams[g].Index}, pixel {r}, t {thick[t]}: {a[r]} vs {b[r]}");
             }
     }
 }

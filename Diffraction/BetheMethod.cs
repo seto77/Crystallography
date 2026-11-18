@@ -411,7 +411,8 @@ public partial class BetheMethod
     public Beam[][] BeamsPED;
     public double SemianglePED { get; set; }
 
-    public bool IsCBED_Busy => bwCBED is null || bwCBED.IsBusy;
+    // public bool IsCBED_Busy => bwCBED is null || bwCBED.IsBusy; // 261118Cl 変更前
+    public bool IsCBED_Busy => bwCBED is null || Volatile.Read(ref cbedActive) != 0 || bwCBED.IsBusy; // 261118Cl 変更 (単位 5): 受理から完了の通知の直前まで true
     public bool IsSTEM_Busy => bwSTEM is null || bwSTEM.IsBusy;
     public bool IsEBSDNew_Busy => bwEBSDNew is null || bwEBSDNew.IsBusy; // (260327Ch) 以後はこちらを EBSD の本命 worker の稼働状態として使う
 
@@ -514,7 +515,57 @@ public partial class BetheMethod
     #region CBED
     private void Cbed_ProgressChanged(object sender, ProgressChangedEventArgs e) => CBED_ProgressChanged?.Invoke(sender, e);
 
-    private void Cbed_RunWorkerCompleted(object sender, RunWorkerCompletedEventArgs e) => CBED_Completed?.Invoke(sender, e);
+    // private void Cbed_RunWorkerCompleted(object sender, RunWorkerCompletedEventArgs e) => CBED_Completed?.Invoke(sender, e); // 261118Cl 変更前
+    /// <summary>261118Cl 変更 (codex2 第 3・4 回の単位 5): 成功した run の結果 (<see cref="CbedSimulationResult"/>、e.Result) を公開してから門を開け、通知する。
+    /// 互換のため、所有元の <see cref="Disks"/> と CBED の結果のプロパティ (Cbed*) にも写す (取消・失敗では前回の値のまま)。
+    /// 公開の段で例外が出ても、門は必ず開けて通知する (その例外を Error に持つ引数で)</summary>
+    private void Cbed_RunWorkerCompleted(object sender, RunWorkerCompletedEventArgs e)
+    {
+        var args = e;
+        try
+        {
+            if (e.Error is null && !e.Cancelled && e.Result is CbedSimulationResult r)
+            {
+                Disks = r.Disks;
+                CbedBeamSelectionUsed = r.Used;
+                CbedBeamSelectionFallbackReason = r.FallbackReason;
+                CbedBeamSelectionDetail = r.Detail;
+                CbedSymmetryDetail = r.SymmetryDetail;
+                Array.Copy(r.StageSeconds, CbedDressedTailStageSeconds, Math.Min(r.StageSeconds.Length, CbedDressedTailStageSeconds.Length));
+                Volatile.Write(ref resultCbed, r); // 正本は最後に書く (これが新しければ、上の写しも新しい)
+            }
+        }
+        catch (Exception ex) { args = new RunWorkerCompletedEventArgs(null, ex, false); }
+        finally
+        {
+            Volatile.Write(ref cbedActive, 0); // 通知の前に門を開ける (完了で次の run を始める使い方を保つ。結果は公開済み)
+            CBED_Completed?.Invoke(sender, args);
+        }
+    }
+
+    /// <summary>261118Cl 追加 (単位 5): <see cref="RunCBED"/> が受理した run の情報。ValidDirectionCount は円の中の方向の数 (進捗の分母)</summary>
+    public sealed record CbedRunInfo(long RunId, int DirectionCount, int ValidDirectionCount);
+
+    /// <summary>261118Cl 追加 (単位 5): 成功した CBED の run の結果 (完了の通知の e.Result、<see cref="ResultCbed"/>)。
+    /// Beams は CBED の出射のビーム (SAED の <see cref="Beams"/> とは別)。BeamDirections・Thicknesses は受理の時点の写し。
+    /// AccVoltage・BaseRotation は計算した条件 (研究用の道具が着衣の部品を同じ条件で呼ぶため)。Detail は着衣で解いたときだけ (それ以外は "")</summary>
+    public sealed record CbedSimulationResult(long RunId, CBED_Disk[][] Disks, Beam[] Beams, Vector3DBase[] BeamDirections, double[] Thicknesses,
+        int ValidDirectionCount, bool LACBED, CbedBeamSelectionMethod Requested, CbedBeamSelectionMethod Used, string FallbackReason, string Detail,
+        string SymmetryDetail, double[] StageSeconds, string Solver, double AccVoltage, Matrix3D BaseRotation);
+
+    /// <summary>261118Cl 追加 (単位 5): 最後に成功した CBED の結果 (取消・失敗では前回のまま)。<see cref="RunCBED"/> の releasePreviousResult で手放せる</summary>
+    public CbedSimulationResult ResultCbed => Volatile.Read(ref resultCbed);
+    [NonSerialized] private CbedSimulationResult resultCbed;
+    /// <summary>261118Cl 追加 (単位 5): 受理の門 (0 = 空き、1 = 受理から完了の通知まで)。最初の書き込みの前に CompareExchange で取る</summary>
+    private int cbedActive;
+    private long cbedRunCounter;
+
+    /// <summary>261118Cl 追加 (単位 5): 方向の正方格子の i 番目が円の中か (RunCBED の数え上げと cbed_DoWork で同じ判定を使い、受理のときの数と worker が選ぶ方向を食い違わせない)</summary>
+    private static bool CbedInside(int i, int width)
+    {
+        double radius = width / 2.0;
+        return (i % width - radius + 0.5) * (i % width - radius + 0.5) + (i / width - radius + 0.5) * (i / width - radius + 0.5) <= radius * radius;
+    }
 
     public void CancelCBED()
     {
@@ -528,16 +579,66 @@ public partial class BetheMethod
     /// <param name="rotation">基準となる方位</param>
     /// <param name="thickness">厚みの配列</param>
     /// <param name="beamRotations">基準となる方位に乗算する方位配列</param>
-    public void RunCBED(int maxNumOfBloch, double voltage, Matrix3D rotation,
-        double[] thickness, Vector3DBase[] beamDirections, bool LACBED, Solver solver = Solver.Auto, int thread = 1)
+    /// <param name="beamSelection">261118Cl 追加: ビーム選択の方式 (null なら所有元の <see cref="CbedBeamSelection"/>)</param>
+    /// <param name="dressedTail">261118Cl 追加: 着衣の設定 (null なら所有元の <see cref="CbedDressedTail"/>)</param>
+    /// <param name="releasePreviousResult">261118Cl 追加: true なら受理の時点で前回の結果 (<see cref="ResultCbed"/>・<see cref="Disks"/>) を手放す
+    /// (結果を完了の処理で使い切る Spot ID が、次の run の間に前回の大きな配列を持ち続けないように)</param>
+    /// <returns>261118Cl 追加: 受理した run の情報 (進捗の分母 = ValidDirectionCount)</returns>
+    // 261118Cl 旧シグネチャ: public void RunCBED(int maxNumOfBloch, double voltage, Matrix3D rotation, double[] thickness, Vector3DBase[] beamDirections, bool LACBED, Solver solver = Solver.Auto, int thread = 1)
+    // 261118Cl 変更 (codex2 第 3・4 回の単位 5): 以前は受理の前に所有元の MaxNumOfBloch・AccVoltage・BaseRotation・BeamDirections・Thicknesses を書き、
+    //   方向と厚さは呼び出し側の配列をそのまま持っていた (二重起動の判定も無く、走っている worker が途中で新しい値を読みえた。SAED・EBSD の入力も上書きした)。
+    //   今は引数を検査し、門 (cbedActive) を取ってから、結晶と入力と設定の写しを持つ専用の BetheMethod を作って、その上で計算する (ALCHEMI の PrepareAlchemi と同じ形)。
+    //   進捗・取消・完了の通知は所有元の bwCBED が担う (cbed_DoWork が専用の BetheMethod へ転送する)。所有元に書くのは進捗の分母 RotationArrayValidLength だけ
+    public CbedRunInfo RunCBED(int maxNumOfBloch, double voltage, Matrix3D rotation,
+        double[] thickness, Vector3DBase[] beamDirections, bool LACBED, Solver solver = Solver.Auto, int thread = 1,
+        CbedBeamSelectionMethod? beamSelection = null, CbedDressedTailSettings dressedTail = null, bool releasePreviousResult = false)
     {
-        MaxNumOfBloch = maxNumOfBloch;
-        AccVoltage = voltage;
-        BaseRotation = new Matrix3D(rotation);
-        BeamDirections = beamDirections;
-        Thicknesses = thickness;
+        // MaxNumOfBloch = maxNumOfBloch; // 261118Cl 変更前 (5 行)
+        // AccVoltage = voltage;
+        // BaseRotation = new Matrix3D(rotation);
+        // BeamDirections = beamDirections;
+        // Thicknesses = thickness;
+        // bwCBED.RunWorkerAsync((LACBED, solver, thread));
 
-        bwCBED.RunWorkerAsync((LACBED, solver, thread));
+        // (a) 引数の検査 (ここでは何も書かない)
+        ArgumentNullException.ThrowIfNull(rotation); ArgumentNullException.ThrowIfNull(thickness); ArgumentNullException.ThrowIfNull(beamDirections);
+        if (!(voltage > 0) || !double.IsFinite(voltage)) throw new ArgumentOutOfRangeException(nameof(voltage), voltage, "voltage must be positive and finite");
+        if (thickness.Length == 0 || thickness.Any(t => !double.IsFinite(t))) throw new ArgumentException("thickness must have at least one finite value", nameof(thickness));
+        int n = beamDirections.Length, width = (int)Math.Round(Math.Sqrt(n));
+        if (n == 0 || width * width != n) throw new ArgumentException($"the number of beam directions ({n}) must be a positive square number", nameof(beamDirections));
+        foreach (var d in beamDirections)
+            if (d is null || !double.IsFinite(d.X) || !double.IsFinite(d.Y) || !double.IsFinite(d.Z) || d.Length2 == 0)
+                throw new ArgumentException("each beam direction must be a finite non-zero vector", nameof(beamDirections));
+        if (new[] { rotation.E11, rotation.E12, rotation.E13, rotation.E21, rotation.E22, rotation.E23, rotation.E31, rotation.E32, rotation.E33 }.Any(x => !double.IsFinite(x)))
+            throw new ArgumentException("rotation must be finite", nameof(rotation));
+
+        // (b) 二重起動の判定 (最初の書き込みの前)
+        if (bwCBED is null) throw new InvalidOperationException("the CBED worker is not available (deserialized instance)");
+        if (Interlocked.CompareExchange(ref cbedActive, 1, 0) != 0) throw new InvalidOperationException("a CBED calculation is already running on this crystal");
+        try
+        {
+            var dirs = beamDirections.Select(d => new Vector3DBase(d.X, d.Y, d.Z)).ToArray();
+            int valid = 0; for (int i = 0; i < n; i++) if (CbedInside(i, width)) valid++;
+            var worker = new BetheMethod(new Crystal(Crystal))
+            {
+                pinnedRunSettings = RunSettings.Capture(),
+                MaxNumOfBloch = maxNumOfBloch, AccVoltage = voltage, BaseRotation = new Matrix3D(rotation), BeamDirections = dirs, Thicknesses = [.. thickness],
+                Surface = new Vector3D(Surface.X, Surface.Y, Surface.Z), UseLocalSurfacePerBeamDirection = UseLocalSurfacePerBeamDirection,
+                UseNonLocalAbsorption = UseNonLocalAbsorption, CbedLegacyUseSymmetry = CbedLegacyUseSymmetry,
+                CbedBeamSelection = beamSelection ?? CbedBeamSelection, CbedDressedTail = dressedTail ?? CbedDressedTail ?? CbedDressedTailDefaults,
+                CbedMemoryBudgetOverride = CbedMemoryBudgetOverride,
+            };
+            long runId = Interlocked.Increment(ref cbedRunCounter);
+            RotationArrayValidLength = valid; // 進捗の分母 (最初の進捗より前に決まる)
+            if (releasePreviousResult) { Volatile.Write(ref resultCbed, null); Disks = null; }
+            bwCBED.RunWorkerAsync((LACBED, solver, thread, worker, runId));
+            return new CbedRunInfo(runId, n, valid);
+        }
+        catch
+        {
+            Volatile.Write(ref cbedActive, 0);
+            throw;
+        }
     }
 
     /// <summary>CBED計算</summary>
@@ -545,7 +646,12 @@ public partial class BetheMethod
     /// <param name="e"></param>
     private unsafe void cbed_DoWork(object sender, DoWorkEventArgs e)
     {
-        var (LACBED, solver, thread) = ((bool, Solver, int))e.Argument;
+        // var (LACBED, solver, thread) = ((bool, Solver, int))e.Argument; // 261118Cl 変更前
+        // 261118Cl 変更 (単位 5): 所有元の bwCBED の DoWork から、専用の BetheMethod へ転送する (STEM の StemDoWork と同じ形)。
+        //   下の bwCBED は sender (所有元の worker) を指す局所の変数で、フィールドを隠す (進捗と取消を所有元の worker で通す)
+        var (LACBED, solver, thread, worker, runId) = ((bool, Solver, int, BetheMethod, long))e.Argument;
+        if (!ReferenceEquals(worker, this)) { worker.cbed_DoWork(sender, e); return; }
+        var bwCBED = (BackgroundWorker)sender;
 
         //波数を計算
         var kvac = UniversalConstants.Convert.EnergyToElectronWaveNumber(AccVoltage);
@@ -558,8 +664,9 @@ public partial class BetheMethod
 
         //有効なRotationだけを選択
         int width = (int)Math.Sqrt(BeamDirections.Length);
-        double radius = width / 2.0;
-        bool inside(int i) => (i % width - radius + 0.5) * (i % width - radius + 0.5) + (i / width - radius + 0.5) * (i / width - radius + 0.5) <= radius * radius;
+        // double radius = width / 2.0; // 261118Cl 変更前 (2 行)
+        // bool inside(int i) => (i % width - radius + 0.5) * (i % width - radius + 0.5) + (i / width - radius + 0.5) * (i / width - radius + 0.5) <= radius * radius;
+        bool inside(int i) => CbedInside(i, width); // 261118Cl 変更 (単位 5): RunCBED の数え上げと同じ判定
         var beamDirectionsValid = BeamDirections.Where((rot, i) => inside(i)).ToList();
 
         RotationArrayValidLength = beamDirectionsValid.Count;
@@ -793,6 +900,7 @@ public partial class BetheMethod
         for (int i = 0, j = 0; i < BeamDirections.Length; i++)
             diskAmplitude[i] = inside(i) ? diskAmplitudeValid[j++] : null;//有効(円内)のピクセルを追加し、無効なものにはnull
 
+        if (bwCBED.CancellationPending) { e.Cancel = true; return; } // 261118Cl 追加 (単位 5): 取消では何も公開しないので、円盤の組み立てを飛ばす
         count = 0;
         bwCBED.ReportProgress(0, "Compiling disks");
 
@@ -924,6 +1032,11 @@ public partial class BetheMethod
 
         if (bwCBED.CancellationPending)
             e.Cancel = true;
+        // 261118Cl 追加 (単位 5): 成功の結果 (専用の BetheMethod のフィールド。run の後は誰も書かない)。公開は所有元の完了の処理が行う
+        else
+            e.Result = new CbedSimulationResult(runId, Disks, Beams, BeamDirections, Thicknesses, RotationArrayValidLength, LACBED, CbedBeamSelection,
+                CbedBeamSelectionUsed, CbedBeamSelectionFallbackReason, CbedBeamSelectionUsed == CbedBeamSelectionMethod.DressedTail ? CbedBeamSelectionDetail : "",
+                CbedSymmetryDetail, [.. CbedDressedTailStageSeconds], reportString, AccVoltage, new Matrix3D(BaseRotation));
     }
 
     private static readonly int[] pow = [4, 1]; 

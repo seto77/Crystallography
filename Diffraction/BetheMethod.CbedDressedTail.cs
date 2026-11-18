@@ -127,9 +127,18 @@ public partial class BetheMethod
     /// <param name="solver">厚さへの伝播の解き手 (従来の CBED と同じ選択。MtxExp は等間隔の厚さのときだけ、Eigen の native が無ければ MathNet の固有分解)</param>
     /// <param name="cancelled">中止の問い合わせ (true で途中の方向を null のまま返す)</param>
     /// <param name="progressed">終わった方向の累計を知らせる</param>
+    /// <param name="kV">261118Cl 追加: 加速電圧。研究の道具が所有元で直接呼ぶときに渡す (NaN ならこの BetheMethod の値。CBED の専用の BetheMethod では RunCBED が設定済み)</param>
+    /// <param name="rotation">261118Cl 追加: 基準の方位 (null ならこの BetheMethod の値)</param>
+    // 261118Cl シグネチャ変更 (kV・rotation を追加)。旧: public (Beam[] beams, Complex[][] amplitudes) SolveCbedDressedTail(double kvac, double u0, IReadOnlyList<Vector3DBase> directions, double[] thicknesses, int threads, Solver solver = Solver.Eigen_Eigen, Func<bool> cancelled = null, Action<int> progressed = null)
     public (Beam[] beams, Complex[][] amplitudes) SolveCbedDressedTail(double kvac, double u0, IReadOnlyList<Vector3DBase> directions, double[] thicknesses, int threads,
-        Solver solver = Solver.Eigen_Eigen, Func<bool> cancelled = null, Action<int> progressed = null)
+        Solver solver = Solver.Eigen_Eigen, Func<bool> cancelled = null, Action<int> progressed = null, double kV = double.NaN, Matrix3D rotation = null)
     {
+        // 261118Cl 追加 (codex2 の単位 5): RunCBED は所有元の電圧・方位を書かなくなった (専用の BetheMethod で計算する)。所有元で直接呼ぶ道具は kV と rotation を渡す。
+        //   どちらも無いときに、黙って既定 (0 kV・null) の値で解かないよう止める
+        if (!double.IsNaN(kV)) AccVoltage = kV;
+        if (rotation != null) BaseRotation = new Matrix3D(rotation);
+        if (!(AccVoltage > 0) || BaseRotation is null)
+            throw new InvalidOperationException("SolveCbedDressedTail needs the accelerating voltage and the base rotation: pass kV and rotation when calling it directly");
         var set = CbedDressedTail ?? CbedDressedTailDefaults;
         CbedBeamSelectionFallbackReason = null;
         Array.Clear(CbedDressedTailStageSeconds);
