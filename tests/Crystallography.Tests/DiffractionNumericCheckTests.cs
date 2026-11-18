@@ -80,5 +80,25 @@ public class DiffractionNumericCheckTests
         bethe.DiffractionCheckFlagsForTest = null;
         var retry = bethe.GetPrecessionElectronDiffraction(32, 200, rot, 30, 0.025, 8).ToDictionary(b => b.Index, b => b.Psi);
         BetheEigenReuseTests.AssertSameAmplitudes(expected025, retry, "PED retry of the failed condition");
+        Assert.Equal(0.025, bethe.SemianglePED); // 261118Cl (codex2 第 11 回): 半角は成功した結果のもの
+    }
+
+    /// <summary>261118Cl 追加 (codex2 第 11 回): 公開の Thickness は成功した結果の厚さ (作り直しでも、厚さだけを変えた使い回しでも)。
+    /// 失敗の後は前の結果の厚さのまま。なお「反射の無い成功」の枝 (固有解も空にする) は、000 が常にエワルドの条件を通る
+    /// (s·k₀ = √(b² + u₀) > 0) ので物理の入力では起きない守り</summary>
+    [NativeNumericFact]
+    public void Saed_ThicknessBelongsToTheSucceededResult()
+    {
+        var (crystal, rot) = BetheEigenReuseTests.TiltedSi();
+        var bethe = new BetheMethod(crystal);
+        bethe.GetDifractedBeamAmpriltudes(48, 200, rot, 30);
+        Assert.Equal(30, bethe.Thickness);
+        bethe.GetDifractedBeamAmpriltudes(48, 200, rot, 45); // 厚さだけを変えた使い回し
+        Assert.Equal(45, bethe.Thickness);
+        var rot2 = Matrix3D.Rot(new Vector3DBase(0, 1, 0), 0.004) * rot;
+        bethe.DiffractionCheckFlagsForTest = _ => NativeWrapper.NumericCheckFlags.TestForceNoConvergence;
+        Assert.Throws<NumericFailureException>(() => bethe.GetDifractedBeamAmpriltudes(48, 200, rot2, 60));
+        Assert.Equal(45, bethe.Thickness); // 失敗した 60 nm は付かない
+        Assert.Equal(bethe.Beams.Length, bethe.EigenValues.Length);
     }
 }

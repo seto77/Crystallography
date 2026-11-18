@@ -660,26 +660,49 @@ public static class KikuchiProfileCalculator
         var h = (a00 + a11) / 2;
         var d = Complex.Sqrt((a00 - a11) * (a00 - a11) / 4 + a01 * a10);
         Complex n0 = a00 - h, n1 = a10; // N e₀
+        var i1 = Complex.ImaginaryOne;
         double rate = 2 * Math.PI * (Math.Abs(d.Real) + Math.Abs(d.Imaginary) + Math.Abs(h.Imaginary)) * thickness;
+        // 261118Cl 変更 (codex2 第 11 回): 区画の数は位相と増減からの見積もりを出発点に、倍にしても相対 1e-12 で変わらなくなるまで倍にする (上限 2^16)
+        // int panels = (int)Math.Clamp(Math.Ceiling(rate), 1, 1 << 16); // 261118Cl 変更前 (見積もりだけで誤差の確かめが無かった)
         int panels = (int)Math.Clamp(Math.Ceiling(rate), 1, 1 << 16);
-        double width = thickness / panels, sum = 0;
-        for (int p = 0; p < panels; p++)
-            for (int k = 0; k < GaussLegendre16Nodes.Length; k++)
-            {
-                double z = width * (p + (GaussLegendre16Nodes[k] + 1) / 2);
-                var x = 2 * Math.PI * d * z;
-                var c = Complex.Cos(x);
-                var x2 = x * x;
-                // sin(x)/d = 2πz·sin(x)/x (小さい |x| は級数)
-                var sinOverD = 2 * Math.PI * z * (x.Magnitude < 1e-3 ? 1 - x2 / 6 + x2 * x2 / 120 : Complex.Sin(x) / x);
-                var phase = Complex.Exp(2 * Math.PI * Complex.ImaginaryOne * h * z);
-                var psi0 = phase * (c + Complex.ImaginaryOne * sinOverD * n0);
-                var psi1 = phase * (Complex.ImaginaryOne * sinOverD * n1);
-                var f = psi0 * Complex.Conjugate(psi0) * q00 + psi0 * Complex.Conjugate(psi1) * q01
-                      + psi1 * Complex.Conjugate(psi0) * q10 + psi1 * Complex.Conjugate(psi1) * q11;
-                sum += GaussLegendre16Weights[k] * f.Real;
-            }
-        return sum * width / 2;
+        double previous = Integrate(panels);
+        while (panels < 1 << 16)
+        {
+            panels *= 2;
+            double next = Integrate(panels);
+            if (Math.Abs(next - previous) <= 1e-12 * Math.Abs(next) || next == previous) return next;
+            previous = next;
+        }
+        return previous;
+
+        double Integrate(int count)
+        {
+            double width = thickness / count, sum = 0;
+            for (int p = 0; p < count; p++)
+                for (int k = 0; k < GaussLegendre16Nodes.Length; k++)
+                {
+                    double z = width * (p + (GaussLegendre16Nodes[k] + 1) / 2);
+                    var x = 2 * Math.PI * d * z;
+                    var theta = 2 * Math.PI * h * z;
+                    // 261118Cl 変更 (codex2 第 11 回): e^{iθ}·cos(x) と e^{iθ}·i·sin(x)/x は指数をまとめて評価する (強い吸収で e^{iθ} → 0 と cos(x) → ∞ を
+                    //   別々に作ると 0×∞ = NaN になる)。小さい |x| は級数 (|Im x| も小さいので別々でよい)
+                    // (旧: c = cos(x)、sinOverD = 2πz·(|x| < 1e-3 ? 級数 : sin(x)/x)、phase = e^{iθ}、psi0 = phase·(c + i·sinOverD·n0)、psi1 = phase·(i·sinOverD·n1))
+                    var ePlus = Complex.Exp(i1 * (theta + x));
+                    var eMinus = Complex.Exp(i1 * (theta - x));
+                    var cosPart = (ePlus + eMinus) / 2;
+                    var x2 = x * x;
+                    // e^{iθ}·i·(sin(x)/d) = 2πz·e^{iθ}·i·sin(x)/x = 2πz·(e^{i(θ+x)} − e^{i(θ−x)})/(2x)
+                    var sinPart = x.Magnitude < 1e-3
+                        ? Complex.Exp(i1 * theta) * i1 * 2 * Math.PI * z * (1 - x2 / 6 + x2 * x2 / 120)
+                        : 2 * Math.PI * z * (ePlus - eMinus) / (2 * x);
+                    var psi0 = cosPart + sinPart * n0;
+                    var psi1 = sinPart * n1;
+                    var f = psi0 * Complex.Conjugate(psi0) * q00 + psi0 * Complex.Conjugate(psi1) * q01
+                          + psi1 * Complex.Conjugate(psi0) * q10 + psi1 * Complex.Conjugate(psi1) * q11;
+                    sum += GaussLegendre16Weights[k] * f.Real;
+                }
+            return sum * width / 2;
+        }
     }
 
     /// <summary>261118Cl 追加 (codex2 第 10 回): この |det C| (列を正規化した固有ベクトルの行列式) より小さい点は対角化を使わず伝播で求める</summary>

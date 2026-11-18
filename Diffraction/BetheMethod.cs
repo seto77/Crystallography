@@ -477,13 +477,19 @@ public partial class BetheMethod
     /// <summary>261118Cl 追加 (codex2 第 9 回): 旧い DLL・managed の固有解と振幅の有限性 (状態を返さない経路)。
     /// 261118Cl (codex2 第 10 回): 段を引数に (Evd → NonFiniteEigen、Boundary → NonFiniteSolve、ほか → NonFiniteOutput)。既定は従来の ValueCheck</summary>
     // private void RequireFiniteDiffraction(ReadOnlySpan<Complex> a, string method, double voltage, double thickness, int direction, string what) // 261118Cl 変更前
-    private void RequireFiniteDiffraction(ReadOnlySpan<Complex> a, string method, double voltage, double thickness, int direction, string what, NumericStage stage = NumericStage.ValueCheck)
+    // private void RequireFiniteDiffraction(ReadOnlySpan<Complex> a, string method, double voltage, double thickness, int direction, string what, NumericStage stage = NumericStage.ValueCheck) // 261118Cl 変更前 (第 11 回)
+    /// <param name="checkIntensity">261118Cl 追加 (codex2 第 11 回): 振幅なら |ψ|² (強度) の有限性も (有限な振幅でも 2 乗があふれうる)</param>
+    private void RequireFiniteDiffraction(ReadOnlySpan<Complex> a, string method, double voltage, double thickness, int direction, string what, NumericStage stage = NumericStage.ValueCheck, bool checkIntensity = false)
     {
         var status = stage switch { NumericStage.Evd => NativeWrapper.NativeSolveStatus.NonFiniteEigen, NumericStage.Boundary => NativeWrapper.NativeSolveStatus.NonFiniteSolve, _ => NativeWrapper.NativeSolveStatus.NonFiniteOutput };
         for (int i = 0; i < a.Length; i++)
+        {
             if (!double.IsFinite(a[i].Real) || !double.IsFinite(a[i].Imaginary))
                 // throw DiffractionFailed(method, voltage, thickness, new NumericFailure(0, direction, NumericStage.ValueCheck, NativeWrapper.NativeSolveStatus.NonFiniteOutput), $"non-finite {what} #{i}; "); // 261118Cl 変更前
                 throw DiffractionFailed(method, voltage, thickness, new NumericFailure(0, direction, stage, status), $"non-finite {what} #{i}; ");
+            if (checkIntensity && !double.IsFinite(a[i].MagnitudeSquared())) // 261118Cl 追加 (codex2 第 11 回)
+                throw DiffractionFailed(method, voltage, thickness, new NumericFailure(0, direction, stage, status), $"non-finite intensity |{what}|² #{i}; ");
+        }
     }
 
     /// <summary>261118Cl 追加 (codex2 第 10 回): 平行ビーム・PED の固有解と逆行列を、計算の初めに決めた経路 (<see cref="DiffractionEigenSettings.EigenPath"/>) だけで選ぶ
@@ -518,9 +524,14 @@ public partial class BetheMethod
             RequireFiniteDiffraction(values.AsSpan(0, dim), method, voltage, thickness, direction, "eigenvalue", NumericStage.Evd);
             RequireFiniteDiffraction(vectors.AsSpan(0, dim * dim), method, voltage, thickness, direction, "eigenvector element", NumericStage.Evd);
             try { inverse = ((DMat)vectorMatrix.Inverse()).Values; }
-            catch (MathNet.Numerics.NativeInterfaceException ex) // 特異 (SingularUMatrixException) など
+            // catch (MathNet.Numerics.NativeInterfaceException ex) // 特異 (SingularUMatrixException) など // 261118Cl 変更前 (codex2 第 11 回: 全部を Singular と呼ぶのは広すぎる)
+            catch (MathNet.Numerics.SingularUMatrixException ex) // 261118Cl 変更: 特異と分かる例外だけ Singular
             {
                 throw DiffractionFailed(method, voltage, thickness, new NumericFailure(0, direction, NumericStage.Boundary, NativeWrapper.NativeSolveStatus.Singular), $"{ex.GetType().Name}: {ex.Message}; ");
+            }
+            catch (MathNet.Numerics.NativeInterfaceException ex) // 261118Cl 追加: ほかの数値の例外は原因 (型と文) を保って Unknown
+            {
+                throw DiffractionFailed(method, voltage, thickness, new NumericFailure(0, direction, NumericStage.Boundary, NativeWrapper.NativeSolveStatus.Unknown), $"{ex.GetType().Name}: {ex.Message}; ");
             }
         }
         RequireFiniteDiffraction(inverse.AsSpan(0, dim * dim), method, voltage, thickness, direction, "inverse element", NumericStage.Boundary);
@@ -3319,7 +3330,7 @@ public partial class BetheMethod
             MaxNumOfBloch = maxNumOfBloch;
             AccVoltage = voltage;
             BaseRotation = new Matrix3D(rotation);
-            Thickness = thickness;
+            // Thickness = thickness; // 261118Cl 変更前 (codex2 第 11 回: 失敗すると前の結果に新しい厚さが付いた。成功の後に書く)
 
             //uDictionary.Clear();
             //計算対象のg-Vectorsを決める。
@@ -3330,15 +3341,24 @@ public partial class BetheMethod
             // (旧: settings.EigenPath == "native-checked" なら CheckedEigenWithInverse、else if (EigenEnabled && maxNumOfBloch < 400) なら NativeWrapper.EigenSolver + Inverse、
             //  それ以外は MathNet の Evd。その後に状態を返さない経路の有限性 → eigenBeams = Beams; eigenSettings = settings。261118Cl 変更前)
             var newBeams = Find_gVectors(BaseRotation, vecK0);
-            if (newBeams == null || newBeams.Length == 0) { Beams = newBeams; return []; } // 反射の無い正当な結果 (固有解の条件は null のまま)
+            // if (newBeams == null || newBeams.Length == 0) { Beams = newBeams; return []; } // 反射の無い正当な結果 (固有解の条件は null のまま) // 261118Cl 変更前 (第 11 回)
+            // 261118Cl 変更 (codex2 第 11 回): 反射の無い正当な結果では、前の組の固有解も残さない (空の Beams と前の固有解の組を公開しない)。公開した Beams を返す
+            if (newBeams == null || newBeams.Length == 0)
+            {
+                (Beams, EigenValues, EigenVectors, EigenVectorsInverse, eigenBeams, Thickness) = ([], [], [], [], null, thickness);
+                return Beams;
+            }
             dim = newBeams.Length;
             var (values, vectors, inverse) = DiffractionEigen(settings.EigenPath, dim, getEigenMatrix(newBeams), "SAED", voltage, thickness, -1);
             var psiNew = DiffractionAmplitudes(newBeams, values, vectors, inverse, thickness);
-            RequireFiniteDiffraction(psiNew, "SAED", voltage, thickness, -1, "amplitude of beam");
+            // RequireFiniteDiffraction(psiNew, "SAED", voltage, thickness, -1, "amplitude of beam"); // 261118Cl 変更前 (第 11 回)
+            RequireFiniteDiffraction(psiNew, "SAED", voltage, thickness, -1, "amplitude of beam", checkIntensity: true); // 261118Cl 変更 (codex2 第 11 回): 強度の有限性も
+            for (int i = 0; i < dim; i++) newBeams[i].Psi = psiNew[i]; // 261118Cl 変更 (codex2 第 11 回): 公開の前に Psi を入れる (旧は公開の後に書いた)
             (Beams, EigenValues, EigenVectors, EigenVectorsInverse) = (newBeams, values, vectors, inverse);
             eigenBeams = Beams; // 261105Cl 追加: この固有解がどの Beams 配列 (並び順) に対応するか
             eigenSettings = settings; // 261106Ch 追加: 固有値分解に成功してから条件を記録 (261118Cl: 振幅の検査の後)
-            for (int i = 0; i < dim; i++) Beams[i].Psi = psiNew[i];
+            Thickness = thickness; // 261118Cl 追加 (codex2 第 11 回): 成功した結果の厚さ
+            // for (int i = 0; i < dim; i++) Beams[i].Psi = psiNew[i]; // 261118Cl 変更前 (公開の後に書いていた)
             return Beams;
         }
 
@@ -3346,10 +3366,12 @@ public partial class BetheMethod
         // 261118Cl 変更 (codex2 第 10 回): 振幅の式は DiffractionAmplitudes へ (新しい組と同じ式)。旧の式は DiffractionAmplitudes の中のコメント
         var psiValues = DiffractionAmplitudes(Beams, EigenValues, EigenVectors, EigenVectorsInverse, thickness);
         // 261118Cl 追加 (codex2 第 9 回): 公開する前に振幅の有限性を確かめる (失敗なら Beams の Psi を書かない。固有解は検査済みなので次の厚さで使い回せる)
-        RequireFiniteDiffraction(psiValues, "SAED", voltage, thickness, -1, "amplitude of beam");
+        // RequireFiniteDiffraction(psiValues, "SAED", voltage, thickness, -1, "amplitude of beam"); // 261118Cl 変更前 (第 11 回)
+        RequireFiniteDiffraction(psiValues, "SAED", voltage, thickness, -1, "amplitude of beam", checkIntensity: true); // 261118Cl 変更 (codex2 第 11 回): 強度の有限性も
 
         for (int i = 0; i < Beams.Length && i < dim; i++)
             Beams[i].Psi = psiValues[i];
+        Thickness = thickness; // 261118Cl 追加 (codex2 第 11 回): 厚さだけを変えて成功したときも、結果の厚さを今の値に (旧は作り直したときだけ書いた)
 
         return Beams;
     }
@@ -3424,8 +3446,8 @@ public partial class BetheMethod
             MaxNumOfBloch = maxNumOfBloch;
             AccVoltage = voltage;
             BaseRotation = new Matrix3D(baseRotation);
-            Thickness = thickness;
-            SemianglePED = semiangle;
+            // Thickness = thickness; // 261118Cl 変更前 (codex2 第 11 回: 厚さと半角は成功した結果に付ける。下で書く)
+            // SemianglePED = semiangle;
 
             // EigenValuesPED = new DVec[step]; // 261118Cl 変更前 (4 行: 計算の前に公開の配列を差し替えていた)
             // EigenVectorsPED = new DMat[step];
@@ -3438,7 +3460,8 @@ public partial class BetheMethod
             stepP.ForAll(k =>
             {
                 var (sin, cos) = Math.SinCos(2.0 * Math.PI * k / step);
-                var beamRotation = Matrix3D.Rot(new Vector3DBase(cos, sin, 0), SemianglePED);
+                // var beamRotation = Matrix3D.Rot(new Vector3DBase(cos, sin, 0), SemianglePED); // 261118Cl 変更前
+                var beamRotation = Matrix3D.Rot(new Vector3DBase(cos, sin, 0), semiangle); // 261118Cl 変更 (codex2 第 11 回): 引数をそのまま (SemianglePED は成功の後に書く)
                 //計算対象のg-Vectorsを決める。
                 var vecK0 = getVecK0(kvac, u0, beamRotation * new Vector3D(0, 0, -1));
                 // (旧: BeamsPED[k] = Find_gVectors(…) → getEigenMatrix → settings.EigenPath == "native-checked" なら CheckedEigenWithInverse、else if (useEigen) なら
@@ -3485,7 +3508,8 @@ public partial class BetheMethod
                 // for (int i = 0; i < BeamsPED[k].Length && i < len; i++) // 261118Cl 変更前 (その場で書いていた)
                 //     BeamsPED[k][i].Psi = psi_atZ[i];
                 var psiK = psi_atZ.ToArray();
-                RequireFiniteDiffraction(psiK, "PED", voltage, thickness, k, "amplitude of beam");
+                // RequireFiniteDiffraction(psiK, "PED", voltage, thickness, k, "amplitude of beam"); // 261118Cl 変更前 (第 11 回)
+                RequireFiniteDiffraction(psiK, "PED", voltage, thickness, k, "amplitude of beam", checkIntensity: true); // 261118Cl 変更 (codex2 第 11 回): 強度の有限性も
                 psiPED[k] = psiK;
             }
         });
@@ -3551,15 +3575,21 @@ public partial class BetheMethod
         // }
 
         // 261118Cl 追加 (codex2 第 10 回): ここまで全部が成功してから公開する (固有解・方位ごとの組・Psi・条件)
+        // 261118Cl 変更 (codex2 第 11 回): 作り直した組には公開の前に Psi を入れる (使い回しの組は公開中の要素を書く)。厚さと半角は成功した結果に付ける
+        for (int k = 0; k < step; k++)
+            if (psiPED[k] is { } psiK)
+                for (int i = 0; i < beamsPED[k].Length && i < psiK.Length; i++)
+                    beamsPED[k][i].Psi = psiK[i];
         if (rebuilt)
         {
             (EigenValuesPED, EigenVectorsPED, EigenVectorsInversePED, BeamsPED) = (valuesPED, vectorsPED, inversePED, beamsPED);
             pedEigenSettings = settings; // 261106Ch: 全方位の固有値分解に成功してから条件を記録 (261118Cl: 最終の値の検査の後)
         }
-        for (int k = 0; k < step; k++)
-            if (psiPED[k] is { } psiK)
-                for (int i = 0; i < BeamsPED[k].Length && i < psiK.Length; i++)
-                    BeamsPED[k][i].Psi = psiK[i];
+        (Thickness, SemianglePED) = (thickness, semiangle); // 261118Cl 追加 (codex2 第 11 回)
+        // for (int k = 0; k < step; k++) // 261118Cl 変更前 (第 11 回: 公開の後に Psi を書いていた)
+        //     if (psiPED[k] is { } psiK)
+        //         for (int i = 0; i < BeamsPED[k].Length && i < psiK.Length; i++)
+        //             BeamsPED[k][i].Psi = psiK[i];
         foreach (var (first, intensity) in compiled.Values) first.intensity = intensity; // 旧と同じく最初に現れた Beam に和を残す (外から読む所は無い)
 
         //並び替え
@@ -5846,7 +5876,8 @@ public partial class BetheMethod
             {
                 if (limitReached) break; // limit 本目を含む殻を終わりまで採った
                 shellEnd = len * (1 + 1E-9);
-                if (shellEnd > coverRadius) break; // 覆い切っていない殻から先は使わない
+                // if (shellEnd > coverRadius) break; // 覆い切っていない殻から先は使わない // 261118Cl 変更前 (codex2 第 11 回)
+                if (shellEnd >= coverRadius) break; // 覆い切っていない殻から先は使わない。261118Cl 変更 (codex2 第 11 回): 保証は |g| < R なので、外端がちょうど R の殻も外す
             }
             if (include(i) && add(i) >= limit)
                 limitReached = true;

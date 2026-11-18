@@ -141,12 +141,31 @@ public class BeamCandidateShellCutTests
         Assert.Equal([0, 1, 2, 3], Run(lengths, 100, 4));
     }
 
-    private static int[] Run(double[] lengths, double cover, int limit)
+    // private static int[] Run(double[] lengths, double cover, int limit) // 261118Cl 変更前 (第 11 回)
+    private static int[] Run(double[] lengths, double cover, int limit, Func<int, bool> include = null)
     {
         var order = Enumerable.Range(0, lengths.Length).OrderBy(i => lengths[i]).ToArray();
         var picked = new List<int>();
-        BetheMethod.SelectShellCut(order, i => lengths[i], _ => true, cover, limit, i => { picked.Add(i); return picked.Count; });
+        BetheMethod.SelectShellCut(order, i => lengths[i], include ?? (_ => true), cover, limit, i => { picked.Add(i); return picked.Count; });
         return [.. picked];
+    }
+
+    /// <summary>261118Cl 追加 (codex2 第 11 回): 境の 3 つの場合。(1) 隣り合う表現可能な 2 数 r1・r2 (r1·(1+ε) &lt; R ≤ r2·(1+ε)) は同じ殻として丸ごと採る、
+    /// (2) 外端がちょうど R の殻は外す (保証は |g| &lt; R)、(3) 殻の最初の点がエワルドの条件を落ちても、殻の外端はその点で決まる</summary>
+    [Fact]
+    public void SelectShellCut_BoundaryCases()
+    {
+        const double R = 10, eps = 1e-9;
+        double r1 = R / (1 + eps);
+        while (r1 * (1 + eps) >= R) r1 = Math.BitDecrement(r1);
+        while (Math.BitIncrement(r1) * (1 + eps) < R) r1 = Math.BitIncrement(r1);
+        double r2 = Math.BitIncrement(r1);
+        Assert.True(r1 * (1 + eps) < R && r2 * (1 + eps) >= R);
+        Assert.Equal([0, 1, 2, 3], Run([0, 1, r1, r2, 12], R, 100));
+        double s = 7, cover = s * (1 + eps); // 外端がちょうど R
+        Assert.Equal([0, 1], Run([0, 1, s, s * (1 + 0.5e-9), 9], cover, 100));
+        double[] lengths = [0, 1, 1 * (1 + 0.5e-9), 1 * (1 + 1.2e-9), 2];
+        Assert.Equal([0, 2], Run(lengths, 100, 2, i => i != 1)); // 殻 [1, 1·(1+1e-9)] の外端は落ちた点 1 で決まり、1·(1+1.2e-9) は次の殻
     }
 
     /// <summary>261118Cl 追加 (codex2 第 10 回): エワルドの条件を通る候補が 0 本 (表面の向きを逆にして 000 も通らない) なら、従来・殻とも例外でなく空を返す

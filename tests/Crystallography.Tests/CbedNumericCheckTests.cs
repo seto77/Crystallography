@@ -116,4 +116,24 @@ public class CbedNumericCheckTests
         Assert.Null(result);
         Assert.Null(owner.ResultCbed);
     }
+
+    /// <summary>261118Cl 追加 (codex2 第 11 回): 解いた振幅の写し (RawAmplitudes、対称の写しの位相の後) だけの異常も検査で止まる (重なりの後の値の検査とは別に)</summary>
+    [Fact]
+    public void NonFiniteRawAmplitude_FailsWithPixelAndThickness()
+    {
+        int pixel = -1;
+        var (error, result, owner) = Run(BetheMethod.Solver.Auto, b => b.CbedCompiledDisksHookForTest = disks =>
+        {
+            var raw = disks[1][0].RawAmplitudes;
+            pixel = Array.FindIndex(raw, a => a != System.Numerics.Complex.Zero);
+            raw[pixel] = new System.Numerics.Complex(0, double.PositiveInfinity);
+        });
+        var ex = Assert.IsType<NumericFailureException>(error);
+        Assert.Equal(pixel, ex.Failure.Direction);
+        Assert.Equal(1, ex.Failure.DepthIndex);
+        Assert.Contains("non-finite amplitude of beam #0", ex.Message);
+        Assert.DoesNotContain("after the overlap", ex.Message);
+        Assert.Null(result);
+        Assert.Null(owner.ResultCbed);
+    }
 }
