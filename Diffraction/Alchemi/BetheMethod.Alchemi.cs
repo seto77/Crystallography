@@ -38,14 +38,72 @@ public partial class BetheMethod
     #region ALCHEMI (260807Cl 追加)
 
     /// <summary>260807Cl 追加: 1D forward ALCHEMI シミュレーション (同期実行)。
-    /// 既存 worker とは完全に別経路で、CBED/STEM/EBSD のバッファ・数値には触れない。</summary>
+    /// 既存 worker とは完全に別経路で、CBED/STEM/EBSD のバッファ・数値には触れない。
+    /// 261118Cl 変更 (codex2 第 3・4 回の単位 4): <see cref="PrepareAlchemi"/> で入力を確定し、専用の BetheMethod で計算する
+    /// (= <c>PrepareAlchemi(request).Run(progress, cancel)</c>)。以前はこの BetheMethod の共有の状態 (AccVoltage・BaseRotation・MaxNumOfBloch・
+    /// Surface・Thicknesses・getU のキャッシュ) を書き換えて計算していたので、同じ結晶の SAED などと重なると互いの結果が混ざりえた。
+    /// GUI のように計算を別のスレッドへ渡すときは、渡す前に UI のスレッドで <see cref="PrepareAlchemi"/> を呼ぶこと</summary>
     /// <param name="request">run 要求 (呼び出し後に書き換えても影響しないよう内部で必要分をコピーする)</param>
     /// <param name="progress">進捗通知 (null 可)。呼ばれるスレッドは不定</param>
     /// <param name="cancel">キャンセル</param>
     public AlchemiResult RunAlchemi(AlchemiRequest request, Action<AlchemiProgress> progress = null, CancellationToken cancel = default)
+        => PrepareAlchemi(request).Run(progress, cancel);
+
+    /// <summary>261118Cl 追加 (単位 4): 入力を確定した ALCHEMI の run。<see cref="PrepareAlchemi"/> で作り、<see cref="Run"/> で計算する。
+    /// 計算は専用の BetheMethod (結晶の写しの上) で行い、所有元の BetheMethod の状態には触れない。要求・結晶・全体の設定 (模型・ビーム選択) は
+    /// 確定の時点の写しなので、その後に呼び出し側が変えても、この run には届かない。⚠ 同じ run の <see cref="Run"/> を並行に呼ばないこと</summary>
+    public sealed class AlchemiRun
+    {
+        private readonly BetheMethod worker;
+        /// <summary>確定した要求 (呼び出し側の要求の写し)。<see cref="AlchemiRequest.UseNativeSolver"/> は実際に使う値 (指定 かつ native が使える)</summary>
+        public AlchemiRequest Request { get; }
+        /// <summary>計算した結晶 (所有元の結晶の写し)</summary>
+        public Crystal Crystal => worker.Crystal;
+        internal AlchemiRun(BetheMethod worker, AlchemiRequest request) { this.worker = worker; Request = request; }
+        /// <summary>確定した入力で計算する</summary>
+        public AlchemiResult Run(Action<AlchemiProgress> progress = null, CancellationToken cancel = default) => worker.RunAlchemiCore(Request, progress, cancel);
+    }
+
+    /// <summary>261118Cl 追加 (単位 4): ALCHEMI の入力を確定する。要求を深く複製して検査し、結晶の写し (<c>new Crystal(Crystal)</c>) の上に専用の
+    /// BetheMethod を作って、今の全体の設定 (<see cref="RunSettings"/>) を固定する。native を使うかもここで確定する。
+    /// 計算は返した <see cref="AlchemiRun.Run"/> で行う (別のスレッドで呼んでよい)</summary>
+    public AlchemiRun PrepareAlchemi(AlchemiRequest request)
     {
         ArgumentNullException.ThrowIfNull(request);
-        Validate(request);
+        var snapshot = SnapshotAlchemiRequest(request);
+        Validate(snapshot); // 複製した入力を検査する (検査の後に呼び出し側が書き換えても届かない)
+        snapshot = snapshot with { UseNativeSolver = snapshot.UseNativeSolver && EigenEnabled };
+        var worker = new BetheMethod(new Crystal(Crystal)) { pinnedRunSettings = RunSettings.Capture() };
+        return new AlchemiRun(worker, snapshot);
+    }
+
+    /// <summary>261118Cl 追加 (単位 4): 要求を深く複製する (方位のビーム方向・表面・回転は成分まで、席の原子の添字は内側の配列まで)。
+    /// ⚠ <see cref="AlchemiRequest.ChannelDataOverride"/> は配列だけを複製する。中の形状 (<see cref="IonizationData"/> の Shape) は任意の実装で
+    /// 深く複製できないので、run の間は変えないこと (診断専用の口)</summary>
+    private static AlchemiRequest SnapshotAlchemiRequest(AlchemiRequest r)
+    {
+        static Vector3DBase V(Vector3DBase v) => v is null ? null : new Vector3DBase(v.X, v.Y, v.Z);
+        return r with
+        {
+            BaseRotation = r.BaseRotation is null ? null : new Matrix3D(r.BaseRotation),
+            Orientations = r.Orientations?.Select(o => o is null ? null : o with { BeamDirection = V(o.BeamDirection) }).ToArray(),
+            ThicknessesNm = r.ThicknessesNm?.ToArray(),
+            Sites = r.Sites?.Select(s => s is null ? null : s with { AtomsIndices = s.AtomsIndices?.ToArray() }).ToArray(),
+            Channels = r.Channels?.ToArray(),
+            Surface = V(r.Surface),
+            ChannelDataOverride = r.ChannelDataOverride?.ToArray(),
+            BasisOrientationIndices = r.BasisOrientationIndices?.ToArray(),
+        };
+    }
+
+    /// <summary>261118Cl 追加 (単位 4): ALCHEMI の計算の本体 (旧 <see cref="RunAlchemi"/> の中身)。<see cref="PrepareAlchemi"/> が作った専用の
+    /// BetheMethod の上で、確定した要求 (<see cref="SnapshotAlchemiRequest"/> の写し、UseNativeSolver は実際に使う値) で呼ぶ。
+    /// この BetheMethod の共有の状態を書き換えるので、所有元の BetheMethod では呼ばない (テストの照合だけは例外)</summary>
+    // 261118Cl 旧シグネチャ: public AlchemiResult RunAlchemi(AlchemiRequest request, Action<AlchemiProgress> progress = null, CancellationToken cancel = default)
+    internal AlchemiResult RunAlchemiCore(AlchemiRequest request, Action<AlchemiProgress> progress, CancellationToken cancel)
+    {
+        // ArgumentNullException.ThrowIfNull(request); // 261118Cl 変更前: 検査は PrepareAlchemi が複製した入力に対して行う
+        // Validate(request);
 
         //--- run パラメータの確定 (private setter はここで代入する。設計 §2 の AccVoltage 注記) ---
         AccVoltage = request.IncidentEnergyKeV;
@@ -279,7 +337,8 @@ public partial class BetheMethod
                 getEigenMatrix(bLen, beams, ref eigenMatrix, potentialMatrix);
 
                 Complex[] eigenValues, eigenVectors, alpha;
-                if (request.UseNativeSolver && EigenEnabled)
+                // if (request.UseNativeSolver && EigenEnabled) // 261118Cl 変更前
+                if (request.UseNativeSolver) // 261118Cl 変更 (単位 4): 実際に使う値は PrepareAlchemi が確定した (指定 かつ native が使える)
                 {
                     (eigenValues, eigenVectors) = NativeWrapper.EigenSolver(bLen, eigenMatrix.AsSpan()[..(bLen * bLen)].ToArray());
                     alpha = NativeWrapper.PartialPivLuSolve(bLen, eigenVectors, psi0);
@@ -303,7 +362,8 @@ public partial class BetheMethod
                 //     ImaginaryPotentialAbsorption, pOverP0); // 261111Cl 変更前
                 //261111Cl 変更: 縮約の行列積も固有値計算と同じく request.UseNativeSolver に従う (managed を指定したら全部 managed。結果は丸め誤差の範囲で同じ)
                 var reduction = new AlchemiReduction(bLen, eigenValues, eigenVectors, alpha, request.ThicknessesNm,
-                    ImaginaryPotentialAbsorption, pOverP0, useNative: request.UseNativeSolver && EigenEnabled);
+                    // ImaginaryPotentialAbsorption, pOverP0, useNative: request.UseNativeSolver && EigenEnabled); // 261118Cl 変更前
+                    ImaginaryPotentialAbsorption, pOverP0, useNative: request.UseNativeSolver); // 261118Cl 変更 (単位 4): 確定した値
                 var l = reduction.CoherentPathLengthNm();//方位あたり 1 回 (以後キャッシュ)
                 for (int t = 0; t < tLen; t++) lcoh[oi * tLen + t] = l[t];
 

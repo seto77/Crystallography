@@ -281,6 +281,18 @@ public partial class BetheMethod
     /// ⚠ uDictionary の鍵には入らないので、設定を変えたら ClearUCache すること (マスターの経路は muBack の前後で空にする)。⚠ 製品の経路では設定しない</summary>
     public static Func<int, double, double> BackscatterSourceScaleForResearch { get; set; }
 
+    /// <summary>261118Cl 追加 (codex2 第 3・4 回の単位 4): 1 回の計算 (run) の開始時に取り込んだ全体の設定 (弾性のイオンの模型・吸収の模型・
+    /// ビーム選択の候補の倍率・境の同値の組の扱い)。全体の設定は static で GUI からも書き換わるので、run の途中で変わると、同じ行列の中で U ごとに
+    /// 模型が違いうる。専用の <see cref="BetheMethod"/> (ALCHEMI の <see cref="PrepareAlchemi"/> が作る) だけがこれを持ち、getU と Find_gVectors は
+    /// これがあれば全体の設定の代わりに読む。null (通常の BetheMethod) なら従来どおり全体の設定を読む</summary>
+    internal sealed record RunSettings(ElasticIonModel Ion, AbsorptionElasticModel Absorption, int CandidateMultiplier, BeamBoundaryTieMode TieMode)
+    {
+        /// <summary>今の全体の設定を取り込む</summary>
+        public static RunSettings Capture() => new(_elasticIonModel, AbsorptionElasticModel, BeamCandidateMultiplier, BeamBoundaryTieMode);
+    }
+    /// <summary>261118Cl 追加: この BetheMethod が run の開始時に固定した設定 (<see cref="RunSettings"/>)。null = 全体の設定を読む</summary>
+    private RunSettings pinnedRunSettings;
+
     /// <summary>U のキャッシュ (uDictionary) を破棄する。260613Cl 追加: ElasticIonModel 切替後に再計算なしで表示を更新する経路向け。
     /// 261106Ch: U に依存する平行回折・PED の固有解も無効化する。公開 API で原子や ADP を変更した後にも呼ぶ。</summary>
     // public void ClearUCache() => uDictionary.Clear(); // 261106Ch 変更前
@@ -4670,11 +4682,14 @@ public partial class BetheMethod
             && (Inner == o.Inner || double.IsNaN(Inner) && double.IsNaN(o.Inner)) && (Outer == o.Outer || double.IsNaN(Outer) && double.IsNaN(o.Outer));
     }
 
-    /// <summary>261118Cl 追加: <see cref="UContext"/> を作る (全立体角なら角度と点数を正規化)</summary>
-    private static UContext UContextOf(double kV, double inner, double outer, int nTheta, int nPhi)
+    /// <summary>261118Cl 追加: <see cref="UContext"/> を作る (全立体角なら角度と点数を正規化)。
+    /// 261118Cl 変更 (単位 4): static をやめ、run の開始時に固定した設定 (<see cref="pinnedRunSettings"/>) があればそちらの模型を使う</summary>
+    private UContext UContextOf(double kV, double inner, double outer, int nTheta, int nPhi)
     {
         bool annular = !double.IsNaN(inner * outer);
-        return new UContext(kV, annular ? inner : double.NaN, annular ? outer : double.NaN, annular ? nTheta : 0, annular ? nPhi : 0, _elasticIonModel, AbsorptionElasticModel);
+        var pinned = pinnedRunSettings;
+        return new UContext(kV, annular ? inner : double.NaN, annular ? outer : double.NaN, annular ? nTheta : 0, annular ? nPhi : 0,
+            pinned?.Ion ?? _elasticIonModel, pinned?.Absorption ?? AbsorptionElasticModel);
     }
 
     /// <summary>261118Cl 追加: getU のキャッシュ。条件 (<see cref="UContext"/>) ごとの入れ物の中を、従来どおり index の組 (int 2 つ) で引く。
@@ -5071,8 +5086,11 @@ public partial class BetheMethod
         if (maxNumOfBloch == -1)
             maxNumOfBloch = MaxNumOfBloch;
         // 261028Cl 追加: 診断用の静的な設定 (BeamCandidateMultiplier・BeamBoundaryTieMode) は冒頭で 1 回だけ読み、この呼び出しの中では同じ値を使う
-        var candidateMultiplier = BeamCandidateMultiplier;
-        var tieMode = BeamBoundaryTieMode;
+        // var candidateMultiplier = BeamCandidateMultiplier; // 261118Cl 変更前
+        // var tieMode = BeamBoundaryTieMode;
+        var pinnedSettings = pinnedRunSettings; // 261118Cl 変更 (単位 4): run の開始時に固定した設定があればそれを使う
+        var candidateMultiplier = pinnedSettings?.CandidateMultiplier ?? BeamCandidateMultiplier;
+        var tieMode = pinnedSettings?.TieMode ?? BeamBoundaryTieMode;
         var diagnostic = candidateMultiplier != 0; // 261028Cl 追加 (査読 M1): 倍率の指定あり = 診断 (候補をちょうど N × 倍率 個集める)。0 = 従来
 
         // 260318Cl 変更: BFS 探索 (Phase 1) とエワルド球スクリーニング (Phase 2) を分離
