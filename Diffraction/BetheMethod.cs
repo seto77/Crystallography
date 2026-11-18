@@ -1158,10 +1158,18 @@ public partial class BetheMethod
     /// true のとき、hkl ごとに α = 0°・45°・90° の 3 点を一度だけ評価し、方向ごとに c² = cos²α の 2 次式で組む (製品の求積の値を相対 ≤1e-5 で再現。
     /// 方向ごとに直接評価すると 1 方向 0.1〜0.5 秒かかるため)。⚠ 着衣の裾の表 (diffF、方向に依らない 1 枚の表) にはまだ入れていない</summary>
     public static bool MasterBackSourceAxisCorrection { get; set; } = false;
+    /// <summary>261118Cl 追加: 直前の EBSD の構築で後方 TDS 源に使った軸の方式 (<see cref="BackSourceAxisIncident"/> か <see cref="BackSourceAxisCrystalZ"/>。後方源を使わなければ "")</summary>
+    public string EbsdBackSourceAxisUsed { get; private set; } = "";
+    /// <summary>261118Cl 追加: 後方源の軸 = 方向ごとの入射 (3 点の cos²α の 2 次式)</summary>
+    public const string BackSourceAxisIncident = "incident (3-node cos2)";
+    /// <summary>261118Cl 追加: 後方源の軸 = 結晶の z (従来)</summary>
+    public const string BackSourceAxisCrystalZ = "crystal z (legacy)";
 
     /// <summary>1 つのビーム集合に対する後方散乱 TDS 行列を作る。</summary>
     /// <param name="incidentAxis">261118Cl 追加: 方向の入射の向き (結晶固定系。正負は問わない)。null なら従来 (軸 = 結晶の z)</param>
     /// <param name="nodeCache">261118Cl 追加: hkl ごとの 3 点 (α = 0°・45°・90°) の値の入れ物 (呼び出し側が区画ごとに作る。incidentAxis と一緒に渡す)</param>
+    // 261118Cl 変更 (codex2 第 5 回): 軸を合わせる形は CreateMasterPatternMuBackNodes (Δhkl ごとの 3 点の表 + 画素ごとに組む) へ移した。
+    //   大きい格子のブロック共有 (1/3/5) では、代表の方向の行列を近傍の画素が写すので、代表の軸で組んだ値を写すと画素の軸がずれる。下の incidentAxis の形は使っていない
     // private Complex[] CreateMasterPatternMuBack(double voltage, Beam[] beams) // 261118Cl 旧シグネチャ
     private Complex[] CreateMasterPatternMuBack(double voltage, Beam[] beams, Vector3DBase incidentAxis = null,
         ConcurrentDictionary<int, (Complex V0, Complex V45, Complex V90)> nodeCache = null)
@@ -1193,6 +1201,37 @@ public partial class BetheMethod
                 muBack[col * beamCount + row] = val;
             }
         return muBack; // (260321Ch)
+    }
+
+    /// <summary>261118Cl 追加 (codex2 第 5 回): 後方源の 1 つの Δhkl の 3 点の値 (入射の軸と G の角 α = 0°・45°・90°) と、G の単位ベクトル (結晶固定系)。
+    /// 方向 (画素) ごとに c² = (Ĝ·K̂₀)² で <see cref="CombineBackSourceAxisNodes"/> を当てて値にする。G = 0 は軸に依らない (Ux = Uy = Uz = 0 で c² = 0)</summary>
+    internal sealed class BackSourceNode((Complex V0, Complex V45, Complex V90) nodes, double ux, double uy, double uz)
+    {
+        public readonly (Complex V0, Complex V45, Complex V90) Nodes = nodes;
+        public readonly double Ux = ux, Uy = uy, Uz = uz;
+        /// <summary>単位ベクトルの軸 (正負は問わない) での値</summary>
+        public Complex At(double ax, double ay, double az) { double c = Ux * ax + Uy * ay + Uz * az; return CombineBackSourceAxisNodes(Nodes, c * c); }
+    }
+
+    /// <summary>261118Cl 追加 (codex2 第 5 回): 1 つのビーム集合の後方 TDS 源を、要素 (列優先 [col * N + row]、<see cref="CreateMasterPatternMuBack"/> と同じ並び) ごとの
+    /// <see cref="BackSourceNode"/> の参照の表にする。Δhkl ごとの 3 点は cache (区画ごと、方向に依らない) で 1 度だけ評価する。値は画素ごとの入射の軸で組む</summary>
+    private BackSourceNode[] CreateMasterPatternMuBackNodes(double voltage, Beam[] beams, ConcurrentDictionary<int, BackSourceNode> cache)
+    {
+        var beamCount = beams?.Length ?? 0;
+        var table = new BackSourceNode[beamCount * beamCount];
+        for (int col = 0; col < beamCount; col++)
+            for (int row = 0; row < beamCount; row++)
+            {
+                var key = compose(beams[row].H - beams[col].H, beams[row].K - beams[col].K, beams[row].L - beams[col].L);
+                table[col * beamCount + row] = cache.GetOrAdd(key, _ =>
+                {
+                    var diff = beams[row] - beams[col];
+                    double len = diff.Vec.Length;
+                    var nodes = BackSourceAxisNodes(voltage, diff.Index, len);
+                    return len > 0 ? new BackSourceNode(nodes, diff.Vec.X / len, diff.Vec.Y / len, diff.Vec.Z / len) : new BackSourceNode(nodes, 0, 0, 0);
+                });
+            }
+        return table;
     }
 
     /// <summary>261118Cl 追加: 3 点の値から c² = cos²α の値を組む (V(c²) = V90 + b c² + d c⁴、c² = 1・0.5・0 が V0・V45・V90)。テストから直接検査する</summary>
@@ -1830,6 +1869,9 @@ public partial class BetheMethod
     private void ebsdNew_DoWork(object sender, DoWorkEventArgs e)
     {
         var (solver, thread, voltages) = ((Solver, int, double[]))e.Argument;
+        // 261118Cl 追加 (codex2 第 5 回): 後方源の軸の方式は構築の開始時に 1 度だけ読んで固定し、使った方式を記録する (MasterPattern・保存の情報へ)
+        bool backSourceAxis = MasterBackSourceAxisCorrection;
+        EbsdBackSourceAxisUsed = !IncludeTDSBackground || double.IsFinite(SourceSmearingSigmaNm) ? "" : backSourceAxis ? BackSourceAxisIncident : BackSourceAxisCrystalZ;
 
         Disks = new CBED_Disk[voltages.Length][];
         int count = 0;
@@ -2012,6 +2054,7 @@ public partial class BetheMethod
             var beamsPreliminary = new (Vector3DBase EquivalentSurface, Vector3DBase EquivalentVecK0, Beam[] Beams, Complex[] PotentialMatrix, Complex[] PhaseNG)[Math.Min(chunkSize, representativeIndices.Count)];
             var representativeOptions = directionOptions;
             Complex[][] muBackArrays = null;
+            BackSourceNode[][] backNodeArrays = null; // 261118Cl 追加 (codex2 第 5 回): 軸を合わせる後方源の表 (代表ごと)
             ebsdIntensity = new double[BeamDirections.Length][]; // 261107Cl 移動 (旧は解くループの直前)
             int orderedPosition = 0; // 261107Cl 追加: orderedSymmetryRepresentatives の中の、次の塊の先頭
             for (int chunkStart = 0; chunkStart < representativeIndices.Count; chunkStart += chunkSize) // 261107Cl 追加
@@ -2054,7 +2097,10 @@ public partial class BetheMethod
                 {
                     uDictionary.Clear();
                     muBackArrays = new Complex[beamsPreliminary.Length][];
-                    var backNodeCache = MasterBackSourceAxisCorrection ? new ConcurrentDictionary<int, (Complex V0, Complex V45, Complex V90)>() : null; // 261118Cl 追加
+                    // var backNodeCache = MasterBackSourceAxisCorrection ? new ConcurrentDictionary<int, (Complex V0, Complex V45, Complex V90)>() : null; // 261118Cl 追加 (1 時間より前の版)
+                    // 261118Cl 変更 (codex2 第 5 回): 軸を合わせるときは行列の代わりに Δhkl ごとの 3 点の表 (backNodeArrays) を作り、画素ごとの軸で組む (ブロック共有の画素も自分の軸で)
+                    var backNodeCache = backSourceAxis && !double.IsFinite(SourceSmearingSigmaNm) ? new ConcurrentDictionary<int, BackSourceNode>() : null;
+                    if (backNodeCache != null) backNodeArrays = new BackSourceNode[beamsPreliminary.Length][];
 
                     Parallel.For(0, beamsPreliminary.Length, representativeOptions, idx =>
                     {
@@ -2064,7 +2110,10 @@ public partial class BetheMethod
                         muBackArrays[idx] = double.IsFinite(SourceSmearingSigmaNm)
                             ? CreateSmearedLocalSourceMatrix(bp, atomArray, sigmaArray, tdsCoeff, SourceSmearingSigmaNm) // 260919Cl 追加 (試行): ぼかした局所源 (非局所源より優先)
                             // : CreateMasterPatternMuBack(AccVoltage, bp); // (260321Ch) // 261118Cl 変更前
-                            : CreateMasterPatternMuBack(AccVoltage, bp, backNodeCache == null ? null : beamsPreliminary[idx].EquivalentVecK0, backNodeCache); // 261118Cl 変更: 切り替えが on なら方向の入射の向きを軸に
+                            // : CreateMasterPatternMuBack(AccVoltage, bp, backNodeCache == null ? null : beamsPreliminary[idx].EquivalentVecK0, backNodeCache); // 261118Cl 変更 (1 時間より前の版: 代表の軸で組んでいた)
+                            : backNodeCache == null ? CreateMasterPatternMuBack(AccVoltage, bp) : null; // 261118Cl 変更: 軸を合わせるときは下の表だけ
+                        if (backNodeCache != null && !double.IsFinite(SourceSmearingSigmaNm))
+                            backNodeArrays[idx] = CreateMasterPatternMuBackNodes(AccVoltage, bp, backNodeCache); // 261118Cl 追加
                     });
                     uDictionary.Clear();
                 }
@@ -2102,6 +2151,7 @@ public partial class BetheMethod
                         // var muBackBase = IncludeTDSBackground ? muBackArrays?[mapping[i]] : null; // 261107Cl 変更前
                         var (_, _, beamsBase, potentialMatrix, phaseNG) = beamsPreliminary[mapping[i] - chunkStart]; // 261107Cl: 塊の中の番号
                         var muBackBase = IncludeTDSBackground ? muBackArrays?[mapping[i] - chunkStart] : null;
+                        var backNodeBase = IncludeTDSBackground ? backNodeArrays?[mapping[i] - chunkStart] : null; // 261118Cl 追加
                         var baseLen = beamsBase?.Length ?? 0;
                         if (baseLen == 0)
                             return;
@@ -2169,7 +2219,8 @@ public partial class BetheMethod
                             phaseNG.AsSpan(gMap[g] * nAtoms, nAtoms).CopyTo(phaseFilteredSpan.Slice(g * nAtoms, nAtoms)); // (260321Ch)
 
                         Complex[] muBackFiltered = null;
-                        if (muBackBase != null)
+                        // if (muBackBase != null) // 261118Cl 変更前
+                        if (muBackBase != null || backNodeBase != null) // 261118Cl 変更: 軸を合わせる表からも組む
                         {
                             int muBackFilteredLength = bLen * bLen;
                             muBackFiltered = threadLocalMuBackFiltered.Value;
@@ -2180,12 +2231,25 @@ public partial class BetheMethod
                                 muBackFiltered = Shared.Rent(muBackFilteredLength); // (260321Ch)
                                 threadLocalMuBackFiltered.Value = muBackFiltered; // (260321Ch)
                             }
-                            for (int col = 0; col < bLen; col++)
+                            if (backNodeBase == null)
+                                for (int col = 0; col < bLen; col++)
+                                {
+                                    int dstColOffset = col * bLen;
+                                    int srcColOffset = gMap[col] * baseLen;
+                                    for (int row = 0; row < bLen; row++)
+                                        muBackFiltered[dstColOffset + row] = muBackBase[srcColOffset + gMap[row]]; // (260321Ch)
+                                }
+                            else
                             {
-                                int dstColOffset = col * bLen;
-                                int srcColOffset = gMap[col] * baseLen;
-                                for (int row = 0; row < bLen; row++)
-                                    muBackFiltered[dstColOffset + row] = muBackBase[srcColOffset + gMap[row]]; // (260321Ch)
+                                // 261118Cl 追加 (codex2 第 5 回): この画素の入射の向き (正負は問わない) を軸に、Δhkl ごとの 3 点から組む (ブロック共有の画素も自分の軸)
+                                double kl = equivalentVecK0_i.Length, ax = equivalentVecK0_i.X / kl, ay = equivalentVecK0_i.Y / kl, az = equivalentVecK0_i.Z / kl;
+                                for (int col = 0; col < bLen; col++)
+                                {
+                                    int dstColOffset = col * bLen;
+                                    int srcColOffset = gMap[col] * baseLen;
+                                    for (int row = 0; row < bLen; row++)
+                                        muBackFiltered[dstColOffset + row] = backNodeBase[srcColOffset + gMap[row]].At(ax, ay, az);
+                                }
                             }
                         }
 
@@ -2363,6 +2427,7 @@ public partial class BetheMethod
                         ReturnMasterPatternBuffer(muBack); // (260321Ch)
                 Array.Clear(beamsPreliminary); // 261107Cl 追加: 次の塊 (最後の塊は短い) に前の塊の参照を残さない
                 muBackArrays = null; // 261107Cl 追加
+                backNodeArrays = null; // 261118Cl 追加
             }
             if (bwEBSDNew.CancellationPending) break; // 261107Cl 追加
             } // 261107Cl 追加: 塊のループの終わり
