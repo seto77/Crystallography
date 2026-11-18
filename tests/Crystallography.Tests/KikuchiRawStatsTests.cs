@@ -6,7 +6,7 @@ namespace Crystallography.Tests;
 /// 見える値は変えず、各サンプル点の生値を集計すること (2 ビーム版と systematic row 版)、点の診断の I = max(0, 生値) であることを確かめる</summary>
 public class KikuchiRawStatsTests
 {
-    private static KikuchiBandFamily Family(Crystal c, int h, int k, int l)
+    internal static KikuchiBandFamily Family(Crystal c, int h, int k, int l) // 261118Cl: KikuchiFailureDirectionTests からも使う (旧 private)
     {
         var v = c.MatrixInverseTransposed * (h, k, l);
         return new KikuchiBandFamily { Index = (h, k, l), Vec = new Vector3DBase(v.X, v.Y, v.Z), Text = $"{h} {k} {l}", RelativeIntensity = 1 };

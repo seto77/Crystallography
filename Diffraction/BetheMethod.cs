@@ -6435,7 +6435,8 @@ public partial class BetheMethod
                 break;
             if (seen.Add(tangentKeys[key.Index]))
                 unique.Add(key.Index);
-            else if (unique.Count <= maxNumOfBloch)
+            // else if (unique.Count <= maxNumOfBloch) // 261118Cl 変更前 (codex2 第 17 回: 候補が最初から N 本以下でも数えた。旧の診断は番兵のある (候補 > N) ときだけ)
+            else if (unique.Count <= maxNumOfBloch && n > maxNumOfBloch)
                 duplicateWithinSentinel = true;
         }
         if (unique.Count <= maxNumOfBloch) // 番兵が無い: 全部

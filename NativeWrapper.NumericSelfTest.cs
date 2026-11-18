@@ -80,7 +80,9 @@ public static partial class NativeWrapper
             {
                 var r = new double[thick.Length];
                 st = EBSDSolverRaw(b, values, vectors, alpha, phase, badSigma, thick, r);
-                Check(st == NativeSolveStatus.Ok && r.All(x => double.IsNaN(x) || x < 0), $"EBSD raw with σ {badSigma[0]}: status {st}, values {string.Join(", ", r)}");
+                // Check(st == NativeSolveStatus.Ok && r.All(x => double.IsNaN(x) || x < 0), ...); // 261118Cl 変更前 (codex2 第 17 回: 負と NaN を取り違えても、−∞ でも合格した)
+                bool rawOk = double.IsNaN(badSigma[0]) ? r.All(double.IsNaN) : r.All(x => double.IsFinite(x) && x < 0); // 負の σ = 全部が有限の負、NaN の σ = 全部が NaN
+                Check(st == NativeSolveStatus.Ok && rawOk, $"EBSD raw with σ {badSigma[0]}: status {st}, values {string.Join(", ", r)}");
                 var legacyEbsd = EBSDSolver(b, values, vectors, alpha, phase, badSigma, thick);
                 Check(legacyEbsd.All(x => BitConverter.DoubleToInt64Bits(x) == 0), $"legacy EBSD clamp with σ {badSigma[0]}: {string.Join(", ", legacyEbsd)} (expected +0)");
             }

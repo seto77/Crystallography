@@ -119,6 +119,18 @@ public class BeamCanonicalSelectionTests
         AssertAllOrders(c, 2, BeamBoundaryTieMode.DropGroup, [Zero, (1, 0, 0)]);
     }
 
+    /// <summary>261118Cl 追加 (codex2 第 17 回): 000 の無い非空の候補で全部が同点 (IncludeGroup は全部、DropGroup は空。000 を作らない) と、
+    /// 000 と別の指数が同じ接平面の鍵 (代表は 000)</summary>
+    [Fact]
+    public void NoZeroBeam_AllTied_And_ZeroSharesAKey()
+    {
+        List<Candidate> noZero = [new((1, 0, 0), 2.0, 1), new((0, 1, 0), 2.0, 2), new((0, 0, 1), 2.0, 3)];
+        AssertAllOrders(noZero, 2, BeamBoundaryTieMode.IncludeGroup, [(0, 0, 1), (0, 1, 0), (1, 0, 0)]);
+        AssertAllOrders(noZero, 2, BeamBoundaryTieMode.DropGroup, []);
+        List<Candidate> shared = [new((-1, 0, 0), 0, 0), new(Zero, 0, 0), new((0, 1, 0), 1.0, 2), new((0, 0, 1), 3.0, 3)];
+        AssertAllOrders(shared, 2, BeamBoundaryTieMode.IncludeGroup, [Zero, (0, 1, 0)]);
+    }
+
     [Fact]
     public void EmptyAndZeroOnly()
     {
