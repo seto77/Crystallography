@@ -259,8 +259,11 @@ public class EBSD
         Array.Copy(negativeDirections, 0, directions, positiveDirections.Length, negativeDirections.Length);
         masterPatternBethe = new BetheMethod(currentMasterPatternBuildRequest.Crystal)
         {
-            EbsdRepresentativeDirectionBlockSize = currentMasterPatternBuildRequest.GridSize <= 512 ? 1
-                : currentMasterPatternBuildRequest.GridSize <= 1024 ? 3 : 5, // (260321Ch) 解像度に応じて 1 / 3 / 5 をその場で決める
+            // EbsdRepresentativeDirectionBlockSize = currentMasterPatternBuildRequest.GridSize <= 512 ? 1
+            //     : currentMasterPatternBuildRequest.GridSize <= 1024 ? 3 : 5, // (260321Ch) 解像度に応じて 1 / 3 / 5 をその場で決める // 261118Cl 変更前
+            // 261118Cl 変更 (作者の決定 2026-11-18 AskUserQuestion「1536 以上も 3 に」): ブロック 5 は 3 の 1.4〜1.7 倍の誤差 (格子 512・1024 の測定、
+            //   wf_blockshare_261118) で、時間の得は 5〜10 % (推測) なので、格子 756 以上は 3 にそろえる
+            EbsdRepresentativeDirectionBlockSize = currentMasterPatternBuildRequest.GridSize <= 512 ? 1 : 3,
             UseLocalSurfacePerBeamDirection = false, // (260321Ch) 新経路では結晶を回すので、既存 worker 側の局所表面近似は使わない
             // EbsdRepresentativeChunkSize = MasterPatternRepresentativeChunkSize // 261107Cl 追加 // 261110Cl 変更前
             EbsdRepresentativeChunkSize = MasterPatternRepresentativeChunkSize, // 261107Cl 追加
