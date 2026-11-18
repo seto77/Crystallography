@@ -1182,6 +1182,10 @@ public partial class BetheMethod
     /// true のとき、hkl ごとに α = 0°・45°・90° の 3 点を一度だけ評価し、方向ごとに c² = cos²α の 2 次式で組む (製品の求積の値を相対 ≤1e-5 で再現。
     /// 方向ごとに直接評価すると 1 方向 0.1〜0.5 秒かかるため)。⚠ 着衣の裾の表 (diffF、方向に依らない 1 枚の表) にはまだ入れていない</summary>
     public static bool MasterBackSourceAxisCorrection { get; set; } = false;
+    /// <summary>261118Cl 追加 (codex2 の単位 6・7 の第 1 段): 直前の EBSD の構築の数値の状態と生値の集計 (構築の開始で null、終わりに作る。取消・例外でも作る)。
+    /// 利用者に見える値は変えない (生値には旧い意味の丸めを当てて使う)</summary>
+    public NumericRunStats EbsdNumericStats { get; private set; }
+
     /// <summary>261118Cl 追加: 直前の EBSD の構築で後方 TDS 源に使った軸の方式 (<see cref="BackSourceAxisIncident"/> か <see cref="BackSourceAxisCrystalZ"/>。後方源を使わなければ "")</summary>
     public string EbsdBackSourceAxisUsed { get; private set; } = "";
     /// <summary>261118Cl 追加: 後方源の軸 = 方向ごとの入射 (3 点の cos²α の 2 次式)</summary>
@@ -1910,6 +1914,16 @@ public partial class BetheMethod
                 (solver, thread) = (Solver.Eigen_MKL, ProcessorCount);//260712Cl 変更 (codex 助言): 内側=1 保証後は外側=PC が正。EBSD は N が小さく EVD scratch のメモリ増も軽微
         }
         var reportString = $"{SolverLabel(solver)}{thread}"; //260611Cl 旧: $"{solver}{thread}" (MKL 不在時の managed 実行を可視化)
+        // 261118Cl 追加 (codex2 の単位 6・7 の第 1 段): 数値の検査の backend は構築の開始時に固定する。新しい DLL なら EVD・α は検査つき、積分は生値で受けて
+        //   源ごとに集計し、旧い意味の丸め (NativeWrapper.LegacyEbsdClamp) を当てて使う (見える値は従来と同じ)。旧い DLL なら従来の入口のまま (生値は見えない)
+        bool numericRaw = EigenEnabled && NativeWrapper.NumericChecksAvailable;
+        bool evdChecked = numericRaw && solver == Solver.Eigen_Eigen && EbsdEigenSolverResearchHook == null;
+        var numeric = new NumericRunStatsCollector("EBSD", EigenEnabled ? (numericRaw ? "native-raw" : "native-legacy") : "managed",
+            solver == Solver.Eigen_Eigen && EigenEnabled ? (EbsdEigenSolverResearchHook != null ? "research-hook" : evdChecked ? "native-checked" : "native-legacy-unchecked") : "managed-MathNet",
+            rawObserved: numericRaw);
+        EbsdNumericStats = null;
+        try
+        {
         // var beamDirectionsP = BeamDirections.AsParallel().WithDegreeOfParallelism(thread); // (260321Ch) 旧実装: PLINQ の Select(...).ToArray() を使っていた
         var directionOptions = new ParallelOptions { MaxDegreeOfParallelism = thread }; // (260321Ch) 明示的な Parallel.For で各方向を埋める
         #endregion
@@ -2158,6 +2172,7 @@ public partial class BetheMethod
                 var threadLocalAlpha = new ThreadLocal<Complex[]>(() => null, true); // (260321Ch)
                 var threadLocalEigenValues = new ThreadLocal<Complex[]>(() => null, true); // (260321Ch)
                 var threadLocalEigenVectors = new ThreadLocal<Complex[]>(() => null, true); // (260321Ch)
+                var threadLocalNumeric = new ThreadLocal<NumericStatsAccumulator>(() => new NumericStatsAccumulator(), true); // 261118Cl 追加: worker ごとの数値の集計
                 try
                 {
                     // ebsdIntensity = new double[BeamDirections.Length][]; // 261107Cl 変更前 (塊のループの前へ移動)
@@ -2317,6 +2332,8 @@ public partial class BetheMethod
                             // NativeWrapper.EigenSolver(bLen, eigenMatrix, ref eigenValues, ref eigenVectors); // (260321Ch) 固有値・固有ベクトルもスレッドごとに再利用する // 261107Cl 変更前
                             if (EbsdEigenSolverResearchHook is { } evdHook) // 261107Cl 追加: 研究用の口 (既定 null で従来の経路)
                                 evdHook(bLen, eigenMatrix, eigenValues, eigenVectors);
+                            else if (evdChecked) // 261118Cl 追加 (単位 6): 検査つき (未収束・非有限は出力を NaN で埋めて状態を返す。旧は未収束のとき未初期化の領域を写した)
+                                threadLocalNumeric.Value.Status(NumericStage.Evd, NativeWrapper.EigenSolverChecked(bLen, eigenMatrix, eigenValues, eigenVectors), vIndex, i);
                             else
                                 NativeWrapper.EigenSolver(bLen, eigenMatrix, ref eigenValues, ref eigenVectors); // (260321Ch) 固有値・固有ベクトルもスレッドごとに再利用する
 
@@ -2340,7 +2357,11 @@ public partial class BetheMethod
                                 alpha = Shared.Rent(bLen); // (260321Ch)
                                 threadLocalAlpha.Value = alpha; // (260321Ch)
                             }
-                            NativeWrapper.PartialPivLuSolve(bLen, eigenVectors, psi0Native2, ref alpha); // (260321Ch)
+                            // NativeWrapper.PartialPivLuSolve(bLen, eigenVectors, psi0Native2, ref alpha); // (260321Ch) // 261118Cl 変更前
+                            if (evdChecked) // 261118Cl 変更 (単位 6): 検査つき (ゼロピボット・非有限を状態で返す)
+                                threadLocalNumeric.Value.Status(NumericStage.Boundary, NativeWrapper.PartialPivLuSolveChecked(bLen, eigenVectors, psi0Native2, alpha), vIndex, i);
+                            else
+                                NativeWrapper.PartialPivLuSolve(bLen, eigenVectors, psi0Native2, ref alpha); // (260321Ch)
                         }
                         else
                         {
@@ -2352,13 +2373,33 @@ public partial class BetheMethod
                             alpha = ((DVec)(evd.EigenVectors as DMat).LU().Solve(psi0)).Values;
                         }
 
-                        if (EigenEnabled && muBackFiltered != null)
+                        if (EigenEnabled && muBackFiltered != null && numericRaw)
+                        {
+                            // 261118Cl 追加 (単位 7 の第 1 段): 生値で受けて TDS の源を集計し、旧い意味の丸めを当てる (局所の 0 配列は計算済みの印なので集計から外す)
+                            int tLen = Thicknesses.Length;
+                            intensity = new double[tLen]; background = new double[tLen];
+                            var acc = threadLocalNumeric.Value;
+                            acc.Status(NumericStage.Integrator, NativeWrapper.EBSDSolverWithTDSRaw(bLen, eigenValues, eigenVectors, alpha, Array.Empty<Complex>(), Array.Empty<double>(), muBackFiltered, tdsCoeff, Thicknesses, intensity, background), vIndex, i);
+                            acc.Observe(NumericQuantity.EbsdTds, background, vIndex, i);
+                            acc.Exclude(NumericQuantity.EbsdLocal, tLen);
+                            for (int t = 0; t < tLen; t++) background[t] = NativeWrapper.LegacyEbsdClamp(background[t]);
+                        }
+                        else if (EigenEnabled && muBackFiltered != null)
                         {
                             // var result = NativeWrapper.EBSDSolverWithTDS(bLen, eigenValues, eigenVectors, alpha, phaseFiltered, sigmaArray, muBackFiltered, tdsCoeff, Thicknesses); // 261106Ch previous
                             // 261106Ch: 非局所源があれば局所値は Disk 格納で使われない。原子源0個として省略し、計算済み判定用の0配列は保持する。
                             var result = NativeWrapper.EBSDSolverWithTDS(bLen, eigenValues, eigenVectors, alpha, Array.Empty<Complex>(), Array.Empty<double>(), muBackFiltered, tdsCoeff, Thicknesses);
                             intensity = result.intensity;
                             background = result.tdsIntensity;
+                        }
+                        else if (EigenEnabled && numericRaw)
+                        {
+                            // 261118Cl 追加 (単位 7 の第 1 段): 局所の源を生値で受けて集計し、旧い意味の丸めを当てる
+                            intensity = new double[Thicknesses.Length];
+                            var acc = threadLocalNumeric.Value;
+                            acc.Status(NumericStage.Integrator, NativeWrapper.EBSDSolverRaw(bLen, eigenValues, eigenVectors, alpha, phaseFiltered, sigmaArray, Thicknesses, intensity), vIndex, i);
+                            acc.Observe(NumericQuantity.EbsdLocal, intensity, vIndex, i);
+                            for (int t = 0; t < intensity.Length; t++) intensity[t] = NativeWrapper.LegacyEbsdClamp(intensity[t]);
                         }
                         else if (EigenEnabled)
                         {
@@ -2384,7 +2425,9 @@ public partial class BetheMethod
                             var diffuse = ComputeAbsorbedFluxBackground(bLen, eigenValues, eigenVectors, alpha, sigmaSum, Thicknesses, pOverP0);
                             var dst = background ?? intensity; // 非局所源が有るときは intensity は使われない (Disk 格納部で background が優先)
                             for (int t = 0; t < diffuse.Length; t++) dst[t] += diffuse[t];
+                            threadLocalNumeric.Value.Observe(NumericQuantity.EbsdReinjection, diffuse, vIndex, i); // 261118Cl 追加 (単位 7): 再注入の源
                         }
+                        threadLocalNumeric.Value.Observe(NumericQuantity.EbsdTotal, background ?? intensity, vIndex, i); // 261118Cl 追加 (単位 7): 足した後の値 (有限性)
 
                         if (background != null)
                             ebsdBackground[i] = background;
@@ -2439,6 +2482,8 @@ public partial class BetheMethod
                     threadLocalAlpha.Dispose(); // (260321Ch)
                     threadLocalEigenValues.Dispose(); // (260321Ch)
                     threadLocalEigenVectors.Dispose(); // (260321Ch)
+                    foreach (var acc in threadLocalNumeric.Values) numeric.Merge(acc); // 261118Cl 追加: Parallel.For が戻った後 (単一のスレッド) に合わせる
+                    threadLocalNumeric.Dispose();
                 }
                 #endregion
             }
@@ -2498,6 +2543,8 @@ public partial class BetheMethod
             //     e.Cancel = true;
             if (bwEBSDNew.CancellationPending) { e.Cancel = true; return; } // 261107Cl
         }
+        }
+        finally { EbsdNumericStats = numeric.Build(); } // 261118Cl 追加: 取消・例外でも集計を残す
     }
 
     /// <summary>
