@@ -157,18 +157,29 @@ public partial class BetheMethod
     // (hkl の鍵の範囲を検査済み。従来の呼び出しとは共有しない)。CoverRadius = これより |g| の小さい格子点はすべて Items にある半径 (nm⁻¹)。
     // private sealed record GCacheSnapshot((double, double, double, double, double, double, double, double, double) Mat,
     //     (int key, double gX, double gY, double gZ, double gLen)[] Items, bool Diagnostic, double CoverRadius); // 261118Cl 変更前
+    // 261118Cl 変更 (codex2 第 9 回): Checkpoints = BFS の外側の一巡ごとの (それまでの点の数, その時点で覆い切った半径)。
+    //   要求の大きさ (cacheLimit) で新しく作ったときと同じ範囲・半径を、大きく作ったキャッシュからも取り出せる (キャッシュの履歴に依らない)
     private sealed record GCacheSnapshot((double, double, double, double, double, double, double, double, double) Mat,
-        (int key, double gX, double gY, double gZ, double gLen)[] Items, bool Diagnostic, double CoverRadius)
+        (int key, double gX, double gY, double gZ, double gLen)[] Items, bool Diagnostic, double CoverRadius, (int Count, double Cover)[] Checkpoints = null)
     {
-        private int[] byLength;
-        /// <summary>261118Cl 追加 (<see cref="BeamCandidateCutMode.Shell"/>): Items の番号を (|g|, 鍵) の昇順に並べた索引。初めて使うときに 1 度だけ作る (同時に作っても同じ配列)</summary>
-        public int[] ByLength => byLength ??= BuildByLength(Items);
+        private readonly Lazy<int[]> byLength = new(() => BuildByLength(Items), LazyThreadSafetyMode.ExecutionAndPublication);
+        /// <summary>261118Cl 追加 (<see cref="BeamCandidateCutMode.Shell"/>): Items の番号を (|g|, 鍵) の昇順に並べた索引。初めて使うときに 1 度だけ作る</summary>
+        public int[] ByLength => byLength.Value;
         private static int[] BuildByLength((int key, double gX, double gY, double gZ, double gLen)[] items)
         {
             var order = new int[items.Length];
             for (int i = 0; i < order.Length; i++) order[i] = i;
             Array.Sort(order, (a, b) => items[a].gLen != items[b].gLen ? items[a].gLen.CompareTo(items[b].gLen) : items[a].key.CompareTo(items[b].key));
             return order;
+        }
+
+        /// <summary>261118Cl 追加 (codex2 第 9 回): cacheLimit で新しく作ったときの点の数と覆い切った半径 (BFS は決まった順なので、大きいキャッシュの先頭はその小さい版と同じ)</summary>
+        public (int Count, double Cover) EffectiveFor(int cacheLimit)
+        {
+            if (Checkpoints == null || Checkpoints.Length == 0) return (Items.Length, CoverRadius);
+            foreach (var c in Checkpoints)
+                if (c.Count >= cacheLimit) return c;
+            return (Items.Length, CoverRadius);
         }
     }
     private volatile GCacheSnapshot gCacheSnapshot;
@@ -5670,6 +5681,7 @@ public partial class BetheMethod
         var whole = new HashSet<int>(cacheLimit * 2) { compose(0, 0, 0) };
         var candidates = new List<(int key, double gX, double gY, double gZ, double gLen)>(cacheLimit) { (compose(0, 0, 0), 0, 0, 0, 0) };
 
+        var checkpoints = new List<(int Count, double Cover)>(); // 261118Cl 追加 (codex2 第 9 回)
         while (whole.Count < cacheLimit && outer.Count > 0)
         {
             if (!outer.TryPeek(out _, out var minGlen))
@@ -5696,6 +5708,7 @@ public partial class BetheMethod
                     }
                 }
             }
+            checkpoints.Add((candidates.Count, outer.TryPeek(out _, out var frontNow) ? frontNow - 6 * shift : double.PositiveInfinity)); // 261118Cl 追加: 一巡の終わりの (数, 覆い切った半径)
         }
 
         // gCache = [.. candidates]; // 261004Cl 旧
@@ -5704,7 +5717,8 @@ public partial class BetheMethod
         // (原点から格子点へ、線分に沿って方向の集合の基底 3 本で進む道は線分から 3 本の長さの和 (≤ 6·shift) 以内に収まる。
         //  その道の点は前線より内側なので展開済みで、隣の点はすべて whole に入っている)
         var coverRadius = outer.TryPeek(out _, out var front) ? front - 6 * shift : double.PositiveInfinity;
-        return new GCacheSnapshot(mat.Tuple, [.. candidates], diagnostic, coverRadius);
+        // return new GCacheSnapshot(mat.Tuple, [.. candidates], diagnostic, coverRadius); // 261118Cl 変更前
+        return new GCacheSnapshot(mat.Tuple, [.. candidates], diagnostic, coverRadius, [.. checkpoints]); // 261118Cl 変更: 一巡ごとの記録も
     }
 
     /// <summary>候補となるgVectorを検索する.</summary>
@@ -5761,6 +5775,9 @@ public partial class BetheMethod
             }
         }
         var gCache = snapshot.Items;
+        // 261118Cl 追加 (codex2 第 9 回): 従来・殻の呼び出しは、この cacheLimit で新しく作ったときと同じ範囲 (先頭 cacheCount 点) と覆い切った半径 (coverRadius) だけを使う
+        //   (旧は、大きい N や別の方式が作った大きいキャッシュをそのまま使い、結果がキャッシュの履歴に依存した)。診断は自分のキャッシュを広げるので全部を使う
+        var (cacheCount, coverRadius) = diagnostic ? (gCache.Length, snapshot.CoverRadius) : snapshot.EffectiveFor(cacheLimit);
         #endregion
 
         #region Phase 2: キャッシュ済み候補に対してエワルド球テストのみ実行
@@ -5785,7 +5802,9 @@ public partial class BetheMethod
         // for (int i = 0; i < gCache.Length && count < limit; i++) { ... } // 261028Cl 変更前: 1 回だけ探す (本体は下の for と同じ)
         // 261118Cl 追加 (codex2 第 7・8 回): 殻の単位の打ち切り。|g| の順に走査し、通過した 8N 本目の |g| の殻 (相対 1e-9) を最後まで採る。
         //   殻の外端 (または候補が尽きたらエワルドの殻 2k0 + shift) までキャッシュが覆い切っていなければ、キャッシュを広げて探し直す
-        while (shellCut)
+        // 261118Cl 変更 (codex2 第 9 回): キャッシュは広げない。この cacheLimit で覆い切った半径 coverRadius (相対 1e-9 の丸めの幅ごと) に収まる完全な殻だけを使い、
+        //   |g| の順に通過の 8N 本目の殻を丸ごと採る。殻が半径をまたぐなら、その殻から先は丸ごと外す。候補が尽きたら半径の中の通過した候補を全部採る (どれも対称)
+        if (shellCut)
         {
             count = 0;
             double cutLen = double.NaN;
@@ -5793,7 +5812,10 @@ public partial class BetheMethod
             for (int o = 0; o < order.Length; o++)
             {
                 int i = order[o];
+                if (i >= cacheCount) continue; // この cacheLimit の範囲の外 (大きく作ったキャッシュの残り)
                 var (_, gX, gY, gZ, gLen) = gCache[i];
+                if (gLen * (1 + 1E-9) > coverRadius)
+                    break; // 覆い切っていない殻から先は使わない (並びは |g| の昇順)
                 if (count >= limit && gLen > cutLen * (1 + 1E-9))
                     break;
                 double vX = gX + kX, vY = gY + kY, vZ = gZ + kZ;
@@ -5810,23 +5832,13 @@ public partial class BetheMethod
                 pool[count++] = (i, gLen * q * q);
                 if (count == limit) cutLen = gLen;
             }
-            double needed = count >= limit ? cutLen * (1 + 1E-9) : 2 * k0 + shift;
-            if (snapshot.CoverRadius >= needed || gCache.Length >= MaxDiagnosticCacheLength)
-                break;
-            var grownShell = (int)Math.Min(MaxDiagnosticCacheLength, gCache.Length * 2L);
-            lock (gCacheLock)
-            {
-                snapshot = gCacheSnapshot;
-                if (snapshot == null || snapshot.Mat != mat.Tuple || snapshot.Items.Length < grownShell || snapshot.Diagnostic)
-                    gCacheSnapshot = snapshot = Build_gCache(baseRotation, grownShell, false);
-            }
-            gCache = snapshot.Items;
         }
         if (shellCut) beamsSpan = pool.AsSpan(0, count);
         while (!shellCut) // 261028Cl 変更 (査読 M1): 診断では、候補が上限に届かないうちにキャッシュの端まで来たら、キャッシュを広げて探し直す // 261118Cl: 殻の単位の打ち切りでは通らない
         {
             count = 0;
-            for (int i = 0; i < gCache.Length && count < limit; i++)
+            // for (int i = 0; i < gCache.Length && count < limit; i++) // 261118Cl 変更前
+            for (int i = 0; i < (diagnostic ? gCache.Length : cacheCount) && count < limit; i++) // 261118Cl 変更 (codex2 第 9 回): この cacheLimit の範囲だけ
             {
                 var (_, gX, gY, gZ, gLen) = gCache[i];
                 double vX = gX + kX, vY = gY + kY, vZ = gZ + kZ;
@@ -5866,7 +5878,8 @@ public partial class BetheMethod
             Array.Sort(lens);
             double maxLen = lens[^1].gLen * (1 + 1E-9);
             List<(int cacheIndex, double rating)> shellRest = null;
-            for (int i = beamsSpan[count - 1].cacheIndex + 1; i < gCache.Length; i++)
+            // for (int i = beamsSpan[count - 1].cacheIndex + 1; i < gCache.Length; i++) // 261118Cl 変更前
+            for (int i = beamsSpan[count - 1].cacheIndex + 1; i < cacheCount; i++) // 261118Cl 変更 (codex2 第 9 回): この cacheLimit の範囲だけ
             {
                 var (_, gX, gY, gZ, gLen) = gCache[i];
                 if (gLen > maxLen)
@@ -5901,12 +5914,14 @@ public partial class BetheMethod
         }
         beamsSpan = beamsSpan[..count];
         // 261028Cl 追加 (査読 M1): 候補探索の結果を記録する (記録だけで結果は変えない)。上限に届かず殻も覆い切っていない = 候補の範囲がキャッシュの大きさで決まった
-        var shellCovered = snapshot.CoverRadius >= 2 * k0 + shift;
+        // var shellCovered = snapshot.CoverRadius >= 2 * k0 + shift; // 261118Cl 変更前
+        var shellCovered = coverRadius >= 2 * k0 + shift; // 261118Cl 変更: この cacheLimit で覆い切った半径
         lastBeamCandidateScan = (count, limit, gCache.Length, shellCovered);
         if (count < limit && !shellCovered) // 261118Cl: 殻の単位の打ち切りでも、上限に届かずエワルドの殻を覆い切っていなければ数える
             Interlocked.Increment(ref beamCandidateExhaustedCount);
         #endregion
 
+        bool hasSentinel = count > maxNumOfBloch; // 261118Cl 追加 (codex2 第 9 回): 候補が N 本以下なら N+1 本目の番兵は無い (旧は最後の本物のビームを番兵として落とし、000 だけなら空を返した)
         count = Math.Min(count, maxNumOfBloch + 1);
         // 260623Cl 修正: 候補ビーム数 (beamsSpan.Length) が要求数 count 以下のとき、QuickSelect.Execute は
         // n (=count) が source.Length 以上だと "n is bigger than source.Length" を投げる (Validation は n < Length 前提)。
@@ -5962,6 +5977,8 @@ public partial class BetheMethod
         //261111Cl 追加: 同点とみなす幅。従来の絶対 1e-6 に、評価値に比例する分を足す。評価値 |g|·Q² の丸めの誤差は q = k0² − |k0+g|² の桁落ち
         //  (約 4e-11 nm⁻²) の 2|g||Q| 倍で、評価値が 1e7 を超えると対称で等価なビームどうしの差が 1e-6 を超えうる (組が切れて一部だけ残る)
         static double tieTol(double r) => 1E-6 + 1E-11 * Math.Abs(r);
+        if (!hasSentinel) // 261118Cl 追加: 番兵が無いときは全部 (同点の組の補完も要らない: 候補を全部選んでいる)
+            return [.. beams];
         int n = beams.Length - 1;
         for (int i = beams.Length - 1; i >= 1; i--)
             // if (Math.Abs(beams[i].Rating - beams[i - 1].Rating) > 1E-6) // 261111Cl 変更前
