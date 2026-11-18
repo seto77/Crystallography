@@ -1934,9 +1934,9 @@ public partial class BetheMethod
         bool evdChecked = numericRaw && solver == Solver.Eigen_Eigen && evdHook == null;
         var numeric = new NumericRunStatsCollector("EBSD")
         {
-            IntegratorBackend = eigenEnabled ? (numericRaw ? "native-raw" : "native-legacy") : "managed",
+            IntegratorBackend = eigenEnabled ? (numericRaw ? "native-raw" : "native-legacy") : "managed-raw", // managed の積分器も生値で受ける (再注入はどの経路でも managed の生値)
             EvdBackend = solver == Solver.Eigen_Eigen && eigenEnabled ? (evdHook != null ? "research-hook" : evdChecked ? "native-checked" : "native-legacy-unchecked") : "managed-MathNet",
-            RawObserved = numericRaw,
+            RawObserved = numericRaw || !eigenEnabled,
         };
         NativeWrapper.NativeSolveStatus StatusFor(NumericStage stage, int direction, NativeWrapper.NativeSolveStatus status) => statusForTest == null ? status : statusForTest(stage, direction, status);
         NumericFailureException Failed(NumericFailure f) // 失敗の場所 (電圧 kV・方向) を文に入れる
@@ -2061,6 +2061,10 @@ public partial class BetheMethod
             }
             #endregion
             double sigmaSum = 0; foreach (var v in sigmaArray) sigmaSum += v; // 260919Cl 追加: Σσ_n = (2π/k)U'_0,back。吸収フラックス再注入の単位深さあたり強度
+            // 261118Cl 追加 (codex2 第 7 回): 再注入の重みは、0 は正当なゼロの源、NaN・負・∞ は不正な重みとして止める (旧は全部 0 の源にしていた)
+            if (IncludeAbsorbedFluxBackground && dressedTail == null && !(sigmaSum >= 0 && double.IsFinite(sigmaSum)))
+                throw new NumericFailureException(new NumericFailure(vIndex, -1, NumericStage.ValueCheck, NativeWrapper.NativeSolveStatus.Args, NumericQuantity.EbsdReinjection),
+                    $"EBSD numeric failure at {voltages[vIndex]:g6} kV: the absorbed-flux reinjection weight Σσ = {sigmaSum} is not a finite non-negative number");
 
             var referenceSurface = Vector3DBase.Normarize(Surface); // (260321Ch) 新経路では固定表面系を基準に、等価な beam / surface 条件へ変換する
             var referenceBeamDirection = Vector3DBase.Normarize(-referenceSurface); // (260321Ch) 固定表面に対する法線出射方向
@@ -2459,11 +2463,28 @@ public partial class BetheMethod
                         {
                             // intensity = EBSDSolverManaged(bLen, nAtoms, eigenValues, eigenVectors, alpha, phaseFiltered, sigmaArray, Thicknesses); // 261106Ch 変更前
                             // 261106Ch: native と同様、非局所源で置換される局所計算を省く。0配列は計算済みセルの印として残す。
-                            intensity = muBackFiltered is null
-                                ? EBSDSolverManaged(bLen, nAtoms, eigenValues, eigenVectors, alpha, phaseFiltered, sigmaArray, Thicknesses)
-                                : new double[Thicknesses.Length];
-                            if (muBackFiltered != null)
-                                background = ComputeTDSMatrixBackground(bLen, eigenValues, eigenVectors, alpha, muBackFiltered, tdsCoeff, Thicknesses);
+                            // intensity = muBackFiltered is null // 261118Cl 変更前
+                            //     ? EBSDSolverManaged(bLen, nAtoms, eigenValues, eigenVectors, alpha, phaseFiltered, sigmaArray, Thicknesses)
+                            //     : new double[Thicknesses.Length];
+                            // if (muBackFiltered != null)
+                            //     background = ComputeTDSMatrixBackground(bLen, eigenValues, eigenVectors, alpha, muBackFiltered, tdsCoeff, Thicknesses);
+                            // 261118Cl 変更 (codex2 第 7 回): managed の局所・TDS も生値で受けて集計し (非有限なら止める)、従来の丸め Math.Max(0, ·) を当てる (見える値は同じ)
+                            if (muBackFiltered is null)
+                            {
+                                intensity = EBSDSolverManagedRaw(bLen, nAtoms, eigenValues, eigenVectors, alpha, phaseFiltered, sigmaArray, Thicknesses);
+                                if (acc.Observe(NumericQuantity.EbsdLocal, NumericObservation.Raw, intensity, vIndex, i) is { } localFailure)
+                                    throw Failed(localFailure);
+                                for (int t = 0; t < intensity.Length; t++) intensity[t] = Math.Max(0, intensity[t]);
+                            }
+                            else
+                            {
+                                intensity = new double[Thicknesses.Length];
+                                acc.Exclude(NumericQuantity.EbsdLocal, intensity.Length);
+                                background = ComputeTDSMatrixBackgroundRaw(bLen, eigenValues, eigenVectors, alpha, muBackFiltered, tdsCoeff, Thicknesses);
+                                if (acc.Observe(NumericQuantity.EbsdTds, NumericObservation.Raw, background, vIndex, i) is { } tdsFailure)
+                                    throw Failed(tdsFailure);
+                                for (int t = 0; t < background.Length; t++) background[t] = Math.Max(0, background[t]);
+                            }
                         }
 
                         // 260919Cl 追加: 吸収で失われたフラックスを拡散背景として再注入 (局所源・非局所源のどちらにも同じ量を足す)
@@ -2472,10 +2493,13 @@ public partial class BetheMethod
                             // var diffuse = ComputeAbsorbedFluxBackground(bLen, eigenValues, eigenVectors, alpha, sigmaSum, Thicknesses); // 261106Ch 変更前
                             var pOverP0 = new double[bLen]; // 261106Ch: 行割りした Bloch 系の生存フラックスを使う (再注入 opt-in のみ)
                             for (int g = 0; g < bLen; g++) pOverP0[g] = beams[g].P / beams[0].P;
-                            var diffuse = ComputeAbsorbedFluxBackground(bLen, eigenValues, eigenVectors, alpha, sigmaSum, Thicknesses, pOverP0);
-                            // 261118Cl 追加 (単位 7): 再注入の源 (積分器の中で Math.Max(0, ·) を当てた後の値。NaN は Math.Max を通るので非有限なら止める)
-                            if (acc.Observe(NumericQuantity.EbsdReinjection, NumericObservation.AfterClamp, diffuse, vIndex, i) is { } reinjectionFailure)
+                            // var diffuse = ComputeAbsorbedFluxBackground(bLen, eigenValues, eigenVectors, alpha, sigmaSum, Thicknesses, pOverP0); // 261118Cl 変更前
+                            // 261118Cl 変更 (codex2 第 7 回): 再注入の源を生値で受けて集計し (非有限なら止める)、従来の丸め Math.Max(0, ·) を当てる (Σσ > 0 では見える値は同じ。
+                            //   Σσ が不正な重みなら電圧の入口で止めている)
+                            var diffuse = ComputeAbsorbedFluxBackgroundRaw(bLen, eigenValues, eigenVectors, alpha, sigmaSum, Thicknesses, pOverP0);
+                            if (acc.Observe(NumericQuantity.EbsdReinjection, NumericObservation.Raw, diffuse, vIndex, i) is { } reinjectionFailure)
                                 throw Failed(reinjectionFailure);
+                            for (int t = 0; t < diffuse.Length; t++) diffuse[t] = Math.Max(0.0, diffuse[t]);
                             var dst = background ?? intensity; // 非局所源が有るときは intensity は使われない (Disk 格納部で background が優先)
                             for (int t = 0; t < diffuse.Length; t++) dst[t] += diffuse[t];
                         }
@@ -2629,8 +2653,9 @@ public partial class BetheMethod
     /// <param name="phaseNG">位相因子 P[n,g] = exp(2πi g·r_n) (nAtoms×bLen, column-major)</param>
     /// <param name="sigma">後方散乱断面積 σ_n (nAtoms 個)</param>
     /// <param name="thicknesses">厚さの配列 (tLen 個, nm 単位)</param>
-    /// <returns>各厚さでの EBSD 強度 (tLen 個)</returns>
-    private static double[] EBSDSolverManaged(
+    /// <returns>各厚さでの EBSD 強度 (tLen 個)。261118Cl: 丸めの前の生値 (旧い意味の丸めは <see cref="EBSDSolverManaged"/>)</returns>
+    // private static double[] EBSDSolverManaged( // 261118Cl 変更前 (本体を生値の版にし、旧い名前は丸めの包みにした)
+    internal static double[] EBSDSolverManagedRaw( // 261118Cl 変更 (codex2 第 7 回): 生値の本体
         int bLen, int nAtoms,
         Complex[] eigenValues, Complex[] eigenVectors, Complex[] alpha,
         Complex[] phaseNG, double[] sigma, double[] thicknesses)
@@ -2751,10 +2776,22 @@ public partial class BetheMethod
                     var F = BlochWaveIntegral.Evaluate(lam, thick); // 261106Ch: |λt| に基づく安定な厚さ積分
                     sum += S[j * bLen + jp] * F;
                 }
-            intensity[t] = Math.Max(0, sum.Real);
+            // intensity[t] = Math.Max(0, sum.Real); // 261118Cl 変更前 (丸めは包みの EBSDSolverManaged へ)
+            intensity[t] = sum.Real; // 261118Cl 変更: 生値
         }
         #endregion
 
+        return intensity;
+    }
+
+    /// <summary>261118Cl 追加 (codex2 第 7 回): <see cref="EBSDSolverManagedRaw"/> に旧い意味の丸め Math.Max(0, ·) (NaN は通す) を当てる薄い包み (署名・値とも従来どおり。道具・試験が反射で呼ぶ)</summary>
+    private static double[] EBSDSolverManaged(
+        int bLen, int nAtoms,
+        Complex[] eigenValues, Complex[] eigenVectors, Complex[] alpha,
+        Complex[] phaseNG, double[] sigma, double[] thicknesses)
+    {
+        var intensity = EBSDSolverManagedRaw(bLen, nAtoms, eigenValues, eigenVectors, alpha, phaseNG, sigma, thicknesses);
+        for (int t = 0; t < intensity.Length; t++) intensity[t] = Math.Max(0, intensity[t]);
         return intensity;
     }
 
@@ -2771,11 +2808,15 @@ public partial class BetheMethod
     /// 晶帯軸では 1s 状態の吸収が大きく N が速く減るので D も大きい。再注入は同じ方向 k に足されるため、晶帯軸の相対輝度はほぼ変わらない (実測: Si 不変、Fe3O4 で僅増)。
     /// </summary>
     // private static double[] ComputeAbsorbedFluxBackground(int bLen, Complex[] eigenValues, Complex[] eigenVectors, Complex[] alpha, double sigmaSum, double[] thicknesses) // 261106Ch 旧シグネチャ
-    private static double[] ComputeAbsorbedFluxBackground(int bLen, Complex[] eigenValues, Complex[] eigenVectors, Complex[] alpha, double sigmaSum, double[] thicknesses, double[] pOverP0 = null) // 261106Ch: null は旧密度規約
+    // private static double[] ComputeAbsorbedFluxBackground(int bLen, Complex[] eigenValues, Complex[] eigenVectors, Complex[] alpha, double sigmaSum, double[] thicknesses, double[] pOverP0 = null) // 261106Ch: null は旧密度規約 // 261118Cl 変更前
+    /// <remarks>261118Cl 変更 (codex2 第 7 回): 本体は丸めの前の生値 Σσ·Re Σ T (t − F) を返す。重み Σσ = 0 は正当なゼロの源として 0 を返し、NaN・負・∞ の重みは
+    /// そのまま掛ける (呼び出し側が不正な重みとして止める)。旧い意味 (NaN・負の重みも 0、値に Math.Max(0, ·)) は包みの <see cref="ComputeAbsorbedFluxBackground"/></remarks>
+    internal static double[] ComputeAbsorbedFluxBackgroundRaw(int bLen, Complex[] eigenValues, Complex[] eigenVectors, Complex[] alpha, double sigmaSum, double[] thicknesses, double[] pOverP0 = null) // 261106Ch: null は旧密度規約
     {
         int tLen = thicknesses.Length;
         var result = new double[tLen];
-        if (!(sigmaSum > 0) || bLen <= 0) return result;
+        // if (!(sigmaSum > 0) || bLen <= 0) return result; // 261118Cl 変更前 (NaN・負の重みも 0 にしていた。この判定は包みへ)
+        if (bLen <= 0 || sigmaSum == 0) return result; // 261118Cl 変更: 正当なゼロの源だけ
         if (pOverP0 != null && pOverP0.Length < bLen) // 261106Ch: 反射と重みの対応を途中で欠落させない
             throw new ArgumentException("Flux weights must cover every beam.", nameof(pOverP0));
         int bLen2 = bLen * bLen;
@@ -2824,9 +2865,20 @@ public partial class BetheMethod
                     }
                 }
             for (int t = 0; t < tLen; t++)
-                result[t] = sigmaSum * Math.Max(0.0, sum[t].Real);
+                // result[t] = sigmaSum * Math.Max(0.0, sum[t].Real); // 261118Cl 変更前 (丸めは包みへ)
+                result[t] = sigmaSum * sum[t].Real; // 261118Cl 変更: 生値
         }
         finally { Shared.Return(T); Shared.Return(expGamma); Shared.Return(sum); }
+        return result;
+    }
+
+    /// <summary>261118Cl 追加 (codex2 第 7 回): <see cref="ComputeAbsorbedFluxBackgroundRaw"/> の旧い意味の包み (署名・値とも従来どおり。道具・試験が反射で呼ぶ)。
+    /// Σσ が正でなければ (NaN を含む) 0、そうでなければ Math.Max(0, Σσ·s)。Σσ が正で有限なら旧の Σσ·Math.Max(0, s) とビットまで同じ (NaN は通す)</summary>
+    private static double[] ComputeAbsorbedFluxBackground(int bLen, Complex[] eigenValues, Complex[] eigenVectors, Complex[] alpha, double sigmaSum, double[] thicknesses, double[] pOverP0 = null)
+    {
+        if (!(sigmaSum > 0) || bLen <= 0) return new double[thicknesses.Length];
+        var result = ComputeAbsorbedFluxBackgroundRaw(bLen, eigenValues, eigenVectors, alpha, sigmaSum, thicknesses, pOverP0);
+        for (int t = 0; t < result.Length; t++) result[t] = Math.Max(0.0, result[t]);
         return result;
     }
 
@@ -2864,7 +2916,8 @@ public partial class BetheMethod
     /// 260919Cl 注記: σ_n を物理スケール ((2π/k)(γ/πV)Occ·f'_back(0)) にしたので、本関数の出力は局所源の非局所版として
     ///   同じ単位になる。IncludeTDSBackground=true では加算ではなく局所源を置換する (Disk への格納部参照)。
     /// </summary>
-    private static double[] ComputeTDSMatrixBackground(
+    // private static double[] ComputeTDSMatrixBackground( // 261118Cl 変更前 (本体を生値の版にし、旧い名前は丸めの包みにした)
+    internal static double[] ComputeTDSMatrixBackgroundRaw( // 261118Cl 変更 (codex2 第 7 回): 生値の本体 (旧い意味の丸めは ComputeTDSMatrixBackground)
         int bLen, Complex[] eigenValues, Complex[] eigenVectors, Complex[] alpha,
         Complex[] muBack, double coeff, double[] thicknesses)
     {
@@ -2922,11 +2975,22 @@ public partial class BetheMethod
                         sum += M[j * bLen + jp] * F;
                     }
                 }
-                tdsIntensity[t] = Math.Max(0, sum.Real);
+                // tdsIntensity[t] = Math.Max(0, sum.Real); // 261118Cl 変更前 (丸めは包みへ)
+                tdsIntensity[t] = sum.Real; // 261118Cl 変更: 生値
             }
         }
         finally { Shared.Return(tmp); Shared.Return(M); }
 
+        return tdsIntensity;
+    }
+
+    /// <summary>261118Cl 追加 (codex2 第 7 回): <see cref="ComputeTDSMatrixBackgroundRaw"/> に旧い意味の丸め Math.Max(0, ·) (NaN は通す) を当てる薄い包み (署名・値とも従来どおり)</summary>
+    private static double[] ComputeTDSMatrixBackground(
+        int bLen, Complex[] eigenValues, Complex[] eigenVectors, Complex[] alpha,
+        Complex[] muBack, double coeff, double[] thicknesses)
+    {
+        var tdsIntensity = ComputeTDSMatrixBackgroundRaw(bLen, eigenValues, eigenVectors, alpha, muBack, coeff, thicknesses);
+        for (int t = 0; t < tdsIntensity.Length; t++) tdsIntensity[t] = Math.Max(0, tdsIntensity[t]);
         return tdsIntensity;
     }
 

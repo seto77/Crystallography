@@ -16,7 +16,7 @@ public class EbsdNumericFailureTests
     private readonly record struct EbsdOutcome(Exception Error, bool Cancelled, NumericRunStats Stats, BetheMethod.CBED_Disk[][] Disks);
 
     /// <summary>EBSD (Si、6×6×2 方向、N16、20 kV、深さ 10・20 nm) を走らせて完了を待つ。完了の通知は SynchronizationContext の無いテストではスレッドプールで届く</summary>
-    private static EbsdOutcome Run(bool tds, Action<BetheMethod> configure = null)
+    private static EbsdOutcome Run(bool tds, Action<BetheMethod> configure = null, bool reinject = false)
     {
         var (crystal, _) = BetheEigenReuseTests.TiltedSi();
         var bethe = new BetheMethod(crystal) { EbsdRepresentativeDirectionBlockSize = 1, UseLocalSurfacePerBeamDirection = false };
@@ -31,7 +31,7 @@ public class EbsdNumericFailureTests
         bethe.EBSD_Completed += C;
         try
         {
-            bethe.RunEBSDNew(16, [20.0], Matrix3D.IdentityMatrix, [10.0, 20.0], Directions(6), BetheMethod.Solver.Eigen_Eigen, 4, includeTDSBackground: tds);
+            bethe.RunEBSDNew(16, [20.0], Matrix3D.IdentityMatrix, [10.0, 20.0], Directions(6), BetheMethod.Solver.Eigen_Eigen, 4, includeTDSBackground: tds, includeAbsorbedFluxBackground: reinject);
             Assert.True(done.Wait(TimeSpan.FromMinutes(5)), "EBSD did not finish");
         }
         finally { bethe.EBSD_Completed -= C; }
@@ -39,6 +39,78 @@ public class EbsdNumericFailureTests
     }
 
     private static long Count(NumericRunStats s, NumericStage stage) => s.Statuses.Where(kv => kv.Key.Stage == stage).Sum(kv => kv.Value);
+
+    /// <summary>managed の経路 (native を切る) でも局所・TDS・再注入を生値で観測する。段は状態を見ないので unchecked。native が無い CI でも走る</summary>
+    [Fact]
+    public void ManagedRun_ObservesRawSources_AndStagesAreUnchecked()
+    {
+        bool saved = BetheMethod.EigenEnabled;
+        try
+        {
+            BetheMethod.EigenEnabled = false;
+            foreach (var tds in new[] { false, true })
+            {
+                var r = Run(tds, reinject: true);
+                Assert.Null(r.Error);
+                var s = r.Stats;
+                Assert.Equal(NumericRunState.Completed, s.RunState);
+                Assert.Equal("managed-raw", s.IntegratorBackend); Assert.Equal("managed-MathNet", s.EvdBackend); Assert.True(s.RawObserved);
+                Assert.Empty(s.Statuses);
+                Assert.Contains("Evd unchecked", s.Summary());
+                long solved = s.Directions - s.NoBeamDirections;
+                Assert.True(solved > 0);
+                var source = s.Quantities[tds ? NumericQuantity.EbsdTds : NumericQuantity.EbsdLocal];
+                Assert.Equal(NumericObservation.Raw, source.Observation);
+                Assert.Equal(solved * 2, source.Evaluated);
+                Assert.Equal(NumericObservation.Raw, s.Quantities[NumericQuantity.EbsdReinjection].Observation);
+                Assert.Equal(solved * 2, s.Quantities[NumericQuantity.EbsdReinjection].Evaluated);
+                Assert.Equal(0, s.Quantities[NumericQuantity.EbsdTotal].NonFinite);
+            }
+        }
+        finally { BetheMethod.EigenEnabled = saved; }
+    }
+
+    /// <summary>再注入の重み Σσ が NaN なら、方向を解く前にその電圧で止める (旧は 0 の源として黙って進めた)</summary>
+    [Fact]
+    public void InvalidReinjectionWeight_FailsTheRun()
+    {
+        var saved = BetheMethod.BackscatterSourceScaleForResearch;
+        try
+        {
+            BetheMethod.BackscatterSourceScaleForResearch = (_, _) => double.NaN;
+            var r = Run(tds: false, reinject: true);
+            var ex = Assert.IsType<NumericFailureException>(r.Error);
+            Assert.Equal(new NumericFailure(0, -1, NumericStage.ValueCheck, NativeWrapper.NativeSolveStatus.Args, NumericQuantity.EbsdReinjection), ex.Failure);
+            Assert.Equal(NumericRunState.Failed, r.Stats.RunState);
+            Assert.Equal(0, r.Stats.Directions);
+        }
+        finally { BetheMethod.BackscatterSourceScaleForResearch = saved; }
+    }
+
+    /// <summary>真値がゼロと分かる条件 (codex2 第 7 回 §2-3): 二波・無吸収・非等価な P の系は流束 Σ(P_g/P_0)|ψ_g|² が保存し、再注入の真値は厳密に 0。
+    /// 生値は丸めの範囲の大きさ (|x| ≤ 1e-12·Σσ·t) に収まり、旧い入口 (包み) は生値に Math.Max(0, ·) を当てたものに等しい</summary>
+    [Theory]
+    [InlineData(2.0)]
+    [InlineData(0.5)]
+    public void ReinjectionRaw_IsRoundoffSmall_WhenTheTrueValueIsZero(double relativeP)
+    {
+        double rootP = Math.Sqrt(relativeP), halfRoot = 1 / Math.Sqrt(2), frequency = 0.17 / rootP;
+        System.Numerics.Complex[] eigen = [new(frequency, 0), new(-frequency, 0)];
+        System.Numerics.Complex[] vectors = [halfRoot, halfRoot / rootP, halfRoot, -halfRoot / rootP];
+        System.Numerics.Complex[] alpha = [halfRoot, halfRoot];
+        double[] depths = [0, 0.1, 0.7, 1.9, 3.0, 40, 400], weights = [1, relativeP];
+        const double sigma = 0.3;
+        var raw = BetheMethod.ComputeAbsorbedFluxBackgroundRaw(2, eigen, vectors, alpha, sigma, depths, weights);
+        var legacy = (double[])typeof(BetheMethod).GetMethod("ComputeAbsorbedFluxBackground", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!
+            .Invoke(null, [2, eigen, vectors, alpha, sigma, depths, weights]);
+        for (int t = 0; t < depths.Length; t++)
+        {
+            Assert.True(double.IsFinite(raw[t]));
+            Assert.True(Math.Abs(raw[t]) <= 1e-12 * sigma * Math.Max(depths[t], 1), $"depth {depths[t]}: raw {raw[t]:e3}");
+            Assert.Equal(BitConverter.DoubleToInt64Bits(Math.Max(0.0, raw[t])), BitConverter.DoubleToInt64Bits(legacy[t]));
+        }
+        Assert.All(BetheMethod.ComputeAbsorbedFluxBackgroundRaw(2, eigen, vectors, alpha, 0.0, depths, weights), x => Assert.Equal(0.0, x)); // Σσ = 0 は正当なゼロの源
+    }
 
     [NativeNumericFact]
     public void NormalRun_IsCompleted_AndEveryStageIsCounted()
