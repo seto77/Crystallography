@@ -57,7 +57,8 @@ public sealed class MasterPatternFileInfo
     public string BeamSelectionNative { get; set; } = ""; // 261110Cl 追加 (codex2 第 32 回): 新方式が使った native の版
     /// <summary>261118Cl 追加 (codex2 第 5 回): 後方 TDS 源の軸の方式。項目の無い古いファイルは "" (従来 = 結晶の z で作ったもの)</summary>
     public string BackSourceAxis { get; set; } = "";
-    /// <summary>261118Cl 追加: 従来のビーム選択の候補の打ち切り方 (Legacy・Shell)。項目の無い古いファイル・着衣の裾は "" (古いファイルは Legacy で作ったもの)</summary>
+    /// <summary>261118Cl 追加: 従来のビーム選択の候補の打ち切り方 (Legacy・Shell・ResearchHook・Diagnostic xM)。着衣の裾は "" (対象外)。
+    /// 項目の無い古いファイルも "" = 未記録 (当時の既定は Legacy だが、Shell を選んで作っていても区別できない。codex2 第 15 回)。空のまま保持する</summary>
     public string BeamCandidateCut { get; set; } = "";
 
     /// <summary>構築リクエストから作成条件を作る</summary>
@@ -358,7 +359,10 @@ public static class MasterPatternFile
     /// <param name="beamSelectionUsed">261110Cl 追加 (codex2 第 34 回): null 以外なら、ビーム選択の方式 (Legacy・DressedTail) も一致を求める (較正や複数のマスターを組み合わせる道具用。表示は従来どおり方式を問わない)</param>
     /// <param name="beamSelectionSettingsVersion">261110Cl 追加: null 以外なら、新方式の設定の版 (DT1-261110、+custom-指紋) も一致を求める</param>
     // public static string CheckCompatibility(MasterPatternFileInfo info, Crystal crystal, double beamEnergyKeV) // 261110Cl 旧シグネチャ
-    public static string CheckCompatibility(MasterPatternFileInfo info, Crystal crystal, double beamEnergyKeV, string beamSelectionUsed = null, string beamSelectionSettingsVersion = null)
+    /// <param name="beamCandidateCut">261118Cl 追加 (codex2 第 15 回): null 以外なら、従来のビーム選択の候補の打ち切り方 (Legacy・Shell) の一致も求める。記録の無い ("") ファイルは一致としない</param>
+    // public static string CheckCompatibility(MasterPatternFileInfo info, Crystal crystal, double beamEnergyKeV, string beamSelectionUsed = null, string beamSelectionSettingsVersion = null) // 261118Cl 旧シグネチャ
+    public static string CheckCompatibility(MasterPatternFileInfo info, Crystal crystal, double beamEnergyKeV, string beamSelectionUsed = null, string beamSelectionSettingsVersion = null,
+        string beamCandidateCut = null)
     {
         ArgumentNullException.ThrowIfNull(info);
         ArgumentNullException.ThrowIfNull(crystal);
@@ -371,6 +375,10 @@ public static class MasterPatternFile
             return $"The file was made with the {info.BeamSelectionUsed ?? "Legacy"} beam selection, not {beamSelectionUsed}.";
         if (beamSelectionSettingsVersion != null && (info.BeamSelectionSettingsVersion ?? "") != beamSelectionSettingsVersion)
             return $"The file was made with the beam-selection settings '{info.BeamSelectionSettingsVersion}', not '{beamSelectionSettingsVersion}'.";
+        if (beamCandidateCut != null && (info.BeamCandidateCut ?? "") != beamCandidateCut) // 261118Cl 追加 (codex2 第 15 回)
+            return string.IsNullOrEmpty(info.BeamCandidateCut)
+                ? $"The file does not record the beam candidate cut (made before it was recorded, when the default was Legacy, or with the dressed-tail selection); {beamCandidateCut} was required."
+                : $"The file was made with the {info.BeamCandidateCut} beam candidate cut, not {beamCandidateCut}.";
         return null;
     }
 }

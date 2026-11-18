@@ -1456,8 +1456,12 @@ public partial class BetheMethod
     /// <summary>261118Cl 追加: 直前の EBSD の構築で後方 TDS 源に使った軸の方式 (<see cref="BackSourceAxisIncident"/> か <see cref="BackSourceAxisCrystalZ"/>。後方源を使わなければ "")</summary>
     public string EbsdBackSourceAxisUsed { get; private set; } = "";
     /// <summary>261118Cl 追加 (殻 v2 の決定的な測定の後): 直前の EBSD の構築で従来のビーム選択 (Find_gVectors) が使った候補の打ち切り方
-    /// (<see cref="BeamCandidateCutMode"/> の名前)。着衣の裾 (Find_gVectors を通らない) なら ""</summary>
+    /// (<see cref="BeamCandidateCutMode"/> の名前)。着衣の裾 (Find_gVectors を通らない) なら ""。261118Cl 追加 (codex2 第 15 回): 研究用の口
+    /// (<see cref="EbsdBeamSelectionResearchHook"/>) で選んだら <see cref="BeamCandidateCutResearchHook"/>、診断の倍率 (BeamCandidateMultiplier ≠ 0、
+    /// 殻の分岐を通らない) なら "Diagnostic xM"。実際に通った分岐を書く</summary>
     public string EbsdBeamCandidateCutUsed { get; private set; } = "";
+    /// <summary>261118Cl 追加 (codex2 第 15 回): <see cref="EbsdBeamCandidateCutUsed"/> の値 = 研究用の口で選んだ</summary>
+    public const string BeamCandidateCutResearchHook = "ResearchHook";
     /// <summary>261118Cl 追加: 後方源の軸 = 方向ごとの入射 (3 点の cos²α の 2 次式)</summary>
     public const string BackSourceAxisIncident = "incident (3-node cos2)";
     /// <summary>261118Cl 追加: 後方源の軸 = 結晶の z (従来)</summary>
@@ -2267,6 +2271,7 @@ public partial class BetheMethod
         }
 
         var dressedTail = EbsdDressedTailResearch; // 261109Cl 追加 (研究用の口、既定 null): 着衣つきの裾の方式。走行の初めに 1 回だけ読む
+        var beamSelectionHook = EbsdBeamSelectionResearchHook; // 261118Cl 追加 (codex2 第 15 回): ビーム選択の研究用の口も走行の初めに 1 回だけ読む (記録と実行を一致させる)
         if (dressedTail != null && (double.IsFinite(SourceSmearingSigmaNm) || UseNonLocalAbsorption || IncludeAbsorbedFluxBackground)) // 261109Cl: 後方 TDS 行列 (IncludeTDSBackground) は対応済み
             throw new NotSupportedException("EbsdDressedTailResearch does not support non-local absorption, absorbed-flux reinjection or source smearing yet.");
         BeamSelectionPool dressedTailPool = null; // 261109Cl 追加: エネルギーの間で共有する候補のプール
@@ -2292,7 +2297,11 @@ public partial class BetheMethod
         //   切り替えが on でも裾を採ったら結晶の z と記録する
         EbsdBackSourceAxisUsed = !IncludeTDSBackground || double.IsFinite(SourceSmearingSigmaNm) ? ""
             : backSourceAxis && dressedTail == null ? BackSourceAxisIncident : BackSourceAxisCrystalZ;
-        EbsdBeamCandidateCutUsed = dressedTail == null ? pinnedRunSettings.CandidateCut.ToString() : ""; // 261118Cl 追加: 打ち切り方も記録する (固定した設定から)
+        // EbsdBeamCandidateCutUsed = dressedTail == null ? pinnedRunSettings.CandidateCut.ToString() : ""; // 261118Cl 変更前 (codex2 第 15 回: 研究用の口・診断の倍率では設定値と実行が食い違う)
+        EbsdBeamCandidateCutUsed = dressedTail != null ? "" // 261118Cl 追加: 打ち切り方も記録する (実際に通る分岐を、固定した設定から)
+            : beamSelectionHook != null ? BeamCandidateCutResearchHook
+            : pinnedRunSettings.CandidateMultiplier != 0 ? $"Diagnostic x{pinnedRunSettings.CandidateMultiplier}"
+            : pinnedRunSettings.CandidateCut.ToString();
 
         for (int vIndex = 0; vIndex < voltages.Length; vIndex++)
         {
@@ -2403,6 +2412,10 @@ public partial class BetheMethod
                 var wIndex = Math.Min((w / blockSize) * blockSize + blockSize / 2, directionGridSize - 1);
                 var hIndex = Math.Min((h / blockSize) * blockSize + blockSize / 2, directionGridSize - 1);
                 var representativeIndex = hemisphereOffset + wIndex + hIndex * directionGridSize; // (260327Ch) symmetry representative に対してだけ近傍共有を作る
+                // 261118Cl 追加 (codex2 第 15 回 §4 の 2): 六方格子ではブロックの中心が六角形の外の無効なセル (方向 null) に落ちうる (格子 > 512 の三方・六方の外周)。
+                //   旧はその null の方向を代表に解いた値を写した (Mg の格子 13・ブロック 3 でブロック 1 と 50 % 超の差)。そのときは画素そのものを代表にする
+                if (BeamDirections[representativeIndex] == null)
+                    representativeIndex = symmetryRepresentativeIndex;
                 if (!representativeIndexToDense.TryGetValue(representativeIndex, out var denseIndex))
                 {
                     denseIndex = representativeIndices.Count;
@@ -2451,7 +2464,8 @@ public partial class BetheMethod
                     var (equivalentBeamDirection, equivalentSurface) = GetCrystalFixedMasterEquivalentBeamAndSurface(direction, referenceSurface, referenceBeamDirection, referenceAxisU, referenceAxisV); // (260321Ch)
                     var equivalentVecK0 = getVecK0(kvac, u0, equivalentBeamDirection, equivalentSurface); // (260321Ch)
                     // var beams = Find_gVectors(BaseRotation, equivalentVecK0, equivalentSurface, MaxNumOfBloch); // (260321Ch) BaseRotation を固定して gCache を再利用する // 261108Cl 変更前
-                    var beams = EbsdBeamSelectionResearchHook is { } beamHook // 261108Cl 追加: ビーム選択の研究用の口 (既定 null で従来の Find_gVectors)
+                    // var beams = EbsdBeamSelectionResearchHook is { } beamHook // 261108Cl 追加: ビーム選択の研究用の口 (既定 null で従来の Find_gVectors) // 261118Cl 変更前
+                    var beams = beamSelectionHook is { } beamHook // 261118Cl 変更 (codex2 第 15 回): 走行の初めに読んだ口を使う
                         ? beamHook(this, equivalentVecK0, equivalentSurface, MaxNumOfBloch)
                         : Find_gVectors(BaseRotation, equivalentVecK0, equivalentSurface, MaxNumOfBloch); // (260321Ch) BaseRotation を固定して gCache を再利用する
                     // var potentialMatrix = UseNonLocalAbsorption ? getPotentialMatrix(beams, 0, Math.PI) : getPotentialMatrix(beams); // (260321Ch) 旧実装

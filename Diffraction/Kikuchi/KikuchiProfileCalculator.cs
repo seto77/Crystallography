@@ -371,8 +371,14 @@ public static class KikuchiProfileCalculator
         //     profiles[i] = ComputeProfile(snap, candidates[i], rotation, thickness, opt));
         try
         {
+            // System.Threading.Tasks.Parallel.For(0, candidates.Count, i =>
+            //     profiles[i] = ComputeProfile(snap, candidates[i], rotation, thickness, opt)); // 261118Cl 変更前
             System.Threading.Tasks.Parallel.For(0, candidates.Count, i =>
-                profiles[i] = ComputeProfile(snap, candidates[i], rotation, thickness, opt));
+            {
+                // 261118Cl 変更: 2 ビームの伝播の例外 (方向 −1) には族の番号を入れる (集計の失敗と同じく、方向 = 族の番号)
+                try { profiles[i] = ComputeProfile(snap, candidates[i], rotation, thickness, opt); }
+                catch (NumericFailureException ex) when (ex.Failure.Direction < 0) { throw new NumericFailureException(ex.Failure with { Direction = i }, ex.Message); }
+            });
         }
         catch (AggregateException ae) when (ae.Flatten().InnerExceptions.All(x => x is NumericFailureException))
         {
