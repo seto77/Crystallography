@@ -37,6 +37,15 @@ public class NativeNumericChecksTests
     }
     private static bool AllNaN(Complex[] a, int n) { for (int i = 0; i < n; i++) if (!double.IsNaN(a[i].Real) || !double.IsNaN(a[i].Imaginary)) return false; return true; }
 
+    /// <summary>261118Cl 追加 (codex2 第 15 回): 配布物の起動の検査 (ReciPro.exe --smoke) が呼ぶ自己検査が、この DLL で合格すること</summary>
+    [NativeNumericFact]
+    public void NumericSelfTest_Passes()
+    {
+        var (ok, detail) = NativeWrapper.NumericSelfTest();
+        output.WriteLine(detail);
+        Assert.True(ok, detail);
+    }
+
     /// <summary>managed だけ: probe の判定の本体 (旧い DLL の場合を作って確かめる)</summary>
     [Fact]
     public void Probe_ReportsMissingEntryPointsAndAbiMismatch()
