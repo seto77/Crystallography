@@ -584,7 +584,13 @@ public partial class BetheMethod
     /// AccVoltage・BaseRotation は計算した条件 (研究用の道具が着衣の部品を同じ条件で呼ぶため)。Detail は着衣で解いたときだけ (それ以外は "")</summary>
     public sealed record CbedSimulationResult(long RunId, CBED_Disk[][] Disks, Beam[] Beams, Vector3DBase[] BeamDirections, double[] Thicknesses,
         int ValidDirectionCount, bool LACBED, CbedBeamSelectionMethod Requested, CbedBeamSelectionMethod Used, string FallbackReason, string Detail,
-        string SymmetryDetail, double[] StageSeconds, string Solver, double AccVoltage, Matrix3D BaseRotation);
+        string SymmetryDetail, double[] StageSeconds, string Solver, double AccVoltage, Matrix3D BaseRotation)
+    {
+        /// <summary>261118Cl 追加 (codex2 第 7・8 回の順の 4): この run の数値の状態の集計 (検査つきの伝播の段ごとの数・最終の振幅の有限性)</summary>
+        public NumericRunStats NumericStats { get; init; }
+    }
+    /// <summary>261118Cl 追加 (試験専用): CBED の検査つきの伝播に渡す旗 (<see cref="NativeWrapper.NumericCheckFlags.TestForceNoConvergence"/> で未収束を起こす)。専用の BetheMethod へ写す</summary>
+    internal NativeWrapper.NumericCheckFlags CbedCheckFlagsForTest { get; set; }
 
     /// <summary>261118Cl 追加 (単位 5): 最後に成功した CBED の結果 (取消・失敗では前回のまま)。<see cref="RunCBED"/> の releasePreviousResult で手放せる</summary>
     public CbedSimulationResult ResultCbed => Volatile.Read(ref resultCbed);
@@ -675,6 +681,7 @@ public partial class BetheMethod
                 UseNonLocalAbsorption = UseNonLocalAbsorption, CbedLegacyUseSymmetry = CbedLegacyUseSymmetry,
                 CbedBeamSelection = beamSelection ?? CbedBeamSelection, CbedDressedTail = dressedTail ?? CbedDressedTail ?? CbedDressedTailDefaults,
                 CbedMemoryBudgetOverride = CbedMemoryBudgetOverride,
+                CbedCheckFlagsForTest = CbedCheckFlagsForTest, // 261118Cl 追加 (試験専用)
             };
             long runId = Interlocked.Increment(ref cbedRunCounter);
             RotationArrayValidLength = valid; // 進捗の分母 (最初の進捗より前に決まる)
@@ -708,6 +715,13 @@ public partial class BetheMethod
         var (LACBED, solver, thread, worker, runId) = ((bool, Solver, int, BetheMethod, long))e.Argument;
         if (!ReferenceEquals(worker, this)) { worker.cbed_DoWork(sender, e); return; }
         var bwCBED = (BackgroundWorker)sender;
+        // 261118Cl 追加 (codex2 第 7・8 回の順の 4): native の使用と検査つきの入口は開始時に 1 度だけ読む。Eigen_Eigen は検査つきの伝播 (EVD・α・出力の状態)、
+        //   どの経路でも最終の振幅の有限性を確かめ、失敗はその方向で NumericFailureException で止める (完了の Error。画面は文を状態の欄に出す)
+        bool eigenEnabled = EigenEnabled;
+        bool cbedChecked = eigenEnabled && NativeWrapper.NumericChecksAvailable;
+        var cbedCheckFlags = CbedCheckFlagsForTest;
+        var numeric = new NumericRunStatsCollector("CBED") { RawCapable = false };
+        var threadLocalNumeric = new ThreadLocal<NumericStatsAccumulator>(() => new NumericStatsAccumulator(), true);
 
         //波数を計算
         var kvac = UniversalConstants.Convert.EnergyToElectronWaveNumber(AccVoltage);
@@ -731,9 +745,11 @@ public partial class BetheMethod
         int count = 0;
 
         #region solver, thread の設定
-        if (solver == Solver.Auto || (!EigenEnabled && (solver == Solver.Eigen_Eigen || solver == Solver.MtxExp_Eigen)))
+        // if (solver == Solver.Auto || (!EigenEnabled && (solver == Solver.Eigen_Eigen || solver == Solver.MtxExp_Eigen))) // 261118Cl 変更前
+        if (solver == Solver.Auto || (!eigenEnabled && (solver == Solver.Eigen_Eigen || solver == Solver.MtxExp_Eigen))) // 261118Cl 変更: 入口で読んだ値
         {
-            if (EigenEnabled)
+            // if (EigenEnabled) // 261118Cl 変更前
+            if (eigenEnabled) // 261118Cl 変更
                 (solver, thread) = (Solver.MtxExp_Eigen, ProcessorCount);
             else
                 (solver, thread) = (Solver.Eigen_MKL, MklEnabled ? Math.Max(1, ProcessorCount / 4) : ProcessorCount);//260712Cl 注: PC/4 は MKL 内側無制限時代の名残だが、CBED は大 N があり得るため EVD scratch のメモリ増を考慮し、代表的な大 N でのベンチ後に PC 化を判断 (codex 助言)。EBSD/STEM fallback は PC 化済み
@@ -742,8 +758,13 @@ public partial class BetheMethod
         //不等間隔・ゼロ間隔の厚み列は厳密な EVD 系 solver へ振り替える (NativeWrapper.CBEDSolver 側にも防御ガードあり)。
         //ここで振り替えることで reportString (進捗表示) も実際に使う solver と一致する
         if ((solver == Solver.MtxExp_Eigen || solver == Solver.MtxExp_MKL) && !NativeWrapper.IsUniformThickness(Thicknesses))
-            solver = EigenEnabled ? Solver.Eigen_Eigen : Solver.Eigen_MKL;
+            // solver = EigenEnabled ? Solver.Eigen_Eigen : Solver.Eigen_MKL; // 261118Cl 変更前
+            solver = eigenEnabled ? Solver.Eigen_Eigen : Solver.Eigen_MKL; // 261118Cl 変更: 入口で読んだ値
         var reportString = $"{SolverLabel(solver)}{thread}"; //260611Cl 旧: $"{solver}{thread}" (MKL 不在時の managed 実行を可視化)
+        // 261118Cl 追加: 経路の記録
+        numeric.IntegratorBackend = solver == Solver.Eigen_Eigen && eigenEnabled ? (cbedChecked ? "native-checked" : "native-legacy")
+            : solver == Solver.MtxExp_Eigen && eigenEnabled ? "native-matexp" : solver == Solver.Eigen_MKL ? "managed-MathNet-evd" : "managed-MathNet-matexp";
+        numeric.EvdBackend = numeric.IntegratorBackend;
         #endregion
 
         // 261110Cl 追加: ビーム選択の新方式 (着衣つきの裾、区画で着衣を使い回す)。要求され、使える条件なら Beams と方向ごとの振幅を差し替える (使えなければ従来へ戻して理由を残す)
@@ -754,7 +775,7 @@ public partial class BetheMethod
             var (dBeams, dAmp) = SolveCbedDressedTail(kvac, u0, beamDirectionsValid, Thicknesses, thread, solver, () => bwCBED.CancellationPending,
                 c => { if (c % 50 == 0) bwCBED.ReportProgress(c, "Dressed tail "); });
             if (bwCBED.CancellationPending) { e.Cancel = true; return; } // 261110Cl (codex2 第 37 回): 取り消されたらディスクを組み立てない
-            if (dBeams != null) { Beams = dBeams; dressedAmplitudes = dAmp; CbedBeamSelectionUsed = CbedBeamSelectionMethod.DressedTail; }
+            if (dBeams != null) { Beams = dBeams; dressedAmplitudes = dAmp; CbedBeamSelectionUsed = CbedBeamSelectionMethod.DressedTail; numeric.IntegratorBackend = numeric.EvdBackend = "dressed-tail (not checked)"; } // 261118Cl: 新方式は検査の経路を通らない
         }
         else CbedBeamSelectionFallbackReason = null;
 
@@ -837,9 +858,13 @@ public partial class BetheMethod
 
         //ここからdiskValid[t*tLen +g]を計算.
         // var diskAmplitudeValid = beamDirectionsP.Select(beamDirection => // 261110Cl 変更前
-        var diskAmplitudeValid = dressedAmplitudes ?? beamDirectionsP.Select(beamDirection => // 261110Cl 変更: 新方式なら計算済みの振幅
+        // var diskAmplitudeValid = dressedAmplitudes ?? beamDirectionsP.Select(beamDirection => // 261110Cl 変更: 新方式なら計算済みの振幅 // 261118Cl 変更前
+        Complex[][] diskAmplitudeValid; // 261118Cl 変更: 数値の失敗を Parallel の包みから外すために try で囲む (下の catch)
+        try { // 261118Cl 追加 (字下げは変えない)
+        diskAmplitudeValid = dressedAmplitudes ?? beamDirectionsP.Select((beamDirection, solvedIndex) => // 261118Cl 変更: 失敗の場所に解いた順の番号を使う
         {
             if (bwCBED.CancellationPending) return null;
+            var acc = threadLocalNumeric.Value; // 261118Cl 追加
             // 260829Cl 削除: var coeff = Math.Abs(1.0 / beamDirection.Z); // = 1/cosTau
             //   宣言のみで一度も使われていない死変数 (obliquity 補正を意図した痕跡)。厚さ t と伝播座標は
             //   表面法線方向で定義済みなので、ここで 1/cosτ を別途掛けると二重補正になる。適用せず削除。
@@ -856,7 +881,31 @@ public partial class BetheMethod
 
                 //ポテンシャル行列の固有値、固有ベクトルを取得し、resultに格納
                 //Eigen＿Eigenの場合
-                if (solver == Solver.Eigen_Eigen && EigenEnabled)
+                // if (solver == Solver.Eigen_Eigen && EigenEnabled) // 261118Cl 変更前
+                //     result = NativeWrapper.CBEDSolver_Eigen(eigenMatrix, psi0.Values, Thicknesses);
+                if (solver == Solver.Eigen_Eigen && eigenEnabled && cbedChecked) // 261118Cl 変更 (codex2 第 7・8 回): 検査つき (未収束・特異・非有限を状態で返す)
+                {
+                    result = new Complex[bLen * tLen];
+                    var status = NativeWrapper.CBEDSolver_EigenChecked(bLen, eigenMatrix, psi0.Values, Thicknesses, result, cbedCheckFlags);
+                    // 状態から失敗した段を決め、その前の段は成功として数える (EVD → α の LU → 伝播と出力)
+                    var failedStage = status switch
+                    {
+                        NativeWrapper.NativeSolveStatus.Ok => (NumericStage?)null,
+                        NativeWrapper.NativeSolveStatus.EvdNoConvergence or NativeWrapper.NativeSolveStatus.NonFiniteEigen or NativeWrapper.NativeSolveStatus.NonFiniteInput => NumericStage.Evd,
+                        NativeWrapper.NativeSolveStatus.Singular or NativeWrapper.NativeSolveStatus.NonFiniteSolve => NumericStage.Boundary,
+                        _ => NumericStage.Integrator,
+                    };
+                    foreach (var stage in new[] { NumericStage.Evd, NumericStage.Boundary, NumericStage.Integrator })
+                    {
+                        if (stage == failedStage)
+                        {
+                            var f = acc.Status(stage, status, 0, solvedIndex);
+                            throw new NumericFailureException(f.Value, $"CBED numeric failure at {AccVoltage:g6} kV, direction #{solvedIndex} ({beamDirection.X:f5}, {beamDirection.Y:f5}, {beamDirection.Z:f5}): {f.Value}");
+                        }
+                        acc.Status(stage, NativeWrapper.NativeSolveStatus.Ok, 0, solvedIndex);
+                    }
+                }
+                else if (solver == Solver.Eigen_Eigen && eigenEnabled) // 261118Cl: 旧い DLL は従来の入口のまま
                     result = NativeWrapper.CBEDSolver_Eigen(eigenMatrix, psi0.Values, Thicknesses);
                 //Eigen_MKL あるいは Eigen_Managedの場合    
                 else if (solver == Solver.Eigen_MKL)
@@ -888,7 +937,8 @@ public partial class BetheMethod
                     result = resultMat.Values;
                 }
                 //MtxExp_Eigenの場合
-                else if (solver == Solver.MtxExp_Eigen && EigenEnabled)
+                // else if (solver == Solver.MtxExp_Eigen && EigenEnabled) // 261118Cl 変更前
+                else if (solver == Solver.MtxExp_Eigen && eigenEnabled) // 261118Cl 変更: 入口で読んだ値
                     result = NativeWrapper.CBEDSolver_MatExp(eigenMatrix, psi0.Values, Thicknesses);
                 //MtxExp_MKLの場合
                 else
@@ -921,6 +971,15 @@ public partial class BetheMethod
                     }
                     result = resultMat.Values;
                 }
+                // 261118Cl 追加 (codex2 第 8 回): どの経路でも最終の振幅の有限性を確かめる (行列指数 (Auto の既定) と managed は状態を返さない)
+                for (int r = 0; r < bLen * tLen; r++)
+                    if (!double.IsFinite(result[r].Real) || !double.IsFinite(result[r].Imaginary))
+                    {
+                        var f = new NumericFailure(0, solvedIndex, NumericStage.ValueCheck, NativeWrapper.NativeSolveStatus.NonFiniteOutput, null, r / bLen);
+                        acc.RecordFailure(f);
+                        throw new NumericFailureException(f, $"CBED numeric failure at {AccVoltage:g6} kV, direction #{solvedIndex} ({beamDirection.X:f5}, {beamDirection.Y:f5}, {beamDirection.Z:f5}): non-finite amplitude of beam #{r % bLen} at thickness #{r / bLen}");
+                    }
+                acc.Directions++;
                 //出射面での境界条件を考慮した位相にするため、以下のように変更 (20220803)
                 for (int t = 0; t < tLen; t++)
                     for (int b = 0; b < bLen; b++)
@@ -934,6 +993,19 @@ public partial class BetheMethod
             }
             finally { Shared.Return(eigenMatrix); ArrayPool<Beam>.Shared.Return(beams); }
         }).ToArray();
+        }
+        catch (AggregateException ae) when (ae.Flatten().InnerExceptions.All(x => x is NumericFailureException))
+        {
+            // 261118Cl 追加: 数値の失敗は包みを外して渡す (複数の方向が同時に失敗したら順序の最初)
+            var first = ae.Flatten().InnerExceptions.Cast<NumericFailureException>().Aggregate((a, b) => NumericFailure.Compare(b.Failure, a.Failure) < 0 ? b : a);
+            System.Runtime.ExceptionServices.ExceptionDispatchInfo.Throw(first);
+            throw;
+        }
+        finally
+        {
+            foreach (var a in threadLocalNumeric.Values) numeric.Merge(a); // 261118Cl 追加
+            threadLocalNumeric.Dispose();
+        }
         // 261111Cl 追加: 対称で残りの方向へ写す。ψ_{Tg}(Td) = ψ_g(d) exp(+2πi h_{Tg}·w) (新方式と同じ規約。出射面の位相は T で変わらない)
         if (legRep != null) // 取り消しで代表の解が null なら写した先も null
         {
@@ -1092,7 +1164,8 @@ public partial class BetheMethod
         else
             e.Result = new CbedSimulationResult(runId, Disks, Beams, BeamDirections, Thicknesses, RotationArrayValidLength, LACBED, CbedBeamSelection,
                 CbedBeamSelectionUsed, CbedBeamSelectionFallbackReason, CbedBeamSelectionUsed == CbedBeamSelectionMethod.DressedTail ? CbedBeamSelectionDetail : "",
-                CbedSymmetryDetail, [.. CbedDressedTailStageSeconds], reportString, AccVoltage, new Matrix3D(BaseRotation));
+                CbedSymmetryDetail, [.. CbedDressedTailStageSeconds], reportString, AccVoltage, new Matrix3D(BaseRotation))
+            { NumericStats = numeric.Build(NumericRunState.Completed) }; // 261118Cl 追加
     }
 
     private static readonly int[] pow = [4, 1]; 
