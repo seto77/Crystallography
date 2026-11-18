@@ -59,6 +59,17 @@ public enum AbsorptionElasticModel
 /// maxNumOfBloch + 1 本の、末尾の同点の組 (Rating の隣どうしの差が 1e-6 以下でつながる組 = ふつうは対称で等価なビーム) の扱い。
 /// グローバル設定 <see cref="BetheMethod.BeamBoundaryTieMode"/> で選ぶ (M1 の N の診断用)。
 /// </summary>
+/// <summary>261118Cl 追加 (codex2 第 7・8 回、N64 の非対称の直し): Find_gVectors の候補 (エワルドと前方の条件を通った点) の打ち切り方</summary>
+public enum BeamCandidateCutMode
+{
+    /// <summary>従来 (既定): BFS の発見の順に並んだキャッシュを走査し、通過した候補を 8N 本で打ち切る。
+    /// 発見の順は対称の操作で写らないので、対称で等価な方向どうしで境の殻の一部だけが入れ替わる (20 kV・N64 の Si で 48 像中 12 像)</summary>
+    Legacy,
+    /// <summary>|g| の順の索引で走査し、通過した 8N 本目の |g| の殻 (相対 1e-9) を丸ごと採る (対称で等価な方向で同じ候補の集合になる)。
+    /// 殻の外端までキャッシュが覆い切っていなければキャッシュを広げる</summary>
+    Shell,
+}
+
 public enum BeamBoundaryTieMode
 {
     // /// <summary>従来 (既定): 末尾の組を丸ごと落とす。N+1 本目は境を見るための番兵で、N 本目と同点ならその組ごと外れる (結果は N 本以下)。</summary> // 261112Cl 変更前
@@ -144,8 +155,22 @@ public partial class BetheMethod
     //     (int key, double gX, double gY, double gZ, double gLen)[] Items); // 261028Cl 変更前
     // 261028Cl 変更 (M1a2 の査読 M1): 作り方の記録を足す。Diagnostic = 診断の呼び出し (BeamCandidateMultiplier ≠ 0) が作った
     // (hkl の鍵の範囲を検査済み。従来の呼び出しとは共有しない)。CoverRadius = これより |g| の小さい格子点はすべて Items にある半径 (nm⁻¹)。
+    // private sealed record GCacheSnapshot((double, double, double, double, double, double, double, double, double) Mat,
+    //     (int key, double gX, double gY, double gZ, double gLen)[] Items, bool Diagnostic, double CoverRadius); // 261118Cl 変更前
     private sealed record GCacheSnapshot((double, double, double, double, double, double, double, double, double) Mat,
-        (int key, double gX, double gY, double gZ, double gLen)[] Items, bool Diagnostic, double CoverRadius);
+        (int key, double gX, double gY, double gZ, double gLen)[] Items, bool Diagnostic, double CoverRadius)
+    {
+        private int[] byLength;
+        /// <summary>261118Cl 追加 (<see cref="BeamCandidateCutMode.Shell"/>): Items の番号を (|g|, 鍵) の昇順に並べた索引。初めて使うときに 1 度だけ作る (同時に作っても同じ配列)</summary>
+        public int[] ByLength => byLength ??= BuildByLength(Items);
+        private static int[] BuildByLength((int key, double gX, double gY, double gZ, double gLen)[] items)
+        {
+            var order = new int[items.Length];
+            for (int i = 0; i < order.Length; i++) order[i] = i;
+            Array.Sort(order, (a, b) => items[a].gLen != items[b].gLen ? items[a].gLen.CompareTo(items[b].gLen) : items[a].key.CompareTo(items[b].key));
+            return order;
+        }
+    }
     private volatile GCacheSnapshot gCacheSnapshot;
     private readonly object gCacheLock = new();
 
@@ -274,6 +299,10 @@ public partial class BetheMethod
     // public static BeamBoundaryTieMode BeamBoundaryTieMode { get; set; } = BeamBoundaryTieMode.DropGroup; // 261112Cl 変更前
     public static BeamBoundaryTieMode BeamBoundaryTieMode { get; set; } = BeamBoundaryTieMode.IncludeGroup; // 261112Cl 変更 (作者の判断: 境の同値の組は全部採る)
 
+    /// <summary>261118Cl 追加 (codex2 第 7・8 回、N64 の非対称の直しの試作。既定 Legacy = 従来): Find_gVectors の候補の打ち切り方 (<see cref="Crystallography.BeamCandidateCutMode"/>)。
+    /// 診断 (<see cref="BeamCandidateMultiplier"/> ≠ 0) では読まない (候補をちょうど N × 倍率 個集める従来の診断のまま)。⚠ 計算の走行中には変えないこと (run の開始時に固定する経路もある)</summary>
+    public static BeamCandidateCutMode BeamCandidateCut { get; set; } = BeamCandidateCutMode.Legacy;
+
     /// <summary>261107Cl 追加 (研究用の口、既定 null = 何もしない): 後方散乱の源に元素ごとの倍率 κ(Z, E[keV]) を掛ける。
     /// 掛ける所は EBSD のマスターの局所源 σ_n と、annular (inner/outer を指定した) 吸収因子の原子ごとの寄与 (= 後方 TDS 行列 CreateMasterPatternMuBack)。
     /// 動力学の吸収 (全立体角の FactorImaginary) には掛けない (源の相対強度だけの感度模型。前方 + 後方の収支は保たれない)。
@@ -285,10 +314,13 @@ public partial class BetheMethod
     /// ビーム選択の候補の倍率・境の同値の組の扱い)。全体の設定は static で GUI からも書き換わるので、run の途中で変わると、同じ行列の中で U ごとに
     /// 模型が違いうる。専用の <see cref="BetheMethod"/> (ALCHEMI の <see cref="PrepareAlchemi"/> が作る) だけがこれを持ち、getU と Find_gVectors は
     /// これがあれば全体の設定の代わりに読む。null (通常の BetheMethod) なら従来どおり全体の設定を読む</summary>
-    internal sealed record RunSettings(ElasticIonModel Ion, AbsorptionElasticModel Absorption, int CandidateMultiplier, BeamBoundaryTieMode TieMode)
+    // internal sealed record RunSettings(ElasticIonModel Ion, AbsorptionElasticModel Absorption, int CandidateMultiplier, BeamBoundaryTieMode TieMode) // 261118Cl 変更前
+    internal sealed record RunSettings(ElasticIonModel Ion, AbsorptionElasticModel Absorption, int CandidateMultiplier, BeamBoundaryTieMode TieMode,
+        BeamCandidateCutMode CandidateCut = BeamCandidateCutMode.Legacy) // 261118Cl 変更: 候補の打ち切り方も固定する
     {
         /// <summary>今の全体の設定を取り込む</summary>
-        public static RunSettings Capture() => new(_elasticIonModel, AbsorptionElasticModel, BeamCandidateMultiplier, BeamBoundaryTieMode);
+        // public static RunSettings Capture() => new(_elasticIonModel, AbsorptionElasticModel, BeamCandidateMultiplier, BeamBoundaryTieMode); // 261118Cl 変更前
+        public static RunSettings Capture() => new(_elasticIonModel, AbsorptionElasticModel, BeamCandidateMultiplier, BeamBoundaryTieMode, BeamCandidateCut);
     }
     /// <summary>261118Cl 追加: この BetheMethod が run の開始時に固定した設定 (<see cref="RunSettings"/>)。null = 全体の設定を読む</summary>
     private RunSettings pinnedRunSettings;
@@ -5544,6 +5576,7 @@ public partial class BetheMethod
         var pinnedSettings = pinnedRunSettings; // 261118Cl 変更 (単位 4): run の開始時に固定した設定があればそれを使う
         var candidateMultiplier = pinnedSettings?.CandidateMultiplier ?? BeamCandidateMultiplier;
         var tieMode = pinnedSettings?.TieMode ?? BeamBoundaryTieMode;
+        var cutMode = pinnedSettings?.CandidateCut ?? BeamCandidateCut; // 261118Cl 追加
         var diagnostic = candidateMultiplier != 0; // 261028Cl 追加 (査読 M1): 倍率の指定あり = 診断 (候補をちょうど N × 倍率 個集める)。0 = 従来
 
         // 260318Cl 変更: BFS 探索 (Phase 1) とエワルド球スクリーニング (Phase 2) を分離
@@ -5595,8 +5628,49 @@ public partial class BetheMethod
         // var (sX, sY, sZ) = Surface.Tuple; // (260321Ch) 旧案: 常に固定平面表面法線を使っていた
         var (sX, sY, sZ) = surface.Tuple;
         int count = 0;
+        bool shellCut = !diagnostic && cutMode == BeamCandidateCutMode.Shell; // 261118Cl 追加
         // for (int i = 0; i < gCache.Length && count < limit; i++) { ... } // 261028Cl 変更前: 1 回だけ探す (本体は下の for と同じ)
-        while (true) // 261028Cl 変更 (査読 M1): 診断では、候補が上限に届かないうちにキャッシュの端まで来たら、キャッシュを広げて探し直す
+        // 261118Cl 追加 (codex2 第 7・8 回): 殻の単位の打ち切り。|g| の順に走査し、通過した 8N 本目の |g| の殻 (相対 1e-9) を最後まで採る。
+        //   殻の外端 (または候補が尽きたらエワルドの殻 2k0 + shift) までキャッシュが覆い切っていなければ、キャッシュを広げて探し直す
+        while (shellCut)
+        {
+            count = 0;
+            double cutLen = double.NaN;
+            var order = snapshot.ByLength;
+            for (int o = 0; o < order.Length; o++)
+            {
+                int i = order[o];
+                var (_, gX, gY, gZ, gLen) = gCache[i];
+                if (count >= limit && gLen > cutLen * (1 + 1E-9))
+                    break;
+                double vX = gX + kX, vY = gY + kY, vZ = gZ + kZ;
+                double q = k0_2 - Dot3(vX, vX, vY, vY, vZ, vZ);
+                if (!(Math.Abs(q) < maxQ && Dot3(sX, vX, sY, vY, sZ, vZ) > 0))
+                    continue;
+                if (count == pool.Length) // 殻の残りで上限を越える分は借り直す
+                {
+                    var bigger = ArrayPool<(int cacheIndex, double rating)>.Shared.Rent(pool.Length * 2);
+                    pool.AsSpan(0, count).CopyTo(bigger);
+                    ArrayPool<(int cacheIndex, double rating)>.Shared.Return(pool);
+                    pool = bigger;
+                }
+                pool[count++] = (i, gLen * q * q);
+                if (count == limit) cutLen = gLen;
+            }
+            double needed = count >= limit ? cutLen * (1 + 1E-9) : 2 * k0 + shift;
+            if (snapshot.CoverRadius >= needed || gCache.Length >= MaxDiagnosticCacheLength)
+                break;
+            var grownShell = (int)Math.Min(MaxDiagnosticCacheLength, gCache.Length * 2L);
+            lock (gCacheLock)
+            {
+                snapshot = gCacheSnapshot;
+                if (snapshot == null || snapshot.Mat != mat.Tuple || snapshot.Items.Length < grownShell || snapshot.Diagnostic)
+                    gCacheSnapshot = snapshot = Build_gCache(baseRotation, grownShell, false);
+            }
+            gCache = snapshot.Items;
+        }
+        if (shellCut) beamsSpan = pool.AsSpan(0, count);
+        while (!shellCut) // 261028Cl 変更 (査読 M1): 診断では、候補が上限に届かないうちにキャッシュの端まで来たら、キャッシュを広げて探し直す // 261118Cl: 殻の単位の打ち切りでは通らない
         {
             count = 0;
             for (int i = 0; i < gCache.Length && count < limit; i++)
@@ -5630,7 +5704,8 @@ public partial class BetheMethod
         //  (= その向きで等価なビーム。晶帯軸を外れた向きでは同じ |g| でも評価値が違うので足さず、従来と同じ候補になる。
         //  |g| だけで足すと、乱数の向きでも立方晶で約 4 割の場合にビームが 1〜6 本入れ替わった)。
         //  診断 (倍率の指定あり) は従来どおり、ちょうど N × 倍率 個のまま
-        if (!diagnostic && count == limit)
+        // if (!diagnostic && count == limit) // 261118Cl 変更前
+        if (!diagnostic && !shellCut && count == limit) // 261118Cl 変更: 殻の単位の打ち切りでは殻は丸ごと入っているので補完しない
         {
             var lens = new (double gLen, double rating)[count];
             for (int c = 0; c < count; c++)
@@ -5675,7 +5750,7 @@ public partial class BetheMethod
         // 261028Cl 追加 (査読 M1): 候補探索の結果を記録する (記録だけで結果は変えない)。上限に届かず殻も覆い切っていない = 候補の範囲がキャッシュの大きさで決まった
         var shellCovered = snapshot.CoverRadius >= 2 * k0 + shift;
         lastBeamCandidateScan = (count, limit, gCache.Length, shellCovered);
-        if (count < limit && !shellCovered)
+        if (count < limit && !shellCovered) // 261118Cl: 殻の単位の打ち切りでも、上限に届かずエワルドの殻を覆い切っていなければ数える
             Interlocked.Increment(ref beamCandidateExhaustedCount);
         #endregion
 
