@@ -12,8 +12,8 @@ using System.Text;
 
 namespace Crystallography;
 
-/// <summary>261118Cl 追加: 集計する物理量 (源)</summary>
-public enum NumericQuantity { EbsdLocal, EbsdTds, EbsdReinjection, EbsdTotal }
+/// <summary>261118Cl 追加: 集計する物理量 (源)。KikuchiI・KikuchiIRef は菊池のプロファイルの I と参照強度 I_ref (261118Cl 追加)</summary>
+public enum NumericQuantity { EbsdLocal, EbsdTds, EbsdReinjection, EbsdTotal, KikuchiI, KikuchiIRef }
 
 /// <summary>261118Cl 追加: 段。並びは同じ方向の中の先後 (EVD → 境界 → 積分 → 値の検査)。ValueCheck は観測した値の有限性 (solver の状態ではない)</summary>
 public enum NumericStage { Evd, Boundary, Integrator, ValueCheck }
@@ -226,7 +226,7 @@ public sealed class NumericRunStats
             sb.Append(stage == NumericStage.Evd ? " " : ", ").Append(stage).Append(' ')
               .Append(counts.Length == 0 ? "unchecked" : string.Join("/", counts.Select(kv => $"{kv.Key.Status} {kv.Value}")));
         }
-        foreach (var (q, s) in Quantities.OrderBy(kv => (int)kv.Key))
+        foreach (var (q, s) in Quantities.Where(kv => kv.Key.ToString().StartsWith(Kind, StringComparison.OrdinalIgnoreCase)).OrderBy(kv => (int)kv.Key)) // その計算の種類の源だけ (EBSD → Ebsd*、Kikuchi → Kikuchi*)
         {
             sb.Append($"; {q} ");
             if (s.Observation == NumericObservation.None && s.Evaluated == 0 && s.Excluded == 0) { sb.Append("unobserved"); continue; }

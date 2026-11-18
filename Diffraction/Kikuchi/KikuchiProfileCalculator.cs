@@ -132,6 +132,15 @@ public sealed class KikuchiBandProfile
     /// <summary>幾何退化 (バンド法線が視軸とほぼ平行) のとき false</summary>
     public bool Valid { get; init; }
 
+    /// <summary>261118Cl 追加 (codex2 第 7 回・実験 (b)): 各サンプル点の I・I_ref の生値 (非有限・負を 0 にする前) の集計の途中。
+    /// I と I_ref は列ごとに観測し、尺度はこのプロファイルの I_ref の正の最大 (参照強度)。見える値 (C) は変えない</summary>
+    internal NumericStatsAccumulator RawAccumulator { get; init; }
+    /// <summary>261118Cl 追加: 積分の経路 (managed-2beam / managed-row)</summary>
+    internal string RawBackend { get; init; } = "";
+    private NumericRunStats numericStats;
+    /// <summary>261118Cl 追加: I・I_ref の生値の集計 (初めて読んだときに作る。無効のプロファイルは null)</summary>
+    public NumericRunStats NumericStats => RawAccumulator == null ? null : numericStats ??= new NumericRunStats("Kikuchi", NumericRunState.Completed, RawBackend, RawBackend, true, RawAccumulator);
+
     //260806Cl /simplify2 削除: Interpolate(double)。renderer が補間をインライン化して以降呼び出しゼロで、
     //正しさに敏感なインデックス計算の複製 (ドリフト危険) になっていた。必要になったら renderer 側の実装を移す。
 }
@@ -155,6 +164,8 @@ public struct KikuchiPointDiagnostics
     public double SRef;
     /// <summary>この点の強度 I と参照強度 I_ref (非有限値は 0 に正規化済み。260806Cl /simplify2)</summary>
     public double I, IRef;
+    /// <summary>261118Cl 追加 (codex2 第 7 回・実験 (b)): 正規化 (非有限・負を 0) の前の I と I_ref の生値</summary>
+    public double RawI, RawIRef;
 }
 
 #endregion
@@ -245,6 +256,7 @@ public static class KikuchiProfileCalculator
         // 「プロファイル内の max I_ref の 1e-3」という相対フロアとして実装する。
         var iArr = new double[n];
         var irefArr = new double[n];
+        var rawI = new double[n]; var rawIRef = new double[n]; // 261118Cl 追加 (codex2 第 7 回・実験 (b)): 正規化の前の生値
         double maxIref = 0;
         //260807Cl: row 経路は ±g が同じ基底に入るので直進チャネルが 1 本。2 ビーム経路は
         //±g 2 メンバーの和なので 2 本。差し引く参照強度の本数がここで決まる
@@ -257,6 +269,7 @@ public static class KikuchiProfileCalculator
                 var d = ComputeRowPoint(snap, geo, row, xs[i], thickness, opt);
                 iArr[i] = d.I;
                 irefArr[i] = d.IRef;
+                rawI[i] = d.RawI; rawIRef[i] = d.RawIRef; // 261118Cl 追加
             }
             else
             {
@@ -264,6 +277,7 @@ public static class KikuchiProfileCalculator
                 var dM = ComputePoint(snap, geo, xs[i], thickness, opt, -1);
                 iArr[i] = dP.I + dM.I;
                 irefArr[i] = dP.IRef; // I_ref は直進チャネルのみで member 非依存 (dM.IRef と同値)
+                rawI[i] = dP.RawI + dM.RawI; rawIRef[i] = dP.RawIRef; // 261118Cl 追加
             }
             maxIref = Math.Max(maxIref, irefArr[i]);
         }
@@ -277,6 +291,13 @@ public static class KikuchiProfileCalculator
             cs[i] = c;
             sumSq += c * c;
         }
+        // 261118Cl 追加 (codex2 第 7 回・実験 (b)): I・I_ref の生値を観測する (見える値は変えない)。尺度は I_ref の正の最大 (参照強度)
+        var rawAcc = new NumericStatsAccumulator();
+        double rawScale = 0;
+        foreach (var r in rawIRef) if (double.IsFinite(r) && r > rawScale) rawScale = r;
+        var rawScales = new double[n]; Array.Fill(rawScales, rawScale);
+        rawAcc.Observe(NumericQuantity.KikuchiI, NumericObservation.Raw, rawI, 0, 0, rawScales);
+        rawAcc.Observe(NumericQuantity.KikuchiIRef, NumericObservation.Raw, rawIRef, 0, 0, rawScales);
         return new KikuchiBandProfile
         {
             Family = family,
@@ -285,6 +306,7 @@ public static class KikuchiProfileCalculator
             C = cs,
             DynamicalRank = Math.Sqrt(sumSq / n),
             Valid = true,
+            RawAccumulator = rawAcc, RawBackend = row != null ? "managed-row" : "managed-2beam", // 261118Cl 追加
         };
     }
 
@@ -323,6 +345,32 @@ public static class KikuchiProfileCalculator
         return [.. profiles.Where(p => p.Valid && p.DynamicalRank > 0)
                            .OrderByDescending(Rank)
                            .Take(topN)];
+    }
+
+    /// <summary>261118Cl 追加 (codex2 第 7 回・実験 (b)): 複数のプロファイルの I・I_ref の生値の集計を 1 つに合わせる (無効のプロファイルは数えない)。
+    /// 最悪の場所の「方向」は profiles の並びの番号、「深さ」はサンプル点の番号</summary>
+    public static NumericRunStats CombineNumericStats(IReadOnlyList<KikuchiBandProfile> profiles)
+    {
+        var total = new NumericStatsAccumulator();
+        var backends = new SortedSet<string>();
+        for (int k = 0; k < profiles.Count; k++)
+        {
+            if (profiles[k]?.RawAccumulator is not { } a) continue;
+            var shifted = new NumericStatsAccumulator(); // 方向の番号を k にそろえて合わせる
+            for (int q = 0; q < a.Quantities.Length; q++)
+            {
+                shifted.Quantities[q].Merge(a.Quantities[q]);
+                var s = shifted.Quantities[q];
+                if (s.WorstNegative is { } w) s.WorstNegative = w with { Direction = k };
+                if (s.FirstNonFinite is { } f) s.FirstNonFinite = f with { Direction = k };
+            }
+            if (a.FirstFailure is { } ff) shifted.RecordFailure(ff with { Direction = k });
+            shifted.Directions = 1;
+            total.Merge(shifted);
+            backends.Add(profiles[k].RawBackend);
+        }
+        var backend = string.Join("+", backends);
+        return new NumericRunStats("Kikuchi", NumericRunState.Completed, backend, backend, true, total);
     }
 
     #endregion
@@ -528,6 +576,7 @@ public static class KikuchiProfileCalculator
             //汚染して族全体を無言で消す。非有限値はここで 0 に正規化する
             I = double.IsFinite(intensity) ? Math.Max(0, intensity) : 0,
             IRef = double.IsFinite(iRef) ? Math.Max(0, iRef) : 0,
+            RawI = intensity, RawIRef = iRef, // 261118Cl 追加
         };
     }
 
@@ -594,7 +643,9 @@ public static class KikuchiProfileCalculator
     /// 厚み積分 F_{jj'}、I_ref = Bragg 結合を切った直進チャネル。
     /// ⚠ ±g が同じ基底に入るので**族としての ± 和は取らない** (直進チャネルも 1 本。ComputeProfile の refCount)。
     /// </summary>
-    private static (double I, double IRef) ComputeRowPoint(KikuchiPotentialSnapshot snap, in BandGeometry geo,
+    // private static (double I, double IRef) ComputeRowPoint(KikuchiPotentialSnapshot snap, in BandGeometry geo, // 261118Cl 変更前
+    //     RowPotential row, double x, double thickness, Options opt)
+    private static (double I, double IRef, double RawI, double RawIRef) ComputeRowPoint(KikuchiPotentialSnapshot snap, in BandGeometry geo, // 261118Cl 変更: 生値も返す
         RowPotential row, double x, double thickness, Options opt)
     {
         var kVac = snap.KVac;
@@ -618,10 +669,10 @@ public static class KikuchiProfileCalculator
         }
         //2 ビーム版と同じ扱い: ほぼ掠め角のビームは 2 波近似の外なので寄与 0 で返す
         if (p[N] <= 0)
-            return (0, 0);
+            return (0, 0, 0, 0); // 261118Cl: 生値も 0 (旧 (0, 0))
         for (int i = 0; i < nb; i++)
             if (p[i] <= 1e-3 * p[N])
-                return (0, 0);
+                return (0, 0, 0, 0); // 261118Cl: 生値も 0 (旧 (0, 0))
 
         // --- 固有値問題行列 (column-major。getEigenMatrix と同一の構成) ---
         // 260829Cl 変更: P の除算を列側 (p[col]) から行側 (p[r]) へ修正 (getEigenMatrix と同じ退行の修正)。
@@ -722,8 +773,10 @@ public static class KikuchiProfileCalculator
         var iRef = (Fjj(gRef, gRef, thickness) * qMat[N + N * nb].Real).Real;
 
         //260806Cl /simplify2 (F-1) と同じ規律: 非有限値は描画層へ流さない
+        // return (double.IsFinite(intensity.Real) ? Math.Max(0, intensity.Real) : 0, // 261118Cl 変更前
+        //         double.IsFinite(iRef) ? Math.Max(0, iRef) : 0);
         return (double.IsFinite(intensity.Real) ? Math.Max(0, intensity.Real) : 0,
-                double.IsFinite(iRef) ? Math.Max(0, iRef) : 0);
+                double.IsFinite(iRef) ? Math.Max(0, iRef) : 0, intensity.Real, iRef); // 261118Cl 変更: 生値も返す
     }
 
     /// <summary>F_{jj'}(t) = [e^{λt}−1]/λ, λ = 2πi(γ_j − γ_j'*)。λ≈0 は t (EBSDSolverManaged と同一)</summary>
