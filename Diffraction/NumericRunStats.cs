@@ -124,18 +124,18 @@ internal sealed class NumericStatsAccumulator
     internal long Directions, NoBeamDirections;
     internal NumericFailure? FirstFailure;
 
-    /// <summary>値の列 (深さごと) を 1 つの方向として数える。尺度は同じ列の正の最大。
+    /// <summary>値の列 (深さごと) を 1 つの方向として数える。尺度は同じ列の正の最大 (scales を渡せば深さごとにその値。真値が 0 になりうる再注入は Σσ·t)。
     /// NaN・±∞ が有れば列の最初の場所を失敗として記録して返す (呼び出し側はその値を使わずに止める)。全部有限なら null</summary>
-    internal NumericFailure? Observe(NumericQuantity q, NumericObservation kind, ReadOnlySpan<double> values, int voltageIndex, int direction)
+    internal NumericFailure? Observe(NumericQuantity q, NumericObservation kind, ReadOnlySpan<double> values, int voltageIndex, int direction, ReadOnlySpan<double> scales = default)
     {
         var s = Quantities[(int)q];
         s.Observation |= kind;
-        double scale = 0;
-        foreach (var x in values) if (double.IsFinite(x) && x > scale) scale = x;
+        double columnScale = 0;
+        foreach (var x in values) if (double.IsFinite(x) && x > columnScale) columnScale = x;
         NumericFailure? failure = null;
         for (int t = 0; t < values.Length; t++)
         {
-            double x = values[t];
+            double x = values[t], scale = scales.IsEmpty ? columnScale : scales[t];
             s.Evaluated++;
             if (!double.IsFinite(x))
             {
@@ -234,6 +234,8 @@ public sealed class NumericRunStats
             sb.Append($": n {s.Evaluated} (excluded {s.Excluded}), ");
             sb.Append(s.Evaluated == 0 ? "no evaluated values"
                 : $"negative {s.Negative}, non-finite {s.NonFinite}, min {(s.Min is { } m ? m.ToString("g4") : "n/a")}, max {s.MaxPositive:g4}, worst negative/scale {s.WorstNegativeRelative:e2}");
+            if (s.Negative > 0) // 負値の |x|/尺度 の桁の度数 (k: 10^−k 以上 10^−(k−1) 未満)
+                sb.Append(" (negative/scale decades " + string.Join(" ", s.NegativeDecades.Select((c, k) => (c, k)).Where(x => x.c > 0).Select(x => $"1e-{x.k}:{x.c}")) + ")");
         }
         sb.Append("; first failure ").Append(FirstFailure is { } f ? f.ToString() : "none");
         return sb.ToString();

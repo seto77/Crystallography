@@ -2065,6 +2065,8 @@ public partial class BetheMethod
             if (IncludeAbsorbedFluxBackground && dressedTail == null && !(sigmaSum >= 0 && double.IsFinite(sigmaSum)))
                 throw new NumericFailureException(new NumericFailure(vIndex, -1, NumericStage.ValueCheck, NativeWrapper.NativeSolveStatus.Args, NumericQuantity.EbsdReinjection),
                     $"EBSD numeric failure at {voltages[vIndex]:g6} kV: the absorbed-flux reinjection weight Σσ = {sigmaSum} is not a finite non-negative number");
+            var reinjectionScale = new double[Thicknesses.Length]; // 261118Cl 追加 (codex2 第 7 回): 再注入の生値の尺度 = 失われる前の流束の Σσ·t (真値が 0 の条件でも意味を持つ)
+            for (int t = 0; t < reinjectionScale.Length; t++) reinjectionScale[t] = sigmaSum * Thicknesses[t];
 
             var referenceSurface = Vector3DBase.Normarize(Surface); // (260321Ch) 新経路では固定表面系を基準に、等価な beam / surface 条件へ変換する
             var referenceBeamDirection = Vector3DBase.Normarize(-referenceSurface); // (260321Ch) 固定表面に対する法線出射方向
@@ -2497,7 +2499,7 @@ public partial class BetheMethod
                             // 261118Cl 変更 (codex2 第 7 回): 再注入の源を生値で受けて集計し (非有限なら止める)、従来の丸め Math.Max(0, ·) を当てる (Σσ > 0 では見える値は同じ。
                             //   Σσ が不正な重みなら電圧の入口で止めている)
                             var diffuse = ComputeAbsorbedFluxBackgroundRaw(bLen, eigenValues, eigenVectors, alpha, sigmaSum, Thicknesses, pOverP0);
-                            if (acc.Observe(NumericQuantity.EbsdReinjection, NumericObservation.Raw, diffuse, vIndex, i) is { } reinjectionFailure)
+                            if (acc.Observe(NumericQuantity.EbsdReinjection, NumericObservation.Raw, diffuse, vIndex, i, reinjectionScale) is { } reinjectionFailure)
                                 throw Failed(reinjectionFailure);
                             for (int t = 0; t < diffuse.Length; t++) diffuse[t] = Math.Max(0.0, diffuse[t]);
                             var dst = background ?? intensity; // 非局所源が有るときは intensity は使われない (Disk 格納部で background が優先)
