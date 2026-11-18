@@ -198,6 +198,10 @@ public class EBSD
     /// <summary>最後に正常終了した MasterPattern。</summary>
     public MasterPattern MasterPattern { get; private set; } = null;
 
+    /// <summary>261118Cl 追加 (codex2 第 7 回): 直前の MasterPattern 作成の動力学計算の数値の集計 (<see cref="BetheMethod.EbsdNumericStats"/> の写し。
+    /// 一時的な BetheMethod を手放す前に受け取る。作成の開始で null、Bethe の段が終われば成功・取消・失敗のどれでも入る)</summary>
+    public NumericRunStats MasterPatternNumericStats { get; private set; } = null;
+
     /// <summary>保持している MasterPattern を破棄する。結晶変更などで無効になったときに呼ぶ。260724Cl 追加</summary>
     public void ClearMasterPattern() => MasterPattern = null;
 
@@ -239,6 +243,7 @@ public class EBSD
         DetachMasterPatternBetheHandlers(); // (260321Ch) 前回の solver が残っていてもイベント配線を解除してから張り直す
         currentMasterPatternBuildRequest = request.Clone(); // (260327Ch)
         MasterPattern = null;
+        MasterPatternNumericStats = null; // 261118Cl 追加
 
         // 260331Cl 格子タイプに応じた方向生成
         var gs = currentMasterPatternBuildRequest.GridSize;
@@ -314,6 +319,7 @@ public class EBSD
     {
         var request = currentMasterPatternBuildRequest; // (260327Ch)
         var completedBethe = masterPatternBethe;
+        MasterPatternNumericStats = completedBethe?.EbsdNumericStats; // 261118Cl 追加 (codex2 第 7 回): 手放す前に数値の集計を受け取る (変更できない写し)
 
         DetachMasterPatternBetheHandlers();
         masterPatternBethe = null;
