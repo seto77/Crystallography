@@ -367,8 +367,21 @@ public static class KikuchiProfileCalculator
         if (opt.RowOrder > 0)
             candidates = KikuchiBandFamily.CollapseSystematicRows(candidates, opt.XMax);
         var profiles = new KikuchiBandProfile[candidates.Count];
-        System.Threading.Tasks.Parallel.For(0, candidates.Count, i =>
-            profiles[i] = ComputeProfile(snap, candidates[i], rotation, thickness, opt));
+        // System.Threading.Tasks.Parallel.For(0, candidates.Count, i => // 261118Cl 変更前 (codex2 第 12 回: 並列の包みを外して数値の失敗を渡す)
+        //     profiles[i] = ComputeProfile(snap, candidates[i], rotation, thickness, opt));
+        try
+        {
+            System.Threading.Tasks.Parallel.For(0, candidates.Count, i =>
+                profiles[i] = ComputeProfile(snap, candidates[i], rotation, thickness, opt));
+        }
+        catch (AggregateException ae) when (ae.Flatten().InnerExceptions.All(x => x is NumericFailureException))
+        {
+            System.Runtime.ExceptionServices.ExceptionDispatchInfo.Throw(ae.Flatten().InnerExceptions[0]);
+            throw;
+        }
+        // 261118Cl 追加 (codex2 第 12 回): 上位の族を選ぶ前に、全部の候補の生値の数値の失敗 (非有限など) を拾う (旧は失敗した族も Valid のまま選ばれ、GUI は成功として表示した)
+        if (CombineNumericStats(profiles) is { RunState: NumericRunState.Failed, FirstFailure: { } failure })
+            throw new NumericFailureException(failure, $"Kikuchi numeric failure for band {profiles[failure.Direction]?.Family.Text} at sample #{failure.DepthIndex}: {failure}");
 
         double Rank(KikuchiBandProfile p) =>
             p.DynamicalRank * (previousSelection != null && previousSelection.Contains(p.Family.Index) ? 1.15 : 1.0);
@@ -554,7 +567,10 @@ public static class KikuchiProfileCalculator
 
         // 261118Cl 変更 (codex2 第 10 回): 2×2 の EVD・S・厚さの積分を SolveTwoBeam へ切り出した (通常の点は同じ演算の順。例外点は行列指数で伝播)。
         //   旧の本文 (EVD → 列の正規化 → det < 1e-14 なら単位の基底と対角の伝播 → S → I) は SolveTwoBeam の中に同じ順で残す
-        var sol = SolveTwoBeam(a00, a01, a10, a11, q00, q01, q10, q11, thickness);
+        // var sol = SolveTwoBeam(a00, a01, a10, a11, q00, q01, q10, q11, thickness); // 261118Cl 変更前 (codex2 第 12 回: 伝播の失敗に族・符号・点を付ける)
+        KikuchiTwoBeamSolution sol;
+        try { sol = SolveTwoBeam(a00, a01, a10, a11, q00, q01, q10, q11, thickness); }
+        catch (NumericFailureException ex) { throw new NumericFailureException(ex.Failure, $"Kikuchi band {geo.Family.Text} (member {member:+0;-0}) at x {x:g4}: {ex.Message}"); }
         var (g0, g1, al0, al1) = (sol.Gamma0, sol.Gamma1, sol.Alpha0, sol.Alpha1);
         var (c00, c10, c01, c11) = (sol.C00, sol.C10, sol.C01, sol.C11);
         var (s00, s01, s10, s11) = (sol.S00, sol.S01, sol.S10, sol.S11);
@@ -656,24 +672,41 @@ public static class KikuchiProfileCalculator
     /// 区画の数は位相と増減の大きさ (2π(|Re d| + |Im d| + |Im h|)·t) から決める</summary>
     internal static double TwoBeamIntensityByPropagation(Complex a00, Complex a01, Complex a10, Complex a11, double q00, Complex q01, Complex q10, double q11, double thickness)
     {
-        if (!(thickness > 0)) return 0;
+        // if (!(thickness > 0)) return 0; // 261118Cl 変更前 (codex2 第 12 回: NaN と負の厚さも正当なゼロにしていた)
+        if (thickness == 0) return 0; // 261118Cl 変更: 厚さゼロだけを正当なゼロに
+        // 261118Cl 追加 (codex2 第 12 回): 入力・見積もり・各積分値の有限性を先に確かめ、上限まで倍にしても収束しなければ失敗 (旧は最後の値を成功として返した)
+        static NumericFailureException Failed(NumericStage stage, NativeWrapper.NativeSolveStatus status, string what) =>
+            new(new NumericFailure(0, -1, stage, status), $"two-beam propagation: {what}");
+        static bool Finite(Complex c) => double.IsFinite(c.Real) && double.IsFinite(c.Imaginary);
+        if (!(thickness > 0) || !double.IsFinite(thickness) || !Finite(a00) || !Finite(a01) || !Finite(a10) || !Finite(a11)
+            || !double.IsFinite(q00) || !Finite(q01) || !Finite(q10) || !double.IsFinite(q11))
+            throw Failed(NumericStage.Input, NativeWrapper.NativeSolveStatus.NonFiniteInput, $"invalid input (thickness {thickness}, A = [[{a00}, {a01}], [{a10}, {a11}]])");
         var h = (a00 + a11) / 2;
         var d = Complex.Sqrt((a00 - a11) * (a00 - a11) / 4 + a01 * a10);
         Complex n0 = a00 - h, n1 = a10; // N e₀
         var i1 = Complex.ImaginaryOne;
         double rate = 2 * Math.PI * (Math.Abs(d.Real) + Math.Abs(d.Imaginary) + Math.Abs(h.Imaginary)) * thickness;
+        if (!double.IsFinite(rate))
+            throw Failed(NumericStage.Input, NativeWrapper.NativeSolveStatus.NonFiniteInput, $"non-finite panel estimate (thickness {thickness})");
         // 261118Cl 変更 (codex2 第 11 回): 区画の数は位相と増減からの見積もりを出発点に、倍にしても相対 1e-12 で変わらなくなるまで倍にする (上限 2^16)
         // int panels = (int)Math.Clamp(Math.Ceiling(rate), 1, 1 << 16); // 261118Cl 変更前 (見積もりだけで誤差の確かめが無かった)
-        int panels = (int)Math.Clamp(Math.Ceiling(rate), 1, 1 << 16);
+        // 261118Cl 変更 (codex2 第 12 回): 最初は上限の半分までにして、必ず上限以下の異なる 2 つの区画の数で比べる
+        int panels = (int)Math.Clamp(Math.Ceiling(rate), 1, 1 << 15);
         double previous = Integrate(panels);
-        while (panels < 1 << 16)
+        if (!double.IsFinite(previous))
+            throw Failed(NumericStage.Integrator, NativeWrapper.NativeSolveStatus.NonFiniteOutput, $"non-finite integral with {panels} panels (thickness {thickness})");
+        while (true)
         {
             panels *= 2;
             double next = Integrate(panels);
-            if (Math.Abs(next - previous) <= 1e-12 * Math.Abs(next) || next == previous) return next;
+            if (!double.IsFinite(next))
+                throw Failed(NumericStage.Integrator, NativeWrapper.NativeSolveStatus.NonFiniteOutput, $"non-finite integral with {panels} panels (thickness {thickness})");
+            // if (Math.Abs(next - previous) <= 1e-12 * Math.Abs(next) || next == previous) return next; // 261118Cl 変更前 (第 12 回)
+            if (Math.Abs(next - previous) <= 1e-12 * Math.Abs(next)) return next; // 有限どうしの完全な一致 (差 0) も含む
+            if (panels >= 1 << 16)
+                throw Failed(NumericStage.Integrator, NativeWrapper.NativeSolveStatus.Unknown, $"not converged with {panels} panels (thickness {thickness}, last relative change {Math.Abs(next - previous) / Math.Abs(next):e2})");
             previous = next;
         }
-        return previous;
 
         double Integrate(int count)
         {

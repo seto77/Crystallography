@@ -1294,7 +1294,8 @@ public partial class BetheMethod
                 for (int g = 0; g < Disks[t].Length; g++)
                     foreach (var (amps, what) in new[] { (Disks[t][g].RawAmplitudes, "amplitude"), (Disks[t][g].Amplitudes, "disk amplitude after the overlap") })
                         for (int r = 0; r < (amps?.Length ?? 0); r++)
-                            if (!double.IsFinite(amps[r].Real) || !double.IsFinite(amps[r].Imaginary))
+                            // if (!double.IsFinite(amps[r].Real) || !double.IsFinite(amps[r].Imaginary)) // 261118Cl 変更前 (codex2 第 12 回)
+                            if (!double.IsFinite(amps[r].Real) || !double.IsFinite(amps[r].Imaginary) || !double.IsFinite(amps[r].MagnitudeSquared())) // 261118Cl 変更: 画面が取る |ψ|² の有限性も
                             {
                                 var f = new NumericFailure(0, r, NumericStage.ValueCheck, NativeWrapper.NativeSolveStatus.NonFiniteOutput, null, t);
                                 numeric.RecordFailure(f);
@@ -3553,6 +3554,8 @@ public partial class BetheMethod
         {
             if (beamsPED[k] is not { } beamsEach) continue;
             var psiK = psiPED[k];
+            if (beamsEach.Length > 0 && (psiK is null || psiK.Length != beamsEach.Length)) // 261118Cl 追加 (codex2 第 12 回): 反射のある方位は振幅がそろっていること
+                throw DiffractionFailed("PED", voltage, thickness, new NumericFailure(0, k, NumericStage.ValueCheck, NativeWrapper.NativeSolveStatus.Unknown), $"missing amplitudes ({psiK?.Length ?? 0} of {beamsEach.Length}); ");
             for (int i = 0; i < beamsEach.Length; i++)
             {
                 var beam = beamsEach[i];

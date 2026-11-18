@@ -89,6 +89,19 @@ public class KikuchiTwoBeamExceptionalTests(ITestOutputHelper output)
         Assert.True(Math.Abs(modal.Intensity - reference) <= 1e-9 * Math.Abs(reference), $"modal {modal.Intensity:R} vs reference {reference:R}");
     }
 
+    /// <summary>261118Cl 追加 (codex2 第 12 回): 伝播の入力と止め方。厚さ 0 は正当なゼロ、NaN の厚さは入力の失敗、
+    /// 区画の上限まで倍にしても収束しない (細かく振動する) ときは成功の値を返さず失敗</summary>
+    [Fact]
+    public void Propagation_RejectsInvalidInput_AndUnconvergedIntegrals()
+    {
+        Assert.Equal(0, KikuchiProfileCalculator.TwoBeamIntensityByPropagation(Lambda, 0, 0.005, Lambda, Q00, Q01, Q10, Q11, 0));
+        var nan = Assert.Throws<NumericFailureException>(() => KikuchiProfileCalculator.TwoBeamIntensityByPropagation(Lambda, 0, 0.005, Lambda, Q00, Q01, Q10, Q11, double.NaN));
+        Assert.Equal(NumericStage.Input, nan.Failure.Stage);
+        var ex = Assert.Throws<NumericFailureException>(() => KikuchiProfileCalculator.TwoBeamIntensityByPropagation(1000, 0.3, 0.3, -1000, Q00, Q01, Q10, Q11, 1000));
+        Assert.Equal(NumericStage.Integrator, ex.Failure.Stage);
+        Assert.Contains("not converged", ex.Message);
+    }
+
     /// <summary>例外点の両側 (a00 − a11 = ±2ε) の値は例外点の値につながる (差は ε に比例して小さくなる)。
     /// 近い点で対角化の和の桁落ちが残らないことも、伝播の値と比べて確かめる</summary>
     [Fact]
