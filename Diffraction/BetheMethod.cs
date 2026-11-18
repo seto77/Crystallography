@@ -4663,7 +4663,7 @@ public partial class BetheMethod
     /// 呼び出し側の Clear の時機に正しさを頼っていた。その結果、検出器範囲の U′ が全立体角の値として残った不具合 (A1) と、前の電圧の U0 を使った不具合
     /// (2f804a1・RunAlchemi) が実際に起きた。全立体角 (inner/outer が NaN) のときは角度と求積点数を正規化して 1 つの鍵にそろえる。
     /// 結晶の中身 (原子・B) の変更は鍵に入らないので、既存の Clear (計算の開始時) を寿命の管理として残す</summary>
-    private readonly record struct UContext(double KV, double Inner, double Outer, int NTheta, int NPhi, ElasticIonModel Ion, AbsorptionElasticModel Absorption)
+    internal readonly record struct UContext(double KV, double Inner, double Outer, int NTheta, int NPhi, ElasticIonModel Ion, AbsorptionElasticModel Absorption)
     {
         /// <summary>ハッシュを計算せずに比べる (NaN どうしは同じとみなす)</summary>
         public bool Same(in UContext o) => KV == o.KV && NTheta == o.NTheta && NPhi == o.NPhi && Ion == o.Ion && Absorption == o.Absorption
@@ -4684,7 +4684,7 @@ public partial class BetheMethod
     /// 新しいものへ差し替えるだけにした。以前は Clear (一覧を空にし、直前を null に) と、別のスレッドの「入れ物を取る → 直前に書く」が重なると、
     /// 消したはずの入れ物が直前として戻りえた。また getU は格納のときに入れ物を取り直していたので、Clear の前の条件で計算した値が新しい一覧へ入りえた。
     /// 今は getU が入口で <see cref="Get"/> を 1 度だけ呼び、探すところから格納までその入れ物を使う。Clear と重なった値は古い世代に入り、読まれずに捨てられる</para></summary>
-    private sealed class UCache
+    internal sealed class UCache // 261118Cl: テスト (Crystallography.Tests) から世代の切り離しを検査するため internal
     {
         public sealed class Bucket(UContext ctx)
         {
