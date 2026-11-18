@@ -170,6 +170,8 @@ public struct KikuchiPointDiagnostics
     public double I, IRef;
     /// <summary>261118Cl 追加 (codex2 第 7 回・実験 (b)): 正規化 (非有限・負を 0) の前の I と I_ref の生値</summary>
     public double RawI, RawIRef;
+    /// <summary>261118Cl 追加 (菊池の実験 (b) の批判の段): ほぼ掠め角の守りで計算せずに 0 を返した点</summary>
+    public bool Guarded;
 }
 
 #endregion
@@ -261,6 +263,7 @@ public static class KikuchiProfileCalculator
         var iArr = new double[n];
         var irefArr = new double[n];
         var rawI = new double[n]; var rawIRef = new double[n]; // 261118Cl 追加 (codex2 第 7 回・実験 (b)): 正規化の前の生値
+        var guardedP = new bool[n]; var guardedM = new bool[n]; // 261118Cl 追加 (菊池の実験 (b) の批判の段): 守りが返した 0 は評価から外す
         var rawIMinus = opt.RowOrder > 0 ? null : new double[n]; // 261118Cl 追加 (codex2 第 8 回): 2 ビームは ±g を足す前に別々に観測する (片方の負を他方の正が隠さない)
         double maxIref = 0;
         //260807Cl: row 経路は ±g が同じ基底に入るので直進チャネルが 1 本。2 ビーム経路は
@@ -274,7 +277,7 @@ public static class KikuchiProfileCalculator
                 var d = ComputeRowPoint(snap, geo, row, xs[i], thickness, opt);
                 iArr[i] = d.I;
                 irefArr[i] = d.IRef;
-                rawI[i] = d.RawI; rawIRef[i] = d.RawIRef; // 261118Cl 追加
+                rawI[i] = d.RawI; rawIRef[i] = d.RawIRef; guardedP[i] = d.Guarded; // 261118Cl 追加
             }
             else
             {
@@ -284,6 +287,7 @@ public static class KikuchiProfileCalculator
                 irefArr[i] = dP.IRef; // I_ref は直進チャネルのみで member 非依存 (dM.IRef と同値)
                 // rawI[i] = dP.RawI + dM.RawI; rawIRef[i] = dP.RawIRef; // 261118Cl 追加 (1 時間より前の版)
                 rawI[i] = dP.RawI; rawIMinus[i] = dM.RawI; rawIRef[i] = dP.RawIRef; // 261118Cl 変更 (第 8 回): +g と −g を別々に
+                guardedP[i] = dP.Guarded; guardedM[i] = dM.Guarded; // 261118Cl 追加
             }
             maxIref = Math.Max(maxIref, irefArr[i]);
         }
@@ -302,9 +306,21 @@ public static class KikuchiProfileCalculator
         double rawScale = 0;
         foreach (var r in rawIRef) if (double.IsFinite(r) && r > rawScale) rawScale = r;
         var rawScales = new double[n]; Array.Fill(rawScales, rawScale);
-        rawAcc.Observe(NumericQuantity.KikuchiI, NumericObservation.Raw, rawI, 0, 0, rawScales);
-        if (rawIMinus != null) rawAcc.Observe(NumericQuantity.KikuchiI, NumericObservation.Raw, rawIMinus, 0, 1, rawScales); // 261118Cl (第 8 回): −g の系 (方向の番号 1)
-        rawAcc.Observe(NumericQuantity.KikuchiIRef, NumericObservation.Raw, rawIRef, 0, 0, rawScales);
+        // 261118Cl 変更 (菊池の実験 (b) の批判の段): 点ごとに観測し、守りが返した 0 は Excluded に数える (深さの番号 = サンプル点の番号)
+        for (int i = 0; i < n; i++)
+        {
+            if (guardedP[i]) { rawAcc.Exclude(NumericQuantity.KikuchiI, 1); rawAcc.Exclude(NumericQuantity.KikuchiIRef, 1); }
+            else
+            {
+                rawAcc.Observe(NumericQuantity.KikuchiI, NumericObservation.Raw, rawI.AsSpan(i, 1), 0, 0, rawScales.AsSpan(i, 1), depthIndexOffset: i);
+                rawAcc.Observe(NumericQuantity.KikuchiIRef, NumericObservation.Raw, rawIRef.AsSpan(i, 1), 0, 0, rawScales.AsSpan(i, 1), depthIndexOffset: i);
+            }
+            if (rawIMinus != null) // −g の系 (方向の番号 1)
+            {
+                if (guardedM[i]) rawAcc.Exclude(NumericQuantity.KikuchiI, 1);
+                else rawAcc.Observe(NumericQuantity.KikuchiI, NumericObservation.Raw, rawIMinus.AsSpan(i, 1), 0, 1, rawScales.AsSpan(i, 1), depthIndexOffset: i);
+            }
+        }
         return new KikuchiBandProfile
         {
             Family = family,
@@ -479,7 +495,8 @@ public static class KikuchiProfileCalculator
         //260806Cl /simplify2 (数値レビュー F-2): p1 → 0 は現状 SinThetaB<0.5 + Clamp±0.99 の組合せで排除されているが、
         //その保証を暗黙にしない。ほぼ掠め角のビームは物理的にも 2 波近似の外なので、その点は寄与 0 で返す
         if (p1 <= 1e-3 * p0)
-            return default;
+            // return default; // 261118Cl 変更前
+            return new KikuchiPointDiagnostics { Guarded = true }; // 261118Cl 変更 (菊池の実験 (b) の批判の段): 守りが返した 0 を印で区別する (生値の集計では評価から外す)
 
         // --- 固有値問題行列 (getEigenMatrix と同一の構成) ---
         var uG = snap.GetU((mh, mk, ml), gm);
@@ -500,10 +517,20 @@ public static class KikuchiProfileCalculator
         Complex c00, c10, c01, c11;
         if (a01.Magnitude < 1e-300 && a10.Magnitude < 1e-300)
         { c00 = 1; c10 = 0; c01 = 0; c11 = 1; g0 = a00; g1 = a11; } // 既に対角
-        else if (a01.Magnitude >= a10.Magnitude)
-        { c00 = a01; c10 = g0 - a00; c01 = a01; c11 = g1 - a00; }
+        // else if (a01.Magnitude >= a10.Magnitude) // 261118Cl 変更前 (両方の列に同じ形の式を使っていた)
+        // { c00 = a01; c10 = g0 - a00; c01 = a01; c11 = g1 - a00; }
+        // else
+        // { c00 = g0 - a11; c10 = a10; c01 = g1 - a11; c11 = a10; }
+        // 261118Cl 変更 (菊池の実験 (b) の点検): 固有値ごとに (a01, γ − a00) と (γ − a11, a10) の大きいほうを使う。結合 a01・a10 が丸めの残り
+        //   (消滅則の族、|U_g| ~ 1e-16) のとき、γ ≈ a00 の列の γ − a00 は桁落ちで a01 と同じ大きさの雑音になり、旧は向きのでたらめな固有ベクトルで
+        //   I を 7 倍ほど誤った (Si 200、200 kV)。結合のある族では両者は同じ向き (丸めの差だけ)
         else
-        { c00 = g0 - a11; c10 = a10; c01 = g1 - a11; c11 = a10; }
+        {
+            Complex ux = a01, uy = g0 - a00, vx = g0 - a11, vy = a10;
+            if (ux.MagnitudeSquared() + uy.MagnitudeSquared() >= vx.MagnitudeSquared() + vy.MagnitudeSquared()) { c00 = ux; c10 = uy; } else { c00 = vx; c10 = vy; }
+            ux = a01; uy = g1 - a00; vx = g1 - a11; vy = a10;
+            if (ux.MagnitudeSquared() + uy.MagnitudeSquared() >= vx.MagnitudeSquared() + vy.MagnitudeSquared()) { c01 = ux; c11 = uy; } else { c01 = vx; c11 = vy; }
+        }
         // 列正規化 (α と S では列スケールは相殺するが、数値安定のため)
         var n0 = Math.Sqrt(c00.MagnitudeSquared() + c10.MagnitudeSquared());
         var n1 = Math.Sqrt(c01.MagnitudeSquared() + c11.MagnitudeSquared());
@@ -512,7 +539,9 @@ public static class KikuchiProfileCalculator
         var det = c00 * c11 - c01 * c10;
         Complex al0, al1;
         if (det.Magnitude < 1e-14)
-        { c00 = 1; c10 = 0; c01 = 0; c11 = 1; al0 = 1; al1 = 0; } // 縮退 (defective) は素通し扱い
+        // { c00 = 1; c10 = 0; c01 = 0; c11 = 1; al0 = 1; al1 = 0; } // 縮退 (defective) は素通し扱い // 261118Cl 変更前
+        { c00 = 1; c10 = 0; c01 = 0; c11 = 1; al0 = 1; al1 = 0; g0 = a00; g1 = a11; } // 縮退 (defective) は素通し扱い。261118Cl 変更 (菊池の実験 (b)): γ も対角に戻す
+        //   (旧は C・α だけを単位に戻し γ0・γ1 は half ± disc のまま、消滅則の族 (U_g が丸めの残り) で γ と基底の組がずれ、生の I が最大 1.8e-4 ずれた)
         else
         { al0 = c11 / det; al1 = -c10 / det; }
 
@@ -652,7 +681,7 @@ public static class KikuchiProfileCalculator
     /// </summary>
     // private static (double I, double IRef) ComputeRowPoint(KikuchiPotentialSnapshot snap, in BandGeometry geo, // 261118Cl 変更前
     //     RowPotential row, double x, double thickness, Options opt)
-    private static (double I, double IRef, double RawI, double RawIRef) ComputeRowPoint(KikuchiPotentialSnapshot snap, in BandGeometry geo, // 261118Cl 変更: 生値も返す
+    private static (double I, double IRef, double RawI, double RawIRef, bool Guarded) ComputeRowPoint(KikuchiPotentialSnapshot snap, in BandGeometry geo, // 261118Cl 変更: 生値と守りの印も返す
         RowPotential row, double x, double thickness, Options opt)
     {
         var kVac = snap.KVac;
@@ -676,10 +705,10 @@ public static class KikuchiProfileCalculator
         }
         //2 ビーム版と同じ扱い: ほぼ掠め角のビームは 2 波近似の外なので寄与 0 で返す
         if (p[N] <= 0)
-            return (0, 0, 0, 0); // 261118Cl: 生値も 0 (旧 (0, 0))
+            return (0, 0, 0, 0, true); // 261118Cl: 生値も 0、守りの印 (旧 (0, 0))
         for (int i = 0; i < nb; i++)
             if (p[i] <= 1e-3 * p[N])
-                return (0, 0, 0, 0); // 261118Cl: 生値も 0 (旧 (0, 0))
+                return (0, 0, 0, 0, true); // 261118Cl: 生値も 0、守りの印 (旧 (0, 0))
 
         // --- 固有値問題行列 (column-major。getEigenMatrix と同一の構成) ---
         // 260829Cl 変更: P の除算を列側 (p[col]) から行側 (p[r]) へ修正 (getEigenMatrix と同じ退行の修正)。
@@ -783,7 +812,7 @@ public static class KikuchiProfileCalculator
         // return (double.IsFinite(intensity.Real) ? Math.Max(0, intensity.Real) : 0, // 261118Cl 変更前
         //         double.IsFinite(iRef) ? Math.Max(0, iRef) : 0);
         return (double.IsFinite(intensity.Real) ? Math.Max(0, intensity.Real) : 0,
-                double.IsFinite(iRef) ? Math.Max(0, iRef) : 0, intensity.Real, iRef); // 261118Cl 変更: 生値も返す
+                double.IsFinite(iRef) ? Math.Max(0, iRef) : 0, intensity.Real, iRef, false); // 261118Cl 変更: 生値も返す
     }
 
     /// <summary>F_{jj'}(t) = [e^{λt}−1]/λ, λ = 2πi(γ_j − γ_j'*)。λ≈0 は t (EBSDSolverManaged と同一)</summary>

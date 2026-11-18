@@ -51,4 +51,26 @@ public class KikuchiRawStatsTests
                 Assert.Equal(double.IsFinite(d.RawIRef) ? Math.Max(0, d.RawIRef) : 0, d.IRef);
             }
     }
+
+    /// <summary>261118Cl 追加 (菊池の実験 (b) の批判の段): 消滅則の族 (Si の 2 0 0、Fd-3m、U_g は丸めの残り ~1e-16) では、2 ビームは結合のない参照と同じ I になる。
+    /// 旧は固有ベクトルの閉じた式が桁落ちで向きを誤り (I が 7 倍ほど違った)、縮退の守りの枝では γ と基底の組もずれた</summary>
+    [Fact]
+    public void ExtinctFamily_TwoBeam_EqualsTheUncoupledReference()
+    {
+        var (crystal, _) = BetheEigenReuseTests.TiltedSi();
+        var snap = new KikuchiPotentialSnapshot(crystal, 200);
+        var rot = Matrix3D.Rot(new Vector3DBase(1, 0, 0), 0.35) * Matrix3D.Rot(new Vector3DBase(0, 1, 0), 0.22);
+        var family = Family(crystal, 2, 0, 0);
+        int checkedPoints = 0;
+        foreach (var x in new[] { -1.5, -1.0, -0.3, 0.0, 0.7, 1.0, 1.4 })
+        {
+            KikuchiPointDiagnostics d;
+            try { d = KikuchiProfileCalculator.ComputePointDiagnostics(snap, family, rot, 50, x, +1); }
+            catch (InvalidOperationException) { continue; } // 幾何の退化
+            if (d.Guarded || !(d.RawIRef > 0)) continue;
+            Assert.True(Math.Abs(d.RawI / d.RawIRef - 1) < 1e-9, $"x {x}: raw I {d.RawI:e6} vs I_ref {d.RawIRef:e6}");
+            checkedPoints++;
+        }
+        Assert.True(checkedPoints > 0);
+    }
 }

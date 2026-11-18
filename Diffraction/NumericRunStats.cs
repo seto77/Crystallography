@@ -145,7 +145,8 @@ internal sealed class NumericStatsAccumulator
     /// NaN・±∞ が有れば列の最初の場所を失敗として記録して返す (呼び出し側はその値を使わずに止める)。全部有限なら null</summary>
     /// <remarks>261118Cl 追加 (codex2 第 8 回): failBelowRelative を渡すと、有限で x &lt; −failBelowRelative·尺度 の値も失敗 (<see cref="NativeWrapper.NativeSolveStatus.SignificantNegative"/>) として返す
     /// (尺度が正のときだけ。それ未満の負は数えて、呼び出し側が表示上 0 にする)。既定 NaN は判定しない (診断だけ)</remarks>
-    internal NumericFailure? Observe(NumericQuantity q, NumericObservation kind, ReadOnlySpan<double> values, int voltageIndex, int direction, ReadOnlySpan<double> scales = default, double failBelowRelative = double.NaN)
+    internal NumericFailure? Observe(NumericQuantity q, NumericObservation kind, ReadOnlySpan<double> values, int voltageIndex, int direction, ReadOnlySpan<double> scales = default, double failBelowRelative = double.NaN,
+        int depthIndexOffset = 0) // 261118Cl 追加: 1 点ずつ観測するときの深さの番号のずれ (菊池のサンプル点の番号)
     {
         var s = Quantities[(int)q];
         s.Observation |= kind;
@@ -158,8 +159,8 @@ internal sealed class NumericStatsAccumulator
             s.Evaluated++;
             if (!double.IsFinite(x))
             {
-                s.NonFinite++; s.FirstNonFinite = NumericQuantityAccumulator.PickFirst(s.FirstNonFinite, new(voltageIndex, direction, t, x, scale));
-                failure ??= new NumericFailure(voltageIndex, direction, NumericStage.ValueCheck, NativeWrapper.NativeSolveStatus.NonFiniteOutput, q, t);
+                s.NonFinite++; s.FirstNonFinite = NumericQuantityAccumulator.PickFirst(s.FirstNonFinite, new(voltageIndex, direction, t + depthIndexOffset, x, scale));
+                failure ??= new NumericFailure(voltageIndex, direction, NumericStage.ValueCheck, NativeWrapper.NativeSolveStatus.NonFiniteOutput, q, t + depthIndexOffset);
                 continue;
             }
             if (x < s.Min) s.Min = x;
@@ -170,11 +171,11 @@ internal sealed class NumericStatsAccumulator
                 double rel = scale > 0 ? -x / scale : double.PositiveInfinity;
                 int k = rel >= 1 ? 0 : rel > 0 ? Math.Min(19, (int)Math.Ceiling(-Math.Log10(rel))) : 19;
                 s.NegativeDecades[k]++;
-                s.WorstNegative = NumericQuantityAccumulator.PickWorstNegative(s.WorstNegative, new(voltageIndex, direction, t, x, scale));
+                s.WorstNegative = NumericQuantityAccumulator.PickWorstNegative(s.WorstNegative, new(voltageIndex, direction, t + depthIndexOffset, x, scale));
                 if (scale > 0 && rel > failBelowRelative) // 261118Cl 追加 (第 8 回): 有意な負 (NaN の許容なら比較は常に false)
                 {
                     s.SignificantNegative++;
-                    failure ??= new NumericFailure(voltageIndex, direction, NumericStage.ValueCheck, NativeWrapper.NativeSolveStatus.SignificantNegative, q, t);
+                    failure ??= new NumericFailure(voltageIndex, direction, NumericStage.ValueCheck, NativeWrapper.NativeSolveStatus.SignificantNegative, q, t + depthIndexOffset);
                 }
             }
         }
