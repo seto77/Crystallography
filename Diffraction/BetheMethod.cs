@@ -2852,7 +2852,8 @@ public partial class BetheMethod
         var stem = (BetheMethod)MemberwiseClone(); // 261105Cl 追加
         stem.stemOwner = this; // 261105Cl 追加
         stem.lastStemRun = null; // 261105Cl 追加 (MemberwiseClone で前回の複製への参照を引き継がない)
-        stem.uDictionary = []; // 261105Cl 追加
+        // stem.uDictionary = []; // 261105Cl 追加 // 261118Cl 変更前
+        stem.uDictionary = new(); // 261118Cl 変更: UCache
         stem.Beams = null; // 261105Cl 追加
         stem.MaxNumOfBloch = maxNumOfBloch; // 261105Cl 追加
         stem.AccVoltage = voltage; // 261105Cl 追加
@@ -4464,9 +4465,13 @@ public partial class BetheMethod
     {
         var key1 = compose(g.Index);
         var key2 = h is null ? int.MaxValue : compose(h.Index);
+        // 261118Cl 追加 (codex2 第 2 回の単位 3): 鍵に電圧・積分角度・求積点数・模型を入れる (条件 UContext ごとの入れ物 + index の組)。研究用の元素ごとの倍率が掛かる annular は値の同一性を保証できないので迂回する
+        var uCtx = UContextOf(kV, inner, outer, nTheta, nPhi);
+        bool useCache = cache && !(BackscatterSourceScaleForResearch != null && !double.IsNaN(inner * outer));
         // if (!uDictionary.TryGetValue((key1, key2), out (Complex real, Complex imag) U)) // 261109Cl 変更前: cache:false でも読み出しはしていた (鍵に電圧・積分角度が無いので、前の電圧や後方散乱の値を拾いうる)
         (Complex real, Complex imag) U = default;
-        if (!cache || !uDictionary.TryGetValue((key1, key2), out U)) // 261109Cl 変更 (codex2 第18回): cache:false は読み書きとも迂回
+        // if (!cache || !uDictionary.TryGetValue((key1, key2), out U)) // 261109Cl 変更 (codex2 第18回): cache:false は読み書きとも迂回 // 261118Cl 変更前
+        if (!useCache || !uDictionary.TryGetValue(uCtx, key1, key2, out U)) // 261118Cl 変更: 完全な鍵
         {
             var index = h is null ? g.Index : g.Index.Minus(h.Index);// (g.H - h.H, g.K - h.K, g.L - h.L) ;
 
@@ -4534,8 +4539,10 @@ public partial class BetheMethod
 
             U = (fReal * gamma / Math.PI / Crystal.Volume, fImag * gamma / Math.PI / Crystal.Volume);
             // if (kV > 0) // 261108Cl 変更前
-            if (kV > 0 && cache)
-                uDictionary.TryAdd((key1, key2), U);
+            // if (kV > 0 && cache) // 261118Cl 変更前
+            //     uDictionary.TryAdd((key1, key2), U);
+            if (kV > 0 && useCache) // 261118Cl 変更: 完全な鍵で格納
+                uDictionary.TryAdd(uCtx, key1, key2, U);
         }
         return U;
     }
@@ -4601,7 +4608,8 @@ public partial class BetheMethod
         var key1 = compose(index);
         const int key2 = int.MaxValue; // h = null に相当するキー
         // キャッシュヒット → Beam 生成なしで即返却 (= 割り当てゼロ)
-        if (uDictionary.TryGetValue((key1, key2), out (Complex real, Complex imag) U))
+        // if (uDictionary.TryGetValue((key1, key2), out (Complex real, Complex imag) U)) // 261118Cl 変更前
+        if (uDictionary.TryGetValue(UContextOf(kV, double.NaN, double.NaN, 60, 20), key1, key2, out (Complex real, Complex imag) U)) // 261118Cl 変更: 完全な鍵 (全立体角・この電圧・今の模型)
             return U;
         // キャッシュミス (初回のみ) → 既存メソッドに委譲。一時 Beam は 1 度だけ生成される。
         return getU(kV, new Beam(index, vec));
@@ -4621,13 +4629,61 @@ public partial class BetheMethod
     {
         var key1 = compose(index);
         const int key2 = int.MaxValue; // h = null に相当するキー
-        if (uDictionary.TryGetValue((key1, key2), out (Complex real, Complex imag) U))
+        // if (uDictionary.TryGetValue((key1, key2), out (Complex real, Complex imag) U)) // 261118Cl 変更前: 角度範囲を区別せず、同じ index の全立体角の値を返しえた (A1 と同じ型)
+        if (BackscatterSourceScaleForResearch == null && uDictionary.TryGetValue(UContextOf(kV, inner, outer, nTheta, nPhi), key1, key2, out (Complex real, Complex imag) U)) // 261118Cl 変更: 角度範囲・求積点数まで含む鍵
             return U; // cache hit → vec 計算・割り当てゼロ
         return getU(kV, new Beam(index, vq + vi - vj), null, inner, outer, nTheta, nPhi); // miss 時のみ vec/Beam を生成
     }
 
     //private readonly ConcurrentDictionary<(int Key1, int Key2), (Complex Real, Complex Imag)> uDictionary = []; // 261105Cl 変更前
-    private ConcurrentDictionary<(int Key1, int Key2), (Complex Real, Complex Imag)> uDictionary = []; // 261105Cl readonly を外した: STEM 専用の複製 (RunSTEM) に新しいキャッシュを持たせるため
+    // private ConcurrentDictionary<(int Key1, int Key2), (Complex Real, Complex Imag)> uDictionary = []; // 261105Cl readonly を外した: STEM 専用の複製 (RunSTEM) に新しいキャッシュを持たせるため // 261118Cl 変更前
+    private UCache uDictionary = new(); // 261118Cl 変更: 完全な鍵 (条件 UContext ごとの入れ物 + index の組)
+
+    /// <summary>261118Cl 追加 (codex2 第 2 回の単位 3): <see cref="uDictionary"/> の条件の部分の鍵。以前の鍵は index の組 (Key1, Key2) だけで、電圧・積分角度・模型を含まず、
+    /// 呼び出し側の Clear の時機に正しさを頼っていた。その結果、検出器範囲の U′ が全立体角の値として残った不具合 (A1) と、前の電圧の U0 を使った不具合
+    /// (2f804a1・RunAlchemi) が実際に起きた。全立体角 (inner/outer が NaN) のときは角度と求積点数を正規化して 1 つの鍵にそろえる。
+    /// 結晶の中身 (原子・B) の変更は鍵に入らないので、既存の Clear (計算の開始時) を寿命の管理として残す</summary>
+    private readonly record struct UContext(double KV, double Inner, double Outer, int NTheta, int NPhi, ElasticIonModel Ion, AbsorptionElasticModel Absorption)
+    {
+        /// <summary>ハッシュを計算せずに比べる (NaN どうしは同じとみなす)</summary>
+        public bool Same(in UContext o) => KV == o.KV && NTheta == o.NTheta && NPhi == o.NPhi && Ion == o.Ion && Absorption == o.Absorption
+            && (Inner == o.Inner || double.IsNaN(Inner) && double.IsNaN(o.Inner)) && (Outer == o.Outer || double.IsNaN(Outer) && double.IsNaN(o.Outer));
+    }
+
+    /// <summary>261118Cl 追加: <see cref="UContext"/> を作る (全立体角なら角度と点数を正規化)</summary>
+    private static UContext UContextOf(double kV, double inner, double outer, int nTheta, int nPhi)
+    {
+        bool annular = !double.IsNaN(inner * outer);
+        return new UContext(kV, annular ? inner : double.NaN, annular ? outer : double.NaN, annular ? nTheta : 0, annular ? nPhi : 0, _elasticIonModel, AbsorptionElasticModel);
+    }
+
+    /// <summary>261118Cl 追加: getU のキャッシュ。条件 (<see cref="UContext"/>) ごとの入れ物の中を、従来どおり index の組 (int 2 つ) で引く。
+    /// 1 回の計算の中では条件が変わらないので、直前に使った入れ物を覚えて条件の比較だけで済ませる (ハッシュは入れ物を替えるときだけ)。
+    /// 9 つの欄の鍵を毎回ハッシュする形では、キャッシュに当たる getU が 5.2 → 8.4 ns に遅くなった (BenchmarkDotNet、UCacheKeyBenchmark)。
+    /// 直前の入れ物はクラスの参照 (volatile) で持つので、並列の読み書きで途中の値を読まない。Clear はその記憶も消す</summary>
+    private sealed class UCache
+    {
+        private sealed class Bucket(UContext ctx)
+        {
+            public readonly UContext Ctx = ctx;
+            public readonly ConcurrentDictionary<(int Key1, int Key2), (Complex Real, Complex Imag)> Map = new();
+        }
+        private readonly ConcurrentDictionary<UContext, Bucket> buckets = new();
+        private volatile Bucket last;
+
+        private Bucket Get(in UContext ctx)
+        {
+            var b = last;
+            if (b != null && b.Ctx.Same(ctx)) return b;
+            b = buckets.GetOrAdd(ctx, static c => new Bucket(c));
+            last = b;
+            return b;
+        }
+
+        public bool TryGetValue(in UContext ctx, int key1, int key2, out (Complex Real, Complex Imag) u) => Get(ctx).Map.TryGetValue((key1, key2), out u);
+        public void TryAdd(in UContext ctx, int key1, int key2, (Complex Real, Complex Imag) u) => Get(ctx).Map.TryAdd((key1, key2), u);
+        public void Clear() { last = null; buckets.Clear(); }
+    }
 
     #region STEM-EDX U_ion (260801Cl 追加)
 
