@@ -1334,7 +1334,7 @@ public partial class BetheMethod
     }
 
     /// <summary>261118Cl 追加 (codex2 第 4 回・ワークフロー wf_axis_261118): マスターの後方 TDS 源 (<see cref="CreateMasterPatternMuBack"/>) の
-    /// 環状の積分の軸を、方向ごとの入射の向きに合わせる (研究と比較のための切り替え。既定 false = 従来)。
+    /// 環状の積分の軸を、方向ごとの入射の向きに合わせる (false = 従来の結晶の z 軸。261118Cl 既定を false から true へ、下の注)。
     /// 環状の積分 (<see cref="AtomStatic.ES.FactorImaginaryAnnular(double, Vector3DBase, double, double, double, int, int, bool, AbsorptionElasticModel?)"/>) は
     /// 入射を +z と決め打ちしている。マスターは結晶の座標系を固定して方向ごとに入射を変えるので、従来は結晶固定の G = g − h をそのまま渡し、
     /// 軸が結晶の z に固定されていた (正しいのは d = ±ẑ の方向だけ)。原子の因子で、軸と G の角 α を 0→90° と変えると 10 kV・|G| 30 nm⁻¹ で −2.4 %、
@@ -1344,8 +1344,13 @@ public partial class BetheMethod
     /// 261118Cl 訂正 (後方源の検証 wf_26a4f176-803): 精度は範囲つき。|Δg| ≤ 約 70 nm⁻¹・Z ≤ 33・10〜30 kV では方向ごとの細かい直接求積 (120,48) を |V(0)| の ≤3.4e-6
     /// (強い成分の相対 ≤2.2e-5) で再現 (従来の軸の誤差 2〜8e-3 の 1/2300 以下)。|Δg| 60〜94 nm⁻¹ や 5 kV では強い成分の相対で 1e-4〜9e-3 に落ちる
     /// (W 5 kV で 8.7e-3) が、従来の振れの 97 % 以上は消える (旧の記述「相対 ≤1e-5」は |G| ≲ 50 nm⁻¹ でだけ成り立つ)。
-    /// ⚠ 着衣の裾の表 (diffF、方向に依らない 1 枚の表) と非局所吸収のポテンシャル行列 (getPotentialMatrix(…, 0, π)) の軸は結晶の z のまま</summary>
-    public static bool MasterBackSourceAxisCorrection { get; set; } = false;
+    /// ⚠ 着衣の裾の表 (diffF、方向に依らない 1 枚の表) と非局所吸収のポテンシャル行列 (getPotentialMatrix(…, 0, π)) の軸は結晶の z のまま
+    /// 261118Cl 既定を true に (作者の決定 11-18 15:5x「条件つきで既定 on」の条件を満たした): Si004 (20 kV・格子 512・N64・TDS on) の新旧で
+    /// 全画像の α (ZNCC) の変化 −0.00001 (MC の標本 4 つ・解析の窓 5 通りで同じ。α は MC に依らず、同条件の繰り返しではビット一致)、
+    /// 共通反射の中央値の E_c の変化 −0.0029〜−0.0035 keV (同条件の MC の標本の揺れ sd 0.0133 keV の約 1/4)。
+    /// 製品の条件の CPU 時間は Si ×1.15 (格子 256)・×0.96 (512)、opx ×1.11・×0.79、albite ×0.66 (格子 256)。記録 = .project-guidance/reports/codex2_261118/wf_bsdefault_si004_261118/</summary>
+    // public static bool MasterBackSourceAxisCorrection { get; set; } = false; // 261118Cl 既定を true へ (上の注)
+    public static bool MasterBackSourceAxisCorrection { get; set; } = true;
     /// <summary>261118Cl 追加 (codex2 の単位 6・7 の第 1 段): 直前の EBSD の構築の数値の状態と生値の集計 (構築の開始で null、終わりに作る。取消・失敗でも作る)。
     /// 正常な値は変えない (生値には旧い意味の丸めを当てて使う)。261118Cl (第 7 回): 検査つきの段の非成功・観測した値の NaN・±∞ は
     /// その方向で止めて <see cref="NumericFailureException"/> で構築を失敗させる (完了の通知の Error)</summary>
