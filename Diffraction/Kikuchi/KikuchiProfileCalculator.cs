@@ -172,7 +172,14 @@ public struct KikuchiPointDiagnostics
     public double RawI, RawIRef;
     /// <summary>261118Cl 追加 (菊池の実験 (b) の批判の段): ほぼ掠め角の守りで計算せずに 0 を返した点</summary>
     public bool Guarded;
+    /// <summary>261118Cl 追加 (codex2 第 10 回): 固有ベクトルがほぼ平行 (|det C| &lt; 1e-3、例外点とその近く) で、対角化を使わずに 2×2 の行列指数で伝播して I を求めた点
+    /// (C・α・S は意味を持たないので C = 単位・S = 0 を入れる)</summary>
+    public bool Exceptional;
 }
+
+/// <summary>261118Cl 追加 (codex2 第 10 回): 2 ビームの 2×2 の解 (KikuchiProfileCalculator.SolveTwoBeam の返り値)</summary>
+internal readonly record struct KikuchiTwoBeamSolution(Complex Gamma0, Complex Gamma1, Complex Alpha0, Complex Alpha1,
+    Complex C00, Complex C10, Complex C01, Complex C11, Complex S00, Complex S01, Complex S10, Complex S11, double Intensity, bool Exceptional);
 
 #endregion
 
@@ -510,41 +517,6 @@ public static class KikuchiProfileCalculator
         Complex a01 = opt.DisableBraggCoupling ? Complex.Zero : (uG.Real + Complex.ImaginaryOne * uG.Imag) / p0;   // [row0, col1] = U(g_1−g_0) = U(+g)
         Complex a10 = opt.DisableBraggCoupling ? Complex.Zero : (uMg.Real + Complex.ImaginaryOne * uMg.Imag) / p1; // [row1, col0] = U(g_0−g_1) = U(−g)
 
-        // --- 2×2 EVD (閉形式) と α = C⁻¹ψ0, ψ0 = (1,0)ᵀ ---
-        var half = (a00 + a11) / 2;
-        var disc = Complex.Sqrt((a00 - a11) * (a00 - a11) / 4 + a01 * a10);
-        Complex g0 = half + disc, g1 = half - disc;
-        Complex c00, c10, c01, c11;
-        if (a01.Magnitude < 1e-300 && a10.Magnitude < 1e-300)
-        { c00 = 1; c10 = 0; c01 = 0; c11 = 1; g0 = a00; g1 = a11; } // 既に対角
-        // else if (a01.Magnitude >= a10.Magnitude) // 261118Cl 変更前 (両方の列に同じ形の式を使っていた)
-        // { c00 = a01; c10 = g0 - a00; c01 = a01; c11 = g1 - a00; }
-        // else
-        // { c00 = g0 - a11; c10 = a10; c01 = g1 - a11; c11 = a10; }
-        // 261118Cl 変更 (菊池の実験 (b) の点検): 固有値ごとに (a01, γ − a00) と (γ − a11, a10) の大きいほうを使う。結合 a01・a10 が丸めの残り
-        //   (消滅則の族、|U_g| ~ 1e-16) のとき、γ ≈ a00 の列の γ − a00 は桁落ちで a01 と同じ大きさの雑音になり、旧は向きのでたらめな固有ベクトルで
-        //   I を 7 倍ほど誤った (Si 200、200 kV)。結合のある族では両者は同じ向き (丸めの差だけ)
-        else
-        {
-            Complex ux = a01, uy = g0 - a00, vx = g0 - a11, vy = a10;
-            if (ux.MagnitudeSquared() + uy.MagnitudeSquared() >= vx.MagnitudeSquared() + vy.MagnitudeSquared()) { c00 = ux; c10 = uy; } else { c00 = vx; c10 = vy; }
-            ux = a01; uy = g1 - a00; vx = g1 - a11; vy = a10;
-            if (ux.MagnitudeSquared() + uy.MagnitudeSquared() >= vx.MagnitudeSquared() + vy.MagnitudeSquared()) { c01 = ux; c11 = uy; } else { c01 = vx; c11 = vy; }
-        }
-        // 列正規化 (α と S では列スケールは相殺するが、数値安定のため)
-        var n0 = Math.Sqrt(c00.MagnitudeSquared() + c10.MagnitudeSquared());
-        var n1 = Math.Sqrt(c01.MagnitudeSquared() + c11.MagnitudeSquared());
-        if (n0 > 0) { c00 /= n0; c10 /= n0; }
-        if (n1 > 0) { c01 /= n1; c11 /= n1; }
-        var det = c00 * c11 - c01 * c10;
-        Complex al0, al1;
-        if (det.Magnitude < 1e-14)
-        // { c00 = 1; c10 = 0; c01 = 0; c11 = 1; al0 = 1; al1 = 0; } // 縮退 (defective) は素通し扱い // 261118Cl 変更前
-        { c00 = 1; c10 = 0; c01 = 0; c11 = 1; al0 = 1; al1 = 0; g0 = a00; g1 = a11; } // 縮退 (defective) は素通し扱い。261118Cl 変更 (菊池の実験 (b)): γ も対角に戻す
-        //   (旧は C・α だけを単位に戻し γ0・γ1 は half ± disc のまま、消滅則の族 (U_g が丸めの残り) で γ と基底の組がずれ、生の I が最大 1.8e-4 ずれた)
-        else
-        { al0 = c11 / det; al1 = -c10 / det; }
-
         // --- 源振幅 τ とコヒーレンス (原子種ごと・2 波ぶん)。診断 swap は s² の入れ替えとして両方に効かせる ---
         //260806Cl /simplify2 (C-1): 種数は snapshot の凍結値を使う (live crystal を並列 hot loop から読まない。
         //計算中の原子削除で Sites.AtomsIndex が配列境界を越える事故の防止)。
@@ -580,18 +552,13 @@ public static class KikuchiProfileCalculator
             q01 = Complex.Zero;
         var q10 = Complex.Conjugate(q01);
 
-        // --- S_{jj'} = α_j α_j'* Σ_{ii'} C_{i,j} C*_{i',j'} Q_{ii'} ---
-        Complex W(Complex ci0, Complex ci1, Complex cj0, Complex cj1) // Σ_{ii'} C_{i,j} C*_{i',j'} Q_{ii'}
-            => ci0 * Complex.Conjugate(cj0) * q00 + ci0 * Complex.Conjugate(cj1) * q01
-             + ci1 * Complex.Conjugate(cj0) * q10 + ci1 * Complex.Conjugate(cj1) * q11;
-        var s00 = al0 * Complex.Conjugate(al0) * W(c00, c10, c00, c10);
-        var s01 = al0 * Complex.Conjugate(al1) * W(c00, c10, c01, c11);
-        var s10 = al1 * Complex.Conjugate(al0) * W(c01, c11, c00, c10);
-        var s11 = al1 * Complex.Conjugate(al1) * W(c01, c11, c01, c11);
-
-        // --- modal 厚み積分 I(t) = Re Σ S_{jj'} F_{jj'}(t) (EBSDSolverManaged と同一) ---
-        var intensity = (Fjj(g0, g0, thickness) * s00 + Fjj(g0, g1, thickness) * s01
-                       + Fjj(g1, g0, thickness) * s10 + Fjj(g1, g1, thickness) * s11).Real;
+        // 261118Cl 変更 (codex2 第 10 回): 2×2 の EVD・S・厚さの積分を SolveTwoBeam へ切り出した (通常の点は同じ演算の順。例外点は行列指数で伝播)。
+        //   旧の本文 (EVD → 列の正規化 → det < 1e-14 なら単位の基底と対角の伝播 → S → I) は SolveTwoBeam の中に同じ順で残す
+        var sol = SolveTwoBeam(a00, a01, a10, a11, q00, q01, q10, q11, thickness);
+        var (g0, g1, al0, al1) = (sol.Gamma0, sol.Gamma1, sol.Alpha0, sol.Alpha1);
+        var (c00, c10, c01, c11) = (sol.C00, sol.C10, sol.C01, sol.C11);
+        var (s00, s01, s10, s11) = (sol.S00, sol.S01, sol.S10, sol.S11);
+        var intensity = sol.Intensity;
 
         // --- 参照強度 I_ref: 同一源で Bragg 結合を切った計算 (設計 §4)。結合 0 では検出器へ届くのは
         //     直接波チャネルのみ → I_ref = Q_00 · F_00(γ_ref), γ_ref = A00 (吸収対角は残す)。
@@ -613,8 +580,127 @@ public static class KikuchiProfileCalculator
             I = double.IsFinite(intensity) ? Math.Max(0, intensity) : 0,
             IRef = double.IsFinite(iRef) ? Math.Max(0, iRef) : 0,
             RawI = intensity, RawIRef = iRef, // 261118Cl 追加
+            Exceptional = sol.Exceptional, // 261118Cl 追加 (codex2 第 10 回)
         };
     }
+
+    /// <summary>261118Cl 追加 (codex2 第 10 回、ComputePoint から切り出し): 2 ビームの行列 A = [[a00, a01], [a10, a11]] の閉じた式の EVD、
+    /// α = C⁻¹e₀、S_{jj'} = α_j α_j'* Σ_{ii'} C_{i,j} C*_{i',j'} Q_{ii'}、I(t) = Re Σ S_{jj'} F_{jj'}(t)。
+    /// 固有ベクトルがほぼ平行 (|det C| &lt; <see cref="ExceptionalDetThreshold"/>、例外点とその近く) なら、対角化の基底は使えない (旧は単位の基底と対角の伝播で、J e₀ ≠ 0 の Jordan 型では
+    /// 2πi z J e₀ の項を落とした) ので、<see cref="TwoBeamIntensityByPropagation"/> で I を求める</summary>
+    internal static KikuchiTwoBeamSolution SolveTwoBeam(Complex a00, Complex a01, Complex a10, Complex a11, double q00, Complex q01, Complex q10, double q11, double thickness)
+    {
+        // --- 2×2 EVD (閉形式) と α = C⁻¹ψ0, ψ0 = (1,0)ᵀ ---
+        var half = (a00 + a11) / 2;
+        var disc = Complex.Sqrt((a00 - a11) * (a00 - a11) / 4 + a01 * a10);
+        Complex g0 = half + disc, g1 = half - disc;
+        Complex c00, c10, c01, c11;
+        if (a01.Magnitude < 1e-300 && a10.Magnitude < 1e-300)
+        { c00 = 1; c10 = 0; c01 = 0; c11 = 1; g0 = a00; g1 = a11; } // 既に対角
+        // else if (a01.Magnitude >= a10.Magnitude) // 261118Cl 変更前 (両方の列に同じ形の式を使っていた)
+        // { c00 = a01; c10 = g0 - a00; c01 = a01; c11 = g1 - a00; }
+        // else
+        // { c00 = g0 - a11; c10 = a10; c01 = g1 - a11; c11 = a10; }
+        // 261118Cl 変更 (菊池の実験 (b) の点検): 固有値ごとに (a01, γ − a00) と (γ − a11, a10) の大きいほうを使う。結合 a01・a10 が丸めの残り
+        //   (消滅則の族、|U_g| ~ 1e-16) のとき、γ ≈ a00 の列の γ − a00 は桁落ちで a01 と同じ大きさの雑音になり、旧は向きのでたらめな固有ベクトルで
+        //   I を 7 倍ほど誤った (Si 200、200 kV)。結合のある族では両者は同じ向き (丸めの差だけ)
+        else
+        {
+            Complex ux = a01, uy = g0 - a00, vx = g0 - a11, vy = a10;
+            if (ux.MagnitudeSquared() + uy.MagnitudeSquared() >= vx.MagnitudeSquared() + vy.MagnitudeSquared()) { c00 = ux; c10 = uy; } else { c00 = vx; c10 = vy; }
+            ux = a01; uy = g1 - a00; vx = g1 - a11; vy = a10;
+            if (ux.MagnitudeSquared() + uy.MagnitudeSquared() >= vx.MagnitudeSquared() + vy.MagnitudeSquared()) { c01 = ux; c11 = uy; } else { c01 = vx; c11 = vy; }
+        }
+        // 列正規化 (α と S では列スケールは相殺するが、数値安定のため)
+        var n0 = Math.Sqrt(c00.MagnitudeSquared() + c10.MagnitudeSquared());
+        var n1 = Math.Sqrt(c01.MagnitudeSquared() + c11.MagnitudeSquared());
+        if (n0 > 0) { c00 /= n0; c10 /= n0; }
+        if (n1 > 0) { c01 /= n1; c11 /= n1; }
+        var det = c00 * c11 - c01 * c10;
+        Complex al0, al1;
+        // if (det.Magnitude < 1e-14) // 261118Cl 変更前 (codex2 第 10 回)
+        // 261118Cl 変更 (codex2 第 10 回): 対角化の和の誤差は約 1e-16/|det C|² (KikuchiTwoBeamExceptionalTests の実測: |det| 4e-5 で 7e-8、4e-4 で 1e-9) なので、
+        //   |det C| < 1e-3 (誤差 1e-10 相当) から伝播へ切り替える (例外点の近くでしか起きない)
+        if (det.Magnitude < ExceptionalDetThreshold)
+        // { c00 = 1; c10 = 0; c01 = 0; c11 = 1; al0 = 1; al1 = 0; } // 縮退 (defective) は素通し扱い // 261118Cl 変更前
+        // { c00 = 1; c10 = 0; c01 = 0; c11 = 1; al0 = 1; al1 = 0; g0 = a00; g1 = a11; } // 縮退 (defective) は素通し扱い。261118Cl 変更 (菊池の実験 (b)): γ も対角に戻す
+        //   (旧は C・α だけを単位に戻し γ0・γ1 は half ± disc のまま、消滅則の族 (U_g が丸めの残り) で γ と基底の組がずれ、生の I が最大 1.8e-4 ずれた)
+        // 261118Cl 変更 (codex2 第 10 回): 素通し (単位の基底と対角の伝播) には物理の根拠が無い (Jordan 型で 2πi z J e₀ を落とす)。
+        //   例外点は対角化を使わず、元の行列から伝播した波を深さで積分する (C = 単位・S = 0 は診断の表示のためだけ)
+        {
+            c00 = 1; c10 = 0; c01 = 0; c11 = 1; al0 = 1; al1 = 0; g0 = a00; g1 = a11;
+            return new KikuchiTwoBeamSolution(g0, g1, al0, al1, c00, c10, c01, c11, 0, 0, 0, 0,
+                TwoBeamIntensityByPropagation(a00, a01, a10, a11, q00, q01, q10, q11, thickness), true);
+        }
+        else
+        { al0 = c11 / det; al1 = -c10 / det; }
+
+        // --- S_{jj'} = α_j α_j'* Σ_{ii'} C_{i,j} C*_{i',j'} Q_{ii'} ---
+        Complex W(Complex ci0, Complex ci1, Complex cj0, Complex cj1) // Σ_{ii'} C_{i,j} C*_{i',j'} Q_{ii'}
+            => ci0 * Complex.Conjugate(cj0) * q00 + ci0 * Complex.Conjugate(cj1) * q01
+             + ci1 * Complex.Conjugate(cj0) * q10 + ci1 * Complex.Conjugate(cj1) * q11;
+        var s00 = al0 * Complex.Conjugate(al0) * W(c00, c10, c00, c10);
+        var s01 = al0 * Complex.Conjugate(al1) * W(c00, c10, c01, c11);
+        var s10 = al1 * Complex.Conjugate(al0) * W(c01, c11, c00, c10);
+        var s11 = al1 * Complex.Conjugate(al1) * W(c01, c11, c01, c11);
+
+        // --- modal 厚み積分 I(t) = Re Σ S_{jj'} F_{jj'}(t) (EBSDSolverManaged と同一) ---
+        var intensity = (Fjj(g0, g0, thickness) * s00 + Fjj(g0, g1, thickness) * s01
+                       + Fjj(g1, g0, thickness) * s10 + Fjj(g1, g1, thickness) * s11).Real;
+        return new KikuchiTwoBeamSolution(g0, g1, al0, al1, c00, c10, c01, c11, s00, s01, s10, s11, intensity, false);
+    }
+
+    /// <summary>261118Cl 追加 (codex2 第 10 回): 対角化を使わない 2 ビームの強度 I(t) = Re ∫₀ᵗ Σ_{ii'} ψ_i(z) ψ_{i'}(z)* Q_{ii'} dz、
+    /// ψ(z) = exp(2πi A z) e₀ = e^{2πi h z} [cos(2π d z) e₀ + i (sin(2π d z)/d) N e₀] (h = (a00 + a11)/2、N = A − h I、d² = ((a00 − a11)/2)² + a01·a10。
+    /// N² = d² I なので 2×2 の行列指数はこの閉じた式で厳密。d → 0 (例外点) でも sin(x)/x の級数で有限)。深さは Gauss–Legendre 16 点の区画で積分し、
+    /// 区画の数は位相と増減の大きさ (2π(|Re d| + |Im d| + |Im h|)·t) から決める</summary>
+    internal static double TwoBeamIntensityByPropagation(Complex a00, Complex a01, Complex a10, Complex a11, double q00, Complex q01, Complex q10, double q11, double thickness)
+    {
+        if (!(thickness > 0)) return 0;
+        var h = (a00 + a11) / 2;
+        var d = Complex.Sqrt((a00 - a11) * (a00 - a11) / 4 + a01 * a10);
+        Complex n0 = a00 - h, n1 = a10; // N e₀
+        double rate = 2 * Math.PI * (Math.Abs(d.Real) + Math.Abs(d.Imaginary) + Math.Abs(h.Imaginary)) * thickness;
+        int panels = (int)Math.Clamp(Math.Ceiling(rate), 1, 1 << 16);
+        double width = thickness / panels, sum = 0;
+        for (int p = 0; p < panels; p++)
+            for (int k = 0; k < GaussLegendre16Nodes.Length; k++)
+            {
+                double z = width * (p + (GaussLegendre16Nodes[k] + 1) / 2);
+                var x = 2 * Math.PI * d * z;
+                var c = Complex.Cos(x);
+                var x2 = x * x;
+                // sin(x)/d = 2πz·sin(x)/x (小さい |x| は級数)
+                var sinOverD = 2 * Math.PI * z * (x.Magnitude < 1e-3 ? 1 - x2 / 6 + x2 * x2 / 120 : Complex.Sin(x) / x);
+                var phase = Complex.Exp(2 * Math.PI * Complex.ImaginaryOne * h * z);
+                var psi0 = phase * (c + Complex.ImaginaryOne * sinOverD * n0);
+                var psi1 = phase * (Complex.ImaginaryOne * sinOverD * n1);
+                var f = psi0 * Complex.Conjugate(psi0) * q00 + psi0 * Complex.Conjugate(psi1) * q01
+                      + psi1 * Complex.Conjugate(psi0) * q10 + psi1 * Complex.Conjugate(psi1) * q11;
+                sum += GaussLegendre16Weights[k] * f.Real;
+            }
+        return sum * width / 2;
+    }
+
+    /// <summary>261118Cl 追加 (codex2 第 10 回): この |det C| (列を正規化した固有ベクトルの行列式) より小さい点は対角化を使わず伝播で求める</summary>
+    internal const double ExceptionalDetThreshold = 1e-3;
+
+    /// <summary>261118Cl 追加: Gauss–Legendre 16 点の節点 ([−1, 1]) と重み</summary>
+    private static readonly double[] GaussLegendre16Nodes =
+    [
+        -0.9894009349916499, -0.9445750230732326, -0.8656312023878318, -0.7554044083550030,
+        -0.6178762444026438, -0.4580167776572274, -0.2816035507792589, -0.0950125098376374,
+        0.0950125098376374, 0.2816035507792589, 0.4580167776572274, 0.6178762444026438,
+        0.7554044083550030, 0.8656312023878318, 0.9445750230732326, 0.9894009349916499,
+    ];
+    private static readonly double[] GaussLegendre16Weights =
+    [
+        0.0271524594117541, 0.0622535239386479, 0.0951585116824928, 0.1246289712555339,
+        0.1495959888165767, 0.1691565193950025, 0.1826034150449236, 0.1894506104550685,
+        0.1894506104550685, 0.1826034150449236, 0.1691565193950025, 0.1495959888165767,
+        0.1246289712555339, 0.0951585116824928, 0.0622535239386479, 0.0271524594117541,
+    ];
+
 
     #endregion
 

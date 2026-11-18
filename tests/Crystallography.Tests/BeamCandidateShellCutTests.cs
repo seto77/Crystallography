@@ -117,4 +117,58 @@ public class BeamCandidateShellCutTests
             finally { BetheMethod.BeamCandidateCut = saved; }
         }
     }
+
+    /// <summary>261118Cl 追加 (codex2 第 10 回): 殻の外端 (殻の最初の |g| × (1 + 1e-9)) を覆い切った半径と殻ごとに 1 回だけ比べる。
+    /// 同じ丸めの幅の 2 点 r1 &lt; r2 が R/(1 + 1e-9) の両側にあっても、殻を丸ごと採る (旧の点ごとの比較は r1 だけを採った)。外端が R を越える殻は丸ごと外す</summary>
+    [Fact]
+    public void SelectShellCut_ComparesTheCoverRadiusOncePerShell()
+    {
+        const double R = 10, eps = 1e-9, delta = 1e-12;
+        double edge = R / (1 + eps);
+        double[] lengths = [0, 1, 1 * (1 + 1e-10), 5, edge - delta, edge + delta, 12];
+        Assert.True((edge - delta) * (1 + eps) < R && (edge + delta) * (1 + eps) > R, "the two points must straddle R/(1+eps)");
+        Assert.Equal([0, 1, 2, 3, 4, 5], Run(lengths, R, 100));
+        double[] crossing = [0, 1, edge + delta, edge + 2 * delta, 12]; // 外端が R を越える殻は丸ごと外す
+        Assert.Equal([0, 1], Run(crossing, R, 100));
+    }
+
+    /// <summary>261118Cl 追加 (codex2 第 10 回): 上限の本数目を含む殻は、その殻の固定した外端まで採り、次の殻で止める (上限の点の |g| から測らない)</summary>
+    [Fact]
+    public void SelectShellCut_TakesTheLimitShellToItsFixedEnd()
+    {
+        double[] lengths = [0, 1, 1 * (1 + 0.9e-9), 1 * (1 + 1.5e-9), 2];
+        Assert.Equal([0, 1, 2], Run(lengths, 100, 3)); // 1·(1 + 1.5e-9) は外端 1·(1 + 1e-9) の外 = 次の殻
+        Assert.Equal([0, 1, 2, 3], Run(lengths, 100, 4));
+    }
+
+    private static int[] Run(double[] lengths, double cover, int limit)
+    {
+        var order = Enumerable.Range(0, lengths.Length).OrderBy(i => lengths[i]).ToArray();
+        var picked = new List<int>();
+        BetheMethod.SelectShellCut(order, i => lengths[i], _ => true, cover, limit, i => { picked.Add(i); return picked.Count; });
+        return [.. picked];
+    }
+
+    /// <summary>261118Cl 追加 (codex2 第 10 回): エワルドの条件を通る候補が 0 本 (表面の向きを逆にして 000 も通らない) なら、従来・殻とも例外でなく空を返す
+    /// (第 9 回の前は範囲外の例外)</summary>
+    [Fact]
+    public void NoCandidate_ReturnsEmpty()
+    {
+        foreach (var mode in new[] { BeamCandidateCutMode.Legacy, BeamCandidateCutMode.Shell })
+        {
+            var saved = BetheMethod.BeamCandidateCut;
+            try
+            {
+                BetheMethod.BeamCandidateCut = mode;
+                var bm = new BetheMethod(Silicon());
+                var d = new Vector3DBase(0.21, 0.47, 0.857); d = d / d.Length;
+                double kvac = UniversalConstants.Convert.EnergyToElectronWaveNumber(200), u0 = bm.getU(200).Real.Real;
+                var s = new Vector3DBase(-d.X, -d.Y, -d.Z);
+                var beams = bm.Find_gVectors(Matrix3D.IdentityMatrix, bm.getVecK0(kvac, u0, d, s), d, 64); // 表面の向きを逆に
+                Assert.Equal(0, BetheMethod.LastBeamCandidateScan.Collected);
+                Assert.Empty(beams);
+            }
+            finally { BetheMethod.BeamCandidateCut = saved; }
+        }
+    }
 }

@@ -94,4 +94,26 @@ public class CbedNumericCheckTests
         var nonUniform = Run(BetheMethod.Solver.Auto, thickness: [20, 45, 60]).Result;
         Assert.Equal("native-checked", nonUniform.NumericStats.IntegratorBackend);
     }
+
+    /// <summary>261118Cl 追加 (codex2 第 10 回): 解いた振幅の検査の後に作る円盤の値 (対称の写し・重なりの二乗和の平方根) の異常は、
+    /// 公開の前の検査で画素・厚さの場所つきの失敗になり、結果を公開しない</summary>
+    [Fact]
+    public void NonFiniteCompiledDisk_FailsWithPixelAndThickness_AndPublishesNothing()
+    {
+        int pixel = -1;
+        var (error, result, owner) = Run(BetheMethod.Solver.Auto, b => b.CbedCompiledDisksHookForTest = disks =>
+        {
+            var amps = disks[1][0].Amplitudes;
+            pixel = Array.FindIndex(amps, a => a != System.Numerics.Complex.Zero);
+            amps[pixel] = new System.Numerics.Complex(double.NaN, 0);
+        });
+        var ex = Assert.IsType<NumericFailureException>(error);
+        Assert.Equal(NumericStage.ValueCheck, ex.Failure.Stage);
+        Assert.Equal(NativeWrapper.NativeSolveStatus.NonFiniteOutput, ex.Failure.Status);
+        Assert.Equal(pixel, ex.Failure.Direction);
+        Assert.Equal(1, ex.Failure.DepthIndex);
+        Assert.Contains("after the overlap", ex.Message);
+        Assert.Null(result);
+        Assert.Null(owner.ResultCbed);
+    }
 }

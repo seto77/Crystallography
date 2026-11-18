@@ -159,8 +159,10 @@ public partial class BetheMethod
     //     (int key, double gX, double gY, double gZ, double gLen)[] Items, bool Diagnostic, double CoverRadius); // 261118Cl 変更前
     // 261118Cl 変更 (codex2 第 9 回): Checkpoints = BFS の外側の一巡ごとの (それまでの点の数, その時点で覆い切った半径)。
     //   要求の大きさ (cacheLimit) で新しく作ったときと同じ範囲・半径を、大きく作ったキャッシュからも取り出せる (キャッシュの履歴に依らない)
+    // 261118Cl 変更 (codex2 第 10 回): Directions = BFS の近傍の列 (GetDirection() の静的な配列。格子型ごとに 1 つ)。同じ行列で格子型だけが替わったら作り直す
     private sealed record GCacheSnapshot((double, double, double, double, double, double, double, double, double) Mat,
-        (int key, double gX, double gY, double gZ, double gLen)[] Items, bool Diagnostic, double CoverRadius, (int Count, double Cover)[] Checkpoints = null)
+        (int key, double gX, double gY, double gZ, double gLen)[] Items, bool Diagnostic, double CoverRadius, (int Count, double Cover)[] Checkpoints = null,
+        (int h, int k, int l)[] Directions = null)
     {
         private readonly Lazy<int[]> byLength = new(() => BuildByLength(Items), LazyThreadSafetyMode.ExecutionAndPublication);
         /// <summary>261118Cl 追加 (<see cref="BeamCandidateCutMode.Shell"/>): Items の番号を (|g|, 鍵) の昇順に並べた索引。初めて使うときに 1 度だけ作る</summary>
@@ -472,12 +474,57 @@ public partial class BetheMethod
         return (values, vectors, inverse);
     }
 
-    /// <summary>261118Cl 追加 (codex2 第 9 回): 旧い DLL・managed の固有解と振幅の有限性 (状態を返さない経路)</summary>
-    private void RequireFiniteDiffraction(ReadOnlySpan<Complex> a, string method, double voltage, double thickness, int direction, string what)
+    /// <summary>261118Cl 追加 (codex2 第 9 回): 旧い DLL・managed の固有解と振幅の有限性 (状態を返さない経路)。
+    /// 261118Cl (codex2 第 10 回): 段を引数に (Evd → NonFiniteEigen、Boundary → NonFiniteSolve、ほか → NonFiniteOutput)。既定は従来の ValueCheck</summary>
+    // private void RequireFiniteDiffraction(ReadOnlySpan<Complex> a, string method, double voltage, double thickness, int direction, string what) // 261118Cl 変更前
+    private void RequireFiniteDiffraction(ReadOnlySpan<Complex> a, string method, double voltage, double thickness, int direction, string what, NumericStage stage = NumericStage.ValueCheck)
     {
+        var status = stage switch { NumericStage.Evd => NativeWrapper.NativeSolveStatus.NonFiniteEigen, NumericStage.Boundary => NativeWrapper.NativeSolveStatus.NonFiniteSolve, _ => NativeWrapper.NativeSolveStatus.NonFiniteOutput };
         for (int i = 0; i < a.Length; i++)
             if (!double.IsFinite(a[i].Real) || !double.IsFinite(a[i].Imaginary))
-                throw DiffractionFailed(method, voltage, thickness, new NumericFailure(0, direction, NumericStage.ValueCheck, NativeWrapper.NativeSolveStatus.NonFiniteOutput), $"non-finite {what} #{i}; ");
+                // throw DiffractionFailed(method, voltage, thickness, new NumericFailure(0, direction, NumericStage.ValueCheck, NativeWrapper.NativeSolveStatus.NonFiniteOutput), $"non-finite {what} #{i}; "); // 261118Cl 変更前
+                throw DiffractionFailed(method, voltage, thickness, new NumericFailure(0, direction, stage, status), $"non-finite {what} #{i}; ");
+    }
+
+    /// <summary>261118Cl 追加 (codex2 第 10 回): 平行ビーム・PED の固有解と逆行列を、計算の初めに決めた経路 (<see cref="DiffractionEigenSettings.EigenPath"/>) だけで選ぶ
+    /// (可変の <see cref="EigenEnabled"/> を読み直さない)。旧い DLL・managed は EVD の直後と逆行列の後に有限性を確かめ、
+    /// MathNet の数値の例外 (収束しない・特異) は発生した段の <see cref="NumericFailureException"/> に換える</summary>
+    private (Complex[] Values, Complex[] Vectors, Complex[] Inverse) DiffractionEigen(string eigenPath, int dim, Complex[] potentialMatrix, string method, double voltage, double thickness, int direction)
+    {
+        if (eigenPath == "native-checked")
+            return CheckedEigenWithInverse(dim, potentialMatrix, method, voltage, thickness, direction);
+        Complex[] values, vectors, inverse;
+        if (eigenPath == "native-legacy")
+        {
+            (values, vectors) = NativeWrapper.EigenSolver(dim, potentialMatrix);
+            RequireFiniteDiffraction(values.AsSpan(0, dim), method, voltage, thickness, direction, "eigenvalue", NumericStage.Evd);
+            RequireFiniteDiffraction(vectors.AsSpan(0, dim * dim), method, voltage, thickness, direction, "eigenvector element", NumericStage.Evd);
+            inverse = NativeWrapper.Inverse(dim, vectors);
+        }
+        else
+        {
+            DMat vectorMatrix;
+            try
+            {
+                var evd = new DMat(dim, dim, potentialMatrix).Evd(Symmetricity.Asymmetric);
+                values = ((DVec)evd.EigenValues).Values;
+                vectorMatrix = (DMat)evd.EigenVectors;
+                vectors = vectorMatrix.Values;
+            }
+            catch (MathNet.Numerics.NonConvergenceException ex)
+            {
+                throw DiffractionFailed(method, voltage, thickness, new NumericFailure(0, direction, NumericStage.Evd, NativeWrapper.NativeSolveStatus.EvdNoConvergence), $"{ex.GetType().Name}: {ex.Message}; ");
+            }
+            RequireFiniteDiffraction(values.AsSpan(0, dim), method, voltage, thickness, direction, "eigenvalue", NumericStage.Evd);
+            RequireFiniteDiffraction(vectors.AsSpan(0, dim * dim), method, voltage, thickness, direction, "eigenvector element", NumericStage.Evd);
+            try { inverse = ((DMat)vectorMatrix.Inverse()).Values; }
+            catch (MathNet.Numerics.NativeInterfaceException ex) // 特異 (SingularUMatrixException) など
+            {
+                throw DiffractionFailed(method, voltage, thickness, new NumericFailure(0, direction, NumericStage.Boundary, NativeWrapper.NativeSolveStatus.Singular), $"{ex.GetType().Name}: {ex.Message}; ");
+            }
+        }
+        RequireFiniteDiffraction(inverse.AsSpan(0, dim * dim), method, voltage, thickness, direction, "inverse element", NumericStage.Boundary);
+        return (values, vectors, inverse);
     }
     private DiffractionEigenSettings eigenSettings, pedEigenSettings; // 261106Ch 追加
 
@@ -637,8 +684,13 @@ public partial class BetheMethod
     }
     /// <summary>261118Cl 追加 (試験専用): CBED の検査つきの伝播に渡す旗 (<see cref="NativeWrapper.NumericCheckFlags.TestForceNoConvergence"/> で未収束を起こす)。専用の BetheMethod へ写す</summary>
     internal NativeWrapper.NumericCheckFlags CbedCheckFlagsForTest { get; set; }
+    /// <summary>261118Cl 追加 (試験専用、codex2 第 10 回): CBED の円盤を組んだ直後 (公開の前の有限性の検査の前) に呼ぶ。異常値を注入して場所つきの失敗を確かめる。専用の BetheMethod へ写す</summary>
+    internal Action<CBED_Disk[][]> CbedCompiledDisksHookForTest { get; set; }
     /// <summary>261118Cl 追加 (試験専用): STEM の検査つきの伝播に渡す旗。STEM の専用の BetheMethod へ写す</summary>
     internal NativeWrapper.NumericCheckFlags StemCheckFlagsForTest { get; set; }
+    /// <summary>261118Cl 追加 (試験専用、codex2 第 10 回): STEM の旧経路 (全スライスを物化しない) でスライスの透過係数を作り直した直後に呼ぶ (tc_k, 厚さの番号, スライスの番号)。
+    /// 非弾性の計算に渡す前の検査に異常値を注入する</summary>
+    internal Action<System.Numerics.Complex[], int, int> StemRegeneratedSliceHookForTest { get; set; }
     /// <summary>261118Cl 追加 (試験専用、codex2 第 9 回): 平行ビーム・PED の検査つきの EVD に渡す旗 (方位の番号 → 旗。平行ビームは −1)</summary>
     internal Func<int, NativeWrapper.NumericCheckFlags> DiffractionCheckFlagsForTest { get; set; }
 
@@ -732,6 +784,7 @@ public partial class BetheMethod
                 CbedBeamSelection = beamSelection ?? CbedBeamSelection, CbedDressedTail = dressedTail ?? CbedDressedTail ?? CbedDressedTailDefaults,
                 CbedMemoryBudgetOverride = CbedMemoryBudgetOverride,
                 CbedCheckFlagsForTest = CbedCheckFlagsForTest, // 261118Cl 追加 (試験専用)
+                CbedCompiledDisksHookForTest = CbedCompiledDisksHookForTest, // 261118Cl 追加 (試験専用、codex2 第 10 回)
             };
             long runId = Interlocked.Increment(ref cbedRunCounter);
             RotationArrayValidLength = valid; // 進捗の分母 (最初の進捗より前に決まる)
@@ -1212,6 +1265,21 @@ public partial class BetheMethod
                 bwCBED.ReportProgress(Interlocked.Increment(ref count) * 1000 / Beams.Length, "Compiling disks");//進捗状況を報告
             });
         }
+
+        // 261118Cl 追加 (codex2 第 10 回): 公開する円盤の有限性。対称の写し (位相を掛ける) と重なり (二乗和の平方根) は解いた振幅の検査の後に作る値なので、
+        //   ここで確かめる (場所 = 元の円盤の画素の番号・厚さの番号・ビーム)
+        if (!bwCBED.CancellationPending) CbedCompiledDisksHookForTest?.Invoke(Disks);
+        if (!bwCBED.CancellationPending)
+            for (int t = 0; t < Disks.Length; t++)
+                for (int g = 0; g < Disks[t].Length; g++)
+                    foreach (var (amps, what) in new[] { (Disks[t][g].RawAmplitudes, "amplitude"), (Disks[t][g].Amplitudes, "disk amplitude after the overlap") })
+                        for (int r = 0; r < (amps?.Length ?? 0); r++)
+                            if (!double.IsFinite(amps[r].Real) || !double.IsFinite(amps[r].Imaginary))
+                            {
+                                var f = new NumericFailure(0, r, NumericStage.ValueCheck, NativeWrapper.NativeSolveStatus.NonFiniteOutput, null, t);
+                                numeric.RecordFailure(f);
+                                throw new NumericFailureException(f, $"CBED numeric failure at {AccVoltage:g6} kV, pixel #{r}: non-finite {what} of beam #{g} ({Disks[t][g].H} {Disks[t][g].K} {Disks[t][g].L}) at thickness #{t}");
+                            }
 
         if (bwCBED.CancellationPending)
             e.Cancel = true;
@@ -3243,6 +3311,9 @@ public partial class BetheMethod
         //     || !ReferenceEquals(Beams, eigenBeams)) // 261106Ch 変更前
         if (MaxNumOfBloch != maxNumOfBloch || AccVoltage != voltage || EigenValues == null || Beams.Length != EigenValues.Length || EigenVectors == null || !rotation.Equals(BaseRotation)
             || !ReferenceEquals(Beams, eigenBeams) || settings != eigenSettings) // 261106Ch: 表面と模型も固有解の条件
+        // 261118Cl 変更 (codex2 第 10 回): 新しいビームの組と固有解は一時の変数に作り、振幅まで有限と確かめてから Beams・固有解・条件をまとめて公開する
+        //   (旧は EVD の前に公開の Beams を差し替えていたので、失敗すると Psi の無い新しい組が残り、反射の表などがそれを読んだ)。
+        //   旧の段取り (Beams = Find_gVectors(…) → EVD → eigenBeams/eigenSettings) は下のコメントに残す
         {
             eigenSettings = null; // 261106Ch 追加: 途中で失敗した解を次の呼び出しで再利用しない
             MaxNumOfBloch = maxNumOfBloch;
@@ -3252,41 +3323,41 @@ public partial class BetheMethod
 
             //uDictionary.Clear();
             //計算対象のg-Vectorsを決める。
-            Beams = Find_gVectors(BaseRotation, vecK0);
-
-            if (Beams == null || Beams.Length == 0) return [];
-
-            var potentialMatrix = getEigenMatrix(Beams);
-            dim = Beams.Length;
-            //A行列に関する固有値、固有ベクトルを取得 
-            // 261118Cl 変更 (codex2 第 9 回): 新しい DLL なら検査つきの EVD と逆行列 (失敗は NumericFailureException)、旧い DLL・managed は解の有限性を確かめる。
-            //   固有解の条件 (eigenSettings) は計算の前に null、成功してから記録 (上と下の 261106Ch のまま)
-            if (settings.EigenPath == "native-checked")
-                (EigenValues, EigenVectors, EigenVectorsInverse) = CheckedEigenWithInverse(dim, potentialMatrix, "SAED", voltage, thickness, -1);
-            else if (EigenEnabled && maxNumOfBloch < 400)
-            {
-                (EigenValues, EigenVectors) = NativeWrapper.EigenSolver(dim, potentialMatrix);
-                EigenVectorsInverse = NativeWrapper.Inverse(Beams.Length, EigenVectors);
-            }
-            else
-            {
-                var evd = new DMat(dim, dim, potentialMatrix).Evd(Symmetricity.Asymmetric);
-                EigenValues = ((DVec)evd.EigenValues).Values;
-                EigenVectors = ((DMat)evd.EigenVectors).Values;
-                EigenVectorsInverse = ((DMat)evd.EigenVectors.Inverse()).Values;
-            }
-            if (settings.EigenPath != "native-checked") // 261118Cl 追加: 状態を返さない経路の解の有限性
-            {
-                RequireFiniteDiffraction(EigenValues.AsSpan(0, dim), "SAED", voltage, thickness, -1, "eigenvalue");
-                RequireFiniteDiffraction(EigenVectors.AsSpan(0, dim * dim), "SAED", voltage, thickness, -1, "eigenvector element");
-                RequireFiniteDiffraction(EigenVectorsInverse.AsSpan(0, dim * dim), "SAED", voltage, thickness, -1, "inverse element");
-            }
+            // Beams = Find_gVectors(BaseRotation, vecK0); // 261118Cl 変更前
+            // if (Beams == null || Beams.Length == 0) return []; // 261118Cl 変更前
+            // var potentialMatrix = getEigenMatrix(Beams); // 261118Cl 変更前
+            // dim = Beams.Length; // 261118Cl 変更前
+            // (旧: settings.EigenPath == "native-checked" なら CheckedEigenWithInverse、else if (EigenEnabled && maxNumOfBloch < 400) なら NativeWrapper.EigenSolver + Inverse、
+            //  それ以外は MathNet の Evd。その後に状態を返さない経路の有限性 → eigenBeams = Beams; eigenSettings = settings。261118Cl 変更前)
+            var newBeams = Find_gVectors(BaseRotation, vecK0);
+            if (newBeams == null || newBeams.Length == 0) { Beams = newBeams; return []; } // 反射の無い正当な結果 (固有解の条件は null のまま)
+            dim = newBeams.Length;
+            var (values, vectors, inverse) = DiffractionEigen(settings.EigenPath, dim, getEigenMatrix(newBeams), "SAED", voltage, thickness, -1);
+            var psiNew = DiffractionAmplitudes(newBeams, values, vectors, inverse, thickness);
+            RequireFiniteDiffraction(psiNew, "SAED", voltage, thickness, -1, "amplitude of beam");
+            (Beams, EigenValues, EigenVectors, EigenVectorsInverse) = (newBeams, values, vectors, inverse);
             eigenBeams = Beams; // 261105Cl 追加: この固有解がどの Beams 配列 (並び順) に対応するか
-            eigenSettings = settings; // 261106Ch 追加: 固有値分解に成功してから条件を記録
+            eigenSettings = settings; // 261106Ch 追加: 固有値分解に成功してから条件を記録 (261118Cl: 振幅の検査の後)
+            for (int i = 0; i < dim; i++) Beams[i].Psi = psiNew[i];
+            return Beams;
         }
 
         dim = Beams.Length;
+        // 261118Cl 変更 (codex2 第 10 回): 振幅の式は DiffractionAmplitudes へ (新しい組と同じ式)。旧の式は DiffractionAmplitudes の中のコメント
+        var psiValues = DiffractionAmplitudes(Beams, EigenValues, EigenVectors, EigenVectorsInverse, thickness);
+        // 261118Cl 追加 (codex2 第 9 回): 公開する前に振幅の有限性を確かめる (失敗なら Beams の Psi を書かない。固有解は検査済みなので次の厚さで使い回せる)
+        RequireFiniteDiffraction(psiValues, "SAED", voltage, thickness, -1, "amplitude of beam");
 
+        for (int i = 0; i < Beams.Length && i < dim; i++)
+            Beams[i].Psi = psiValues[i];
+
+        return Beams;
+    }
+
+    /// <summary>261118Cl 追加 (codex2 第 10 回、GetDifractedBeamAmpriltudes から切り出し): 厚さ t の出射面の振幅 ψ = P(t)·V·diag(exp(2πiγt))·V⁻¹e₀ (検査は呼び出し側)</summary>
+    private static Complex[] DiffractionAmplitudes(Beam[] beams, Complex[] eigenValues, Complex[] eigenVectors, Complex[] eigenVectorsInverse, double thickness)
+    {
+        int dim = beams.Length;
         // var psi0 = new DVec(new Complex[dim]) { [0] = 1 };//入射面での波動関数を定義 (261106Ch 変更前)
         // var alpha = new DMat(dim, dim, EigenVectorsInverse).Multiply(psi0);//アルファベクトルを求める (261106Ch 変更前)
         // 261106Ch: 入射波は e0 なので alpha = V^-1 e0 は column-major 逆行列の第一列そのもの。
@@ -3294,22 +3365,16 @@ public partial class BetheMethod
         //ガンマの対称行列×アルファを作成
         // var gamma_alpha = new DVec([.. ValueEnumerable.Range(0, dim).Select(n => Exp(TwoPiI * EigenValues[n] * thickness) * alpha[n])]); // 261106Ch 変更前
         // var gamma_alpha = new DVec([.. ValueEnumerable.Range(0, dim).Select(n => Exp(TwoPiI * EigenValues[n] * thickness) * EigenVectorsInverse[n])]); // 261111Cl 変更前
-        var gamma_alpha = new DVec([.. Enumerable.Range(0, dim).Select(n => Exp(TwoPiI * EigenValues[n] * thickness) * EigenVectorsInverse[n])]); // 261111Cl 変更: ZLinq を外したので標準 LINQ
+        var gamma_alpha = new DVec([.. Enumerable.Range(0, dim).Select(n => Exp(TwoPiI * eigenValues[n] * thickness) * eigenVectorsInverse[n])]); // 261111Cl 変更: ZLinq を外したので標準 LINQ
 
         //出射面での境界条件を考慮した位相にする (20230827)
-        var p = new DiagonalMatrix(dim, dim, [.. Beams.Select(b => Exp(PiI * b.P * thickness))]);
+        var p = new DiagonalMatrix(dim, dim, [.. beams.Select(b => Exp(PiI * b.P * thickness))]);
 
         //深さZにおけるψを求める
-        var psi_atZ = p.Multiply(new DMat(dim, dim, EigenVectors).Multiply(gamma_alpha));
-        // 261118Cl 追加 (codex2 第 9 回): 公開する前に振幅の有限性を確かめる (失敗なら Beams の Psi を書かない。固有解は検査済みなので次の厚さで使い回せる)
+        var psi_atZ = p.Multiply(new DMat(dim, dim, eigenVectors).Multiply(gamma_alpha));
         var psiValues = new Complex[dim];
         for (int i = 0; i < dim; i++) psiValues[i] = psi_atZ[i];
-        RequireFiniteDiffraction(psiValues, "SAED", voltage, thickness, -1, "amplitude of beam");
-
-        for (int i = 0; i < Beams.Length && i < dim; i++)
-            Beams[i].Psi = psi_atZ[i];
-
-        return Beams;
+        return psiValues;
     }
 
     #endregion
@@ -3339,13 +3404,18 @@ public partial class BetheMethod
         if (AccVoltage != voltage)
             uDictionary.Clear();
 
-        var useEigen = EigenEnabled && maxNumOfBloch < 400;
+        // var useEigen = EigenEnabled && maxNumOfBloch < 400; // 261118Cl 変更前 (codex2 第 10 回: 可変の EigenEnabled を読み直していた)
+        var useEigen = settings.EigenPath != "managed"; // 261118Cl 変更: 計算の初めに決めた経路から
 
         var stepP = ParallelEnumerable.Range(0, step).WithDegreeOfParallelism(useEigen ? Environment.ProcessorCount : Math.Max(1, Environment.ProcessorCount / 4));
 
         // if (MaxNumOfBloch != maxNumOfBloch || AccVoltage != voltage || EigenValuesPED == null || EigenValuesPED.Length != step
         //     || EigenVectorsPED == null || EigenVectorsPED.Length != step || semiangle != SemianglePED || !baseRotation.Equals(BaseRotation)) // 261106Ch 変更前
         // 261106Ch: PED(A) → 平行ビーム(B) → PED(B) では共有フィールドは B でも PED 固有解は A のまま。
+        // 261118Cl 変更 (codex2 第 10 回): 方位ごとのビームの組と固有解は一時の配列に作り、最終の強度まで有限と確かめてから
+        //   BeamsPED・EigenValuesPED などをまとめて公開する (旧は計算の前に公開の配列を差し替えていた)。反射の無い方位は EVD に渡さず空の組 (SAED と同じ扱い)
+        DVec[] valuesPED = EigenValuesPED; DMat[] vectorsPED = EigenVectorsPED, inversePED = EigenVectorsInversePED; Beam[][] beamsPED = BeamsPED; // 261118Cl 追加
+        bool rebuilt = false; // 261118Cl 追加: 固有解を作り直したか (作り直したら下で公開する)
         if (MaxNumOfBloch != maxNumOfBloch || AccVoltage != voltage || EigenValuesPED == null || EigenValuesPED.Length != step
             || EigenVectorsPED == null || EigenVectorsPED.Length != step || semiangle != SemianglePED || !baseRotation.Equals(BaseRotation)
             || settings != pedEigenSettings)
@@ -3357,10 +3427,12 @@ public partial class BetheMethod
             Thickness = thickness;
             SemianglePED = semiangle;
 
-            EigenValuesPED = new DVec[step];
-            EigenVectorsPED = new DMat[step];
-            EigenVectorsInversePED = new DMat[step];
-            BeamsPED = new Beam[step][];
+            // EigenValuesPED = new DVec[step]; // 261118Cl 変更前 (4 行: 計算の前に公開の配列を差し替えていた)
+            // EigenVectorsPED = new DMat[step];
+            // EigenVectorsInversePED = new DMat[step];
+            // BeamsPED = new Beam[step][];
+            (valuesPED, vectorsPED, inversePED, beamsPED) = (new DVec[step], new DMat[step], new DMat[step], new Beam[step][]);
+            rebuilt = true;
 
             try { // 261118Cl 追加 (codex2 第 9 回): 数値の失敗は並列の包みを外して渡す (字下げは変えない)
             stepP.ForAll(k =>
@@ -3368,37 +3440,15 @@ public partial class BetheMethod
                 var (sin, cos) = Math.SinCos(2.0 * Math.PI * k / step);
                 var beamRotation = Matrix3D.Rot(new Vector3DBase(cos, sin, 0), SemianglePED);
                 //計算対象のg-Vectorsを決める。
-                var potentialMatrix = Array.Empty<Complex>();
                 var vecK0 = getVecK0(kvac, u0, beamRotation * new Vector3D(0, 0, -1));
-                BeamsPED[k] = Find_gVectors(BaseRotation, vecK0, MaxNumOfBloch);
-                var len = BeamsPED[k].Length;
-                potentialMatrix = getEigenMatrix(BeamsPED[k]);
-                var dim = BeamsPED[k].Length;
-                //A行列に関する固有値、固有ベクトルを取得 
-                if (settings.EigenPath == "native-checked") // 261118Cl 追加 (codex2 第 9 回): 検査つき (方位の番号を失敗の場所に)
-                {
-                    var (val, vec, inv) = CheckedEigenWithInverse(dim, potentialMatrix, "PED", voltage, thickness, k);
-                    (EigenValuesPED[k], EigenVectorsPED[k], EigenVectorsInversePED[k]) = (new DVec(val), new DMat(len, len, vec), new DMat(len, len, inv));
-                }
-                else if (useEigen)
-                {//Eigenを使う場合
-                    var (val, vec) = NativeWrapper.EigenSolver(dim, potentialMatrix);
-                    (EigenValuesPED[k], EigenVectorsPED[k]) = (new DVec(val), new DMat(len, len, vec));
-                    EigenVectorsInversePED[k] = new DMat(len, len, NativeWrapper.Inverse(len, EigenVectorsPED[k].Values));
-                }
-                else
-                {//MKLを使う場合
-                    var evd = new DMat(dim, dim, potentialMatrix).Evd(Symmetricity.Asymmetric);
-                    EigenValuesPED[k] = (DVec)evd.EigenValues;
-                    EigenVectorsPED[k] = (DMat)evd.EigenVectors;
-                    EigenVectorsInversePED[k] = (DMat)EigenVectorsPED[k].Inverse();
-                }
-                if (settings.EigenPath != "native-checked") // 261118Cl 追加: 状態を返さない経路の解の有限性
-                {
-                    RequireFiniteDiffraction(EigenValuesPED[k].Values, "PED", voltage, thickness, k, "eigenvalue");
-                    RequireFiniteDiffraction(EigenVectorsPED[k].Values, "PED", voltage, thickness, k, "eigenvector element");
-                    RequireFiniteDiffraction(EigenVectorsInversePED[k].Values, "PED", voltage, thickness, k, "inverse element");
-                }
+                // (旧: BeamsPED[k] = Find_gVectors(…) → getEigenMatrix → settings.EigenPath == "native-checked" なら CheckedEigenWithInverse、else if (useEigen) なら
+                //  NativeWrapper.EigenSolver + Inverse、それ以外は MathNet の Evd → 状態を返さない経路の有限性。261118Cl 変更前)
+                var beamsK = Find_gVectors(BaseRotation, vecK0, MaxNumOfBloch) ?? [];
+                beamsPED[k] = beamsK;
+                if (beamsK.Length == 0) return; // 261118Cl 追加: 反射の無い方位 (固有解は null のまま。振幅も強度も足さない)
+                var dim = beamsK.Length;
+                var (val, vec, inv) = DiffractionEigen(settings.EigenPath, dim, getEigenMatrix(beamsK), "PED", voltage, thickness, k);
+                (valuesPED[k], vectorsPED[k], inversePED[k]) = (new DVec(val), new DMat(dim, dim, vec), new DMat(dim, dim, inv));
             });
             }
             catch (AggregateException ae) when (ae.Flatten().InnerExceptions.All(x => x is NumericFailureException))
@@ -3407,7 +3457,7 @@ public partial class BetheMethod
                 System.Runtime.ExceptionServices.ExceptionDispatchInfo.Throw(first);
                 throw;
             }
-            pedEigenSettings = settings; // 261106Ch 追加: 全方位の固有値分解に成功してから条件を記録
+            // pedEigenSettings = settings; // 261106Ch 追加: 全方位の固有値分解に成功してから条件を記録 // 261118Cl 変更前 (公開と一緒に下へ)
         }
 
         //各方向でのbeamの振幅を求める
@@ -3416,19 +3466,22 @@ public partial class BetheMethod
         try { // 字下げは変えない
         stepP.ForAll(k =>
         {
-            if (EigenValuesPED[k] is not null)
+            // if (EigenValuesPED[k] is not null) // 261118Cl 変更前 (公開の配列を読んでいた)
+            if (valuesPED[k] is not null)
             {
-                var len = EigenValuesPED[k].Count;
+                var len = valuesPED[k].Count;
                 // var psi0 = new DVec(new Complex[len]) { [0] = 1 };//入射面での波動関数を定義 (261106Ch 変更前)
                 // var alpha = EigenVectorsInversePED[k].Multiply(psi0);//アルファベクトルを求める (261106Ch 変更前)
                 // 261106Ch: alpha = V^-1 e0 は第一列。逆行列を公開する既存 API は変えない。
-                var inverseValues = EigenVectorsInversePED[k].Values;
+                var inverseValues = inversePED[k].Values;
                 //ガンマの対称行列×アルファを作成
                 // var gamma_alpha = new DVec([.. ValueEnumerable.Range(0, len).Select(n => Exp(TwoPiI * EigenValuesPED[k][n] * thickness) * alpha[n])]); // 261106Ch 変更前
                 // var gamma_alpha = new DVec([.. ValueEnumerable.Range(0, len).Select(n => Exp(TwoPiI * EigenValuesPED[k][n] * thickness) * inverseValues[n])]); // 261111Cl 変更前
-                var gamma_alpha = new DVec([.. Enumerable.Range(0, len).Select(n => Exp(TwoPiI * EigenValuesPED[k][n] * thickness) * inverseValues[n])]); // 261111Cl 変更: ZLinq を外したので標準 LINQ
+                // var gamma_alpha = new DVec([.. Enumerable.Range(0, len).Select(n => Exp(TwoPiI * EigenValuesPED[k][n] * thickness) * inverseValues[n])]); // 261111Cl 変更: ZLinq を外したので標準 LINQ // 261118Cl 変更前
+                var gamma_alpha = new DVec([.. Enumerable.Range(0, len).Select(n => Exp(TwoPiI * valuesPED[k][n] * thickness) * inverseValues[n])]); // 261118Cl 変更: 一時の配列から
                 //深さZにおけるψを求める
-                var psi_atZ = EigenVectorsPED[k].Multiply(gamma_alpha);
+                // var psi_atZ = EigenVectorsPED[k].Multiply(gamma_alpha); // 261118Cl 変更前
+                var psi_atZ = vectorsPED[k].Multiply(gamma_alpha);
                 // for (int i = 0; i < BeamsPED[k].Length && i < len; i++) // 261118Cl 変更前 (その場で書いていた)
                 //     BeamsPED[k][i].Psi = psi_atZ[i];
                 var psiK = psi_atZ.ToArray();
@@ -3443,35 +3496,71 @@ public partial class BetheMethod
             System.Runtime.ExceptionServices.ExceptionDispatchInfo.Throw(first);
             throw;
         }
-        for (int k = 0; k < step; k++) // 261118Cl 追加: 全方位が成功してから公開
-            if (psiPED[k] is { } psiK)
-                for (int i = 0; i < BeamsPED[k].Length && i < psiK.Length; i++)
-                    BeamsPED[k][i].Psi = psiK[i];
+        // for (int k = 0; k < step; k++) // 261118Cl 追加: 全方位が成功してから公開 // 261118Cl 変更前 (codex2 第 10 回: 最終の強度の検査の後へ)
+        //     if (psiPED[k] is { } psiK)
+        //         for (int i = 0; i < BeamsPED[k].Length && i < psiK.Length; i++)
+        //             BeamsPED[k][i].Psi = psiK[i];
 
         //最後に全てのビームをまとめる
-        var compiled = new Dictionary<(int h, int k, int l), Beam>();
-        foreach (var beamsEach in BeamsPED.Where(beams => beams is not null))
-            foreach (var beam in beamsEach)
+        // var compiled = new Dictionary<(int h, int k, int l), Beam>(); // 261118Cl 変更前 (公開中の BeamsPED の Beam の intensity を書き換えていた。旧の 11 行)
+        // foreach (var beamsEach in BeamsPED.Where(beams => beams is not null))
+        //     foreach (var beam in beamsEach)
+        //     {
+        //         if (!compiled.TryGetValue(beam.Index, out Beam value))
+        //         {
+        //             compiled.Add(beam.Index, beam);
+        //             compiled[beam.Index].intensity = beam.Psi.MagnitudeSquared() / step;
+        //         }
+        //         else
+        //             value.intensity += beam.Psi.MagnitudeSquared() / step;
+        //     }
+        // 261118Cl 変更 (codex2 第 10 回): 強度の和は一時の辞書に (最初に現れた Beam と、方位の順に足した和。足す順は従来と同じ)
+        var compiled = new Dictionary<(int h, int k, int l), (Beam First, double Intensity)>();
+        for (int k = 0; k < step; k++)
+        {
+            if (beamsPED[k] is not { } beamsEach) continue;
+            var psiK = psiPED[k];
+            for (int i = 0; i < beamsEach.Length; i++)
             {
-                if (!compiled.TryGetValue(beam.Index, out Beam value))
-                {
-                    compiled.Add(beam.Index, beam);
-                    compiled[beam.Index].intensity = beam.Psi.MagnitudeSquared() / step;
-                }
-                else
-                    value.intensity += beam.Psi.MagnitudeSquared() / step;
+                var beam = beamsEach[i];
+                // var add = beam.Psi.MagnitudeSquared() / step; (旧は書き込んだ Psi から。振幅の無い方位の Beam は Psi の旧い値を足していた)
+                var add = (psiK is not null && i < psiK.Length ? psiK[i] : beam.Psi).MagnitudeSquared() / step;
+                compiled[beam.Index] = compiled.TryGetValue(beam.Index, out var e) ? (e.First, e.Intensity + add) : (beam, add);
             }
+        }
 
         //基準の方位でP,Q,Sなどを再セット
         var mat = BaseRotation * Crystal.MatrixInverseTransposed;
-        var beams = compiled.Values.ToList();
-        for (int i = 0; i < beams.Count; i++)
+        // var beams = compiled.Values.ToList(); // 261118Cl 変更前
+        var beams = new List<Beam>(compiled.Count);
+        foreach (var (first, intensity) in compiled.Values)
         {
-            var g = mat * beams[i].Index;
+            var g = mat * first.Index;
             var (Q, P) = getQP(g, kvac, u0);
-            var psi = new Complex(Math.Sqrt(beams[i].intensity), 0);
-            beams[i] = new Beam(beams[i].Index, g, (beams[i].Ureal, beams[i].Uimag), (Q, P)) { Psi = psi };
+            var psi = new Complex(Math.Sqrt(intensity), 0);
+            if (!double.IsFinite(psi.Real)) // 261118Cl 追加 (codex2 第 10 回): 二乗和の平方根 (最終の値) の有限性
+                throw DiffractionFailed("PED", voltage, thickness, new NumericFailure(0, -1, NumericStage.ValueCheck, NativeWrapper.NativeSolveStatus.NonFiniteOutput), $"non-finite averaged intensity of {first.Index}; ");
+            beams.Add(new Beam(first.Index, g, (first.Ureal, first.Uimag), (Q, P)) { Psi = psi });
         }
+        // for (int i = 0; i < beams.Count; i++) // 261118Cl 変更前 (上の foreach へ)
+        // {
+        //     var g = mat * beams[i].Index;
+        //     var (Q, P) = getQP(g, kvac, u0);
+        //     var psi = new Complex(Math.Sqrt(beams[i].intensity), 0);
+        //     beams[i] = new Beam(beams[i].Index, g, (beams[i].Ureal, beams[i].Uimag), (Q, P)) { Psi = psi };
+        // }
+
+        // 261118Cl 追加 (codex2 第 10 回): ここまで全部が成功してから公開する (固有解・方位ごとの組・Psi・条件)
+        if (rebuilt)
+        {
+            (EigenValuesPED, EigenVectorsPED, EigenVectorsInversePED, BeamsPED) = (valuesPED, vectorsPED, inversePED, beamsPED);
+            pedEigenSettings = settings; // 261106Ch: 全方位の固有値分解に成功してから条件を記録 (261118Cl: 最終の値の検査の後)
+        }
+        for (int k = 0; k < step; k++)
+            if (psiPED[k] is { } psiK)
+                for (int i = 0; i < BeamsPED[k].Length && i < psiK.Length; i++)
+                    BeamsPED[k][i].Psi = psiK[i];
+        foreach (var (first, intensity) in compiled.Values) first.intensity = intensity; // 旧と同じく最初に現れた Beam に和を残す (外から読む所は無い)
 
         //並び替え
         beams.Sort((a, b) =>
@@ -3762,6 +3851,7 @@ public partial class BetheMethod
         //   その方向で NumericFailureException で止める (managed の経路も最終の振幅の有限性を確かめる)。試験の旗は StemCheckFlagsForTest
         var stemChecked = useNativeSolver && NativeWrapper.NumericChecksAvailable;
         var stemCheckFlags = StemCheckFlagsForTest;
+        var stemRegeneratedSliceHook = StemRegeneratedSliceHookForTest; // 261118Cl 追加 (試験専用、codex2 第 10 回)
         NumericFailureException StemFailed(NumericFailure f, Vector3DBase d, string what) =>
             new(f, $"STEM numeric failure at {AccVoltage:g6} kV, direction #{f.Direction} ({d.X:f5}, {d.Y:f5}, {d.Z:f5}): {what}{f}");
         void RequireFiniteStem(Complex[] a, int length, int direction, Vector3DBase d)
@@ -4377,6 +4467,17 @@ public partial class BetheMethod
                                 }
                             });
                             #endregion
+                            // 261118Cl 追加 (codex2 第 10 回): 作り直したこのスライスの透過係数 (検査した V·diag(α) から作る値) の有限性を、非弾性の計算に渡す前に確かめる
+                            //   (場所 = 方向・厚さの番号。スライスの番号は文に)
+                            if (!useAllSliceTc)
+                            {
+                                stemRegeneratedSliceHook?.Invoke(tc_k, t, si);
+                                foreach (var kIndex in validTc)
+                                    for (int b = 0; b < bLen; b++)
+                                        if (!double.IsFinite(tc_k[kIndex * bLen + b].Real) || !double.IsFinite(tc_k[kIndex * bLen + b].Imaginary))
+                                            throw StemFailed(new NumericFailure(0, kIndex, NumericStage.ValueCheck, NativeWrapper.NativeSolveStatus.NonFiniteOutput, null, t), BeamDirections[kIndex],
+                                                $"non-finite regenerated transmission coefficient of beam #{b} at slice #{si} of thickness #{t}; ");
+                            }
 
                             //if (EigenEnabled) //260711Cl 変更前: mutable static の再読 (codex 指摘)
                             if (nativeHelpersEnabled)
@@ -5730,6 +5831,63 @@ public partial class BetheMethod
     static int compose((int h, int k, int l) index) => ((index.h + 255) << 20) + ((index.k + 255) << 10) + index.l + 255;
     static (int h, int k, int l) decompose(int key) => ((key >> 20) - 255, ((key << 12) >> 22) - 255, ((key << 22) >> 22) - 255);
 
+    /// <summary>261118Cl 追加 (codex2 第 10 回、Find_gVectors の殻の単位の打ち切りから切り出し): |g| の昇順の索引 order を走査し、殻ごとに選ぶ。
+    /// 殻 = 殻の最初の点の |g| × (1 + 1e-9) (= 殻の外端。殻ごとに固定) までの点。殻の外端が coverRadius を越えたら、その殻から先は使わない (殻ごとに 1 回だけ比べる)。
+    /// include(i) を満たす点を add(i) に渡し (add は今の数を返す)、limit 本目を渡した殻は終わりまで採る</summary>
+    internal static void SelectShellCut(int[] order, Func<int, double> length, Func<int, bool> include, double coverRadius, int limit, Func<int, int> add)
+    {
+        double shellEnd = double.NegativeInfinity;
+        bool limitReached = false;
+        for (int o = 0; o < order.Length; o++)
+        {
+            int i = order[o];
+            double len = length(i);
+            if (len > shellEnd) // 新しい殻の始まり
+            {
+                if (limitReached) break; // limit 本目を含む殻を終わりまで採った
+                shellEnd = len * (1 + 1E-9);
+                if (shellEnd > coverRadius) break; // 覆い切っていない殻から先は使わない
+            }
+            if (include(i) && add(i) >= limit)
+                limitReached = true;
+        }
+    }
+
+    /// <summary>261118Cl 追加 (codex2 第 10 回): Find_gVectors の殻の単位の打ち切りの候補 (<see cref="SelectShellCut"/> で選び、評価値 |g|·Q² と一緒に pool へ。足りなければ借り直す)。返り値は候補の数</summary>
+    private static int ShellCutCandidates(int[] order, (int key, double gX, double gY, double gZ, double gLen)[] gCache, int cacheCount, double coverRadius, int limit,
+        Vector3DBase vecK0, Vector3DBase surface, double maxQ, ref (int cacheIndex, double rating)[] pool)
+    {
+        double k0_2 = vecK0.Length2;
+        var (kX, kY, kZ) = vecK0.Tuple;
+        var (sX, sY, sZ) = surface.Tuple;
+        var buffer = pool;
+        int count = 0;
+        SelectShellCut(order, i => gCache[i].gLen, i =>
+        {
+            if (i >= cacheCount) return false; // この cacheLimit の範囲の外 (大きく作ったキャッシュの残り)
+            var (_, gX, gY, gZ, _) = gCache[i];
+            double vX = gX + kX, vY = gY + kY, vZ = gZ + kZ;
+            double q = k0_2 - Dot3(vX, vX, vY, vY, vZ, vZ);
+            return Math.Abs(q) < maxQ && Dot3(sX, vX, sY, vY, sZ, vZ) > 0;
+        }, coverRadius, limit, i =>
+        {
+            if (count == buffer.Length) // 殻の残りで上限を越える分は借り直す
+            {
+                var bigger = ArrayPool<(int cacheIndex, double rating)>.Shared.Rent(buffer.Length * 2);
+                buffer.AsSpan(0, count).CopyTo(bigger);
+                ArrayPool<(int cacheIndex, double rating)>.Shared.Return(buffer);
+                buffer = bigger;
+            }
+            var (_, gX, gY, gZ, gLen) = gCache[i];
+            double vX = gX + kX, vY = gY + kY, vZ = gZ + kZ;
+            double q = k0_2 - Dot3(vX, vX, vY, vY, vZ, vZ);
+            buffer[count++] = (i, gLen * q * q);
+            return count;
+        });
+        pool = buffer;
+        return count;
+    }
+
     /// <summary>格子タイプに対応する direction セットを返す。260318Cl 追加。261030Cl: 列挙の順を固定するため配列で返す</summary>
     // private FrozenSet<(int h, int k, int l)> GetDirection() // 261030Cl 旧シグネチャ
     private (int h, int k, int l)[] GetDirection()
@@ -5805,7 +5963,8 @@ public partial class BetheMethod
         //  その道の点は前線より内側なので展開済みで、隣の点はすべて whole に入っている)
         var coverRadius = outer.TryPeek(out _, out var front) ? front - 6 * shift : double.PositiveInfinity;
         // return new GCacheSnapshot(mat.Tuple, [.. candidates], diagnostic, coverRadius); // 261118Cl 変更前
-        return new GCacheSnapshot(mat.Tuple, [.. candidates], diagnostic, coverRadius, [.. checkpoints]); // 261118Cl 変更: 一巡ごとの記録も
+        // return new GCacheSnapshot(mat.Tuple, [.. candidates], diagnostic, coverRadius, [.. checkpoints]); // 261118Cl 変更: 一巡ごとの記録も // 261118Cl 変更前 (第 10 回)
+        return new GCacheSnapshot(mat.Tuple, [.. candidates], diagnostic, coverRadius, [.. checkpoints], direction); // 261118Cl 変更 (codex2 第 10 回): 近傍の列も
     }
 
     /// <summary>候補となるgVectorを検索する.</summary>
@@ -5850,14 +6009,16 @@ public partial class BetheMethod
         // (診断が広げた大きいキャッシュを従来の呼び出しが使い回すと、候補が尽きる条件で候補が増え、結果が呼び出しの順に依存するため)
         var snapshot = gCacheSnapshot;
         // if (snapshot == null || snapshot.Mat != mat.Tuple || snapshot.Items.Length < cacheLimit) // 261028Cl 変更前
-        if (snapshot == null || snapshot.Mat != mat.Tuple || snapshot.Items.Length < cacheLimit || snapshot.Diagnostic != diagnostic)
+        // if (snapshot == null || snapshot.Mat != mat.Tuple || snapshot.Items.Length < cacheLimit || snapshot.Diagnostic != diagnostic) // 261118Cl 変更前
+        if (snapshot == null || snapshot.Mat != mat.Tuple || snapshot.Items.Length < cacheLimit || snapshot.Diagnostic != diagnostic || !ReferenceEquals(snapshot.Directions, GetDirection())) // 261118Cl 変更 (codex2 第 10 回): 格子型 (近傍の列) も
         {
             lock (gCacheLock)
             {
                 snapshot = gCacheSnapshot;
                 // if (snapshot == null || snapshot.Mat != mat.Tuple || snapshot.Items.Length < cacheLimit) // 261028Cl 変更前
                 //     gCacheSnapshot = snapshot = Build_gCache(baseRotation, cacheLimit);
-                if (snapshot == null || snapshot.Mat != mat.Tuple || snapshot.Items.Length < cacheLimit || snapshot.Diagnostic != diagnostic)
+                // if (snapshot == null || snapshot.Mat != mat.Tuple || snapshot.Items.Length < cacheLimit || snapshot.Diagnostic != diagnostic) // 261118Cl 変更前
+                if (snapshot == null || snapshot.Mat != mat.Tuple || snapshot.Items.Length < cacheLimit || snapshot.Diagnostic != diagnostic || !ReferenceEquals(snapshot.Directions, GetDirection())) // 261118Cl 変更 (codex2 第 10 回)
                     gCacheSnapshot = snapshot = Build_gCache(baseRotation, cacheLimit, diagnostic);
             }
         }
@@ -5894,31 +6055,10 @@ public partial class BetheMethod
         if (shellCut)
         {
             count = 0;
-            double cutLen = double.NaN;
-            var order = snapshot.ByLength;
-            for (int o = 0; o < order.Length; o++)
-            {
-                int i = order[o];
-                if (i >= cacheCount) continue; // この cacheLimit の範囲の外 (大きく作ったキャッシュの残り)
-                var (_, gX, gY, gZ, gLen) = gCache[i];
-                if (gLen * (1 + 1E-9) > coverRadius)
-                    break; // 覆い切っていない殻から先は使わない (並びは |g| の昇順)
-                if (count >= limit && gLen > cutLen * (1 + 1E-9))
-                    break;
-                double vX = gX + kX, vY = gY + kY, vZ = gZ + kZ;
-                double q = k0_2 - Dot3(vX, vX, vY, vY, vZ, vZ);
-                if (!(Math.Abs(q) < maxQ && Dot3(sX, vX, sY, vY, sZ, vZ) > 0))
-                    continue;
-                if (count == pool.Length) // 殻の残りで上限を越える分は借り直す
-                {
-                    var bigger = ArrayPool<(int cacheIndex, double rating)>.Shared.Rent(pool.Length * 2);
-                    pool.AsSpan(0, count).CopyTo(bigger);
-                    ArrayPool<(int cacheIndex, double rating)>.Shared.Return(pool);
-                    pool = bigger;
-                }
-                pool[count++] = (i, gLen * q * q);
-                if (count == limit) cutLen = gLen;
-            }
+            // (261118Cl 第 9 回の版: 点ごとに gLen·(1 + 1e-9) > coverRadius で止め、上限の点の |g| = cutLen から cutLen·(1 + 1e-9) まで採っていた。
+            //  codex2 第 10 回: 同じ丸めの幅の 2 点が coverRadius/(1 + 1e-9) の両側にあると、殻の片方だけを採れた → 殻の外端を殻の最初の点で 1 度決めて比べる)
+            //   (従来の経路の変数をラムダで捕まえないよう、別の関数で選ぶ)
+            count = ShellCutCandidates(snapshot.ByLength, gCache, cacheCount, coverRadius, limit, vecK0, surface, maxQ, ref pool);
         }
         if (shellCut) beamsSpan = pool.AsSpan(0, count);
         while (!shellCut) // 261028Cl 変更 (査読 M1): 診断では、候補が上限に届かないうちにキャッシュの端まで来たら、キャッシュを広げて探し直す // 261118Cl: 殻の単位の打ち切りでは通らない
@@ -5943,7 +6083,8 @@ public partial class BetheMethod
             lock (gCacheLock)
             {
                 snapshot = gCacheSnapshot;
-                if (snapshot == null || snapshot.Mat != mat.Tuple || snapshot.Items.Length < grown || !snapshot.Diagnostic)
+                // if (snapshot == null || snapshot.Mat != mat.Tuple || snapshot.Items.Length < grown || !snapshot.Diagnostic) // 261118Cl 変更前
+                if (snapshot == null || snapshot.Mat != mat.Tuple || snapshot.Items.Length < grown || !snapshot.Diagnostic || !ReferenceEquals(snapshot.Directions, GetDirection())) // 261118Cl 変更 (codex2 第 10 回)
                     gCacheSnapshot = snapshot = Build_gCache(baseRotation, grown, true);
             }
             gCache = snapshot.Items;

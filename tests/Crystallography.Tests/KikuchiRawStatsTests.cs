@@ -63,14 +63,19 @@ public class KikuchiRawStatsTests
         var family = Family(crystal, 2, 0, 0);
         int checkedPoints = 0;
         foreach (var x in new[] { -1.5, -1.0, -0.3, 0.0, 0.7, 1.0, 1.4 })
-        {
-            KikuchiPointDiagnostics d;
-            try { d = KikuchiProfileCalculator.ComputePointDiagnostics(snap, family, rot, 50, x, +1); }
-            catch (InvalidOperationException) { continue; } // 幾何の退化
-            if (d.Guarded || !(d.RawIRef > 0)) continue;
-            Assert.True(Math.Abs(d.RawI / d.RawIRef - 1) < 1e-9, $"x {x}: raw I {d.RawI:e6} vs I_ref {d.RawIRef:e6}");
-            checkedPoints++;
-        }
+            foreach (var member in new[] { +1, -1 }) // 261118Cl (codex2 第 10 回): −g の系も
+            {
+                KikuchiPointDiagnostics d;
+                try { d = KikuchiProfileCalculator.ComputePointDiagnostics(snap, family, rot, 50, x, member); }
+                catch (InvalidOperationException) { continue; } // 幾何の退化
+                if (d.Guarded || !(d.RawIRef > 0)) continue;
+                Assert.True(Math.Abs(d.RawI / d.RawIRef - 1) < 1e-9, $"x {x}, member {member}: raw I {d.RawI:e6} vs I_ref {d.RawIRef:e6}");
+                checkedPoints++;
+            }
         Assert.True(checkedPoints > 0);
+        // 261118Cl 追加 (codex2 第 10 回): 利用者が見る量 = ±g を足したプロファイルのコントラスト c = (I₊ + I₋ − 2 I_ref)/I_ref が消える
+        var profile = KikuchiProfileCalculator.ComputeProfile(snap, family, rot, 50);
+        Assert.True(profile.Valid);
+        Assert.All(profile.C, c => Assert.True(Math.Abs(c) < 1e-8, $"contrast of an extinct family {c:e3}"));
     }
 }

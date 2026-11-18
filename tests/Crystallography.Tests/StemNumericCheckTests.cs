@@ -17,7 +17,8 @@ public sealed class NativeNumericTheoryAttribute : TheoryAttribute
 [Collection("Bethe global settings")]
 public class StemNumericCheckTests
 {
-    private static Exception Run(NativeWrapper.NumericCheckFlags flags, string allSlice = null)
+    // private static Exception Run(NativeWrapper.NumericCheckFlags flags, string allSlice = null) // 261118Cl 変更前
+    private static Exception Run(NativeWrapper.NumericCheckFlags flags, string allSlice = null, Action<BetheMethod> configure = null)
     {
         var savedEnv = Environment.GetEnvironmentVariable("RECIPRO_STEM_ALLSLICE"); // 261118Cl (codex2 第 9 回): 全スライスの方式と Eigen2 の方式を明示して両方を通す
         Environment.SetEnvironmentVariable("RECIPRO_STEM_ALLSLICE", allSlice);
@@ -25,6 +26,7 @@ public class StemNumericCheckTests
         {
         var (crystal, rot) = BetheEigenReuseTests.TiltedSi();
         var bethe = new BetheMethod(crystal) { StemCheckFlagsForTest = flags };
+        configure?.Invoke(bethe); // 261118Cl 追加
         const int div = 3;
         var sin = Math.Sin(0.010);
         var directions = new Vector3DBase[div * div];
@@ -64,5 +66,21 @@ public class StemNumericCheckTests
         Assert.Equal(NumericStage.Evd, ex.Failure.Stage);
         Assert.Equal(NativeWrapper.NativeSolveStatus.EvdNoConvergence, ex.Failure.Status);
         Assert.Contains("STEM numeric failure at 200 kV", ex.Message);
+    }
+
+    /// <summary>261118Cl 追加 (codex2 第 10 回): 旧経路 (全スライスを物化しない) で作り直したスライスの透過係数の異常は、非弾性の計算に渡す前の検査で
+    /// 方向・厚さの場所つきの失敗になる (中心の方向 #4 の最初の厚さ・最初のスライスに注入)</summary>
+    [NativeNumericFact]
+    public void NonFiniteRegeneratedSlice_FailsWithDirectionAndThickness()
+    {
+        var ex = Assert.IsType<NumericFailureException>(Run(NativeWrapper.NumericCheckFlags.None, "0", b => b.StemRegeneratedSliceHookForTest = (tc, t, si) =>
+        {
+            if (t == 0 && si == 0) tc[4 * (tc.Length / 9)] = new System.Numerics.Complex(double.NaN, 0);
+        }));
+        Assert.Equal(NumericStage.ValueCheck, ex.Failure.Stage);
+        Assert.Equal(NativeWrapper.NativeSolveStatus.NonFiniteOutput, ex.Failure.Status);
+        Assert.Equal(4, ex.Failure.Direction);
+        Assert.Equal(0, ex.Failure.DepthIndex);
+        Assert.Contains("regenerated transmission coefficient", ex.Message);
     }
 }
