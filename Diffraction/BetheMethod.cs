@@ -1612,7 +1612,8 @@ public partial class BetheMethod
     /// 格子上の各方向を、その orbit 内で最小 index の exact representative へ写す。 // (260327Ch)
     /// 六方格子の場合、無効セル (|u+v| > N) は -1 にマッピングされスキップ対象となる。 // 260331Cl
     /// </summary>
-    private int[] CreateMasterPatternSymmetryRepresentativeDirectionMapping(int beamDirectionCount, int hemisphereLength, int gridSize)
+    // private int[] CreateMasterPatternSymmetryRepresentativeDirectionMapping(int beamDirectionCount, int hemisphereLength, int gridSize) // 261118Cl 変更前 (試験から写しの代表を見るため internal に)
+    internal int[] CreateMasterPatternSymmetryRepresentativeDirectionMapping(int beamDirectionCount, int hemisphereLength, int gridSize)
     {
         if (beamDirectionCount <= 0 || hemisphereLength <= 0 || gridSize <= 0)
             return [];

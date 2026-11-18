@@ -90,5 +90,14 @@ public class EbsdBackSourceBlockAxisTests
         var old = System.Text.Json.JsonSerializer.Deserialize<MasterPatternFileInfo>("{}");
         Assert.Equal("", old.BackSourceAxis);
         Assert.Equal("", old.BeamCandidateCut); // 261118Cl 追加: 古いファイル = 従来の打ち切り方
+        // 261118Cl 追加 (codex2 第 16 回): 打ち切り方を求めたら、記録の無いファイルは一致としない。空の要求は引数の誤り
+        var si = EbsdBackSourceAxisTests.GaAs(0.6);
+        var info = new MasterPatternFileInfo { CrystalFingerprint = MasterPatternFile.CrystalFingerprint(si), BeamEnergyKeV = 20 };
+        Assert.Null(MasterPatternFile.CheckCompatibility(info, si, 20));
+        Assert.Contains("does not record", MasterPatternFile.CheckCompatibility(info, si, 20, beamCandidateCut: "Legacy"));
+        info.BeamCandidateCut = "Shell";
+        Assert.Contains("Shell", MasterPatternFile.CheckCompatibility(info, si, 20, beamCandidateCut: "Legacy"));
+        Assert.Null(MasterPatternFile.CheckCompatibility(info, si, 20, beamCandidateCut: "Shell"));
+        Assert.Throws<ArgumentException>(() => MasterPatternFile.CheckCompatibility(info, si, 20, beamCandidateCut: ""));
     }
 }

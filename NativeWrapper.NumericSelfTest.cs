@@ -45,7 +45,8 @@ public static partial class NativeWrapper
             st = PartialPivLuSolveChecked(b, vectors, psi0, alpha);
             Check(st == NativeSolveStatus.Ok, $"LU status {st}");
             var phase = new Complex[nAtoms * b];
-            for (int i = 0; i < phase.Length; i++) phase[i] = Complex.FromPolarCoordinates(1, 0.7 * i);
+            // for (int i = 0; i < phase.Length; i++) phase[i] = Complex.FromPolarCoordinates(1, 0.7 * i); // 261118Cl 変更前 (codex2 第 16 回: 原子と反射に分離でき、原子の位相は強度で消えた)
+            for (int g = 0; g < b; g++) for (int n = 0; n < nAtoms; n++) phase[g * nAtoms + n] = Complex.FromPolarCoordinates(1, 0.7 * g * (n + 1) + 0.3 * n); // 原子ごとに反射に依る位相 (原子の添字の誤りにも感度)
             double[] sigma = [0.4, 0.25, 0.1], thick = [3.0, 8.0];
             var raw = new double[thick.Length];
             st = EBSDSolverRaw(b, values, vectors, alpha, phase, sigma, thick, raw);
@@ -74,12 +75,23 @@ public static partial class NativeWrapper
             }
             Check(ebsdRel < 1e-9, $"EBSD local source differs from the closed form (rel {ebsdRel:e2})");
 
+            // 2b. 旧の EBSD の丸め (NbLegacyClamp): 負・NaN の σ で生値は負・NaN、旧の入口はビットで +0 (fast-math で比較が畳まれると負や NaN が漏れる)
+            foreach (var badSigma in new[] { new[] { -0.4, -0.25, -0.1 }, new[] { double.NaN, 0.25, 0.1 } })
+            {
+                var r = new double[thick.Length];
+                st = EBSDSolverRaw(b, values, vectors, alpha, phase, badSigma, thick, r);
+                Check(st == NativeSolveStatus.Ok && r.All(x => double.IsNaN(x) || x < 0), $"EBSD raw with σ {badSigma[0]}: status {st}, values {string.Join(", ", r)}");
+                var legacyEbsd = EBSDSolver(b, values, vectors, alpha, phase, badSigma, thick);
+                Check(legacyEbsd.All(x => BitConverter.DoubleToInt64Bits(x) == 0), $"legacy EBSD clamp with σ {badSigma[0]}: {string.Join(", ", legacyEbsd)} (expected +0)");
+            }
+
             // 3. CBED の伝播: 検査つきの入口が旧の入口と同じ値
             double[] t = [5, 12.5, 40];
             var legacy = CBEDSolver_Eigen(a, psi0, t);
             var result = new Complex[b * t.Length];
             st = CBEDSolver_EigenChecked(b, a, psi0, t, result);
             Check(st == NativeSolveStatus.Ok, $"CBED status {st}");
+            Check(legacy.All(z => double.IsFinite(z.Real) && double.IsFinite(z.Imaginary)) && result.All(z => double.IsFinite(z.Real) && double.IsFinite(z.Imaginary)), "CBED values are not finite"); // 261118Cl 追加 (codex2 第 16 回)
             double max = legacy.Max(z => z.Magnitude);
             cbedRel = Enumerable.Range(0, result.Length).Max(i => (legacy[i] - result[i]).Magnitude) / max;
             Check(cbedRel < 1e-11, $"CBED differs from the legacy entry point (rel {cbedRel:e2})");

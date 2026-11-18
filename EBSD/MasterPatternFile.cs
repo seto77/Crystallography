@@ -366,6 +366,7 @@ public static class MasterPatternFile
     {
         ArgumentNullException.ThrowIfNull(info);
         ArgumentNullException.ThrowIfNull(crystal);
+        if (beamCandidateCut is "") throw new ArgumentException("Pass null to skip the beam-candidate-cut check; an empty requirement would match unrecorded files.", nameof(beamCandidateCut)); // 261118Cl 追加 (codex2 第 16 回)
         if (info.CrystalFingerprint != CrystalFingerprint(crystal))
             return $"The file was made for a different crystal (\"{info.CrystalName}\"), or the cell, atoms or B differ.";
         if (Math.Abs(info.BeamEnergyKeV - beamEnergyKeV) > 1E-6)
