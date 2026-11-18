@@ -304,6 +304,15 @@ public partial class BetheMethod
     }
     private static long beamCandidateExhaustedCount; // 261028Cl 追加
 
+    /// <summary>261118Cl 追加 (診断用、codex2 第 11 回 §2): 番兵 (N+1 本目) を含む候補の中で、接平面の重複除去が本数を減らした Find_gVectors の呼び出しの累計
+    /// (番兵の判定は重複除去の前なので、このとき本物の反射が番兵として落ちうる)。数えるだけで結果は変えない。0 を代入して数え直せる</summary>
+    public static long SentinelDuplicateCount
+    {
+        get => Interlocked.Read(ref sentinelDuplicateCount);
+        set => Interlocked.Exchange(ref sentinelDuplicateCount, value);
+    }
+    private static long sentinelDuplicateCount; // 261118Cl 追加
+
     /// <summary>
     /// 261028Cl 追加 (グローバル設定。261112Cl 既定を IncludeGroup に変更、作者の判断。それまでは DropGroup): Find_gVectors で選んだ maxNumOfBloch + 1 本の末尾の同点の組の扱い。
     /// 意味は <see cref="Crystallography.BeamBoundaryTieMode"/> enum 参照。<see cref="BeamCandidateMultiplier"/> と同じく static で、
@@ -6202,9 +6211,9 @@ public partial class BetheMethod
             beams[i] = new Beam((h, k, l), g, getU(AccVoltage, (h, k, l), g), (q, p));
         }
         // 261028Cl 追加: 診断用 (IncludeGroup) では、N+1 本に入らなかった残りの候補を、借りた配列を返す前に写しておく (既定の DropGroup では写さない)
-        var restCandidates = tieMode == BeamBoundaryTieMode.IncludeGroup ? beamsSpan[count..].ToArray() : null;
+        // var restCandidates = tieMode == BeamBoundaryTieMode.IncludeGroup ? beamsSpan[count..].ToArray() : null; // 261118Cl 変更前 (codex2 第 11 回: 重複除去の後に、借りた配列を返す前で写す)
         // ArrayPool<(int key, float rating)>.Shared.Return(pool); // 261111Cl 変更前
-        ArrayPool<(int key, double rating)>.Shared.Return(pool); // 261111Cl 変更: double
+        // ArrayPool<(int key, double rating)>.Shared.Return(pool); // 261111Cl 変更: double // 261118Cl 変更前 (下へ移した)
 
         // beams.Sort(static (a, b) => a.Rating.CompareTo(b.Rating)); // 261111Cl 変更前
         //261111Cl 変更: 同じ評価値の順を指数で決める。不安定な並べ替えなので、同値の順が QuickSelect の出力の並びに依存し、
@@ -6231,6 +6240,41 @@ public partial class BetheMethod
                 beams[uniqueCount++] = b;
         }
         beams = beams[..uniqueCount];
+        // if (hasSentinel && uniqueCount < count) Interlocked.Increment(ref sentinelDuplicateCount); // 261118Cl 追加 (診断用) // 261118Cl 変更前 (1 時間より前の版)
+        // 261118Cl 追加 (codex2 第 11 回 §2): 番兵は「一意な反射の N+1 本目」。N+1 本の候補の中で重複除去が本数を減らしたら (旧は残った本物の反射が番兵として落ちた。
+        //   opx の [100] 晶帯軸ちょうどで 448 条件中 2 回)、残りの候補から評価値の順に一意な反射を足して N+1 本にそろえる (足りなければ番兵は無い)。
+        //   重複の無い通常の呼び出しはここを通らない (結果は不変)
+        var restSpan = beamsSpan[count..];
+        if (hasSentinel && uniqueCount < count)
+        {
+            Interlocked.Increment(ref sentinelDuplicateCount); // 診断用: 番兵を含む候補で重複除去が効いた
+            var rest = restSpan.ToArray();
+            var restKeys = new (double Rating, (int, int, int) Hkl)[rest.Length]; // (評価値, 指数) の順に並べる (ラムダで gCache を捕まえない: 従来の経路まで閉包になる)
+            for (int r = 0; r < rest.Length; r++) restKeys[r] = (rest[r].rating, decompose(gCache[rest[r].cacheIndex].key));
+            Array.Sort(restKeys, rest);
+            var refilled = new List<Beam>(beams.ToArray());
+            int used = 0;
+            for (; used < rest.Length && refilled.Count < maxNumOfBloch + 1; used++)
+            {
+                var (key, gX, gY, gZ, _) = gCache[rest[used].cacheIndex];
+                var g = new Vector3DBase(gX, gY, gZ);
+                long xKey = (long)Math.Round(g * axisU / duplicateTol, MidpointRounding.AwayFromZero);
+                long yKey = (long)Math.Round(g * axisV / duplicateTol, MidpointRounding.AwayFromZero);
+                if (!uniqueXY.Add((xKey << 32) ^ (yKey & 0xFFFFFFFFL)))
+                    continue;
+                var (h, k, l) = decompose(key);
+                double vX = gX + kX, vY = gY + kY, vZ = gZ + kZ;
+                double q = k0_2 - Dot3(vX, vX, vY, vY, vZ, vZ), p = 2 * Dot3(sX, vX, sY, vY, sZ, vZ);
+                refilled.Add(new Beam((h, k, l), g, getU(AccVoltage, (h, k, l), g), (q, p)));
+            }
+            refilled.Sort(static (a, b) => a.Rating.CompareTo(b.Rating) is var c && c != 0 ? c : a.Index.CompareTo(b.Index));
+            beams = refilled.ToArray();
+            hasSentinel = beams.Length > maxNumOfBloch;
+            restSpan = rest.AsSpan(used); // 境の同値の組の補完 (IncludeGroup) は、足さなかった残りから探す
+        }
+        // 261118Cl 変更 (上から移した): 境の同値の組の補完に使う残りの候補を写してから、借りた配列を返す
+        var restCandidates = tieMode == BeamBoundaryTieMode.IncludeGroup ? restSpan.ToArray() : null;
+        ArrayPool<(int key, double rating)>.Shared.Return(pool);
         #endregion
 
         //261111Cl 追加: 同点とみなす幅。従来の絶対 1e-6 に、評価値に比例する分を足す。評価値 |g|·Q² の丸めの誤差は q = k0² − |k0+g|² の桁落ち
