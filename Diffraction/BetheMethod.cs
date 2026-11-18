@@ -1363,7 +1363,10 @@ public partial class BetheMethod
 
     /// <summary>261118Cl 追加 (codex2 第 5 回): 1 つのビーム集合の後方 TDS 源を、要素 (列優先 [col * N + row]、<see cref="CreateMasterPatternMuBack"/> と同じ並び) ごとの
     /// <see cref="BackSourceNode"/> の参照の表にする。Δhkl ごとの 3 点は cache (区画ごと、方向に依らない) で 1 度だけ評価する。値は画素ごとの入射の軸で組む</summary>
-    private BackSourceNode[] CreateMasterPatternMuBackNodes(double voltage, Beam[] beams, ConcurrentDictionary<int, BackSourceNode> cache)
+    // private BackSourceNode[] CreateMasterPatternMuBackNodes(double voltage, Beam[] beams, ConcurrentDictionary<int, BackSourceNode> cache) // 261118Cl 変更前
+    // 261118Cl 変更 (後方源の残りの検証の批判の段): 入れ物の値を Lazy にして、同じ Δhkl を複数のスレッドが同時に評価する重複を防ぐ
+    //   (GetOrAdd の作り方の関数は同時に何度も呼ばれうる。3 点の評価は環状の積分 3 回で重い。値は同じ)
+    private BackSourceNode[] CreateMasterPatternMuBackNodes(double voltage, Beam[] beams, ConcurrentDictionary<int, Lazy<BackSourceNode>> cache)
     {
         var beamCount = beams?.Length ?? 0;
         var table = new BackSourceNode[beamCount * beamCount];
@@ -1371,13 +1374,14 @@ public partial class BetheMethod
             for (int row = 0; row < beamCount; row++)
             {
                 var key = compose(beams[row].H - beams[col].H, beams[row].K - beams[col].K, beams[row].L - beams[col].L);
-                table[col * beamCount + row] = cache.GetOrAdd(key, _ =>
+                // 作り方の関数は、この呼び出しが .Value を返すまで row・col を進めないので、それらを取り込んでよい (別のスレッドが先に評価しても同じ値)
+                table[col * beamCount + row] = cache.GetOrAdd(key, _ => new Lazy<BackSourceNode>(() =>
                 {
                     var diff = beams[row] - beams[col];
                     double len = diff.Vec.Length;
                     var nodes = BackSourceAxisNodes(voltage, diff.Index, len);
                     return len > 0 ? new BackSourceNode(nodes, diff.Vec.X / len, diff.Vec.Y / len, diff.Vec.Z / len) : new BackSourceNode(nodes, 0, 0, 0);
-                });
+                }, LazyThreadSafetyMode.ExecutionAndPublication)).Value;
             }
         return table;
     }
@@ -2269,7 +2273,7 @@ public partial class BetheMethod
             BackSourceNode[][] backNodeArrays = null; // 261118Cl 追加 (codex2 第 5 回): 軸を合わせる後方源の表 (代表ごと)
             // 261118Cl 追加 (後方源の検証の批判の段): Δhkl ごとの 3 点は方向に依らないので、入れ物は塊をまたいで電圧ごとに 1 つ
             //   (旧は塊ごとに作り直し、異方性の単斜晶で 3 点の評価が塊の数だけ繰り返されて時間が ×2.3〜2.5 になった)
-            var backNodeCacheForVoltage = IncludeTDSBackground && backSourceAxis && !double.IsFinite(SourceSmearingSigmaNm) ? new ConcurrentDictionary<int, BackSourceNode>() : null;
+            var backNodeCacheForVoltage = IncludeTDSBackground && backSourceAxis && !double.IsFinite(SourceSmearingSigmaNm) ? new ConcurrentDictionary<int, Lazy<BackSourceNode>>() : null; // 261118Cl: 値は Lazy (同時の評価の重複を防ぐ)
             ebsdIntensity = new double[BeamDirections.Length][]; // 261107Cl 移動 (旧は解くループの直前)
             int orderedPosition = 0; // 261107Cl 追加: orderedSymmetryRepresentatives の中の、次の塊の先頭
             for (int chunkStart = 0; chunkStart < representativeIndices.Count; chunkStart += chunkSize) // 261107Cl 追加
