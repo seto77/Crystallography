@@ -34,7 +34,7 @@ public class EbsdBackSourceAxisTests
         }
     }
 
-    private static Crystal GaAs(double bisoAng2)
+    internal static Crystal GaAs(double bisoAng2) // 261118Cl: EbsdBackSourceBlockAxisTests からも使う (旧 private)
     {
         int series = 0;
         for (var i = 1; i < SymmetryStatic.TotalSpaceGroupNumber; i++)

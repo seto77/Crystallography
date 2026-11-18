@@ -1179,8 +1179,12 @@ public partial class BetheMethod
     /// 入射を +z と決め打ちしている。マスターは結晶の座標系を固定して方向ごとに入射を変えるので、従来は結晶固定の G = g − h をそのまま渡し、
     /// 軸が結晶の z に固定されていた (正しいのは d = ±ẑ の方向だけ)。原子の因子で、軸と G の角 α を 0→90° と変えると 10 kV・|G| 30 nm⁻¹ で −2.4 %、
     /// 20 kV・|G| 15 で −0.3 % 変わる。局所の後方源は G → −G で不変なので、軸の正負は効かない。
-    /// true のとき、hkl ごとに α = 0°・45°・90° の 3 点を一度だけ評価し、方向ごとに c² = cos²α の 2 次式で組む (製品の求積の値を相対 ≤1e-5 で再現。
-    /// 方向ごとに直接評価すると 1 方向 0.1〜0.5 秒かかるため)。⚠ 着衣の裾の表 (diffF、方向に依らない 1 枚の表) にはまだ入れていない</summary>
+    /// true のとき、hkl ごとに α = 0°・45°・90° の 3 点を一度だけ (電圧ごとに) 評価し、方向ごとに c² = cos²α の 2 次式で組む
+    /// (方向ごとに直接評価すると 1 方向 0.1〜0.5 秒かかるため)。
+    /// 261118Cl 訂正 (後方源の検証 wf_26a4f176-803): 精度は範囲つき。|Δg| ≤ 約 70 nm⁻¹・Z ≤ 33・10〜30 kV では方向ごとの細かい直接求積 (120,48) を |V(0)| の ≤3.4e-6
+    /// (強い成分の相対 ≤2.2e-5) で再現 (従来の軸の誤差 2〜8e-3 の 1/2300 以下)。|Δg| 60〜94 nm⁻¹ や 5 kV では強い成分の相対で 1e-4〜9e-3 に落ちる
+    /// (W 5 kV で 8.7e-3) が、従来の振れの 97 % 以上は消える (旧の記述「相対 ≤1e-5」は |G| ≲ 50 nm⁻¹ でだけ成り立つ)。
+    /// ⚠ 着衣の裾の表 (diffF、方向に依らない 1 枚の表) と非局所吸収のポテンシャル行列 (getPotentialMatrix(…, 0, π)) の軸は結晶の z のまま</summary>
     public static bool MasterBackSourceAxisCorrection { get; set; } = false;
     /// <summary>261118Cl 追加 (codex2 の単位 6・7 の第 1 段): 直前の EBSD の構築の数値の状態と生値の集計 (構築の開始で null、終わりに作る。取消・失敗でも作る)。
     /// 正常な値は変えない (生値には旧い意味の丸めを当てて使う)。261118Cl (第 7 回): 検査つきの段の非成功・観測した値の NaN・±∞ は
@@ -2132,6 +2136,9 @@ public partial class BetheMethod
             var representativeOptions = directionOptions;
             Complex[][] muBackArrays = null;
             BackSourceNode[][] backNodeArrays = null; // 261118Cl 追加 (codex2 第 5 回): 軸を合わせる後方源の表 (代表ごと)
+            // 261118Cl 追加 (後方源の検証の批判の段): Δhkl ごとの 3 点は方向に依らないので、入れ物は塊をまたいで電圧ごとに 1 つ
+            //   (旧は塊ごとに作り直し、異方性の単斜晶で 3 点の評価が塊の数だけ繰り返されて時間が ×2.3〜2.5 になった)
+            var backNodeCacheForVoltage = IncludeTDSBackground && backSourceAxis && !double.IsFinite(SourceSmearingSigmaNm) ? new ConcurrentDictionary<int, BackSourceNode>() : null;
             ebsdIntensity = new double[BeamDirections.Length][]; // 261107Cl 移動 (旧は解くループの直前)
             int orderedPosition = 0; // 261107Cl 追加: orderedSymmetryRepresentatives の中の、次の塊の先頭
             for (int chunkStart = 0; chunkStart < representativeIndices.Count; chunkStart += chunkSize) // 261107Cl 追加
@@ -2176,7 +2183,8 @@ public partial class BetheMethod
                     muBackArrays = new Complex[beamsPreliminary.Length][];
                     // var backNodeCache = MasterBackSourceAxisCorrection ? new ConcurrentDictionary<int, (Complex V0, Complex V45, Complex V90)>() : null; // 261118Cl 追加 (1 時間より前の版)
                     // 261118Cl 変更 (codex2 第 5 回): 軸を合わせるときは行列の代わりに Δhkl ごとの 3 点の表 (backNodeArrays) を作り、画素ごとの軸で組む (ブロック共有の画素も自分の軸で)
-                    var backNodeCache = backSourceAxis && !double.IsFinite(SourceSmearingSigmaNm) ? new ConcurrentDictionary<int, BackSourceNode>() : null;
+                    // var backNodeCache = backSourceAxis && !double.IsFinite(SourceSmearingSigmaNm) ? new ConcurrentDictionary<int, BackSourceNode>() : null; // 261118Cl 変更前 (塊ごとに作り直していた)
+                    var backNodeCache = backNodeCacheForVoltage; // 261118Cl 変更: 電圧ごとの入れ物
                     if (backNodeCache != null) backNodeArrays = new BackSourceNode[beamsPreliminary.Length][];
 
                     Parallel.For(0, beamsPreliminary.Length, representativeOptions, idx =>
