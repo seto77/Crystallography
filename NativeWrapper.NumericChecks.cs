@@ -23,6 +23,8 @@ public static partial class NativeWrapper
     {
         Ok = 0, NonFiniteInput = 1, EvdNoConvergence = 2, NonFiniteEigen = 3, Singular = 4, Args = 5, OutOfMemory = 6,
         NonFiniteSolve = 7, NonFiniteOutput = 8, Unknown = 9, Unchecked = 100,
+        /// <summary>261118Cl 追加 (codex2 第 8 回、C# の側だけの値): 観測した生値が尺度に対して有意な負 (x &lt; −許容·尺度)。native は返さない</summary>
+        SignificantNegative = 101,
     }
 
     /// <summary>261118Cl 追加: 検査の旗 (EigenFuncs.h の EigenFuncsFlags)</summary>

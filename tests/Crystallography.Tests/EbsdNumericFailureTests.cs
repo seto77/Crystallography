@@ -54,7 +54,7 @@ public class EbsdNumericFailureTests
                 Assert.Null(r.Error);
                 var s = r.Stats;
                 Assert.Equal(NumericRunState.Completed, s.RunState);
-                Assert.Equal("managed-raw", s.IntegratorBackend); Assert.Equal("managed-MathNet", s.EvdBackend); Assert.True(s.RawObserved);
+                Assert.Equal("managed-raw", s.IntegratorBackend); Assert.Equal("managed-MathNet", s.EvdBackend); Assert.True(s.RawCapable);
                 Assert.Empty(s.Statuses);
                 Assert.Contains("Evd unchecked", s.Summary());
                 long solved = s.Directions - s.NoBeamDirections;
@@ -83,6 +83,24 @@ public class EbsdNumericFailureTests
             Assert.Equal(new NumericFailure(0, -1, NumericStage.ValueCheck, NativeWrapper.NativeSolveStatus.Args, NumericQuantity.EbsdReinjection), ex.Failure);
             Assert.Equal(NumericRunState.Failed, r.Stats.RunState);
             Assert.Equal(0, r.Stats.Directions);
+            Assert.Equal(ex.Failure, r.Stats.FirstFailure); // 261118Cl (codex2 第 8 回): 例外と同じ失敗が集計にも残る
+        }
+        finally { BetheMethod.BackscatterSourceScaleForResearch = saved; }
+    }
+
+    /// <summary>261118Cl 追加 (codex2 第 8 回): 局所の源を使う構築では、各席の σ_n の NaN・負は電圧の入口で失敗 (源の非負性の前提)</summary>
+    [Fact]
+    public void InvalidLocalSigma_FailsTheRun()
+    {
+        var saved = BetheMethod.BackscatterSourceScaleForResearch;
+        try
+        {
+            BetheMethod.BackscatterSourceScaleForResearch = (z, _) => z == 14 ? -1.0 : 1.0;
+            var r = Run(tds: false);
+            var ex = Assert.IsType<NumericFailureException>(r.Error);
+            Assert.Equal(new NumericFailure(0, -1, NumericStage.ValueCheck, NativeWrapper.NativeSolveStatus.Args, NumericQuantity.EbsdLocal), ex.Failure);
+            Assert.Equal(ex.Failure, r.Stats.FirstFailure);
+            Assert.Equal(NumericRunState.Failed, r.Stats.RunState);
         }
         finally { BetheMethod.BackscatterSourceScaleForResearch = saved; }
     }
@@ -106,7 +124,9 @@ public class EbsdNumericFailureTests
         for (int t = 0; t < depths.Length; t++)
         {
             Assert.True(double.IsFinite(raw[t]));
-            Assert.True(Math.Abs(raw[t]) <= 1e-12 * sigma * Math.Max(depths[t], 1), $"depth {depths[t]}: raw {raw[t]:e3}");
+            // 261118Cl 変更 (codex2 第 8 回): 深さごとの Σσ·t で判定し、t = 0 は厳密に 0 (旧は max(t, 1) で薄い深さの幅を見ていなかった)
+            if (depths[t] == 0) Assert.Equal(0.0, raw[t]);
+            else Assert.True(Math.Abs(raw[t]) <= BetheMethod.EbsdReinjectionNegativeTolerance * sigma * depths[t], $"depth {depths[t]}: raw {raw[t]:e3} vs {BetheMethod.EbsdReinjectionNegativeTolerance * sigma * depths[t]:e3}");
             Assert.Equal(BitConverter.DoubleToInt64Bits(Math.Max(0.0, raw[t])), BitConverter.DoubleToInt64Bits(legacy[t]));
         }
         Assert.All(BetheMethod.ComputeAbsorbedFluxBackgroundRaw(2, eigen, vectors, alpha, 0.0, depths, weights), x => Assert.Equal(0.0, x)); // Σσ = 0 は正当なゼロの源
@@ -121,7 +141,7 @@ public class EbsdNumericFailureTests
             Assert.Null(r.Error); Assert.False(r.Cancelled);
             var s = r.Stats;
             Assert.Equal(NumericRunState.Completed, s.RunState);
-            Assert.Equal("native-raw", s.IntegratorBackend); Assert.Equal("native-checked", s.EvdBackend); Assert.True(s.RawObserved);
+            Assert.Equal("native-raw", s.IntegratorBackend); Assert.Equal("native-checked", s.EvdBackend); Assert.True(s.RawCapable);
             long solved = s.Directions - s.NoBeamDirections;
             Assert.True(solved > 0);
             foreach (var stage in new[] { NumericStage.Evd, NumericStage.Boundary, NumericStage.Integrator })
@@ -178,6 +198,69 @@ public class EbsdNumericFailureTests
             Assert.Equal(0, s.Statuses.GetValueOrDefault((NumericStage.Integrator, NativeWrapper.NativeSolveStatus.Ok)));
             Assert.Null(r.Disks[0]);
         }
+    }
+
+    // ---- 261118Cl 追加 (codex2 第 8 回): 解析値が決まる負の源の対照 (native と managed の生値、受け取り側の記録) ----
+
+    /// <summary>一波・一席・単位振幅・吸収なし (γ 実数で λ = 0、F = t) で σ &lt; 0 なら、局所の源の生値は σ·t (負)。native と managed の両方</summary>
+    [Fact]
+    public void LocalSource_NegativeSigma_GivesSigmaTimesDepth()
+    {
+        System.Numerics.Complex[] eigen = [new(0.04, 0)], vectors = [1], alpha = [1], phase = [1];
+        double[] sigma = [-0.5], depths = [0, 1.5, 4];
+        var managed = BetheMethod.EBSDSolverManagedRaw(1, 1, eigen, vectors, alpha, phase, sigma, depths);
+        for (int t = 0; t < depths.Length; t++) Assert.Equal(-0.5 * depths[t], managed[t], 12);
+        if (NativeWrapper.NumericChecksAvailable)
+        {
+            var native = new double[depths.Length];
+            Assert.Equal(NativeWrapper.NativeSolveStatus.Ok, NativeWrapper.EBSDSolverRaw(1, eigen, vectors, alpha, phase, sigma, depths, native));
+            for (int t = 0; t < depths.Length; t++) Assert.Equal(-0.5 * depths[t], native[t], 12);
+        }
+        // 受け取り側: 局所の源は判定しない (診断だけ) が、負値の数と最悪の場所 (源・深さ) は残る
+        var acc = new NumericStatsAccumulator();
+        double[] scale = [0, 0.5 * 1.5, 0.5 * 4]; // |Σσ|·t
+        Assert.Null(acc.Observe(NumericQuantity.EbsdLocal, NumericObservation.Raw, managed, 0, 3, scale));
+        var c = new NumericRunStatsCollector("EBSD"); c.Merge(acc);
+        var local = c.Build(NumericRunState.Completed).Quantities[NumericQuantity.EbsdLocal];
+        Assert.Equal(2, local.Negative); Assert.Equal(0, local.SignificantNegative);
+        Assert.Equal(3, local.WorstNegative?.Direction); Assert.Equal(1.0, local.WorstNegativeRelative, 12);
+    }
+
+    /// <summary>二波・伝播一定 (γ = 0)・固有ベクトル単位・入射 (1, −1)/√2 で、源 μ = [[u, b], [b, u]] の TDS の生値は tdsCoeff·t·(u − b)。
+    /// b &gt; u &gt; 0 は対角も尺度も正のまま負 (エルミートでも半正定値でない)、b = u は半正定値・暗い状態で真値 0</summary>
+    [Theory]
+    [InlineData(0.3, 0.7)]
+    [InlineData(0.5, 0.5)]
+    public void TdsSource_TwoBeamControl_GivesAnalyticValue(double u, double b)
+    {
+        double h = 1 / Math.Sqrt(2), coeff = 0.9;
+        System.Numerics.Complex[] eigen = [0, 0], vectors = [1, 0, 0, 1], alpha = [h, -h], mu = [u, b, b, u];
+        double[] depths = [0, 2, 7];
+        var managed = BetheMethod.ComputeTDSMatrixBackgroundRaw(2, eigen, vectors, alpha, mu, coeff, depths);
+        for (int t = 0; t < depths.Length; t++) Assert.Equal(coeff * depths[t] * (u - b), managed[t], 12);
+        if (NativeWrapper.NumericChecksAvailable)
+        {
+            double[] local = new double[depths.Length], tds = new double[depths.Length];
+            Assert.Equal(NativeWrapper.NativeSolveStatus.Ok, NativeWrapper.EBSDSolverWithTDSRaw(2, eigen, vectors, alpha, [], [], mu, coeff, depths, local, tds));
+            for (int t = 0; t < depths.Length; t++) Assert.Equal(coeff * depths[t] * (u - b), tds[t], 12);
+        }
+    }
+
+    /// <summary>判定つきの観測 (再注入) では、尺度に対して許容を越える負が SignificantNegative の失敗になり、源と深さが残る。許容以下の負は数えるだけ</summary>
+    [Fact]
+    public void Observe_WithTolerance_FailsOnlySignificantNegatives()
+    {
+        var acc = new NumericStatsAccumulator();
+        double[] scale = [0, 1, 1, 1];
+        Assert.Null(acc.Observe(NumericQuantity.EbsdReinjection, NumericObservation.Raw, [-1e-3, -5e-13, 2, 1], 0, 4, scale, 1e-12)); // 尺度 0 の深さは判定しない
+        var f = acc.Observe(NumericQuantity.EbsdReinjection, NumericObservation.Raw, [0, -5e-13, -2e-12, 1], 1, 5, scale, 1e-12);
+        Assert.Equal(new NumericFailure(1, 5, NumericStage.ValueCheck, NativeWrapper.NativeSolveStatus.SignificantNegative, NumericQuantity.EbsdReinjection, 2), f);
+        var c = new NumericRunStatsCollector("EBSD"); c.Merge(acc);
+        var s = c.Build(NumericRunState.Failed);
+        Assert.Equal(1, s.Quantities[NumericQuantity.EbsdReinjection].SignificantNegative);
+        Assert.Equal(4, s.Quantities[NumericQuantity.EbsdReinjection].Negative);
+        Assert.Contains("significant negative 1", s.Summary());
+        Assert.Contains("(value ", s.Summary());
     }
 
     // ---- 集計の型 (native なしで走る) ----

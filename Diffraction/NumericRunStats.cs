@@ -63,6 +63,8 @@ public sealed class NumericQuantityStats
     public long Negative { get; }
     public long NonFinite { get; }
     public long Excluded { get; }
+    /// <summary>261118Cl 追加 (codex2 第 8 回): 判定つきで観測したとき、許容を越えた有意な負の数 (判定なしの源では 0)</summary>
+    public long SignificantNegative { get; }
     /// <summary>有限の値の最小 (有限の値が 1 つも無ければ null)</summary>
     public double? Min { get; }
     public double MaxPositive { get; }
@@ -74,7 +76,7 @@ public sealed class NumericQuantityStats
 
     internal NumericQuantityStats(NumericQuantityAccumulator a)
     {
-        Observation = a.Observation; Evaluated = a.Evaluated; Negative = a.Negative; NonFinite = a.NonFinite; Excluded = a.Excluded;
+        Observation = a.Observation; Evaluated = a.Evaluated; Negative = a.Negative; NonFinite = a.NonFinite; Excluded = a.Excluded; SignificantNegative = a.SignificantNegative;
         Min = a.Evaluated > a.NonFinite ? a.Min : null; MaxPositive = a.MaxPositive;
         NegativeDecades = Array.AsReadOnly((long[])a.NegativeDecades.Clone()); // 写し (集め役の配列を公開しない)
         WorstNegative = a.WorstNegative; FirstNonFinite = a.FirstNonFinite;
@@ -85,7 +87,7 @@ public sealed class NumericQuantityStats
 internal sealed class NumericQuantityAccumulator
 {
     internal NumericObservation Observation;
-    internal long Evaluated, Negative, NonFinite, Excluded;
+    internal long Evaluated, Negative, NonFinite, Excluded, SignificantNegative;
     internal double Min = double.PositiveInfinity, MaxPositive = 0;
     internal readonly long[] NegativeDecades = new long[20];
     internal NumericWorstCase? WorstNegative, FirstNonFinite;
@@ -93,7 +95,7 @@ internal sealed class NumericQuantityAccumulator
     internal void Merge(NumericQuantityAccumulator o)
     {
         Observation |= o.Observation;
-        Evaluated += o.Evaluated; Negative += o.Negative; NonFinite += o.NonFinite; Excluded += o.Excluded;
+        Evaluated += o.Evaluated; Negative += o.Negative; NonFinite += o.NonFinite; Excluded += o.Excluded; SignificantNegative += o.SignificantNegative;
         if (o.Min < Min) Min = o.Min;
         if (o.MaxPositive > MaxPositive) MaxPositive = o.MaxPositive;
         for (int k = 0; k < NegativeDecades.Length; k++) NegativeDecades[k] += o.NegativeDecades[k];
@@ -126,7 +128,9 @@ internal sealed class NumericStatsAccumulator
 
     /// <summary>値の列 (深さごと) を 1 つの方向として数える。尺度は同じ列の正の最大 (scales を渡せば深さごとにその値。真値が 0 になりうる再注入は Σσ·t)。
     /// NaN・±∞ が有れば列の最初の場所を失敗として記録して返す (呼び出し側はその値を使わずに止める)。全部有限なら null</summary>
-    internal NumericFailure? Observe(NumericQuantity q, NumericObservation kind, ReadOnlySpan<double> values, int voltageIndex, int direction, ReadOnlySpan<double> scales = default)
+    /// <remarks>261118Cl 追加 (codex2 第 8 回): failBelowRelative を渡すと、有限で x &lt; −failBelowRelative·尺度 の値も失敗 (<see cref="NativeWrapper.NativeSolveStatus.SignificantNegative"/>) として返す
+    /// (尺度が正のときだけ。それ未満の負は数えて、呼び出し側が表示上 0 にする)。既定 NaN は判定しない (診断だけ)</remarks>
+    internal NumericFailure? Observe(NumericQuantity q, NumericObservation kind, ReadOnlySpan<double> values, int voltageIndex, int direction, ReadOnlySpan<double> scales = default, double failBelowRelative = double.NaN)
     {
         var s = Quantities[(int)q];
         s.Observation |= kind;
@@ -152,6 +156,11 @@ internal sealed class NumericStatsAccumulator
                 int k = rel >= 1 ? 0 : rel > 0 ? Math.Min(19, (int)Math.Ceiling(-Math.Log10(rel))) : 19;
                 s.NegativeDecades[k]++;
                 s.WorstNegative = NumericQuantityAccumulator.PickWorstNegative(s.WorstNegative, new(voltageIndex, direction, t, x, scale));
+                if (scale > 0 && rel > failBelowRelative) // 261118Cl 追加 (第 8 回): 有意な負 (NaN の許容なら比較は常に false)
+                {
+                    s.SignificantNegative++;
+                    failure ??= new NumericFailure(voltageIndex, direction, NumericStage.ValueCheck, NativeWrapper.NativeSolveStatus.SignificantNegative, q, t);
+                }
             }
         }
         if (failure is { } f) RecordFailure(f);
@@ -196,8 +205,9 @@ public sealed class NumericRunStats
     /// <summary>固有値: native-checked / native-legacy-unchecked / managed-MathNet / research-hook / dressed-tail</summary>
     public string EvdBackend { get; }
     public string NativeLibrary { get; }
-    /// <summary>局所・TDS の源を生値で見たか (旧い DLL・managed・着衣の裾では見ない)</summary>
-    public bool RawObserved { get; }
+    /// <summary>261118Cl 変更 (codex2 第 8 回、旧 RawObserved): 局所・TDS の源を生値で受けられる構成か (旧い DLL・着衣の裾では受けられない)。
+    /// 実際に観測した数は源ごとの Evaluated で見る (EVD で全方向が止まれば構成が対応でも 0)</summary>
+    public bool RawCapable { get; }
     /// <summary>解きに入った (電圧, 代表方向) の数と、そのうちビームが無くて解かずに戻った数 (実験の分母の確認用)</summary>
     public long Directions { get; }
     public long NoBeamDirections { get; }
@@ -205,9 +215,9 @@ public sealed class NumericRunStats
     public IReadOnlyDictionary<(NumericStage Stage, NativeWrapper.NativeSolveStatus Status), long> Statuses { get; }
     public NumericFailure? FirstFailure { get; }
 
-    internal NumericRunStats(string kind, NumericRunState state, string integratorBackend, string evdBackend, bool rawObserved, NumericStatsAccumulator total)
+    internal NumericRunStats(string kind, NumericRunState state, string integratorBackend, string evdBackend, bool rawCapable, NumericStatsAccumulator total)
     {
-        Kind = kind; RunState = state; IntegratorBackend = integratorBackend; EvdBackend = evdBackend; RawObserved = rawObserved;
+        Kind = kind; RunState = state; IntegratorBackend = integratorBackend; EvdBackend = evdBackend; RawCapable = rawCapable;
         NativeLibrary = NativeWrapper.LoadedNativeLibrary ?? "none";
         Directions = total.Directions; NoBeamDirections = total.NoBeamDirections;
         Quantities = Enum.GetValues<NumericQuantity>().ToFrozenDictionary(q => q, q => new NumericQuantityStats(total.Quantities[(int)q]));
@@ -219,7 +229,7 @@ public sealed class NumericRunStats
     /// 「no evaluated values (評価なし)」を区別する</summary>
     public string Summary()
     {
-        var sb = new StringBuilder($"{Kind} {RunState.ToString().ToLowerInvariant()}: directions {Directions} (no beams {NoBeamDirections}); integrator {IntegratorBackend}, EVD {EvdBackend}, native {NativeLibrary}, raw {(RawObserved ? "observed" : "not observed")}; stages");
+        var sb = new StringBuilder($"{Kind} {RunState.ToString().ToLowerInvariant()}: directions {Directions} (no beams {NoBeamDirections}); integrator {IntegratorBackend}, EVD {EvdBackend}, native {NativeLibrary}, raw {(RawCapable ? "capable" : "not capable")}; stages");
         foreach (var stage in new[] { NumericStage.Evd, NumericStage.Boundary, NumericStage.Integrator })
         {
             var counts = Statuses.Where(kv => kv.Key.Stage == stage).OrderBy(kv => (int)kv.Key.Status).ToArray();
@@ -233,7 +243,10 @@ public sealed class NumericRunStats
             sb.Append(s.Observation switch { NumericObservation.Raw => "raw", NumericObservation.AfterClamp => "after clamp", NumericObservation.None => "not evaluated", _ => "raw+after clamp" });
             sb.Append($": n {s.Evaluated} (excluded {s.Excluded}), ");
             sb.Append(s.Evaluated == 0 ? "no evaluated values"
-                : $"negative {s.Negative}, non-finite {s.NonFinite}, min {(s.Min is { } m ? m.ToString("g4") : "n/a")}, max {s.MaxPositive:g4}, worst negative/scale {s.WorstNegativeRelative:e2}");
+                : $"negative {s.Negative}, non-finite {s.NonFinite}, min {(s.Min is { } m ? m.ToString("g4") : "n/a")}, max {s.MaxPositive:g4}, worst negative/scale {s.WorstNegativeRelative:e2}"
+                  // 261118Cl 追加 (codex2 第 8 回): 最悪の負値は値・尺度・場所を 1 組で出す (min とは別の点でありうる)
+                  + (s.WorstNegative is { } w ? $" (value {w.Value:e3}, scale {w.Scale:e3}, voltage #{w.VoltageIndex}, direction #{w.Direction}, depth #{w.DepthIndex})" : "")
+                  + (s.SignificantNegative > 0 ? $", significant negative {s.SignificantNegative}" : ""));
             if (s.Negative > 0) // 負値の |x|/尺度 の桁の度数 (k: 10^−k 以上 10^−(k−1) 未満)
                 sb.Append(" (negative/scale decades " + string.Join(" ", s.NegativeDecades.Select((c, k) => (c, k)).Where(x => x.c > 0).Select(x => $"1e-{x.k}:{x.c}")) + ")");
         }
@@ -247,7 +260,7 @@ public sealed class NumericRunStats
 internal sealed class NumericRunStatsCollector(string kind)
 {
     internal string IntegratorBackend = "", EvdBackend = "";
-    internal bool RawObserved;
+    internal bool RawCapable; // 261118Cl 変更 (旧 RawObserved)
     private readonly object gate = new();
     private readonly NumericStatsAccumulator total = new();
 
@@ -257,8 +270,14 @@ internal sealed class NumericRunStatsCollector(string kind)
         lock (gate) total.Merge(acc);
     }
 
+    /// <summary>261118Cl 追加 (codex2 第 8 回): worker の外 (電圧の入口など) の失敗を集計に記録する (例外と同じ NumericFailure を渡す)</summary>
+    internal void RecordFailure(in NumericFailure f)
+    {
+        lock (gate) total.RecordFailure(f);
+    }
+
     internal NumericRunStats Build(NumericRunState state)
     {
-        lock (gate) return new NumericRunStats(kind, state, IntegratorBackend, EvdBackend, RawObserved, total);
+        lock (gate) return new NumericRunStats(kind, state, IntegratorBackend, EvdBackend, RawCapable, total);
     }
 }

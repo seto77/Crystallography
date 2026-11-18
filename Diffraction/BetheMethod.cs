@@ -1192,6 +1192,10 @@ public partial class BetheMethod
     public NumericRunStats EbsdNumericStats { get; private set; }
     /// <summary>261118Cl 追加 (試験専用、codex2 第 7 回): EBSD の検査つきの EVD に渡す旗 (<see cref="NativeWrapper.NumericCheckFlags.TestForceNoConvergence"/> で未収束を起こす)。構築の開始時に読む</summary>
     internal NativeWrapper.NumericCheckFlags EbsdEvdCheckFlagsForTest { get; set; }
+    /// <summary>261118Cl 追加 (codex2 第 8 回・実験 (b) の第 2 回): 再注入の生値の有意な負の許容 (尺度 Σσ·t に対する比)。
+    /// 真値 0 (B = 0) の 245 + 10 の run で最悪 7.7e-15 (native・managed、N16〜N128、10〜30 kV、深さ 0.2〜40 nm) だったので、約 130 倍の余裕の暫定の運用値。
+    /// これより大きい負は失敗、これ以下の負は数えて表示上 0。局所・TDS の源は校正の例がまだ無いので判定しない (診断だけ)</summary>
+    public const double EbsdReinjectionNegativeTolerance = 1e-12;
     /// <summary>261118Cl 追加 (試験専用、codex2 第 7 回): EBSD の段の状態を差し替える (段・方向の番号・実際の状態 → 使う状態)。構築の開始時に読む</summary>
     internal Func<NumericStage, int, NativeWrapper.NativeSolveStatus, NativeWrapper.NativeSolveStatus> EbsdNumericStatusForTest { get; set; }
 
@@ -1940,7 +1944,7 @@ public partial class BetheMethod
         {
             IntegratorBackend = eigenEnabled ? (numericRaw ? "native-raw" : "native-legacy") : "managed-raw", // managed の積分器も生値で受ける (再注入はどの経路でも managed の生値)
             EvdBackend = solver == Solver.Eigen_Eigen && eigenEnabled ? (evdHook != null ? "research-hook" : evdChecked ? "native-checked" : "native-legacy-unchecked") : "managed-MathNet",
-            RawObserved = numericRaw || !eigenEnabled,
+            RawCapable = numericRaw || !eigenEnabled, // 261118Cl 変更 (第 8 回、旧 RawObserved)
         };
         NativeWrapper.NativeSolveStatus StatusFor(NumericStage stage, int direction, NativeWrapper.NativeSolveStatus status) => statusForTest == null ? status : statusForTest(stage, direction, status);
         NumericFailureException Failed(NumericFailure f) // 失敗の場所 (電圧 kV・方向) を文に入れる
@@ -2017,7 +2021,7 @@ public partial class BetheMethod
         if (dressedTail != null) // 261118Cl 追加 (codex2 第 7 回): 着衣の裾は従来の集計を通らない (検査つき・生値の入口を使わない) ので、native-raw と記録しない
         {
             numeric.IntegratorBackend = numeric.EvdBackend = "dressed-tail (not checked)";
-            numeric.RawObserved = false;
+            numeric.RawCapable = false;
         }
         // 261118Cl 追加 (codex2 第 6 回): 後方源の軸の方式は、実際の分岐が決まってから記録する。着衣の裾の diffF は方向に依らない 1 枚の表 (軸 = 結晶の z) なので、
         //   切り替えが on でも裾を採ったら結晶の z と記録する
@@ -2067,10 +2071,25 @@ public partial class BetheMethod
             double sigmaSum = 0; foreach (var v in sigmaArray) sigmaSum += v; // 260919Cl 追加: Σσ_n = (2π/k)U'_0,back。吸収フラックス再注入の単位深さあたり強度
             // 261118Cl 追加 (codex2 第 7 回): 再注入の重みは、0 は正当なゼロの源、NaN・負・∞ は不正な重みとして止める (旧は全部 0 の源にしていた)
             if (IncludeAbsorbedFluxBackground && dressedTail == null && !(sigmaSum >= 0 && double.IsFinite(sigmaSum)))
-                throw new NumericFailureException(new NumericFailure(vIndex, -1, NumericStage.ValueCheck, NativeWrapper.NativeSolveStatus.Args, NumericQuantity.EbsdReinjection),
-                    $"EBSD numeric failure at {voltages[vIndex]:g6} kV: the absorbed-flux reinjection weight Σσ = {sigmaSum} is not a finite non-negative number");
-            var reinjectionScale = new double[Thicknesses.Length]; // 261118Cl 追加 (codex2 第 7 回): 再注入の生値の尺度 = 失われる前の流束の Σσ·t (真値が 0 の条件でも意味を持つ)
-            for (int t = 0; t < reinjectionScale.Length; t++) reinjectionScale[t] = sigmaSum * Thicknesses[t];
+            {
+                // throw new NumericFailureException(new NumericFailure(vIndex, -1, ...), ...); // 261118Cl 変更前 (集計に記録していなかった。codex2 第 8 回)
+                var weightFailure = new NumericFailure(vIndex, -1, NumericStage.ValueCheck, NativeWrapper.NativeSolveStatus.Args, NumericQuantity.EbsdReinjection);
+                numeric.RecordFailure(weightFailure); // 261118Cl 変更: 例外と同じ失敗を集計にも
+                throw new NumericFailureException(weightFailure, $"EBSD numeric failure at {voltages[vIndex]:g6} kV: the absorbed-flux reinjection weight Σσ = {sigmaSum} is not a finite non-negative number");
+            }
+            // 261118Cl 追加 (codex2 第 8 回): 局所の源 (Σσ_n|ψ(r_n)|²) を使うときは、各席の σ_n の有限性・非負性が源の非負性の前提なので入口で確かめる
+            if (dressedTail == null && (!IncludeTDSBackground || double.IsFinite(SourceSmearingSigmaNm)))
+                for (int n = 0; n < sigmaArray.Length; n++)
+                    if (!(sigmaArray[n] >= 0 && double.IsFinite(sigmaArray[n])))
+                    {
+                        var sigmaFailure = new NumericFailure(vIndex, -1, NumericStage.ValueCheck, NativeWrapper.NativeSolveStatus.Args, NumericQuantity.EbsdLocal);
+                        numeric.RecordFailure(sigmaFailure);
+                        throw new NumericFailureException(sigmaFailure, $"EBSD numeric failure at {voltages[vIndex]:g6} kV: the local backscattering weight σ of site #{n} = {sigmaArray[n]} is not a finite non-negative number");
+                    }
+            // var reinjectionScale = new double[Thicknesses.Length]; // 261118Cl 追加 (codex2 第 7 回) // 261118Cl 変更 (第 8 回): 局所の源にも同じ平面波の尺度を使うので名前を変えた
+            // 261118Cl (codex2 第 7・8 回): 平面波の尺度 Σσ·t。再注入 (失われる前の流束) と局所の源 (平面波の極限の値) の生値の尺度
+            var planeWaveScale = new double[Thicknesses.Length];
+            for (int t = 0; t < planeWaveScale.Length; t++) planeWaveScale[t] = sigmaSum * Thicknesses[t];
 
             var referenceSurface = Vector3DBase.Normarize(Surface); // (260321Ch) 新経路では固定表面系を基準に、等価な beam / surface 条件へ変換する
             var referenceBeamDirection = Vector3DBase.Normarize(-referenceSurface); // (260321Ch) 固定表面に対する法線出射方向
@@ -2440,7 +2459,9 @@ public partial class BetheMethod
                             intensity = new double[tLen]; background = new double[tLen];
                             if (acc.Status(NumericStage.Integrator, StatusFor(NumericStage.Integrator, i, NativeWrapper.EBSDSolverWithTDSRaw(bLen, eigenValues, eigenVectors, alpha, Array.Empty<Complex>(), Array.Empty<double>(), muBackFiltered, tdsCoeff, Thicknesses, intensity, background)), vIndex, i) is { } integratorFailure)
                                 throw Failed(integratorFailure);
-                            if (acc.Observe(NumericQuantity.EbsdTds, NumericObservation.Raw, background, vIndex, i) is { } tdsFailure)
+                            // 261118Cl 変更 (codex2 第 8 回): 尺度は渡した源の行列の (000,000) から t·(2π/k)·Re μ_back(000,000) (B = 0 では物理的な後方 TDS の源は 0)
+                            var tdsScale = new double[tLen]; for (int t = 0; t < tLen; t++) tdsScale[t] = Thicknesses[t] * tdsCoeff * muBackFiltered[0].Real;
+                            if (acc.Observe(NumericQuantity.EbsdTds, NumericObservation.Raw, background, vIndex, i, tdsScale) is { } tdsFailure)
                                 throw Failed(tdsFailure);
                             acc.Exclude(NumericQuantity.EbsdLocal, tLen);
                             for (int t = 0; t < tLen; t++) background[t] = NativeWrapper.LegacyEbsdClamp(background[t]);
@@ -2460,7 +2481,7 @@ public partial class BetheMethod
                             intensity = new double[Thicknesses.Length];
                             if (acc.Status(NumericStage.Integrator, StatusFor(NumericStage.Integrator, i, NativeWrapper.EBSDSolverRaw(bLen, eigenValues, eigenVectors, alpha, phaseFiltered, sigmaArray, Thicknesses, intensity)), vIndex, i) is { } integratorFailure)
                                 throw Failed(integratorFailure);
-                            if (acc.Observe(NumericQuantity.EbsdLocal, NumericObservation.Raw, intensity, vIndex, i) is { } localFailure)
+                            if (acc.Observe(NumericQuantity.EbsdLocal, NumericObservation.Raw, intensity, vIndex, i, planeWaveScale) is { } localFailure) // 261118Cl (第 8 回): 尺度 Σσ·t
                                 throw Failed(localFailure);
                             for (int t = 0; t < intensity.Length; t++) intensity[t] = NativeWrapper.LegacyEbsdClamp(intensity[t]);
                         }
@@ -2482,7 +2503,7 @@ public partial class BetheMethod
                             if (muBackFiltered is null)
                             {
                                 intensity = EBSDSolverManagedRaw(bLen, nAtoms, eigenValues, eigenVectors, alpha, phaseFiltered, sigmaArray, Thicknesses);
-                                if (acc.Observe(NumericQuantity.EbsdLocal, NumericObservation.Raw, intensity, vIndex, i) is { } localFailure)
+                                if (acc.Observe(NumericQuantity.EbsdLocal, NumericObservation.Raw, intensity, vIndex, i, planeWaveScale) is { } localFailure) // 261118Cl (第 8 回): 尺度 Σσ·t
                                     throw Failed(localFailure);
                                 for (int t = 0; t < intensity.Length; t++) intensity[t] = Math.Max(0, intensity[t]);
                             }
@@ -2491,7 +2512,8 @@ public partial class BetheMethod
                                 intensity = new double[Thicknesses.Length];
                                 acc.Exclude(NumericQuantity.EbsdLocal, intensity.Length);
                                 background = ComputeTDSMatrixBackgroundRaw(bLen, eigenValues, eigenVectors, alpha, muBackFiltered, tdsCoeff, Thicknesses);
-                                if (acc.Observe(NumericQuantity.EbsdTds, NumericObservation.Raw, background, vIndex, i) is { } tdsFailure)
+                                var tdsScale = new double[background.Length]; for (int t = 0; t < tdsScale.Length; t++) tdsScale[t] = Thicknesses[t] * tdsCoeff * muBackFiltered[0].Real; // 261118Cl (第 8 回)
+                                if (acc.Observe(NumericQuantity.EbsdTds, NumericObservation.Raw, background, vIndex, i, tdsScale) is { } tdsFailure)
                                     throw Failed(tdsFailure);
                                 for (int t = 0; t < background.Length; t++) background[t] = Math.Max(0, background[t]);
                             }
@@ -2507,7 +2529,8 @@ public partial class BetheMethod
                             // 261118Cl 変更 (codex2 第 7 回): 再注入の源を生値で受けて集計し (非有限なら止める)、従来の丸め Math.Max(0, ·) を当てる (Σσ > 0 では見える値は同じ。
                             //   Σσ が不正な重みなら電圧の入口で止めている)
                             var diffuse = ComputeAbsorbedFluxBackgroundRaw(bLen, eigenValues, eigenVectors, alpha, sigmaSum, Thicknesses, pOverP0);
-                            if (acc.Observe(NumericQuantity.EbsdReinjection, NumericObservation.Raw, diffuse, vIndex, i, reinjectionScale) is { } reinjectionFailure)
+                            // 261118Cl 変更 (codex2 第 8 回): 有意な負 (x < −EbsdReinjectionNegativeTolerance·Σσ·t) は失敗、それ未満の負は数えて表示上 0
+                            if (acc.Observe(NumericQuantity.EbsdReinjection, NumericObservation.Raw, diffuse, vIndex, i, planeWaveScale, EbsdReinjectionNegativeTolerance) is { } reinjectionFailure)
                                 throw Failed(reinjectionFailure);
                             for (int t = 0; t < diffuse.Length; t++) diffuse[t] = Math.Max(0.0, diffuse[t]);
                             var dst = background ?? intensity; // 非局所源が有るときは intensity は使われない (Disk 格納部で background が優先)
