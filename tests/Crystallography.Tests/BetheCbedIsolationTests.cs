@@ -67,27 +67,37 @@ public class BetheCbedIsolationTests
             }
     }
 
+    /// <summary>261118Cl (codex2 第 6 回で強めた): 32×32 の格子なので最初の進捗の通知 (400 方向ごと) は伝播の最中に届く。そこで、事前の SAED と電圧・方位の違う SAED を
+    /// 同じ所有元で完了させ (固有解は使い回せない)、呼び出し側の方向と厚さの配列も書き換える。CBED・SAED とも単独の実行と一致する</summary>
     [Fact]
     public void SaedDuringCbed_LeavesBothUnaffected_AndKeepsOwnerBeams()
     {
         var (crystal, rot) = Si();
-        var dirs = Grid(12, 2e-3); double[] thick = [30, 60];
-        var saedRot = Matrix3D.Rot(new Vector3DBase(0.3, 1, 0.1), 0.04);
-        var expectedCbed = Run(new BetheMethod(crystal), rot, dirs, thick).Result;
-        var expectedSaed = new BetheMethod(crystal).GetDifractedBeamAmpriltudes(48, 120, saedRot, 25);
+        double[] Thick() => [30, 60];
+        var saedRotA = Matrix3D.Rot(new Vector3DBase(1, 0.2, 0), 0.03);
+        var saedRotB = Matrix3D.Rot(new Vector3DBase(0.3, 1, 0.1), 0.04);
+        var expectedCbed = Run(new BetheMethod(crystal), rot, Grid(32, 2e-3), Thick()).Result;
+        var expectedSaed = new BetheMethod(crystal).GetDifractedBeamAmpriltudes(48, 120, saedRotB, 25);
 
         var owner = new BetheMethod(crystal);
-        var ownerBeamsBefore = owner.GetDifractedBeamAmpriltudes(48, 120, saedRot, 25); // 所有元の SAED の状態
-        BetheMethod.Beam[] interleaved = null;
-        var (actualCbed, done) = Run(owner, rot, dirs, thick, onFirstProgress: () => interleaved = owner.GetDifractedBeamAmpriltudes(48, 120, saedRot, 25));
+        owner.GetDifractedBeamAmpriltudes(36, 150, saedRotA, 40); // 事前の SAED (割り込みとは条件が違う)
+        BetheMethod.Beam[] interleaved = null; bool busyDuring = false;
+        var dirs = Grid(32, 2e-3); var thick = Thick();
+        var (actualCbed, done) = Run(owner, rot, dirs, thick, onFirstProgress: () =>
+        {
+            busyDuring = owner.IsCBED_Busy;
+            interleaved = owner.GetDifractedBeamAmpriltudes(48, 120, saedRotB, 25);
+            dirs[0].X += 0.01; thick[0] = 999; // 受理の後の呼び出し側の編集は届かない
+        });
 
         Assert.Null(done.Error);
+        Assert.True(busyDuring, "割り込みは CBED の計算中に起きること");
         AssertSameCbed(expectedCbed, actualCbed, "CBED with SAED interleaved");
+        Assert.Equal(30.0, actualCbed.Thicknesses[0]);
         Assert.NotNull(interleaved);
         Assert.Equal(expectedSaed.Select(b => b.Index), interleaved.Select(b => b.Index));
         for (int i = 0; i < expectedSaed.Length; i++) Assert.True((expectedSaed[i].Psi - interleaved[i].Psi).Magnitude <= 1e-12);
         Assert.Same(interleaved, owner.Beams); // CBED は所有元の Beams (SAED の結果) を書き換えない
-        Assert.Equal(ownerBeamsBefore.Select(b => b.Index), owner.Beams.Select(b => b.Index));
         Assert.True(done.PublishedBeforeNotify, "結果は通知の前に公開する");
         Assert.False(done.BusyAtNotify, "門は通知の前に開ける (完了で次の run を始められる)");
         Assert.Same(actualCbed.Disks, owner.Disks); // 互換の写し

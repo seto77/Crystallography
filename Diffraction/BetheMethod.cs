@@ -526,7 +526,8 @@ public partial class BetheMethod
         {
             if (e.Error is null && !e.Cancelled && e.Result is CbedSimulationResult r)
             {
-                Disks = r.Disks;
+                // Disks = r.Disks; // 261118Cl 変更前
+                if (bwEBSDNew is null || !bwEBSDNew.IsBusy) Disks = r.Disks; // 261118Cl 変更 (codex2 第 6 回): 同じ所有元で EBSD が走っている間は、その Disks を置き換えない (CBED の結果は ResultCbed にある)
                 CbedBeamSelectionUsed = r.Used;
                 CbedBeamSelectionFallbackReason = r.FallbackReason;
                 CbedBeamSelectionDetail = r.Detail;
@@ -559,6 +560,8 @@ public partial class BetheMethod
     /// <summary>261118Cl 追加 (単位 5): 受理の門 (0 = 空き、1 = 受理から完了の通知まで)。最初の書き込みの前に CompareExchange で取る</summary>
     private int cbedActive;
     private long cbedRunCounter;
+    /// <summary>261118Cl 追加 (codex2 第 6 回): 受理から起動までの間に来た取消の印</summary>
+    private int cbedCancelPending;
 
     /// <summary>261118Cl 追加 (単位 5): 方向の正方格子の i 番目が円の中か (RunCBED の数え上げと cbed_DoWork で同じ判定を使い、受理のときの数と worker が選ぶ方向を食い違わせない)</summary>
     private static bool CbedInside(int i, int width)
@@ -569,8 +572,11 @@ public partial class BetheMethod
 
     public void CancelCBED()
     {
-        if (bwCBED.IsBusy)
-            bwCBED.CancelAsync();
+        // if (bwCBED.IsBusy) // 261118Cl 変更前 (2 行)
+        //     bwCBED.CancelAsync();
+        // 261118Cl 変更 (codex2 第 6 回): 受理 (門) から RunWorkerAsync までの間の取消も失わない (印を残し、起動の直後に当てる)
+        if (bwCBED.IsBusy) bwCBED.CancelAsync();
+        else if (Volatile.Read(ref cbedActive) != 0) Volatile.Write(ref cbedCancelPending, 1);
     }
 
     /// <summary></summary>
@@ -600,29 +606,33 @@ public partial class BetheMethod
         // Thicknesses = thickness;
         // bwCBED.RunWorkerAsync((LACBED, solver, thread));
 
-        // (a) 引数の検査 (ここでは何も書かない)
+        // (a) 引数の検査 (ここでは何も書かない)。261118Cl (codex2 第 6 回): 先に写し、写した値を検査する (検査と写しの間の呼び出し側の編集がすり抜けない)
         ArgumentNullException.ThrowIfNull(rotation); ArgumentNullException.ThrowIfNull(thickness); ArgumentNullException.ThrowIfNull(beamDirections);
         if (!(voltage > 0) || !double.IsFinite(voltage)) throw new ArgumentOutOfRangeException(nameof(voltage), voltage, "voltage must be positive and finite");
-        if (thickness.Length == 0 || thickness.Any(t => !double.IsFinite(t))) throw new ArgumentException("thickness must have at least one finite value", nameof(thickness));
-        int n = beamDirections.Length, width = (int)Math.Round(Math.Sqrt(n));
+        var dirsCopy = beamDirections.Select(d => d is null ? null : new Vector3DBase(d.X, d.Y, d.Z)).ToArray();
+        double[] thickCopy = [.. thickness];
+        var rotCopy = new Matrix3D(rotation);
+        if (thickCopy.Length == 0 || thickCopy.Any(t => !double.IsFinite(t))) throw new ArgumentException("thickness must have at least one finite value", nameof(thickness));
+        int n = dirsCopy.Length, width = (int)Math.Round(Math.Sqrt(n));
         if (n == 0 || width * width != n) throw new ArgumentException($"the number of beam directions ({n}) must be a positive square number", nameof(beamDirections));
-        foreach (var d in beamDirections)
+        foreach (var d in dirsCopy)
             if (d is null || !double.IsFinite(d.X) || !double.IsFinite(d.Y) || !double.IsFinite(d.Z) || d.Length2 == 0)
                 throw new ArgumentException("each beam direction must be a finite non-zero vector", nameof(beamDirections));
-        if (new[] { rotation.E11, rotation.E12, rotation.E13, rotation.E21, rotation.E22, rotation.E23, rotation.E31, rotation.E32, rotation.E33 }.Any(x => !double.IsFinite(x)))
+        if (new[] { rotCopy.E11, rotCopy.E12, rotCopy.E13, rotCopy.E21, rotCopy.E22, rotCopy.E23, rotCopy.E31, rotCopy.E32, rotCopy.E33 }.Any(x => !double.IsFinite(x)))
             throw new ArgumentException("rotation must be finite", nameof(rotation));
 
         // (b) 二重起動の判定 (最初の書き込みの前)
         if (bwCBED is null) throw new InvalidOperationException("the CBED worker is not available (deserialized instance)");
         if (Interlocked.CompareExchange(ref cbedActive, 1, 0) != 0) throw new InvalidOperationException("a CBED calculation is already running on this crystal");
+        Volatile.Write(ref cbedCancelPending, 0); // 261118Cl 追加 (codex2 第 6 回)
         try
         {
-            var dirs = beamDirections.Select(d => new Vector3DBase(d.X, d.Y, d.Z)).ToArray();
+            var dirs = dirsCopy; // 261118Cl 変更 (codex2 第 6 回): 検査した写し
             int valid = 0; for (int i = 0; i < n; i++) if (CbedInside(i, width)) valid++;
             var worker = new BetheMethod(new Crystal(Crystal))
             {
                 pinnedRunSettings = RunSettings.Capture(),
-                MaxNumOfBloch = maxNumOfBloch, AccVoltage = voltage, BaseRotation = new Matrix3D(rotation), BeamDirections = dirs, Thicknesses = [.. thickness],
+                MaxNumOfBloch = maxNumOfBloch, AccVoltage = voltage, BaseRotation = rotCopy, BeamDirections = dirs, Thicknesses = thickCopy, // 261118Cl 変更: 検査した写し
                 Surface = new Vector3D(Surface.X, Surface.Y, Surface.Z), UseLocalSurfacePerBeamDirection = UseLocalSurfacePerBeamDirection,
                 UseNonLocalAbsorption = UseNonLocalAbsorption, CbedLegacyUseSymmetry = CbedLegacyUseSymmetry,
                 CbedBeamSelection = beamSelection ?? CbedBeamSelection, CbedDressedTail = dressedTail ?? CbedDressedTail ?? CbedDressedTailDefaults,
@@ -630,8 +640,16 @@ public partial class BetheMethod
             };
             long runId = Interlocked.Increment(ref cbedRunCounter);
             RotationArrayValidLength = valid; // 進捗の分母 (最初の進捗より前に決まる)
-            if (releasePreviousResult) { Volatile.Write(ref resultCbed, null); Disks = null; }
+            // if (releasePreviousResult) { Volatile.Write(ref resultCbed, null); Disks = null; } // 261118Cl 変更前 (起動の前に手放し、所有元の Disks が EBSD のものでも消していた)
             bwCBED.RunWorkerAsync((LACBED, solver, thread, worker, runId));
+            // 261118Cl 変更 (codex2 第 6 回): 起動できた後に手放す。所有元の Disks は前回の CBED の配列と同じときだけ消す (同じ所有元の EBSD の Disks は残す)
+            if (releasePreviousResult)
+            {
+                var prev = Volatile.Read(ref resultCbed);
+                Volatile.Write(ref resultCbed, null);
+                if (prev != null && ReferenceEquals(Disks, prev.Disks)) Disks = null;
+            }
+            if (Interlocked.Exchange(ref cbedCancelPending, 0) != 0) bwCBED.CancelAsync(); // 受理から起動までの間に来た取消
             return new CbedRunInfo(runId, n, valid);
         }
         catch
@@ -1871,7 +1889,7 @@ public partial class BetheMethod
         var (solver, thread, voltages) = ((Solver, int, double[]))e.Argument;
         // 261118Cl 追加 (codex2 第 5 回): 後方源の軸の方式は構築の開始時に 1 度だけ読んで固定し、使った方式を記録する (MasterPattern・保存の情報へ)
         bool backSourceAxis = MasterBackSourceAxisCorrection;
-        EbsdBackSourceAxisUsed = !IncludeTDSBackground || double.IsFinite(SourceSmearingSigmaNm) ? "" : backSourceAxis ? BackSourceAxisIncident : BackSourceAxisCrystalZ;
+        // EbsdBackSourceAxisUsed = ... (ここで決めていた。261118Cl codex2 第 6 回: 着衣の裾を採るかが決まった後に記録する。下の dressedTailRunScope の直後)
 
         Disks = new CBED_Disk[voltages.Length][];
         int count = 0;
@@ -1948,6 +1966,10 @@ public partial class BetheMethod
             else EbsdBeamSelectionFallbackReason = dtReason;
         }
         using var dressedTailRunScope = dressedTailRun; // 261110Cl 追加: 構築の終わり (例外でも) に native の表と作業領域を返す
+        // 261118Cl 追加 (codex2 第 6 回): 後方源の軸の方式は、実際の分岐が決まってから記録する。着衣の裾の diffF は方向に依らない 1 枚の表 (軸 = 結晶の z) なので、
+        //   切り替えが on でも裾を採ったら結晶の z と記録する
+        EbsdBackSourceAxisUsed = !IncludeTDSBackground || double.IsFinite(SourceSmearingSigmaNm) ? ""
+            : backSourceAxis && dressedTail == null ? BackSourceAxisIncident : BackSourceAxisCrystalZ;
 
         for (int vIndex = 0; vIndex < voltages.Length; vIndex++)
         {

@@ -3,7 +3,10 @@
 //   _CBEDSolver_Eigen2・_EBSDSolver・_EBSDSolverWithTDS) は変えずに残り、旧い DLL でもそちらは動く。新しい入口は、読み込んだ DLL に
 //   8 本すべてがあり ABI の版が合うときだけ呼ぶ (<see cref="NumericChecksAvailable"/>。LibraryImport は最初の呼び出しで結び付くので、
 //   確かめてから呼べば旧い DLL で EntryPointNotFoundException は出ない)。
-//   状態の意味: 失敗 (NonFiniteOutput を除く) のとき native は出力を quiet NaN で埋める (前の方向の解やごみが、もっともらしい値として残らない)。
+//   状態の意味 (261118Cl codex2 第 6 回で明記): Checked の数値の失敗 (NonFiniteInput・EvdNoConvergence・NonFiniteEigen・Singular・NonFiniteSolve・
+//   OutOfMemory・Unknown) では、native は有効な出力の領域を quiet NaN で埋める (前の方向の解やごみが、もっともらしい値として残らない)。
+//   NonFiniteOutput では調べるために計算した値を残す。Args は検査の直後に戻るので出力は未規定。Raw は値を検査せず、OutOfMemory・Unknown でも埋めない。
+//   呼び出し側は状態を最初に読み、Ok でない出力を次の段へ渡さないこと。diag は書いた欄だけが有効 (包みは呼ぶ前に NaN で初期化する)。
 //   Checked の EVD は出力に触る前に ComplexEigenSolver.info() を見る (旧の _EigenSolver は未収束のとき未初期化の領域を写していた)。
 //   LU は同梱の Eigen の PartialPivLU.info() が常に Success なので、U の対角が厳密に 0 か非有限なら Singular を返す。
 using System;
@@ -96,6 +99,7 @@ public static partial class NativeWrapper
     private static void RequireDiag(double[] diag)
     {
         if (diag is not null && diag.Length < NumericDiagLength) throw new ArgumentException($"diag must have at least {NumericDiagLength} elements", nameof(diag));
+        if (diag is not null) Array.Fill(diag, double.NaN); // 261118Cl 追加 (codex2 第 6 回): 書かれなかった欄を前の呼び出しの値と取り違えない
     }
 
     /// <summary>261118Cl 追加: 検査つきの EVD (<see cref="EigenSolver(int, Complex[], ref Complex[], ref Complex[])"/> と同じ量)。
@@ -163,8 +167,10 @@ public static partial class NativeWrapper
         Complex[] phaseNG, double[] sigma, double[] thicknesses, double[] intensity)
     {
         RequireNumericChecks();
+        ArgumentNullException.ThrowIfNull(sigma); ArgumentNullException.ThrowIfNull(thicknesses);
         int nAtoms = sigma.Length, tLen = thicknesses.Length;
         RequireLength(intensity, tLen, nameof(intensity));
+        RequireEbsdInputs(bLen, nAtoms, tLen, eigenValues, eigenVectors, alpha, phaseNG, null, withTds: false); // 261118Cl 追加 (codex2 第 6 回): native が読む入力の長さ
         fixed (Complex* v = eigenValues, w = eigenVectors, a = alpha, p = phaseNG)
         fixed (double* s = sigma, t = thicknesses, r = intensity)
             return (NativeSolveStatus)_EBSDSolverRaw(bLen, nAtoms, tLen, (double*)v, (double*)w, (double*)a, (double*)p, s, t, r);
@@ -175,11 +181,25 @@ public static partial class NativeWrapper
         Complex[] phaseNG, double[] sigma, Complex[] muBack, double tdsCoeff, double[] thicknesses, double[] intensity, double[] tdsIntensity)
     {
         RequireNumericChecks();
+        ArgumentNullException.ThrowIfNull(sigma); ArgumentNullException.ThrowIfNull(thicknesses);
         int nAtoms = sigma.Length, tLen = thicknesses.Length;
         RequireLength(intensity, tLen, nameof(intensity)); RequireLength(tdsIntensity, tLen, nameof(tdsIntensity));
+        RequireEbsdInputs(bLen, nAtoms, tLen, eigenValues, eigenVectors, alpha, phaseNG, muBack, withTds: true); // 261118Cl 追加 (codex2 第 6 回)
         fixed (Complex* v = eigenValues, w = eigenVectors, a = alpha, p = phaseNG, u = muBack)
         fixed (double* s = sigma, t = thicknesses, r = intensity, q = tdsIntensity)
             return (NativeSolveStatus)_EBSDSolverWithTDSRaw(bLen, nAtoms, tLen, (double*)v, (double*)w, (double*)a, (double*)p, s, (double*)u, tdsCoeff, t, r, q);
+    }
+
+    /// <summary>261118Cl 追加 (codex2 第 6 回): 生値の EBSD の入口が読む入力の長さを、native を呼ぶ前に確かめる (短い非 null の配列は native の null の検査を通ってしまう)。
+    /// 固有値・α は bLen、固有ベクトル・muBack は bLen²、位相は nAtoms × bLen (局所の原子が 0 のときは要らない)。tLen == 0 は何も読まない</summary>
+    private static void RequireEbsdInputs(int bLen, int nAtoms, int tLen, Complex[] eigenValues, Complex[] eigenVectors, Complex[] alpha, Complex[] phaseNG, Complex[] muBack, bool withTds)
+    {
+        if (bLen < 0) throw new ArgumentOutOfRangeException(nameof(bLen), bLen, "bLen must be non-negative");
+        if (tLen == 0 || (!withTds && nAtoms == 0)) return; // 何も読まない (局所の源だけで原子 0 は 0 を書いて戻る)
+        long b2 = (long)bLen * bLen;
+        RequireLength(eigenValues, bLen, nameof(eigenValues)); RequireLength(alpha, bLen, nameof(alpha)); RequireLength(eigenVectors, b2, nameof(eigenVectors));
+        if (nAtoms > 0) RequireLength(phaseNG, (long)nAtoms * bLen, nameof(phaseNG));
+        if (withTds) RequireLength(muBack, b2, nameof(muBack)); // TDS つきの入口では muBack を必ず読む
     }
 
     /// <summary>261118Cl 追加: 旧の native の EBSD の丸め max(0.0, sum) の意味 (11-13 版の DLL の実測): NaN・負・−0・−∞ は +0、正・+∞ はそのまま。

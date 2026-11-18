@@ -155,6 +155,52 @@ public class NativeNumericChecksTests
         Assert.False(double.IsFinite(r2[0].Real) && double.IsFinite(r2[0].Imaginary)); // NaN で埋めずに、計算した非有限の値が残る (行列の積の 0×∞ で他の成分も NaN になりうる)
     }
 
+    /// <summary>261118Cl 追加 (codex2 第 6 回): _CBEDSolver_Eigen2Checked 自体。正常なら Vα = ψ₀ (境界の残差) と厚さ 0 の Tg = ψ₀、強制の未収束なら 4 つの出力が全部 NaN</summary>
+    [NativeNumericFact]
+    public void Eigen2Checked_BoundaryAndForcedFailure()
+    {
+        Assert.True(NativeWrapper.NumericChecksAvailable, NativeWrapper.NumericChecksUnavailableReason);
+        const int n = 8;
+        var a = RandomMatrix(n, 9, 0.03);
+        var psi0 = new Complex[n]; psi0[0] = 1;
+        double[] t = [0, 15];
+        var v = new Complex[n]; var w = new Complex[n * n]; var al = new Complex[n]; var tg = new Complex[n * t.Length]; var diag = new double[NativeWrapper.NumericDiagLength];
+        Assert.Equal(NativeWrapper.NativeSolveStatus.Ok, NativeWrapper.CBEDSolver_Eigen2Checked(n, a, psi0, t, v, w, al, tg, NativeWrapper.NumericCheckFlags.VerifyResidual, diag));
+        output.WriteLine($"Eigen2: EVD residual {diag[2]:e2}, boundary residual {diag[3]:e2}, pivot ratio {diag[0]:e2}");
+        Assert.True(diag[3] < 1e-13, $"境界の残差 {diag[3]:e2}");
+        for (int g = 0; g < n; g++) Assert.True((tg[g] - psi0[g]).Magnitude < 1e-12, $"Tg(0)[{g}] = {tg[g]}");
+        Assert.Equal(NativeWrapper.NativeSolveStatus.EvdNoConvergence,
+            NativeWrapper.CBEDSolver_Eigen2Checked(n, a, psi0, t, v, w, al, tg, NativeWrapper.NumericCheckFlags.TestForceNoConvergence));
+        Assert.True(AllNaN(v, n) && AllNaN(w, n * n) && AllNaN(al, n) && AllNaN(tg, n * t.Length));
+    }
+
+    /// <summary>261118Cl 追加 (codex2 第 6 回): 生値の入口は native が読む入力の長さを先に確かめる。出力の配列の論理範囲 (tLen) の外の番兵は書き換えない。
+    /// diag は書かなかった欄を NaN にする</summary>
+    [NativeNumericFact]
+    public void RawInputsAreLengthChecked_AndDiagUnwrittenSlotsAreNaN()
+    {
+        Assert.True(NativeWrapper.NumericChecksAvailable, NativeWrapper.NumericChecksUnavailableReason);
+        const int b = 5, nAtoms = 2;
+        var values = new Complex[b]; var vectors = new Complex[b * b]; var alpha = new Complex[b]; var phase = new Complex[nAtoms * b];
+        for (int i = 0; i < b; i++) { values[i] = new Complex(0.1 * i, -0.001); vectors[i * b + i] = 1; alpha[i] = 0.2; }
+        for (int i = 0; i < phase.Length; i++) phase[i] = 1;
+        double[] sigma = [0.3, 0.2], thick = [5.0, 10, 15];
+        Assert.Throws<ArgumentException>(() => NativeWrapper.EBSDSolverRaw(b, values, new Complex[b * b - 1], alpha, phase, sigma, thick, new double[3]));
+        Assert.Throws<ArgumentException>(() => NativeWrapper.EBSDSolverRaw(b, values, vectors, alpha, new Complex[nAtoms * b - 1], sigma, thick, new double[3]));
+        Assert.Throws<ArgumentException>(() => NativeWrapper.EBSDSolverWithTDSRaw(b, values, vectors, alpha, phase, sigma, new Complex[b * b - 1], 0.5, thick, new double[3], new double[3]));
+        var pooled = new double[8]; Array.Fill(pooled, 12345.0); // プールの配列 (論理の長さ 3 より長い)
+        Assert.Equal(NativeWrapper.NativeSolveStatus.Ok, NativeWrapper.EBSDSolverRaw(b, values, vectors, alpha, phase, sigma, thick, pooled));
+        for (int i = thick.Length; i < pooled.Length; i++) Assert.Equal(12345.0, pooled[i]);
+        // TDS つき・局所の原子 0 (製品で使う形) は通る
+        var tds = new double[3]; var loc = new double[3];
+        Assert.Equal(NativeWrapper.NativeSolveStatus.Ok, NativeWrapper.EBSDSolverWithTDSRaw(b, values, vectors, alpha, [], [], RandomMatrix(b, 3, 0), 0.5, thick, loc, tds));
+        Assert.All(loc, x => Assert.Equal(0.0, x));
+        var diag = new double[NativeWrapper.NumericDiagLength]; Array.Fill(diag, 5.0);
+        Assert.Equal(NativeWrapper.NativeSolveStatus.Ok, NativeWrapper.InverseChecked(b, vectors, new Complex[b * b], diag: diag));
+        Assert.Equal(1.0, diag[0]); // 単位行列のピボットの比
+        Assert.True(double.IsNaN(diag[1]) && double.IsNaN(diag[2]) && double.IsNaN(diag[3]), "書かなかった欄は NaN");
+    }
+
     /// <summary>旧の EBSD の入口 = 生値に旧の意味の丸めを当てたもの (ビット単位)。負の σ と NaN の σ で丸めを通す</summary>
     [NativeNumericFact]
     public void EbsdLegacyExport_EqualsLegacyClampOfRaw()
