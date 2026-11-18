@@ -1455,6 +1455,9 @@ public partial class BetheMethod
 
     /// <summary>261118Cl 追加: 直前の EBSD の構築で後方 TDS 源に使った軸の方式 (<see cref="BackSourceAxisIncident"/> か <see cref="BackSourceAxisCrystalZ"/>。後方源を使わなければ "")</summary>
     public string EbsdBackSourceAxisUsed { get; private set; } = "";
+    /// <summary>261118Cl 追加 (殻 v2 の決定的な測定の後): 直前の EBSD の構築で従来のビーム選択 (Find_gVectors) が使った候補の打ち切り方
+    /// (<see cref="BeamCandidateCutMode"/> の名前)。着衣の裾 (Find_gVectors を通らない) なら ""</summary>
+    public string EbsdBeamCandidateCutUsed { get; private set; } = "";
     /// <summary>261118Cl 追加: 後方源の軸 = 方向ごとの入射 (3 点の cos²α の 2 次式)</summary>
     public const string BackSourceAxisIncident = "incident (3-node cos2)";
     /// <summary>261118Cl 追加: 後方源の軸 = 結晶の z (従来)</summary>
@@ -2289,6 +2292,7 @@ public partial class BetheMethod
         //   切り替えが on でも裾を採ったら結晶の z と記録する
         EbsdBackSourceAxisUsed = !IncludeTDSBackground || double.IsFinite(SourceSmearingSigmaNm) ? ""
             : backSourceAxis && dressedTail == null ? BackSourceAxisIncident : BackSourceAxisCrystalZ;
+        EbsdBeamCandidateCutUsed = dressedTail == null ? pinnedRunSettings.CandidateCut.ToString() : ""; // 261118Cl 追加: 打ち切り方も記録する (固定した設定から)
 
         for (int vIndex = 0; vIndex < voltages.Length; vIndex++)
         {

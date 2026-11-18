@@ -153,6 +153,8 @@ public class EBSD
         public string BeamSelectionNative { get; init; } = ""; // 261110Cl 追加
         /// <summary>261118Cl 追加 (codex2 第 5 回): 後方 TDS 源の軸の方式 (BetheMethod.EbsdBackSourceAxisUsed。後方源を使わなければ "")</summary>
         public string BackSourceAxis { get; init; } = "";
+        /// <summary>261118Cl 追加: 従来のビーム選択の候補の打ち切り方 (BetheMethod.EbsdBeamCandidateCutUsed。着衣の裾なら "")</summary>
+        public string BeamCandidateCut { get; init; } = "";
 
         public MasterPatternBuildRequest Request { get; }
         public BetheMethod.CBED_Disk[][] Disks { get; }
@@ -340,6 +342,7 @@ public class EBSD
                     BeamSelectionNative = completedBethe.EbsdBeamSelectionUsed == BetheMethod.EbsdBeamSelectionMethod.DressedTail ? completedBethe.EbsdBeamSelectionNative : "", // 261110Cl 追加 (codex2 第 32 回)
                     BeamSelectionFallbackReason = completedBethe.EbsdBeamSelectionFallbackReason ?? "",
                     BackSourceAxis = completedBethe.EbsdBackSourceAxisUsed ?? "", // 261118Cl 追加 (codex2 第 5 回)
+                    BeamCandidateCut = completedBethe.EbsdBeamCandidateCutUsed ?? "", // 261118Cl 追加
                 });
                 return;
             }
@@ -430,6 +433,7 @@ public class EBSD
                 BeamSelectionSettingsVersion = argument.BeamSelectionSettingsVersion, BeamSelectionFallbackReason = argument.BeamSelectionFallbackReason,
                 BeamSelectionNative = argument.BeamSelectionNative, // 261110Cl 追加
                 BackSourceAxis = argument.BackSourceAxis, // 261118Cl 追加
+                BeamCandidateCut = argument.BeamCandidateCut, // 261118Cl 追加
             });
     }
 
@@ -577,6 +581,9 @@ public sealed class MasterPattern
     /// <summary>261118Cl 追加 (codex2 第 5 回): 後方 TDS 源の軸の方式 (<see cref="BetheMethod.BackSourceAxisIncident"/> か <see cref="BetheMethod.BackSourceAxisCrystalZ"/>。
     /// 後方源を使わない・記録の無い古いファイルは "")</summary>
     public string BackSourceAxis { get; init; } = "";
+    /// <summary>261118Cl 追加 (殻 v2 の決定的な測定の後): 従来のビーム選択の候補の打ち切り方 (<see cref="BeamCandidateCutMode"/> の名前)。
+    /// 着衣の裾で作ったものは ""。記録の無い古いファイルは "" (= 従来の打ち切り方 Legacy で作ったもの)</summary>
+    public string BeamCandidateCut { get; init; } = "";
 
     /// <summary> MasterPattern 本体を初期化する。 </summary>
     public MasterPattern(int gridSize, double[] energies, double[] depths, float[][] positivePlanes, float[][] negativePlanes,

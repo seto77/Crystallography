@@ -25,6 +25,7 @@ public class EbsdBackSourceBlockAxisTests
             Assert.True(done.Wait(TimeSpan.FromMinutes(10)), "EBSD did not finish");
             Assert.Null(error);
             Assert.Equal(correction ? BetheMethod.BackSourceAxisIncident : BetheMethod.BackSourceAxisCrystalZ, bethe.EbsdBackSourceAxisUsed);
+            Assert.Equal(BetheMethod.BeamCandidateCut.ToString(), bethe.EbsdBeamCandidateCutUsed); // 261118Cl 追加: 従来のビーム選択の打ち切り方も記録される
             return [.. Enumerable.Range(0, 2).Select(t => bethe.Disks[0][t].Amplitudes.Take(dirs.Length).Select(a => a.Real * a.Real + a.Imaginary * a.Imaginary).ToArray())];
         }
         finally { BetheMethod.MasterBackSourceAxisCorrection = savedAxis; BetheMethod.EbsdBeamSelectionResearchHook = savedHook; }
@@ -73,7 +74,7 @@ public class EbsdBackSourceBlockAxisTests
     {
         int g = 4;
         float[][] Planes() => [Enumerable.Range(0, g * g).Select(i => (float)i).ToArray()];
-        var mp = new MasterPattern(g, [20.0], [10.0], Planes(), Planes(), MasterPattern.Types.Square) { BackSourceAxis = BetheMethod.BackSourceAxisIncident };
+        var mp = new MasterPattern(g, [20.0], [10.0], Planes(), Planes(), MasterPattern.Types.Square) { BackSourceAxis = BetheMethod.BackSourceAxisIncident, BeamCandidateCut = nameof(BeamCandidateCutMode.Shell) }; // 261118Cl 打ち切り方も
         var path = Path.Combine(Path.GetTempPath(), $"rpmp_axis_{Guid.NewGuid():N}.rpmp");
         try
         {
@@ -81,9 +82,12 @@ public class EbsdBackSourceBlockAxisTests
             var loaded = MasterPatternFile.Load(path, loadElectrons: false);
             Assert.Equal(BetheMethod.BackSourceAxisIncident, loaded.Info.BackSourceAxis);
             Assert.Equal(BetheMethod.BackSourceAxisIncident, loaded.MasterPattern.BackSourceAxis);
+            Assert.Equal(nameof(BeamCandidateCutMode.Shell), loaded.Info.BeamCandidateCut); // 261118Cl 追加
+            Assert.Equal(nameof(BeamCandidateCutMode.Shell), loaded.MasterPattern.BeamCandidateCut);
         }
         finally { File.Delete(path); }
         var old = System.Text.Json.JsonSerializer.Deserialize<MasterPatternFileInfo>("{}");
         Assert.Equal("", old.BackSourceAxis);
+        Assert.Equal("", old.BeamCandidateCut); // 261118Cl 追加: 古いファイル = 従来の打ち切り方
     }
 }

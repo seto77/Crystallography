@@ -57,6 +57,8 @@ public sealed class MasterPatternFileInfo
     public string BeamSelectionNative { get; set; } = ""; // 261110Cl 追加 (codex2 第 32 回): 新方式が使った native の版
     /// <summary>261118Cl 追加 (codex2 第 5 回): 後方 TDS 源の軸の方式。項目の無い古いファイルは "" (従来 = 結晶の z で作ったもの)</summary>
     public string BackSourceAxis { get; set; } = "";
+    /// <summary>261118Cl 追加: 従来のビーム選択の候補の打ち切り方 (Legacy・Shell)。項目の無い古いファイル・着衣の裾は "" (古いファイルは Legacy で作ったもの)</summary>
+    public string BeamCandidateCut { get; set; } = "";
 
     /// <summary>構築リクエストから作成条件を作る</summary>
     // public static MasterPatternFileInfo FromBuildRequest(EBSD.MasterPatternBuildRequest request, double beamEnergyKeV, string creator = "") // 261110Cl 旧シグネチャ
@@ -81,6 +83,7 @@ public sealed class MasterPatternFileInfo
             BeamSelectionFallbackReason = result?.BeamSelectionFallbackReason ?? "",
             BeamSelectionNative = result?.BeamSelectionNative ?? "",
             BackSourceAxis = result?.BackSourceAxis ?? "", // 261118Cl 追加 (codex2 第 5 回)
+            BeamCandidateCut = result?.BeamCandidateCut ?? "", // 261118Cl 追加
         };
     }
 }
@@ -114,6 +117,7 @@ public static class MasterPatternFile
         BeamSelectionSettingsVersion = info.BeamSelectionSettingsVersion ?? "", BeamSelectionFallbackReason = info.BeamSelectionFallbackReason ?? "",
         BeamSelectionNative = info.BeamSelectionNative ?? "", // 261110Cl 追加
         BackSourceAxis = info.BackSourceAxis ?? "", // 261118Cl 追加
+        BeamCandidateCut = info.BeamCandidateCut ?? "", // 261118Cl 追加
     };
 
     /// <summary>既定の拡張子</summary>
@@ -143,6 +147,7 @@ public static class MasterPatternFile
         info.BeamSelectionSettingsVersion = masterPattern.BeamSelectionSettingsVersion; info.BeamSelectionFallbackReason = masterPattern.BeamSelectionFallbackReason;
         info.BeamSelectionNative = masterPattern.BeamSelectionNative;
         info.BackSourceAxis = masterPattern.BackSourceAxis; // 261118Cl 追加
+        info.BeamCandidateCut = masterPattern.BeamCandidateCut; // 261118Cl 追加
         info.BackscatteredElectronCount = backscatteredElectrons?.Length ?? 0;
         if (string.IsNullOrEmpty(info.CreatedUtc)) info.CreatedUtc = DateTime.UtcNow.ToString("o", CultureInfo.InvariantCulture);
 
