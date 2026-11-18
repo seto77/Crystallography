@@ -591,6 +591,8 @@ public partial class BetheMethod
     }
     /// <summary>261118Cl 追加 (試験専用): CBED の検査つきの伝播に渡す旗 (<see cref="NativeWrapper.NumericCheckFlags.TestForceNoConvergence"/> で未収束を起こす)。専用の BetheMethod へ写す</summary>
     internal NativeWrapper.NumericCheckFlags CbedCheckFlagsForTest { get; set; }
+    /// <summary>261118Cl 追加 (試験専用): STEM の検査つきの伝播に渡す旗。STEM の専用の BetheMethod へ写す</summary>
+    internal NativeWrapper.NumericCheckFlags StemCheckFlagsForTest { get; set; }
 
     /// <summary>261118Cl 追加 (単位 5): 最後に成功した CBED の結果 (取消・失敗では前回のまま)。<see cref="RunCBED"/> の releasePreviousResult で手放せる</summary>
     public CbedSimulationResult ResultCbed => Volatile.Read(ref resultCbed);
@@ -3626,6 +3628,24 @@ public partial class BetheMethod
         for (int t = 0; t < Thicknesses.Length; t++) { sliceOffset[t] = sliceTotal; sliceTotal += _thick[t].Length; }
 
         var useNativeSolver = solver == Solver.Eigen_Eigen && EigenEnabled;//260711Cl 追加: eigenMatrix の確保方法判定 (native 経路のみ pool 化。managed 経路は DMat が長さ一致を要求)
+        // 261118Cl 追加 (codex2 第 7・8 回の順の 4): 新しい DLL なら全スライスの伝播と Eigen2 を検査つきの入口で解き、非成功・最終の振幅の NaN・±∞ は
+        //   その方向で NumericFailureException で止める (managed の経路も最終の振幅の有限性を確かめる)。試験の旗は StemCheckFlagsForTest
+        var stemChecked = useNativeSolver && NativeWrapper.NumericChecksAvailable;
+        var stemCheckFlags = StemCheckFlagsForTest;
+        NumericFailureException StemFailed(NumericFailure f, Vector3DBase d, string what) =>
+            new(f, $"STEM numeric failure at {AccVoltage:g6} kV, direction #{f.Direction} ({d.X:f5}, {d.Y:f5}, {d.Z:f5}): {what}{f}");
+        void RequireFiniteStem(Complex[] a, int length, int direction, Vector3DBase d)
+        {
+            for (int r = 0; r < length; r++)
+                if (!double.IsFinite(a[r].Real) || !double.IsFinite(a[r].Imaginary))
+                    throw StemFailed(new NumericFailure(0, direction, NumericStage.ValueCheck, NativeWrapper.NativeSolveStatus.NonFiniteOutput, null, r / bLen), d, $"non-finite amplitude of beam #{r % bLen} at column #{r / bLen}; ");
+        }
+        NumericStage StageOf(NativeWrapper.NativeSolveStatus st) => st switch
+        {
+            NativeWrapper.NativeSolveStatus.EvdNoConvergence or NativeWrapper.NativeSolveStatus.NonFiniteEigen or NativeWrapper.NativeSolveStatus.NonFiniteInput => NumericStage.Evd,
+            NativeWrapper.NativeSolveStatus.Singular or NativeWrapper.NativeSolveStatus.NonFiniteSolve => NumericStage.Boundary,
+            _ => NumericStage.Integrator,
+        };
 
         //260711Cl 追加 (全-slice tc 物化, codex 協議の本命提案): EVD 直後に全 slice の透過係数を native GEMM 1回 (_CBEDSolver_Eigen) で
         //生成し、eVec/eVal/α を managed に保持しない。保持量は K_inside×N² (eVec) → S×K_all×N (tcSlice) となり、
@@ -3674,7 +3694,10 @@ public partial class BetheMethod
         var kgzSlice = new double[BeamDirections.Length][];//261111Cl 追加: スライスの透過係数に掛ける搬送波 (既定は共通の n·K0 だけ、旧式は kg_z と同じ)
         //進捗状況報告用の各種定数を初期化
         int count = 0;
-        var tc = BeamDirections.AsParallel().WithDegreeOfParallelism(thread).Select((beamDirection, i) =>
+        // var tc = BeamDirections.AsParallel().WithDegreeOfParallelism(thread).Select((beamDirection, i) => // 261118Cl 変更前
+        Complex[][] tc; // 261118Cl 変更: 数値の失敗を並列の包みから外すため try で囲む (字下げは変えない)
+        try {
+        tc = BeamDirections.AsParallel().WithDegreeOfParallelism(thread).Select((beamDirection, i) =>
         {
             var vecK0 = getVecK0(kvac, u0, beamDirection);
             k_vec[i] = vecK0;
@@ -3699,7 +3722,17 @@ public partial class BetheMethod
                 //V/λ/α を managed へ出さない (EigenFuncs.cpp:347)。eVec の全方向保持と後段の GenerateTC1B 再生成が消滅する
                 if (useAllSliceTc)
                 {
-                    var tgAll = NativeWrapper.CBEDSolver_Eigen(eigenMatrix, psi0, allThick);//[bLen × (tLen+sliceTotal)] column-major
+                    // var tgAll = NativeWrapper.CBEDSolver_Eigen(eigenMatrix, psi0, allThick);//[bLen × (tLen+sliceTotal)] column-major // 261118Cl 変更前
+                    Complex[] tgAll;
+                    if (stemChecked) // 261118Cl 変更 (codex2 第 8 回): 検査つき (全スライスの列まで)
+                    {
+                        tgAll = new Complex[bLen * allThick.Length];
+                        var st = NativeWrapper.CBEDSolver_EigenChecked(bLen, eigenMatrix, psi0, allThick, tgAll, stemCheckFlags);
+                        if (st != NativeWrapper.NativeSolveStatus.Ok) throw StemFailed(new NumericFailure(0, i, StageOf(st), st), beamDirection, "");
+                    }
+                    else
+                        tgAll = NativeWrapper.CBEDSolver_Eigen(eigenMatrix, psi0, allThick);//[bLen × (tLen+sliceTotal)] column-major
+                    RequireFiniteStem(tgAll, bLen * allThick.Length, i, beamDirection); // 261118Cl 追加
                     if (bwSTEM.CancellationPending) { e.Cancel = true; return null; }//260711Cl 追加: EVD 直後にも確認 (キャンセル後の位相補正+scatter を省く。codex 指摘)
                     var _kgzA = new double[bLen];
                     for (int g = 0; g < bLen; g++)
@@ -3722,7 +3755,15 @@ public partial class BetheMethod
                 }
                 //Eigen＿Eigenの場合
                 //if (solver == Solver.Eigen_Eigen && EigenEnabled) //260711Cl 変更前: mutable static の EigenEnabled を再読していた (実行中に変化すると pool 余長配列が managed DMat に渡り得る。codex レビュー指摘)
-                if (useNativeSolver)
+                // if (useNativeSolver) // 261118Cl 変更前
+                //     (eVal[i], eVec[i], α[i], result) = NativeWrapper.CBEDSolver2(eigenMatrix, psi0, thicknesses);
+                if (stemChecked) // 261118Cl 変更 (codex2 第 8 回): 検査つきの Eigen2 (λ・V・α・Tg)
+                {
+                    eVal[i] = new Complex[bLen]; eVec[i] = new Complex[bLen * bLen]; α[i] = new Complex[bLen]; result = new Complex[bLen * tLen];
+                    var st = NativeWrapper.CBEDSolver_Eigen2Checked(bLen, eigenMatrix, psi0, thicknesses, eVal[i], eVec[i], α[i], result, stemCheckFlags);
+                    if (st != NativeWrapper.NativeSolveStatus.Ok) throw StemFailed(new NumericFailure(0, i, StageOf(st), st), beamDirection, "");
+                }
+                else if (useNativeSolver)
                     (eVal[i], eVec[i], α[i], result) = NativeWrapper.CBEDSolver2(eigenMatrix, psi0, thicknesses);
                 //Eigen_MKL あるいは Eigen_Managedの場合    
                 else
@@ -3739,6 +3780,7 @@ public partial class BetheMethod
                     result = tg.Values;
                 }
                 #endregion
+                RequireFiniteStem(result, bLen * tLen, i, beamDirection); // 261118Cl 追加 (codex2 第 8 回): どの経路でも最終の振幅の有限性
 
                 //kg_z[i] = [.. beams.Where(e => e is not null).Select(e => e.P / 2)];//260711Cl 変更前: pool 配列の全長を走査するため、余長部分に stale な Beam が残ると余分な要素を拾っていた (後段は先頭 bLen しか使わないため数値影響はないが脆い。codex レビュー指摘)
                 var _kgz = new double[bLen];//260711Cl 変更: 先頭 bLen だけを直接埋める
@@ -3772,6 +3814,14 @@ public partial class BetheMethod
             finally { ArrayPool<Beam>.Shared.Return(beams); if (useNativeSolver) Shared.Return(eigenMatrix); }//260711Cl eigenMatrix の Pool 返却を追加
 
         }).ToArray();
+        }
+        catch (AggregateException ae) when (ae.Flatten().InnerExceptions.All(x => x is NumericFailureException))
+        {
+            // 261118Cl 追加: 数値の失敗は包みを外して渡す (複数の方向が同時に失敗したら順序の最初)
+            var first = ae.Flatten().InnerExceptions.Cast<NumericFailureException>().Aggregate((a, b) => NumericFailure.Compare(b.Failure, a.Failure) < 0 ? b : a);
+            System.Runtime.ExceptionServices.ExceptionDispatchInfo.Throw(first);
+            throw;
+        }
         #endregion
 
         var k_xy = k_vec.Select(e => e.ToPointD).ToArray();
