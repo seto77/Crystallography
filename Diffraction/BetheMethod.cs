@@ -1036,25 +1036,64 @@ public partial class BetheMethod
         return phaseNG; // (260321Ch)
     }
 
+    /// <summary>261118Cl 追加 (codex2 第 4 回・ワークフロー wf_axis_261118): マスターの後方 TDS 源 (<see cref="CreateMasterPatternMuBack"/>) の
+    /// 環状の積分の軸を、方向ごとの入射の向きに合わせる (研究と比較のための切り替え。既定 false = 従来)。
+    /// 環状の積分 (<see cref="AtomStatic.ES.FactorImaginaryAnnular(double, Vector3DBase, double, double, double, int, int, bool, AbsorptionElasticModel?)"/>) は
+    /// 入射を +z と決め打ちしている。マスターは結晶の座標系を固定して方向ごとに入射を変えるので、従来は結晶固定の G = g − h をそのまま渡し、
+    /// 軸が結晶の z に固定されていた (正しいのは d = ±ẑ の方向だけ)。原子の因子で、軸と G の角 α を 0→90° と変えると 10 kV・|G| 30 nm⁻¹ で −2.4 %、
+    /// 20 kV・|G| 15 で −0.3 % 変わる。局所の後方源は G → −G で不変なので、軸の正負は効かない。
+    /// true のとき、hkl ごとに α = 0°・45°・90° の 3 点を一度だけ評価し、方向ごとに c² = cos²α の 2 次式で組む (製品の求積の値を相対 ≤1e-5 で再現。
+    /// 方向ごとに直接評価すると 1 方向 0.1〜0.5 秒かかるため)。⚠ 着衣の裾の表 (diffF、方向に依らない 1 枚の表) にはまだ入れていない</summary>
+    public static bool MasterBackSourceAxisCorrection { get; set; } = false;
+
     /// <summary>1 つのビーム集合に対する後方散乱 TDS 行列を作る。</summary>
-    private Complex[] CreateMasterPatternMuBack(double voltage, Beam[] beams)
+    /// <param name="incidentAxis">261118Cl 追加: 方向の入射の向き (結晶固定系。正負は問わない)。null なら従来 (軸 = 結晶の z)</param>
+    /// <param name="nodeCache">261118Cl 追加: hkl ごとの 3 点 (α = 0°・45°・90°) の値の入れ物 (呼び出し側が区画ごとに作る。incidentAxis と一緒に渡す)</param>
+    // private Complex[] CreateMasterPatternMuBack(double voltage, Beam[] beams) // 261118Cl 旧シグネチャ
+    private Complex[] CreateMasterPatternMuBack(double voltage, Beam[] beams, Vector3DBase incidentAxis = null,
+        ConcurrentDictionary<int, (Complex V0, Complex V45, Complex V90)> nodeCache = null)
     {
         var beamCount = beams?.Length ?? 0;
         // var muBack = new Complex[beamCount * beamCount]; // (260321Ch) 旧実装: 代表方向ごとに新規確保していた
         var muBack = Shared.Rent(beamCount * beamCount); // (260321Ch) TDS 行列も pooled buffer に載せる
         var localCache = new Dictionary<int, Complex>();
+        var axis = incidentAxis != null && nodeCache != null ? Vector3DBase.Normarize(incidentAxis) : null; // 261118Cl 追加
         for (int col = 0; col < beamCount; col++)
             for (int row = 0; row < beamCount; row++)
             {
                 var key = compose(beams[row].H - beams[col].H, beams[row].K - beams[col].K, beams[row].L - beams[col].L);
                 if (!localCache.TryGetValue(key, out var val))
                 {
-                    val = getU(voltage, beams[row] - beams[col], null, Math.PI / 2, Math.PI, 30, 12).Imag.Conjugate();
+                    if (axis == null)
+                        val = getU(voltage, beams[row] - beams[col], null, Math.PI / 2, Math.PI, 30, 12).Imag.Conjugate();
+                    else
+                    {
+                        // 261118Cl 追加: 軸を合わせた値 = 3 点の cos²α の 2 次式 (V(c²) = V90 + b c² + d c⁴、c² = 1・0.5・0 が V0・V45・V90)
+                        var diff = beams[row] - beams[col];
+                        double g2 = diff.Vec.Length2;
+                        var (v0, v45, v90) = nodeCache.GetOrAdd(key, _ => BackSourceAxisNodes(voltage, diff.Index, Math.Sqrt(g2)));
+                        double cg = g2 > 0 ? diff.Vec * axis : 0;
+                        val = CombineBackSourceAxisNodes((v0, v45, v90), g2 > 0 ? cg * cg / g2 : 0);
+                    }
                     localCache[key] = val;
                 }
                 muBack[col * beamCount + row] = val;
             }
         return muBack; // (260321Ch)
+    }
+
+    /// <summary>261118Cl 追加: 3 点の値から c² = cos²α の値を組む (V(c²) = V90 + b c² + d c⁴、c² = 1・0.5・0 が V0・V45・V90)。テストから直接検査する</summary>
+    internal static Complex CombineBackSourceAxisNodes((Complex V0, Complex V45, Complex V90) n, double c2)
+    {
+        var d = 2 * (n.V0 - 2 * n.V45 + n.V90);
+        return n.V90 + (n.V0 - n.V90 - d) * c2 + d * (c2 * c2);
+    }
+
+    /// <summary>261118Cl 追加: 後方 TDS 源の 1 つの hkl の、入射の軸と G の角 α = 0°・45°・90° の値 (getU の annular、cache:false。位相と温度因子は hkl から)</summary>
+    internal (Complex V0, Complex V45, Complex V90) BackSourceAxisNodes(double voltage, (int H, int K, int L) index, double length)
+    {
+        Complex At(double alpha) => getU(voltage, new Beam(index, new Vector3DBase(length * Math.Sin(alpha), 0, length * Math.Cos(alpha))), null, Math.PI / 2, Math.PI, 30, 12, cache: false).Imag.Conjugate();
+        return (At(0), At(Math.PI / 4), At(Math.PI / 2));
     }
 
     /// <summary>260919Cl 追加 (試行): 局所源を幅 sigmaNm の Gaussian でぼかした源行列 U_gh = (1/tdsCoeff)·Σ_n σ_n e^{2πi(h−g)·r_n}·exp(−2π²σ²|g−h|²)。
@@ -1902,6 +1941,7 @@ public partial class BetheMethod
                 {
                     uDictionary.Clear();
                     muBackArrays = new Complex[beamsPreliminary.Length][];
+                    var backNodeCache = MasterBackSourceAxisCorrection ? new ConcurrentDictionary<int, (Complex V0, Complex V45, Complex V90)>() : null; // 261118Cl 追加
 
                     Parallel.For(0, beamsPreliminary.Length, representativeOptions, idx =>
                     {
@@ -1910,7 +1950,8 @@ public partial class BetheMethod
                         // muBackArrays[idx] = CreateMasterPatternMuBack(AccVoltage, bp); // (260321Ch) // 260919Cl 変更前
                         muBackArrays[idx] = double.IsFinite(SourceSmearingSigmaNm)
                             ? CreateSmearedLocalSourceMatrix(bp, atomArray, sigmaArray, tdsCoeff, SourceSmearingSigmaNm) // 260919Cl 追加 (試行): ぼかした局所源 (非局所源より優先)
-                            : CreateMasterPatternMuBack(AccVoltage, bp); // (260321Ch)
+                            // : CreateMasterPatternMuBack(AccVoltage, bp); // (260321Ch) // 261118Cl 変更前
+                            : CreateMasterPatternMuBack(AccVoltage, bp, backNodeCache == null ? null : beamsPreliminary[idx].EquivalentVecK0, backNodeCache); // 261118Cl 変更: 切り替えが on なら方向の入射の向きを軸に
                     });
                     uDictionary.Clear();
                 }
