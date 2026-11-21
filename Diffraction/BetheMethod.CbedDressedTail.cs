@@ -190,7 +190,14 @@ public partial class BetheMethod
         // 候補のプールと結合の表 (方向に依らない)
         DressedTailPrecomputeOptions = new ParallelOptions { MaxDegreeOfParallelism = threads };
         var pool = CreateBeamSelectionPool(set.PoolRadiusNm, buildE0: false);
-        var table = CreateDressedTailTable(pool, set.Eta, buildCsr: true);
+        // var table = CreateDressedTailTable(pool, set.Eta, buildCsr: true); // 261121Cl 変更前
+        DressedTailTable table;
+        try { table = CreateDressedTailTable(pool, set.Eta, buildCsr: true); }
+        catch (DressedTailTableLimitException ex) // 261121Cl 追加 (codex2 第 30 回 §5): 結合の表が配列の上限を超えるときだけ、理由を残して従来へ (本物のメモリ不足・取り消し・数値の失敗はここで受けない)
+        {
+            CbedBeamSelectionFallbackReason = $"the coupling table is too large for the dressed-tail method ({ex.Message})";
+            return (null, null);
+        }
         CbedDressedTailStageSeconds[0] = swAll.Elapsed.TotalSeconds;
         if (cancelled?.Invoke() == true) return (null, null);
         var sel = new DressedTailSelectionSettings

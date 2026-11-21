@@ -158,6 +158,21 @@ public partial class BetheMethod
         double rtt = table.TailRadiusNm * table.TailRadiusNm * (1 + 1e-9);
         var inT = new bool[n];
         for (int i = 0; i < n; i++) inT[i] = Dot3(pool.GX[i], pool.GX[i], pool.GY[i], pool.GY[i], pool.GZ[i], pool.GZ[i]) <= rtt;
+        // 261121Cl 追加 (codex2 第 30 回 §5): 非零の数の守り。上界 (裾の中の行 × 差の数) が配列の上限を超えるときだけ、行の一覧を作る前に行ごとに数える
+        long csrUpper = 0;
+        for (int i = 0; i < n; i++) if (inT[i]) csrUpper += ds.Count;
+        if (csrUpper > Array.MaxLength)
+        {
+            long counted = 0;
+            Parallel.For(0, n, DressedTailPrecomputeOptions, () => 0L, (i, _, acc) =>
+            {
+                if (!inT[i]) return acc;
+                var (h0, k0, l0) = pool.Hkl[i];
+                foreach (var d in ds) { int j = pool.IndexOf((h0 + d.h, k0 + d.k, l0 + d.l)); if (j >= 0 && inT[j]) acc++; }
+                return acc;
+            }, acc => Interlocked.Add(ref counted, acc));
+            if (counted > Array.MaxLength) throw new DressedTailTableLimitException("coupling table", counted);
+        }
         var rows = new (int j, Complex u)[n][];
         Parallel.For(0, n, DressedTailPrecomputeOptions, i => // 261110Cl: 前計算の並列を構築のスレッドの数で抑える
         {
@@ -173,8 +188,9 @@ public partial class BetheMethod
             list.Sort((a, b) => a.Item1.CompareTo(b.Item1));
             rows[i] = [.. list];
         });
-        var rowPtr = new int[n + 1];
-        for (int i = 0; i < n; i++) rowPtr[i + 1] = rowPtr[i] + rows[i].Length;
+        // var rowPtr = new int[n + 1]; // 261121Cl 変更前 (int の累積が黙ってあふれうる)
+        // for (int i = 0; i < n; i++) rowPtr[i + 1] = rowPtr[i] + rows[i].Length; // 261121Cl 変更前
+        var rowPtr = CsrRowPointersChecked(n, i => rows[i].Length, "coupling table"); // 261121Cl 変更: 累積は long で検査
         var col = new int[rowPtr[n]]; var vr = new double[rowPtr[n]]; var vi = new double[rowPtr[n]];
         Parallel.For(0, n, DressedTailPrecomputeOptions, i => // 261110Cl: 前計算の並列を構築のスレッドの数で抑える
         {
@@ -213,6 +229,18 @@ public partial class BetheMethod
                         var fm = fFull[Box(-h, -k, -l)];
                         if (Math.Max(fm.Magnitude, fFull[Box(h, k, l)].Magnitude) >= fThr) fds.Add((h, k, l, fm));
                     }
+            // 261121Cl 追加 (codex2 第 30 回 §5): 結合の表と同じ守り。上界 (行 × 差の数) が配列の上限を超えるときだけ、行の一覧を作る前に数える
+            if ((long)n * fds.Count > Array.MaxLength)
+            {
+                long counted = 0;
+                Parallel.For(0, n, DressedTailPrecomputeOptions, () => 0L, (i, _, acc) =>
+                {
+                    var (h0, k0, l0) = pool.Hkl[i];
+                    foreach (var d in fds) if (pool.IndexOf((h0 + d.h, k0 + d.k, l0 + d.l)) >= 0) acc++;
+                    return acc;
+                }, acc => Interlocked.Add(ref counted, acc));
+                if (counted > Array.MaxLength) throw new DressedTailTableLimitException("backscatter source table", counted, "raise sourceEta");
+            }
             var fRows = new (int j, Complex f)[n][];
             Parallel.For(0, n, DressedTailPrecomputeOptions, i => // 261110Cl: 前計算の並列を構築のスレッドの数で抑える
             {
@@ -226,9 +254,11 @@ public partial class BetheMethod
                 list.Sort((a, b) => a.Item1.CompareTo(b.Item1));
                 fRows[i] = [.. list];
             });
-            var fPtr = new int[n + 1];
-            long fTotal = 0;
-            for (int i = 0; i < n; i++) { fTotal += fRows[i].Length; if (fTotal > int.MaxValue) throw new OutOfMemoryException("The backscatter source table exceeds int.MaxValue nonzeros; raise sourceEta"); fPtr[i + 1] = (int)fTotal; }
+            // var fPtr = new int[n + 1]; // 261121Cl 変更前 (int.MaxValue で判定していた。配列の上限 Array.MaxLength はそれより小さい)
+            // long fTotal = 0; // 261121Cl 変更前
+            // for (int i = 0; i < n; i++) { fTotal += fRows[i].Length; if (fTotal > int.MaxValue) throw new OutOfMemoryException("The backscatter source table exceeds int.MaxValue nonzeros; raise sourceEta"); fPtr[i + 1] = (int)fTotal; } // 261121Cl 変更前
+            var fPtr = CsrRowPointersChecked(n, i => fRows[i].Length, "backscatter source table", "raise sourceEta"); // 261121Cl 変更
+            int fTotal = fPtr[n]; // 261121Cl 変更 (long → int、上で検査済み)
             var fCol = new int[fTotal]; var fr = new double[fTotal]; var fi = new double[fTotal];
             Parallel.For(0, n, DressedTailPrecomputeOptions, i => // 261110Cl: 前計算の並列を構築のスレッドの数で抑える
             {
@@ -2225,6 +2255,29 @@ public partial class BetheMethod
     public sealed class DressedTailBackwardBeamException : InvalidOperationException
     {
         public DressedTailBackwardBeamException() : base("A shared beam is not forward (P <= 0) in this direction; shrink the block") { }
+    }
+
+    /// <summary>261121Cl 追加 (codex2 第 30 回 §5): 着衣の裾の疎な表 (CSR) の非零が、int の添字で表せる配列の上限 (<see cref="Array.MaxLength"/>) を超える (資源の上限)。
+    /// 本物のメモリ不足 (<see cref="OutOfMemoryException"/>)・取り消し・数値の失敗とは分ける。CBED はこれだけを受けて従来へ戻し、研究の呼び出しにはそのまま返す</summary>
+    public sealed class DressedTailTableLimitException(string table, long nonzeros, string hint = "raise eta or shrink the pool radius")
+        : InvalidOperationException($"The dressed-tail {table} would have {nonzeros:N0} or more nonzeros, more than the array limit {Array.MaxLength:N0} ({hint})")
+    {
+        /// <summary>数えた非零 (累積の途中で止めたときはそこまでの数)</summary>
+        public long Nonzeros { get; } = nonzeros;
+    }
+
+    /// <summary>261121Cl 追加 (codex2 第 30 回 §5): 行の長さから CSR の行の先頭 (int) を作る。累積は long で数え、配列の上限を超えたら <see cref="DressedTailTableLimitException"/></summary>
+    internal static int[] CsrRowPointersChecked(int n, Func<int, int> rowLength, string table, string hint = "raise eta or shrink the pool radius")
+    {
+        var ptr = new int[n + 1];
+        long total = 0;
+        for (int i = 0; i < n; i++)
+        {
+            total += rowLength(i);
+            if (total > Array.MaxLength) throw new DressedTailTableLimitException(table, total, hint);
+            ptr[i + 1] = (int)total;
+        }
+        return ptr;
     }
 
     /// <summary>261109Cl 追加 (研究用): MasterPattern の経路 (RunEBSDNew) を、着衣つきの裾の方式 (方式の核 + 方向のブロックの共有) で解く設定。
