@@ -61,6 +61,26 @@ public sealed class MasterPatternFileInfo
     /// 項目の無い古いファイルも "" = 未記録 (当時の既定は Legacy だが、Shell を選んで作っていても区別できない。codex2 第 15 回)。空のまま保持する</summary>
     public string BeamCandidateCut { get; set; } = "";
 
+    /// <summary>261124Cl 追加 (形式 v2): マスターパターンを計算した物理の版 (<see cref="MasterPatternFile.PhysicsVersion"/>)。
+    /// 項目の無い古いファイル (v1) は "" = 未記録。読み込み側は今の版と違えば知らせる (作者決定 11-24: 警告して読む)</summary>
+    public string PhysicsVersion { get; set; } = "";
+    /// <summary>261124Cl 追加 (形式 v2): 作った結晶 (<see cref="Crystal2"/> の MemoryPack + Brotli を base64)。
+    /// 今の結晶と合わないとき、この結晶を一覧に足して読み込めるようにする (作者決定 11-24)。古いファイルは ""</summary>
+    public string CrystalData { get; set; } = "";
+    /// <summary>261124Cl 追加 (形式 v2): 格子 (本体を読まずに条件を見せるため見出しにも入れる。v1 のファイルでは 0・空)</summary>
+    public int GridSize { get; set; }
+    public int GridType { get; set; }
+    public double[] Energies { get; set; } = [];
+    public double[] Depths { get; set; } = [];
+
+    /// <summary>261124Cl 追加: 同梱の結晶 (<see cref="CrystalData"/>) を復元する。無い・読めないときは null</summary>
+    public Crystal GetCrystal()
+    {
+        if (string.IsNullOrEmpty(CrystalData)) return null;
+        try { return Crystal2.Deserialize(Convert.FromBase64String(CrystalData))?.ToCrystal(); }
+        catch (FormatException) { return null; }
+    }
+
     /// <summary>構築リクエストから作成条件を作る</summary>
     // public static MasterPatternFileInfo FromBuildRequest(EBSD.MasterPatternBuildRequest request, double beamEnergyKeV, string creator = "") // 261110Cl 旧シグネチャ
     public static MasterPatternFileInfo FromBuildRequest(EBSD.MasterPatternBuildRequest request, double beamEnergyKeV, string creator = "",
@@ -85,6 +105,8 @@ public sealed class MasterPatternFileInfo
             BeamSelectionNative = result?.BeamSelectionNative ?? "",
             BackSourceAxis = result?.BackSourceAxis ?? "", // 261118Cl 追加 (codex2 第 5 回)
             BeamCandidateCut = result?.BeamCandidateCut ?? "", // 261118Cl 追加
+            PhysicsVersion = MasterPatternFile.PhysicsVersion, // 261124Cl 追加: 今この版の物理で計算した
+            CrystalData = Convert.ToBase64String(Crystal2.Serialize(request.Crystal.ToCrystal2())), // 261124Cl 追加: 作った結晶を同梱
         };
     }
 }
@@ -103,12 +125,33 @@ public sealed record MasterPatternFileContent(MasterPattern MasterPattern, Maste
 /// MC 分布 (<see cref="EbsdMonteCarloDistribution"/>) そのものは保存しない: 源の深さモード・非晶質層・蛍光体重み・格子を
 /// 変えると電子からの再ビニングが要るので、電子を持っておけば MC をやり直さずに済み、しかも MC の乱数による揺らぎも入らない
 /// (同じファイルを読めば毎回まったく同じ分布になる。条件を比べる調整作業ではこれが大事)。</para>
+/// <para>261124Cl 追加 (作者決定 11-24): 【形式 v2】"RPMP" + 版 (int32 = 2) + ヘッダ長 (int32) + ヘッダ (JSON。v2 では格子・エネルギー列・深さ列・
+/// 物理の版・同梱の結晶も入る) + 区画の表 (区画の数 int32 + 区画ごとに 種類 int32・番号 int32・位置 int64・格納長 int64・元の長さ int64・方式 int32・CRC32 uint32)
+/// + 区画。平面は 1 枚ずつ 1 区画 (種類 1 = +Z、2 = −Z、番号 = energy-major の平面番号、元の長さ 0 は欠落)、電子は <see cref="ElectronsPerBlock"/> 本ずつ
+/// 列ごと (float32 × 15 列 + フラグ 1 列) に並べて 1 区画 (種類 3、番号 = 塊の番号)。方式 1 = 4 バイトの並べ替え (Blosc の shuffle) + Brotli、
+/// 0 = そのまま。CRC32 は元のバイト列のもの。区画ごとに独立なので並列に縮め・戻せ、一部だけも読める。
+/// 実測 (grid 512 の Si・Al₂O₃): 平面は v1 の zlib で 0.62〜0.66、v2 で 0.29〜0.43 (MasterPatternファイル仕様_提案_261124.md)。v1 のファイルもそのまま読める。</para>
 /// </summary>
 public static class MasterPatternFile
 {
     /// <summary>ファイル形式の版。形式を変えたら上げ、<see cref="Load"/> で旧版を読めるようにすること</summary>
     /// <remarks>261031Cl 追加: 本体 (格子の見出し・平面の並び・電子の区画) は <see cref="ReadElectronChunks"/> でも読む。形式を変えたら両方を直すこと</remarks>
-    public const int FormatVersion = 1;
+    // public const int FormatVersion = 1; // 261124Cl 変更前
+    public const int FormatVersion = 2; // 261124Cl 変更: 区画の形式 (v2)。v1 も読む
+
+    /// <summary>261124Cl 追加 (作者決定 11-24): マスターパターンを計算する物理の版。同じ入力でマスターパターンの強度が変わる直し
+    /// (源・吸収・ビーム選択の既定・散乱因子の表など) を入れたら上げる。読み込み側は、ファイルの版が今と違えば警告して読む。
+    /// 値は直しを入れた日 (yyMMdd)。最後の直しは 11-18 の後方源の軸 (既定で入射の軸)</summary>
+    public const string PhysicsVersion = "261118";
+
+    // 261124Cl 追加: 形式 v2 の区画の種類・方式・大きさ
+    const int KindPlanePositive = 1, KindPlaneNegative = 2, KindElectrons = 3;
+    const int CodecStored = 0, CodecShuffleBrotli = 1;
+    /// <summary>261124Cl 追加: 電子の 1 区画の本数 (元の大きさ 8 MB)</summary>
+    internal const int ElectronsPerBlock = 1 << 17;
+    const int ElectronBytes = 61; // float32 × 15 + フラグ 1 バイト (v1 と同じ値の丸め)
+    const long BatchBytes = 128L << 20; // 並列に縮め・戻すときに一度に持つ量の目安 (元の大きさ。縮める間は一時に約 3 倍を持つ)
+    readonly record struct Block(int Kind, int Index, long Offset, long StoredLength, long RawLength, int Codec, uint Crc);
 
     /// <summary>261110Cl 追加: 読み込んだ見出しのビーム選択の記録を MasterPattern に写す (項目の無い古いファイルは従来)</summary>
     static MasterPattern WithBeamSelection(MasterPattern mp, MasterPatternFileInfo info) => new(mp.GridSize, mp.Energies, mp.Depths, mp.PositivePlanes, mp.NegativePlanes, mp.GridType)
@@ -132,8 +175,9 @@ public static class MasterPatternFile
     /// ⚠ NaN の入ったヘッダは、この修正より前の版では読めない (その版では書けもしなかった)。</summary>
     static readonly JsonSerializerOptions HeaderJsonOptions = new() { NumberHandling = JsonNumberHandling.AllowNamedFloatingPointLiterals };
 
-    /// <summary>MasterPattern を保存する。</summary>
-    /// <param name="compression">本体の zlib 圧縮レベル。float の強度はあまり縮まないので既定は Fastest</param>
+    /// <summary>MasterPattern を保存する (261124Cl 変更: 形式 v2。区画ごとに並列に縮める)。</summary>
+    /// <param name="compression">261124Cl 変更: 区画の Brotli の強さ (NoCompression = 縮めない、Fastest = 品質 1 (既定。実測で zlib より小さく速い)、
+    ///   Optimal = 4、SmallestSize = 9)。v1 では本体の zlib の圧縮レベルだった</param>
     /// <param name="backscatteredElectrons">一緒に保存する MC の後方散乱電子 (null なら保存しない)。
     ///   入れるときは info の McSampleTiltRad / McEnergyThresholdKeV / McIncidentCount も埋めること</param>
     public static void Save(MasterPattern masterPattern, string path, MasterPatternFileInfo info,
@@ -141,6 +185,96 @@ public static class MasterPatternFile
     {
         ArgumentNullException.ThrowIfNull(masterPattern);
         ArgumentNullException.ThrowIfNull(path);
+        info = FillInfo(masterPattern, info, backscatteredElectrons, FormatVersion);
+        info.GridSize = masterPattern.GridSize; info.GridType = (int)masterPattern.GridType; // v2 は格子を見出しに書く (本体を読まずに条件を見せる)
+        info.Energies = masterPattern.Energies; info.Depths = masterPattern.Depths;
+        int quality = compression switch { CompressionLevel.NoCompression => -1, CompressionLevel.Optimal => 4, CompressionLevel.SmallestSize => 9, _ => 1 };
+
+        // 区画の一覧 (書く順 = +Z の平面 → −Z の平面 → 電子の塊)
+        int planeCount = masterPattern.PlaneCount;
+        var jobs = new List<(int Kind, int Index, float[] Plane, int ElectronStart, int ElectronCount)>();
+        foreach (var (kind, planes) in new[] { (KindPlanePositive, masterPattern.PositivePlanes), (KindPlaneNegative, masterPattern.NegativePlanes) })
+            for (int k = 0; k < planeCount; k++)
+                jobs.Add((kind, k, k < planes.Length ? planes[k] : null, 0, 0));
+        int nBse = backscatteredElectrons?.Length ?? 0;
+        for (int s = 0, b = 0; s < nBse; s += ElectronsPerBlock, b++)
+            jobs.Add((KindElectrons, b, null, s, Math.Min(ElectronsPerBlock, nBse - s)));
+
+        //途中で失敗しても既存のファイルを壊さないよう、一時ファイルへ書いてから置き換える
+        var tmp = path + ".tmp";
+        using (var fs = new FileStream(tmp, FileMode.Create, FileAccess.ReadWrite, FileShare.None, 1 << 20))
+        {
+            var header = JsonSerializer.SerializeToUtf8Bytes(info, HeaderJsonOptions);
+            Span<byte> i32 = stackalloc byte[4];
+            fs.Write(Magic);
+            BitConverter.TryWriteBytes(i32, FormatVersion); fs.Write(i32);
+            BitConverter.TryWriteBytes(i32, header.Length); fs.Write(i32);
+            fs.Write(header);
+            long tablePosition = fs.Position;
+            fs.Write(new byte[4 + 40L * jobs.Count]); // 区画の表は最後に書き戻す
+
+            var blocks = new Block[jobs.Count];
+            for (int start = 0; start < jobs.Count;)
+            {
+                // 元の大きさで BatchBytes まで束ね、並列に縮めてから順に書く
+                int end = start; long bytes = 0;
+                do { var j = jobs[end++]; bytes += j.Plane != null ? 4L * j.Plane.Length : (long)ElectronBytes * j.ElectronCount; } while (end < jobs.Count && bytes < BatchBytes);
+                var encoded = new (byte[] Stored, long RawLength, int Codec, uint Crc)[end - start];
+                System.Threading.Tasks.Parallel.For(start, end, i =>
+                {
+                    var j = jobs[i];
+                    if (j.Kind == KindElectrons)
+                    {
+                        var raw = EncodeElectrons(backscatteredElectrons, j.ElectronStart, j.ElectronCount);
+                        encoded[i - start] = EncodeBlock(raw, quality);
+                    }
+                    else encoded[i - start] = EncodeBlock(j.Plane is { Length: > 0 } ? MemoryMarshal.AsBytes(j.Plane.AsSpan()) : [], quality);
+                });
+                for (int i = start; i < end; i++)
+                {
+                    var e = encoded[i - start];
+                    blocks[i] = new Block(jobs[i].Kind, jobs[i].Index, fs.Position, e.Stored.Length, e.RawLength, e.Codec, e.Crc);
+                    fs.Write(e.Stored);
+                }
+                start = end;
+            }
+
+            fs.Position = tablePosition; // 区画の表
+            using (var w = new BinaryWriter(fs, Encoding.UTF8, leaveOpen: true))
+            {
+                w.Write(blocks.Length);
+                foreach (var b in blocks)
+                { w.Write(b.Kind); w.Write(b.Index); w.Write(b.Offset); w.Write(b.StoredLength); w.Write(b.RawLength); w.Write(b.Codec); w.Write(b.Crc); }
+            }
+        }
+        File.Move(tmp, path, overwrite: true);
+    }
+
+    /// <summary>261124Cl 追加: 保存する MasterPattern から見出しの記録を埋める (v2 の <see cref="Save"/> と v1 の <see cref="SaveVersion1"/> で共用)</summary>
+    static MasterPatternFileInfo FillInfo(MasterPattern masterPattern, MasterPatternFileInfo info, EbsdBackscatteredElectron[] backscatteredElectrons, int formatVersion)
+    {
+        info ??= new MasterPatternFileInfo();
+        info.FormatVersion = formatVersion;
+        // 261110Cl 追加 (codex2 第 32 回): ビーム選択の方式は保存する MasterPattern から書く (info だけでは新方式の像を従来として記録しうる)
+        info.BeamSelectionRequested = masterPattern.BeamSelectionRequested; info.BeamSelectionUsed = masterPattern.BeamSelectionUsed;
+        info.BeamSelectionSettingsVersion = masterPattern.BeamSelectionSettingsVersion; info.BeamSelectionFallbackReason = masterPattern.BeamSelectionFallbackReason;
+        info.BeamSelectionNative = masterPattern.BeamSelectionNative;
+        info.BackSourceAxis = masterPattern.BackSourceAxis; // 261118Cl 追加
+        info.BeamCandidateCut = masterPattern.BeamCandidateCut; // 261118Cl 追加
+        info.BackscatteredElectronCount = backscatteredElectrons?.Length ?? 0;
+        if (string.IsNullOrEmpty(info.CreatedUtc)) info.CreatedUtc = DateTime.UtcNow.ToString("o", CultureInfo.InvariantCulture);
+        return info;
+    }
+
+    /// <summary>261124Cl 変更: 旧形式 (v1) で保存する。261124Cl までの <see cref="Save"/> そのもの (版の数を 1 に固定しただけ)。
+    /// v1 のファイルを読めることを試験で確かめるために残す。普段の保存は <see cref="Save"/> (v2)</summary>
+    internal static void SaveVersion1(MasterPattern masterPattern, string path, MasterPatternFileInfo info,
+        EbsdBackscatteredElectron[] backscatteredElectrons = null, CompressionLevel compression = CompressionLevel.Fastest)
+    {
+        ArgumentNullException.ThrowIfNull(masterPattern);
+        ArgumentNullException.ThrowIfNull(path);
+        info = FillInfo(masterPattern, info, backscatteredElectrons, 1); // 261124Cl: 見出しを埋める処理は FillInfo へ (v2 と共用)。旧: 以下の行をここに直書き
+        /*
         info ??= new MasterPatternFileInfo();
         info.FormatVersion = FormatVersion;
         // 261110Cl 追加 (codex2 第 32 回): ビーム選択の方式は保存する MasterPattern から書く (info だけでは新方式の像を従来として記録しうる)
@@ -151,6 +285,7 @@ public static class MasterPatternFile
         info.BeamCandidateCut = masterPattern.BeamCandidateCut; // 261118Cl 追加
         info.BackscatteredElectronCount = backscatteredElectrons?.Length ?? 0;
         if (string.IsNullOrEmpty(info.CreatedUtc)) info.CreatedUtc = DateTime.UtcNow.ToString("o", CultureInfo.InvariantCulture);
+        */
 
         //途中で失敗しても既存のファイルを壊さないよう、一時ファイルへ書いてから置き換える
         var tmp = path + ".tmp";
@@ -160,7 +295,8 @@ public static class MasterPatternFile
             var header = JsonSerializer.SerializeToUtf8Bytes(info, HeaderJsonOptions); // 261028Cl 変更
             fs.Write(Magic);
             Span<byte> i32 = stackalloc byte[4];
-            BitConverter.TryWriteBytes(i32, FormatVersion); fs.Write(i32);
+            // BitConverter.TryWriteBytes(i32, FormatVersion); fs.Write(i32); // 261124Cl 変更前
+            BitConverter.TryWriteBytes(i32, 1); fs.Write(i32); // 261124Cl 変更: v1 に固定
             BitConverter.TryWriteBytes(i32, header.Length); fs.Write(i32);
             fs.Write(header);
 
@@ -192,7 +328,7 @@ public static class MasterPatternFile
     public static MasterPatternFileInfo ReadInfo(string path)
     {
         using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
-        return ReadHeader(fs);
+        return ReadHeader(fs, out _);
     }
 
     /// <summary>MasterPattern (と、保存されていれば後方散乱電子) を読み込む。</summary>
@@ -204,7 +340,9 @@ public static class MasterPatternFile
     {
         ArgumentNullException.ThrowIfNull(path);
         using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, 1 << 20);
-        var info = ReadHeader(fs);
+        // var info = ReadHeader(fs); // 261124Cl 変更前
+        var info = ReadHeader(fs, out int version);
+        if (version >= 2) return LoadVersion2(fs, info, loadElectrons); // 261124Cl 追加: 形式 v2。以下は v1
         using var z = new ZLibStream(fs, CompressionMode.Decompress);
         using var r = new BinaryReader(z, Encoding.UTF8);
         int gridSize = r.ReadInt32();
@@ -260,7 +398,13 @@ public static class MasterPatternFile
         IEnumerable<EbsdBackscatteredElectron[]> Chunks()
         {
             using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, 1 << 20);
-            ReadHeader(fs);
+            // ReadHeader(fs); // 261124Cl 変更前
+            ReadHeader(fs, out int version);
+            if (version >= 2) // 261124Cl 追加: 形式 v2 は電子の区画だけを順に戻す (平面は読まない)。以下は v1
+            {
+                foreach (var c in ElectronChunksVersion2(fs, chunkSize)) yield return c;
+                yield break;
+            }
             using var z = new ZLibStream(fs, CompressionMode.Decompress);
             using var r = new BinaryReader(z, Encoding.UTF8);
             //本体の書式は Load と同じに読む (形式を変えたら両方を直す。FormatVersion の remarks)。格子の見出しも Load と同じに検査する
@@ -314,13 +458,15 @@ public static class MasterPatternFile
             (flags & 2) != 0, lastDecoDepth);
     }
 
-    static MasterPatternFileInfo ReadHeader(Stream fs)
+    // static MasterPatternFileInfo ReadHeader(Stream fs) // 261124Cl 旧シグネチャ
+    static MasterPatternFileInfo ReadHeader(Stream fs, out int version) // 261124Cl 変更: 版も返す (v1 と v2 で本体の読み方が違う)
     {
         Span<byte> magic = stackalloc byte[4];
         fs.ReadExactly(magic);
         if (!magic.SequenceEqual(Magic)) throw new InvalidDataException("Not a ReciPro MasterPattern file.");
         Span<byte> i32 = stackalloc byte[4];
-        fs.ReadExactly(i32); int version = BitConverter.ToInt32(i32);
+        // fs.ReadExactly(i32); int version = BitConverter.ToInt32(i32); // 261124Cl 変更前
+        fs.ReadExactly(i32); version = BitConverter.ToInt32(i32);
         if (version < 1 || version > FormatVersion) throw new InvalidDataException($"Unsupported MasterPattern file version {version} (this build reads up to {FormatVersion}).");
         fs.ReadExactly(i32); int headerLength = BitConverter.ToInt32(i32);
         if (headerLength < 0 || headerLength > 1 << 24) throw new InvalidDataException("Corrupt MasterPattern file (bad header length).");
@@ -329,6 +475,206 @@ public static class MasterPatternFile
         // return JsonSerializer.Deserialize<MasterPatternFileInfo>(header) ?? new MasterPatternFileInfo(); // 261028Cl 変更前
         return JsonSerializer.Deserialize<MasterPatternFileInfo>(header, HeaderJsonOptions) ?? new MasterPatternFileInfo(); // 261028Cl 変更: "NaN" なども読む
     }
+
+    #region 261124Cl 追加: 形式 v2 (区画・並べ替え + Brotli・CRC32)
+
+    /// <summary>形式 v2 の本体を読む (見出しの直後から)。平面は区画ごとに並列に戻す</summary>
+    static MasterPatternFileContent LoadVersion2(FileStream fs, MasterPatternFileInfo info, bool loadElectrons)
+    {
+        var gridType = (MasterPattern.Types)info.GridType;
+        int nE = info.Energies?.Length ?? -1, nD = info.Depths?.Length ?? -1;
+        if (info.GridSize <= 0 || nE < 0 || nD < 0 || !System.Enum.IsDefined(gridType)) throw new InvalidDataException("Corrupt MasterPattern file (bad grid header).");
+        var blocks = ReadBlockTable(fs);
+        int planeCount = nE * nD;
+        var pos = new float[planeCount][];
+        var neg = new float[planeCount][];
+        ReadBlocks(fs, blocks.Where(b => b.Kind is KindPlanePositive or KindPlaneNegative), (b, raw) =>
+        {
+            if ((uint)b.Index >= (uint)planeCount || raw.Length % 4 != 0) throw new InvalidDataException("Corrupt MasterPattern file (bad plane block).");
+            if (raw.Length == 0) return; // 欠落の平面
+            var p = new float[raw.Length / 4];
+            raw.AsSpan().CopyTo(MemoryMarshal.AsBytes(p.AsSpan()));
+            (b.Kind == KindPlanePositive ? pos : neg)[b.Index] = p;
+        });
+        EbsdBackscatteredElectron[] bses = [];
+        if (loadElectrons)
+        {
+            var eb = blocks.Where(b => b.Kind == KindElectrons).ToArray();
+            long n = eb.Sum(b => b.RawLength / ElectronBytes);
+            if (n != info.BackscatteredElectronCount || n > Array.MaxLength) throw new InvalidDataException("Corrupt MasterPattern file (electron count).");
+            bses = new EbsdBackscatteredElectron[n];
+            ReadBlocks(fs, eb, (b, raw) =>
+            {
+                int count = (int)(raw.Length / ElectronBytes);
+                long start = (long)b.Index * ElectronsPerBlock;
+                if (raw.Length % ElectronBytes != 0 || start + count > n) throw new InvalidDataException("Corrupt MasterPattern file (bad electron block).");
+                for (int i = 0; i < count; i++) bses[start + i] = DecodeElectron(raw, count, i);
+            });
+        }
+        return new MasterPatternFileContent(WithBeamSelection(new MasterPattern(info.GridSize, info.Energies, info.Depths, pos, neg, gridType), info), info, bses);
+    }
+
+    /// <summary>形式 v2 の電子の区画を順に戻し、chunkSize 本ずつの配列で返す (<see cref="ReadElectronChunks"/>)。平面の区画は読まない</summary>
+    static IEnumerable<EbsdBackscatteredElectron[]> ElectronChunksVersion2(FileStream fs, int chunkSize)
+    {
+        foreach (var b in ReadBlockTable(fs).Where(b => b.Kind == KindElectrons).OrderBy(b => b.Index))
+        {
+            var raw = new byte[b.RawLength];
+            DecodeBlock(b, ReadStored(fs, b), raw);
+            if (raw.Length % ElectronBytes != 0) throw new InvalidDataException("Corrupt MasterPattern file (bad electron block).");
+            int count = raw.Length / ElectronBytes;
+            for (int done = 0; done < count;)
+            {
+                var chunk = new EbsdBackscatteredElectron[Math.Min(chunkSize, count - done)];
+                for (int i = 0; i < chunk.Length; i++) chunk[i] = DecodeElectron(raw, count, done + i);
+                done += chunk.Length;
+                yield return chunk;
+            }
+        }
+    }
+
+    static Block[] ReadBlockTable(Stream fs)
+    {
+        using var r = new BinaryReader(fs, Encoding.UTF8, leaveOpen: true);
+        int n = r.ReadInt32();
+        if (n < 0 || n > 1 << 24) throw new InvalidDataException("Corrupt MasterPattern file (bad block table).");
+        var blocks = new Block[n];
+        for (int i = 0; i < n; i++)
+        {
+            blocks[i] = new Block(r.ReadInt32(), r.ReadInt32(), r.ReadInt64(), r.ReadInt64(), r.ReadInt64(), r.ReadInt32(), r.ReadUInt32());
+            if (blocks[i].Offset < 0 || blocks[i].StoredLength < 0 || blocks[i].RawLength < 0 || blocks[i].RawLength > Array.MaxLength || blocks[i].StoredLength > Array.MaxLength)
+                throw new InvalidDataException("Corrupt MasterPattern file (bad block entry).");
+        }
+        return blocks;
+    }
+
+    static byte[] ReadStored(Stream fs, in Block b)
+    {
+        var stored = new byte[b.StoredLength];
+        fs.Position = b.Offset;
+        fs.ReadExactly(stored);
+        return stored;
+    }
+
+    /// <summary>区画を BatchBytes ずつ順に読み、並列に戻して consume に渡す (consume は区画ごとに別のスレッドから呼ばれる)</summary>
+    static void ReadBlocks(FileStream fs, IEnumerable<Block> blocks, Action<Block, byte[]> consume)
+    {
+        var list = blocks.OrderBy(b => b.Offset).ToArray();
+        for (int start = 0; start < list.Length;)
+        {
+            int end = start; long bytes = 0;
+            var stored = new List<byte[]>();
+            do { stored.Add(ReadStored(fs, list[end])); bytes += list[end].RawLength; end++; } while (end < list.Length && bytes < BatchBytes);
+            try
+            {
+                System.Threading.Tasks.Parallel.For(start, end, i =>
+                {
+                    var raw = new byte[list[i].RawLength];
+                    DecodeBlock(list[i], stored[i - start], raw);
+                    consume(list[i], raw);
+                });
+            }
+            catch (AggregateException ex) when (ex.InnerExceptions.Count > 0) // 「壊れている」の理由 (InvalidDataException) をそのまま呼び手へ
+            { System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(ex.InnerExceptions[0]).Throw(); }
+            start = end;
+        }
+    }
+
+    /// <summary>1 区画を縮める。並べ替え + Brotli で縮まなければそのまま格納する。CRC32 は元のバイト列のもの</summary>
+    static (byte[] Stored, long RawLength, int Codec, uint Crc) EncodeBlock(ReadOnlySpan<byte> raw, int quality)
+    {
+        uint crc = Crc32(raw);
+        if (raw.Length > 0 && quality >= 0)
+        {
+            var shuffled = new byte[raw.Length];
+            Shuffle4(raw, shuffled);
+            var dst = new byte[System.IO.Compression.BrotliEncoder.GetMaxCompressedLength(raw.Length)];
+            if (System.IO.Compression.BrotliEncoder.TryCompress(shuffled, dst, out int n, quality, 22) && n < raw.Length)
+                return (dst[..n], raw.Length, CodecShuffleBrotli, crc);
+        }
+        return (raw.ToArray(), raw.Length, CodecStored, crc);
+    }
+
+    /// <summary>1 区画を戻して raw (元の長さちょうど) に書き、CRC32 を照合する</summary>
+    static void DecodeBlock(in Block b, ReadOnlySpan<byte> stored, Span<byte> raw)
+    {
+        if (b.Codec == CodecStored)
+        {
+            if (stored.Length != raw.Length) throw new InvalidDataException("Corrupt MasterPattern file (bad block length).");
+            stored.CopyTo(raw);
+        }
+        else if (b.Codec == CodecShuffleBrotli)
+        {
+            var shuffled = new byte[raw.Length];
+            if (!System.IO.Compression.BrotliDecoder.TryDecompress(stored, shuffled, out int n) || n != raw.Length)
+                throw new InvalidDataException("Corrupt MasterPattern file (block cannot be decompressed).");
+            Unshuffle4(shuffled, raw);
+        }
+        else throw new InvalidDataException($"Unsupported MasterPattern block codec {b.Codec}.");
+        if (Crc32(raw) != b.Crc) throw new InvalidDataException($"Corrupt MasterPattern file (checksum mismatch in block {b.Kind}:{b.Index}).");
+    }
+
+    /// <summary>4 バイトの並べ替え (Blosc の shuffle)。i 番目の 4 バイトの j 位を j·m + i へ (m = 4 バイトの個数)。4 で割り切れない末尾はそのまま</summary>
+    static void Shuffle4(ReadOnlySpan<byte> src, Span<byte> dst)
+    {
+        int m = src.Length / 4;
+        for (int i = 0; i < m; i++)
+            for (int j = 0; j < 4; j++) dst[j * m + i] = src[4 * i + j];
+        src[(4 * m)..].CopyTo(dst[(4 * m)..]);
+    }
+
+    static void Unshuffle4(ReadOnlySpan<byte> src, Span<byte> dst)
+    {
+        int m = src.Length / 4;
+        for (int i = 0; i < m; i++)
+            for (int j = 0; j < 4; j++) dst[4 * i + j] = src[j * m + i];
+        src[(4 * m)..].CopyTo(dst[(4 * m)..]);
+    }
+
+    static readonly uint[] crcTable = Enumerable.Range(0, 256).Select(n =>
+    {
+        uint c = (uint)n;
+        for (int k = 0; k < 8; k++) c = (c & 1) != 0 ? 0xEDB88320u ^ (c >> 1) : c >> 1;
+        return c;
+    }).ToArray();
+
+    /// <summary>CRC-32 (IEEE 802.3、zlib と同じ多項式)</summary>
+    static uint Crc32(ReadOnlySpan<byte> data)
+    {
+        uint c = 0xFFFFFFFFu;
+        foreach (var b in data) c = crcTable[(c ^ b) & 0xFF] ^ (c >> 8);
+        return c ^ 0xFFFFFFFFu;
+    }
+
+    /// <summary>電子を列ごとに並べる (float32 × 15 列 + フラグ 1 列)。各列の値の丸めは v1 (<see cref="WriteElectron"/>) と同じ</summary>
+    static byte[] EncodeElectrons(EbsdBackscatteredElectron[] electrons, int start, int count)
+    {
+        var raw = new byte[(long)ElectronBytes * count];
+        var f = MemoryMarshal.Cast<byte, float>(raw.AsSpan(0, 60 * count));
+        for (int i = 0; i < count; i++)
+        {
+            ref readonly var e = ref electrons[start + i];
+            f[0 * count + i] = (float)e.Depth; f[1 * count + i] = (float)e.Vec.X; f[2 * count + i] = (float)e.Vec.Y; f[3 * count + i] = (float)e.Vec.Z;
+            f[4 * count + i] = (float)e.Position.X; f[5 * count + i] = (float)e.Position.Y; f[6 * count + i] = (float)e.Energy; f[7 * count + i] = (float)e.TotalEnergyLoss;
+            f[8 * count + i] = (float)e.LastInelasticDepth; f[9 * count + i] = (float)e.LastInelasticEnergyBeforeLoss; f[10 * count + i] = (float)e.LastInelasticEnergyAfterLoss;
+            f[11 * count + i] = (float)e.LastInelasticDirection.X; f[12 * count + i] = (float)e.LastInelasticDirection.Y; f[13 * count + i] = (float)e.LastInelasticDirection.Z;
+            f[14 * count + i] = (float)e.LastDecoherenceDepth;
+            raw[60 * count + i] = (byte)((e.HasLastInelasticEvent ? 1 : 0) | (e.HasLastDecoherenceEvent ? 2 : 0));
+        }
+        return raw;
+    }
+
+    static EbsdBackscatteredElectron DecodeElectron(byte[] raw, int count, int i)
+    {
+        var f = MemoryMarshal.Cast<byte, float>(raw.AsSpan(0, 60 * count));
+        byte flags = raw[60 * count + i];
+        return new EbsdBackscatteredElectron(f[i], new OpenTK.Mathematics.Vector3d(f[count + i], f[2 * count + i], f[3 * count + i]),
+            new PointD(f[4 * count + i], f[5 * count + i]), f[6 * count + i], f[7 * count + i], (flags & 1) != 0,
+            f[8 * count + i], f[9 * count + i], f[10 * count + i], new OpenTK.Mathematics.Vector3d(f[11 * count + i], f[12 * count + i], f[13 * count + i]),
+            (flags & 2) != 0, f[14 * count + i]);
+    }
+
+    #endregion
 
     /// <summary>結晶の同一性を表す文字列。格子定数 (nm, 6 桁)・角度 (度, 4 桁)・空間群の系列番号・
     /// 原子ごとの Z / 座標 (5 桁) / 占有率 (4 桁) / 等方 B (nm², 6 桁) を並べる。異方性の原子はその後ろに β の 6 成分 (有効数字 7 桁) を足す (261105Cl)。
