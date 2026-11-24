@@ -315,6 +315,9 @@ public class Tiff
             /// <summary>1: 非圧縮</summary>
             public int Compression;
 
+            /// <summary>261124Cl 追加: 圧縮前の差分予測 (タグ 317)。1: なし、2: 水平差分、3: 浮動小数点の差分</summary>
+            public int Predictor = 1;
+
             /// <summary>0: 黒モードモノクロ (0が白い),   1: 白モードモノクロ (0が黒い),  2: RGBダイレクトカラー (0が黒い)</summary>
             public int PhotometricInterpretation;
 
@@ -515,6 +518,8 @@ public class Tiff
                             }
                             break;
 
+                        case 317:
+                            image.Predictor = (int)iFD[i].Data[0]; break; // 261124Cl 追加
                         case 339:
                             image.SampleFormat = (int)iFD[i].Data[0]; break;  //SampleFormat, 1: 整数, 3: float
 
@@ -568,6 +573,8 @@ public class Tiff
                 if (image.IsGray || image.SampleFormat == 3)//grayか、浮動小数点の時
                 {
                     bytePerPixel = image.BitsPerSampleGray / 8;
+                    if (bytePerPixel == 0) // 261124Cl 追加 (査読): 1・4 bit の画像は読めない。以前は下の割り算で 0 除算になっていた
+                        throw new NotSupportedException($"{image.BitsPerSampleGray}-bit TIFF images are not supported.");
                     image.Value = new double[image.ImageLength * image.ImageWidth];
                 }
                 else
@@ -616,8 +623,15 @@ public class Tiff
 
 
                 //261111Cl 追加 (T33): 圧縮された画素の展開には対応していない。誤読した画像を黙って返さず、明確なエラーにする (タグが無い = 0 は非圧縮として扱う)
-                if (image.Compression != 0 && image.Compression != 1)
-                    throw new NotSupportedException($"Compressed TIFF (Compression = {image.Compression}) is not supported. Please save the image without compression.");
+                //if (image.Compression != 0 && image.Compression != 1) // 261124Cl 変更前
+                //    throw new NotSupportedException($"Compressed TIFF (Compression = {image.Compression}) is not supported. Please save the image without compression.");
+                // 261124Cl 変更 (作者指示: Spot ID v2 で圧縮 TIFF を読む): LZW (5)・Deflate (8, 32946)・PackBits (32773) は展開して読む。
+                //  差分予測は水平差分 (Predictor 2) まで。それ以外の圧縮 (JPEG など) と浮動小数点の差分 (Predictor 3) は従来どおり明確なエラーにする
+                bool compressed = image.Compression is not (0 or 1);
+                if (compressed && image.Compression is not (5 or 8 or 32946 or 32773))
+                    throw new NotSupportedException($"This TIFF compression (Compression = {image.Compression}) is not supported. Uncompressed, LZW, Deflate (zip) and PackBits TIFFs can be read.");
+                if (image.Predictor is not (1 or 2))
+                    throw new NotSupportedException($"This TIFF predictor (Predictor = {image.Predictor}) is not supported. Save without a predictor or with the horizontal predictor.");
 
                 #region 261111Cl 変更前: 画素ごとに Func<double> を呼ぶ (MM の 16/32bit と浮動小数点は、画素ごとに byte[] を確保して反転していた)
                 //Func<double> toInt = () => 0;
@@ -745,15 +759,35 @@ public class Tiff
                     : bytePerPixel == 8 ? (image.SampleFormat == 1 ? SampleKind.U64 : SampleKind.S64)
                     : SampleKind.None;
 
+                // 261124Cl 追加: 圧縮 (または差分予測) のあるストリップは、生のバイト列に展開してから同じ読み方をする
+                bool buffered = compressed || image.Predictor == 2;
+                int samplesPerPixel = image.SampleFormat == 3 || image.IsGray ? 1 : bitsPerSampleLength;
+                int rowBytes = image.ImageWidth * samplesPerPixel * bytePerPixel;
+                int stripRows = image.RowsPerStrip is { Length: > 0 } rps && rps[0] > 0 ? Math.Min(rps[0], image.ImageLength) : image.ImageLength;
                 for (int i = 0, n = 0; i < image.StripByteCounts.Length; i++)
                 {
                     br.BaseStream.Position = image.StripOffsets[i];
+                    Stream src = br.BaseStream; // 261124Cl 追加
+                    int stripBytes = image.StripByteCounts[i]; // 261124Cl 追加
+                    if (buffered) // 261124Cl 追加
+                    {
+                        // 展開後の大きさ = この帯の行数 × 1 行のバイト数 (最後の帯は残りの行数)。int を超える大きさは扱えない
+                        long expected = (long)rowBytes * Math.Max(1, Math.Min(stripRows, image.ImageLength - i * stripRows));
+                        if (expected > Array.MaxLength - 4096)
+                            throw new NotSupportedException("This compressed TIFF strip is too large to decode.");
+                        var dec = DecodeStrip(br.ReadBytes(stripBytes), image.Compression, (int)expected);
+                        if (image.Predictor == 2)
+                            UndoHorizontalPredictor(dec, image.ImageWidth, samplesPerPixel, bytePerPixel, bigEndian);
+                        src = new MemoryStream(dec, false);
+                        stripBytes = dec.Length;
+                    }
                     if (image.SampleFormat == 3 || image.IsGray)//浮動小数点データ、またはグレーの整数データの時 (整数は 1 の時は符号なし。2 の時は符号アリ)
                     {
-                        int count = Math.Max(0, image.StripByteCounts[i] / bytePerPixel);
+                        //int count = Math.Max(0, image.StripByteCounts[i] / bytePerPixel); // 261124Cl 変更前
+                        int count = Math.Max(0, stripBytes / bytePerPixel); // 261124Cl 変更: 展開した後のバイト数で数える
                         int fit = Math.Min(count, image.Value.Length - n);
                         var dst = image.Value.AsSpan(n, fit);
-                        ReadSamples(br.BaseStream, dst, kind, bigEndian);
+                        ReadSamples(src, dst, kind, bigEndian); // 261124Cl 変更 (旧 br.BaseStream)
                         if (image.SampleFormat != 3 && image.MDFileTag == 2)//gelファイルの時
                             for (int j = 0; j < dst.Length; j++)
                                 dst[j] *= dst[j];
@@ -763,7 +797,8 @@ public class Tiff
                     }
                     else//RGB(A) の整数データ: 画素ごとに bitsPerSampleLength 個の標本。一時配列に読んで振り分ける
                     {
-                        int count = Math.Max(0, image.StripByteCounts[i] / bytePerPixel / bitsPerSampleLength);
+                        //int count = Math.Max(0, image.StripByteCounts[i] / bytePerPixel / bitsPerSampleLength); // 261124Cl 変更前
+                        int count = Math.Max(0, stripBytes / bytePerPixel / bitsPerSampleLength); // 261124Cl 変更
                         int fit = Math.Min(count, image.ValueRed.Length - n);
                         const int chunk = 1 << 14;
                         var tmp = ArrayPool<double>.Shared.Rent(Math.Min(fit, chunk) * bitsPerSampleLength);
@@ -773,7 +808,7 @@ public class Tiff
                             {
                                 int m = Math.Min(chunk, fit - p);
                                 var t = tmp.AsSpan(0, m * bitsPerSampleLength);
-                                ReadSamples(br.BaseStream, t, kind, bigEndian);
+                                ReadSamples(src, t, kind, bigEndian); // 261124Cl 変更 (旧 br.BaseStream)
                                 for (int k = 0, q = n + p; k < m; k++, q++)
                                 {
                                     image.ValueRed[q] = (uint)t[k * bitsPerSampleLength];
@@ -827,6 +862,114 @@ public class Tiff
         /// <summary>標本の型 (一括読み込み用)。261111Cl 追加</summary>
         //private enum SampleKind { None, U8, U16, S16, U32, S32, F16, F32, F64 } // 261112Cl 変更前
         private enum SampleKind { None, U8, U16, S16, U32, S32, F16, F32, F64, U64, S64 } // 261112Cl 変更: 64 bit 整数を追加
+
+        /// <summary>261124Cl 追加: 圧縮されたストリップを展開する。5: LZW、8 / 32946: Deflate (zlib)、32773: PackBits。
+        /// expected はこの帯の展開後の大きさ。結果はそこで打ち切る (余分な展開で次の帯の画素がずれる・際限なくメモリを使うのを防ぐ)</summary>
+        private static byte[] DecodeStrip(byte[] src, int compression, int expected) => compression switch
+        {
+            5 => DecodeLzw(src, expected),
+            8 or 32946 => DecodeDeflate(src, expected),
+            32773 => DecodePackBits(src, expected),
+            _ => src,
+        };
+
+        /// <summary>261124Cl 追加: TIFF の LZW (MSB から詰めた 9〜12 ビットの符号、符号の幅は 1 つ早く増える "early change")</summary>
+        private static byte[] DecodeLzw(byte[] src, int expected)
+        {
+            const int clear = 256, eoi = 257;
+            var prefix = new short[4096];
+            var suffix = new byte[4096];
+            var first = new byte[4096];
+            var length = new int[4096];
+            for (int k = 0; k < 256; k++) { prefix[k] = -1; suffix[k] = first[k] = (byte)k; length[k] = 1; }
+            var dst = new byte[expected + 4096]; // 1 つの符号の展開は最長 4096 バイト。expected を超えた分は最後に捨てる
+            int o = 0, next = 258, width = 9, prev = -1, bits = 0, pos = 0;
+            uint buffer = 0;
+
+            void Write(int code)
+            {
+                int len = length[code];
+                for (int c = code, q = o + len - 1; q >= o; c = prefix[c], q--)
+                    dst[q] = suffix[c];
+                o += len;
+            }
+            void Add(int pre, byte last)
+            {
+                if (next >= 4096) return;
+                prefix[next] = (short)pre; suffix[next] = last; first[next] = first[pre]; length[next] = length[pre] + 1;
+                next++;
+                if (next + 1 == 1 << width && width < 12) width++; // early change: 511・1023・2047 で幅を増やす
+            }
+
+            while (o < expected)
+            {
+                while (bits < width && pos < src.Length) { buffer = (buffer << 8) | src[pos++]; bits += 8; }
+                if (bits < width) break;
+                int code = (int)((buffer >> (bits - width)) & ((1u << width) - 1));
+                bits -= width;
+                if (code == eoi) break;
+                if (code == clear) { next = 258; width = 9; prev = -1; continue; }
+                if (prev == -1) { if (code >= 256) break; Write(code); prev = code; continue; }
+                if (code < next) { Write(code); Add(prev, first[code]); }
+                else if (code == next) { Add(prev, first[prev]); Write(code); }
+                else break; // 壊れたデータ
+                prev = code;
+            }
+            Array.Resize(ref dst, Math.Min(o, expected));
+            return dst;
+        }
+
+        /// <summary>261124Cl 追加: Deflate (zlib の枠つき)。帯の大きさ (expected) の配列へ直接読み、それを超える分は読まない</summary>
+        private static byte[] DecodeDeflate(byte[] src, int expected)
+        {
+            using var z = new System.IO.Compression.ZLibStream(new MemoryStream(src, false), System.IO.Compression.CompressionMode.Decompress);
+            var dst = new byte[expected];
+            int o = 0, n;
+            while (o < dst.Length && (n = z.Read(dst, o, dst.Length - o)) > 0)
+                o += n;
+            if (o != dst.Length) Array.Resize(ref dst, o);
+            return dst;
+        }
+
+        /// <summary>261124Cl 追加: PackBits (0〜127: 続く n+1 バイトをそのまま、-1〜-127: 次の 1 バイトを 1−n 回、-128: 何もしない)</summary>
+        private static byte[] DecodePackBits(byte[] src, int expected)
+        {
+            var dst = new byte[expected];
+            int o = 0;
+            for (int p = 0; p < src.Length && o < dst.Length;)
+            {
+                int n = (sbyte)src[p++], m;
+                if (n >= 0) m = Math.Min(n + 1, src.Length - p);
+                else if (n != -128 && p < src.Length) m = 1 - n;
+                else continue;
+                int w = Math.Min(m, dst.Length - o); // 帯の大きさで打ち切る
+                if (n >= 0) { Array.Copy(src, p, dst, o, w); p += m; }
+                else dst.AsSpan(o, w).Fill(src[p++]);
+                o += w;
+            }
+            if (o != dst.Length) Array.Resize(ref dst, o);
+            return dst;
+        }
+
+        /// <summary>261124Cl 追加: 水平差分の予測 (Predictor 2) を戻す。行ごとに、各標本へ同じ成分の左隣の値を足す。
+        /// 標本の幅 (1・2・4・8 バイト) によらず、下位のバイトから繰り上がりつきで 1 バイトずつ足す (バイト順はファイルのとおり)</summary>
+        private static void UndoHorizontalPredictor(byte[] d, int width, int samplesPerPixel, int bytesPerSample, bool bigEndian)
+        {
+            int rowSamples = width * samplesPerPixel, rowBytes = rowSamples * bytesPerSample, step = samplesPerPixel * bytesPerSample;
+            if (rowBytes <= 0) return;
+            for (int r = 0; r + rowBytes <= d.Length; r += rowBytes)
+                for (int a = r + step; a < r + rowBytes; a += bytesPerSample)
+                {
+                    int carry = 0;
+                    for (int j = 0; j < bytesPerSample; j++)
+                    {
+                        int k = bigEndian ? bytesPerSample - 1 - j : j;
+                        int sum = d[a + k] + d[a - step + k] + carry;
+                        d[a + k] = (byte)sum;
+                        carry = sum >> 8;
+                    }
+                }
+        }
 
         /// <summary>stream の現在位置から dst.Length 個の標本を読み、double にして dst に書く。261111Cl 追加
         /// 8bit と II の整数はファイル末尾で EndOfStreamException (旧 BinaryReader.ReadXxx と同じ)、
