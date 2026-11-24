@@ -1054,8 +1054,13 @@ public static class Ring
                     }
                     else
                     {
-                        startCos = Math.Cos(2 * Math.Asin(IP.WaveLength / 2.0 / (IP.RadialRadiusDspacing + IP.RadialRadiusDspacingRange / 2)));
-                        endCos = Math.Cos(2 * Math.Asin(IP.WaveLength / 2.0 / (IP.RadialRadiusDspacing - IP.RadialRadiusDspacingRange / 2)));
+                        //startCos = Math.Cos(2 * Math.Asin(IP.WaveLength / 2.0 / (IP.RadialRadiusDspacing + IP.RadialRadiusDspacingRange / 2))); // 261124Cl 変更前
+                        //endCos = Math.Cos(2 * Math.Asin(IP.WaveLength / 2.0 / (IP.RadialRadiusDspacing - IP.RadialRadiusDspacingRange / 2)));
+                        // 261124Cl 修正 (所見 3): 積分 (GetRadialProfile) と UI は d ± 半幅。画素の除外だけ半幅の半分になっていたのを揃える。
+                        //          内側の境界 d − 半幅 が λ/2 以下なら、角度モードの同心円と同じく上限なし (cos = −1)
+                        startCos = Math.Cos(2 * Math.Asin(IP.WaveLength / 2.0 / (IP.RadialRadiusDspacing + IP.RadialRadiusDspacingRange)));
+                        double dInner = IP.RadialRadiusDspacing - IP.RadialRadiusDspacingRange;
+                        endCos = dInner > IP.WaveLength / 2.0 ? Math.Cos(2 * Math.Asin(IP.WaveLength / 2.0 / dInner)) : -1;
                     }
                 }
                 double endCos2 = endCos * endCos, startCos2 = startCos * startCos;
@@ -1939,15 +1944,19 @@ public static class Ring
             profile.Pt.Add(new PointD(i * step / Math.PI * 180, tempProfileIntensity[i] + tempProfileIntensity[i + length]));
 
         double shift = 0;
+        //if (ChiRotation == Rotation.Counterclockwise) // 261124Cl 変更前 (X を i と length−i−1 で入れ替えると、χ が 1 ビンずれる: 0° が 359° に付く)
+        //    for (int i = 0; i < length / 2; i++)
+        //    {
+        //        double temp = profile.Pt[i].X;
+        //        //profile.Pt[i].X = profile.Pt[length - i - 1].X;
+        //        profile.Pt[i] = new PointD(profile.Pt[length - i - 1].X, profile.Pt[i].Y);
+        //        //profile.Pt[length - i - 1].X = temp;
+        //        profile.Pt[length - i - 1] = new PointD(temp, profile.Pt[length - i - 1].Y);
+        //    }
+        // 261124Cl 修正 (所見 4): 反時計回りは χ' = (360° − χ) mod 360° に変換してから、下の原点のずらしを掛ける
         if (ChiRotation == Rotation.Counterclockwise)
-            for (int i = 0; i < length / 2; i++)
-            {
-                double temp = profile.Pt[i].X;
-                //profile.Pt[i].X = profile.Pt[length - i - 1].X;
-                profile.Pt[i] = new PointD(profile.Pt[length - i - 1].X, profile.Pt[i].Y);
-                //profile.Pt[length - i - 1].X = temp;
-                profile.Pt[length - i - 1] = new PointD(temp, profile.Pt[length - i - 1].Y);
-            }
+            for (int i = 1; i < length; i++)
+                profile.Pt[i] = new PointD(360 - profile.Pt[i].X, profile.Pt[i].Y);
 
         if (ChiRotation == Rotation.Clockwise)
         {
@@ -2052,8 +2061,16 @@ public static class Ring
             else if (IP.Mode == HorizontalAxis.d)//d-spacing modeのとき
             {
                 R2 = new double[(int)((IP.EndDspacing - IP.StartDspacing) / IP.StepDspacing) + 1];
+                //for (int i = R2.Length - 1; i >= 0; i--) // 261124Cl 変更前
+                //    R2[R2.Length - 1 - i] = 2 * Math.Asin(IP.WaveLength / 2 / (IP.StartDspacing + (i + 0.5) * IP.StepDspacing));
+                // 261124Cl 修正 (IPAnalyzer の査読の所見 1): R2[k] は角度のビン k の上側の境界。d と 2θ は逆順なので、d の出力 i (中心 dᵢ) の
+                //          上側の角度の境界は dᵢ − step/2 から作る (旧は dᵢ + step/2 で、dᵢ + step の信号が dᵢ のビンに入っていた)。
+                //          d ≤ λ/2 (sin が 1 を超える・d ≤ 0) は π とする (NaN にしない)。境界が 2θ より π/2 以上先なら積分の側で切らない。
                 for (int i = R2.Length - 1; i >= 0; i--)
-                    R2[R2.Length - 1 - i] = 2 * Math.Asin(IP.WaveLength / 2 / (IP.StartDspacing + (i + 0.5) * IP.StepDspacing));
+                {
+                    double dBoundary = IP.StartDspacing + (i - 0.5) * IP.StepDspacing;
+                    R2[R2.Length - 1 - i] = dBoundary > IP.WaveLength / 2 ? 2 * Math.Asin(IP.WaveLength / 2 / dBoundary) : Math.PI;
+                }
             }
             else if (IP.Mode == HorizontalAxis.Length)
             {
@@ -2413,10 +2430,15 @@ public static class Ring
         //角度ステップの区切り位置を設定する
         int length = (int)((IP.EndAngle - IP.StartAngle) / IP.StepAngle) + 1;
         //var divisions = new List<double>(); // 261111Cl 変更前
-        var divisions = new double[length]; // 261111Cl 二分探索のため配列で持つ
-        var tan = new double[length];
-        var sec = new double[length];
-        for (int i = 0; i < length; i++)
+        //var divisions = new double[length]; // 261111Cl 二分探索のため配列で持つ
+        //var tan = new double[length];
+        //var sec = new double[length];
+        //for (int i = 0; i < length; i++)
+        // 261124Cl 修正 (所見 5): divisions[i] はビン i の下側の境界。length 個のビンには length + 1 個の境界が要る (旧は最終ビンの上側の境界が無く、最終ビンに強度が入らなかった)
+        var divisions = new double[length + 1];
+        var tan = new double[length + 1];
+        var sec = new double[length + 1];
+        for (int i = 0; i <= length; i++)
         {
             //divisions.Add((i - 0.5) * IP.StepAngle + IP.StartAngle); // 261111Cl 変更前
             divisions[i] = (i - 0.5) * IP.StepAngle + IP.StartAngle;
@@ -2425,7 +2447,8 @@ public static class Ring
         }
         // 261111Cl divisions が狭義単調増加 (NaN なし) のときだけ二分探索を使う。そうでなければ旧来の線形探索。
         bool divisionsIncreasing = true;
-        for (int i = 1; i < length; i++)
+        //for (int i = 1; i < length; i++) // 261124Cl 変更前
+        for (int i = 1; i <= length; i++) // 261124Cl 境界は length + 1 個
             if (!(divisions[i - 1] < divisions[i])) { divisionsIncreasing = false; break; }
 
         // 261111Cl 追加: Matrix3D の乗算と同じ a1*b1 + a2*b2 + a3*b3 (FMA の入れ子)。下の m2 をスカラーで書き下すのに使う
@@ -2508,7 +2531,8 @@ public static class Ring
                         maxTwoTheta = Math.Max(Math.Max(tt0, tt1), Math.Max(tt2, tt3));
                     }
 
-                    if (maxTwoTheta > divisions[0] && minTwoTheta < divisions[length - 1])//全区切り内にピクセルが(一部でも)収まっている場合（完全に範囲外の時は除外）
+                    //if (maxTwoTheta > divisions[0] && minTwoTheta < divisions[length - 1])//全区切り内にピクセルが(一部でも)収まっている場合（完全に範囲外の時は除外） // 261124Cl 変更前
+                    if (maxTwoTheta > divisions[0] && minTwoTheta < divisions[length])//全区切り内にピクセルが(一部でも)収まっている場合（完全に範囲外の時は除外） // 261124Cl 最後の境界は divisions[length]
                     {
                         //最小インデックスと最大インデックスを求める
                         //int minIndex = Math.Max(0, divisions.FindLastIndex(d => d < minTwoTheta)); // 261111Cl 変更前
@@ -2522,13 +2546,19 @@ public static class Ring
                             minIndex = Math.Max(0, (bsMin >= 0 ? bsMin : ~bsMin) - 1);
                             int bsMax = divisions.AsSpan().BinarySearch(maxTwoTheta);
                             int firstOver = bsMax >= 0 ? bsMax + 1 : ~bsMax;
-                            maxIndex = Math.Min(length - 1, firstOver < length ? firstOver : -1);
+                            //maxIndex = Math.Min(length - 1, firstOver < length ? firstOver : -1); // 261124Cl 変更前
+                            maxIndex = firstOver <= length ? firstOver : -1;
                         }
                         else
                         {
                             minIndex = Math.Max(0, Array.FindLastIndex(divisions, d => d < minTwoTheta));
-                            maxIndex = Math.Min(length - 1, Array.FindIndex(divisions, d => d > maxTwoTheta));
+                            //maxIndex = Math.Min(length - 1, Array.FindIndex(divisions, d => d > maxTwoTheta)); // 261124Cl 変更前
+                            maxIndex = Array.FindIndex(divisions, d => d > maxTwoTheta);
                         }
+                        // 261124Cl 修正 (所見 5): 画素が最後の境界を越える (max 以上の境界が無い = −1) ときは、最後の境界まで切り分ける (旧はこの画素を丸ごと落としていた)。
+                        //          境界より先の残りは範囲外なので加えない
+                        if (maxIndex < 0)
+                            maxIndex = length;
 
                         //最大インデックスと最小インデックスの差が1の場合(ピクセルがすっぽり一つの区切り内に収まるとき)
                         if (maxIndex - minIndex == 1 && divisions[minIndex] < minTwoTheta && divisions[maxIndex] > maxTwoTheta)
@@ -3095,6 +3125,10 @@ public static class Ring
                     #endregion
 
                     double l2 = x * x + y * y + z * z, q = Math.Sqrt(x * x + y * y), l = Math.Sqrt(l2);
+                    // 261124Cl 修正 (所見 2、作者決定 11-24「中心画素は積分から外す」): 直射の中心が画素の中心に重なる (q = 0) と、下の bNew = …/q が NaN になり、
+                    //          扇形に分けるときは n4 が 0 にならず終わらなかった (分けないときもビン 0 が NaN → 0 になっていた)。この画素は積分しない。
+                    if (!(q > 0))
+                        continue;
 
                     //四隅の頂点座標を計算
                     for (int k = 0; k < 2; k++)
@@ -3150,7 +3184,10 @@ public static class Ring
                     for (int k1 = startIndex; k1 < R2.Length; k1++)
                     {
                         //x が c1以下の矩形(pt1)と、c1以上の矩形(pt2)を生成
-                        var c = Math.Tan(R2[k1] - twoTheta) * fd;
+                        //var c = Math.Tan(R2[k1] - twoTheta) * fd; // 261124Cl 変更前
+                        // 261124Cl 境界が 2θ より π/2 以上先 (d 値モードの π の境界など) は tan の符号が反転するので切らない (残りを全部このビンへ)。差は普通は画素の幅ほど
+                        var dR2 = R2[k1] - twoTheta;
+                        var c = dR2 < Math.PI / 2 ? Math.Tan(dR2) * fd : double.PositiveInfinity;
 
                         int n1 = 0, n2 = 0;
 
@@ -3173,8 +3210,11 @@ public static class Ring
                         }
                         else//セクター分割をする場合
                         {
+                            int chiVisits = 0; // 261124Cl 追加 (所見 2): 一周を超えて回らないための上限
                             for (int k2 = startChiIndex; k2 < chi.Length; k2++)
                             {
+                                if (++chiVisits > chiDivision + 1) // 261124Cl 開始の扇形から一周して元に戻るまで (chiDivision + 1 回) で打ち切る
+                                    break;
                                 var d = q / l * Math.Tan(chi[k2] - chiAngle) * fd;
                                 //矩形pt1を更に分割していく
                                 int n3 = 0, n4 = 0;

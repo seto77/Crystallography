@@ -33,7 +33,7 @@ public static partial class ImageIO
             "mar*",
             "mccd",
             "his",
-            "h5",
+            //"h5", // 261124Cl 削除 (所見 10): HDF5 の読込本体はコメントアウトされていて常に false。読めない形式をファイルの選択肢・ドロップの対象に出さない (NeXus .nxs は読める)
             "dm?",
             "raw",
             "bmp",
@@ -240,20 +240,41 @@ public static partial class ImageIO
         if (!File.Exists(str))
             return false;
 
+        // 261124Cl 修正 (IPAnalyzer の査読の所見 9、作者決定 11-24): 形式が分からない・読めなかったときは、読む前の状態 (いま表示中の画像と連番データ) に戻す。
+        //          旧は形式を判定する前に連番データを消し、読込関数が false を返しても IntensityOriginal を (読みかけの) Ring.Intensity で上書きしていた。
+        //          呼び出し側 (IPAnalyzer・ReciPro) はどれも false を失敗として扱う。
+        var saved = (Ring.Comments, Ring.SequentialImageIntensities, Ring.SequentialImageEnergy, Ring.SequentialImageNames, Ring.SequentialImagePulsePower,
+            Ring.Intensity, Ring.SrcImgSize);
+
         Ring.Comments = "";
         Ring.SequentialImageIntensities = null;
         Ring.SequentialImageEnergy = null;
         Ring.SequentialImageNames = null;
         Ring.SequentialImagePulsePower = null;
+        // 261124Cl 読込関数の多くは、大きさが同じなら Ring.Intensity の配列にそのまま書く。読みかけで失敗しても元の画像が残るよう、必ず新しい配列へ読ませる
+        //          (前の中身を使う読込関数は無い。大きさが違えば従来も新しく確保していた)
+        Ring.Intensity = [];
 
         // (261106Ch) 未認識だけを早期終了。読込関数が false を返した場合も従来どおり原画像を保存する。
-        var result = ReadImageData(str, flag);
-        if (result is null)
+        //var result = ReadImageData(str, flag); // 261124Cl 変更前
+        //if (result is null)
+        //    return false;
+        bool? result;
+        try { result = ReadImageData(str, flag); }
+        catch { restore(); throw; } // 261124Cl 例外は従来どおり呼び出し側へ。状態だけ戻す
+        if (result != true)
+        {
+            restore();
             return false;
+        }
 
         Ring.IntensityOriginal = [.. Ring.Intensity];
         Ring.SrcImgSizeOriginal = new Size(Ring.SrcImgSize.Width, Ring.SrcImgSize.Height);
-        return result.Value;
+        //return result.Value; // 261124Cl 変更前
+        return true;
+
+        void restore() => (Ring.Comments, Ring.SequentialImageIntensities, Ring.SequentialImageEnergy, Ring.SequentialImageNames, Ring.SequentialImagePulsePower,
+            Ring.Intensity, Ring.SrcImgSize) = saved;
     }
 
     /// <summary>形式別の読込。null は未認識、true/false は選択した読込関数の結果。(261106Ch) 追加</summary>
@@ -586,7 +607,8 @@ public static partial class ImageIO
             Ring.BitsPerPixels = type == "unsigned long int" ? 4 : 0;
 
             Ring.SrcImgSize = new Size(imageWidth, imageHeight);
-            Ring.ImageType = Ring.ImageTypeEnum.SMV;
+            //Ring.ImageType = Ring.ImageTypeEnum.SMV; // 261124Cl 変更前
+            Ring.ImageType = Ring.ImageTypeEnum.PXD; // 261124Cl 修正 (所見 7): Rigaku PXD は SMV (Dexela) と設定を共有しない
             //Ring.Comments = "Num. of Frame: " + numberOfFrame.ToString(); ;
         }
         catch (Exception e)
@@ -1213,7 +1235,8 @@ public static partial class ImageIO
                 Ring.Intensity[i] = t.Images[0].Value[i] * t.Images[0].MDScaleFactor;
 
             Ring.BitsPerPixels = t.BitsPerSampleGray;
-            Ring.ImageType = Ring.ImageTypeEnum.MCCD;
+            //Ring.ImageType = Ring.ImageTypeEnum.MCCD; // 261124Cl 変更前
+            Ring.ImageType = Ring.ImageTypeEnum.FLA7000; // 261124Cl 修正 (所見 7): GE の gel 形式は MCCD (Rayonix) と設定を共有しない
             //Ring.Scale = t.MDScaleFactor;
             Ring.Comments = t.Images[0].ImageDescription;
         }
@@ -2410,10 +2433,13 @@ public static partial class ImageIO
                     Ring.SequentialImageIntensities[j] = t.Images[j].Value;// 261111Cl 変更 (T9): t はローカルで、各フレームの配列は別々に確保されているので複製せずに受け取る
 
                 //hdfファイルに埋め込まれた情報の処理
-                if (!double.IsNaN(t.Images[j].XrayEnergy))
-                    Ring.SequentialImageEnergy.Add(t.Images[j].XrayEnergy);
-                if (!double.IsNaN(t.Images[j].PulsePower))
-                    Ring.SequentialImagePulsePower.Add(t.Images[j].PulsePower);
+                //if (!double.IsNaN(t.Images[j].XrayEnergy)) // 261124Cl 変更前 (値のあるフレームだけを詰めて入れていたので、欠けがあるとフレーム番号と添字がずれた)
+                //    Ring.SequentialImageEnergy.Add(t.Images[j].XrayEnergy);
+                //if (!double.IsNaN(t.Images[j].PulsePower))
+                //    Ring.SequentialImagePulsePower.Add(t.Images[j].PulsePower);
+                // 261124Cl 修正 (所見 8): フレームごとに入れ、欠けは NaN で埋めて添字をフレーム番号に揃える (どのフレームにも無いときは下で空にする)
+                Ring.SequentialImageEnergy.Add(t.Images[j].XrayEnergy);
+                Ring.SequentialImagePulsePower.Add(t.Images[j].PulsePower);
 
                 if (t.Images[j].Name.Length == 0)
                     Ring.SequentialImageNames.Add(j.ToString("000"));
@@ -2421,13 +2447,30 @@ public static partial class ImageIO
                     Ring.SequentialImageNames.Add(t.Images[j].Name);
             }
 
+            // 261124Cl 所見 8: どのフレームにも値が無ければ従来どおり空のリストにする (アプリは Count が枚数と同じかで使うかを決める)。
+            //          X 線のエネルギーは全フレームに揃っているときだけ残す (一部だけだと NaN の波長が使われかねない。旧も枚数が合わず使われなかった)
+            if (Ring.SequentialImageEnergy.Any(double.IsNaN))
+                Ring.SequentialImageEnergy.Clear();
+            if (Ring.SequentialImagePulsePower.All(double.IsNaN))
+                Ring.SequentialImagePulsePower.Clear();
+            // 261124Cl 作者決定 11-24: パルス強度が欠けた (NaN・0 以下) フレームが 1 枚でもあれば正規化しない (フレームごとに尺度が混ざるのを避ける)。そのことを知らせる
+            bool pulsePowerComplete = Ring.SequentialImagePulsePower.Count != 0 && Ring.SequentialImagePulsePower.All(p => p > 0);
+            if (Ring.SequentialImagePulsePower.Count != 0 && !pulsePowerComplete)
+            {
+                if (normarize != false)
+                    MessageBox.Show("Some images in this file have no pulse power. The intensities are not normalized by pulse power.", "read file option", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                normarize = false;
+            }
+
             //hdfだった場合のノーマライズ処理
-            if (Ring.SequentialImagePulsePower.Count != 0 && normarize == null)
+            //if (Ring.SequentialImagePulsePower.Count != 0 && normarize == null) // 261124Cl 変更前
+            if (pulsePowerComplete && normarize == null)
                 normarize = MessageBox.Show("This file contains pulse power in each image. Normarize intensities by pulse power?", "read file option", MessageBoxButtons.YesNo) == DialogResult.Yes;
 
             for (int j = 0; j < t.NumberOfFrames; j++)
             {
-                if (normarize == true && Ring.SequentialImagePulsePower[j] > 0)
+                //if (normarize == true && Ring.SequentialImagePulsePower[j] > 0) // 261124Cl 変更前
+                if (normarize == true && pulsePowerComplete) // 261124Cl 全フレームに正の値があるときだけ
                 {
                     //Ring.SequentialImageIntensities[j] = [.. Ring.SequentialImageIntensities[j].Select(d => d / Ring.SequentialImagePulsePower[j] / 10000)];
                     //261111Cl 変更 (T9): 上で受け取った配列 (このフレーム専用) をその場で正規化する。式 d / P / 10000 は同じ
