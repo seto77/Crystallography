@@ -1066,6 +1066,47 @@ public class Crystal : IEquatable<Crystal>, ICloneable, IComparable<Crystal>
 
     /// <summary>261111Cl 追加: 要素数の見積もり count から HashSet / List の初期容量を決める。見積もりを 2 割増し + 64 とし、upper (従来の固定値) を上限にする。
     /// double のまま比べてから int にするので、count が NaN・∞ のときは upper になる</summary>
+    /// <summary>261124Cl 追加 (C1-03): 逆格子 G = h a* + k b* + l c* のうち |G| &lt; gMax の点を、原点を除いて全部返す (|G| の昇順)。
+    /// |h| ≤ gMax·a (a は実格子の軸長。G·a = h より) などで h, k の範囲を決め、各 (h, k) で |G|² &lt; gMax² を l の二次不等式として解く。
+    /// 範囲は丸めに備えて 1 ずつ広げ、最後に |G| &lt; gMax で確かめる。halfSpace なら h &gt; 0、または h = 0 で k &gt; 0、または h = k = 0 で l &gt; 0 の半分だけ</summary>
+    internal static List<(int h, int k, int l, double x, double y, double z, double len)> EnumerateReciprocalPoints(
+        double aX, double aY, double aZ, double bX, double bY, double bZ, double cX, double cY, double cZ,
+        double a, double b, double c, double gMax, bool halfSpace)
+    {
+        var list = new List<(int h, int k, int l, double x, double y, double z, double len)>();
+        if (!(gMax > 0)) return list;
+        double m11 = aX * aX + aY * aY + aZ * aZ, m22 = bX * bX + bY * bY + bZ * bZ, m33 = cX * cX + cY * cY + cZ * cZ;
+        double m12 = aX * bX + aY * bY + aZ * bZ, m13 = aX * cX + aY * cY + aZ * cZ, m23 = bX * cX + bY * cY + bZ * cZ;
+        if (!(m33 > 0)) return list;
+        double g2 = gMax * gMax;
+        int hMax = (int)Math.Ceiling(gMax * a) + 1, kMax = (int)Math.Ceiling(gMax * b) + 1;
+        for (int h = halfSpace ? 0 : -hMax; h <= hMax; h++)
+            for (int k = halfSpace && h == 0 ? 0 : -kMax; k <= kMax; k++)
+            {
+                double bq = m13 * h + m23 * k, c0 = m11 * h * h + 2 * m12 * h * k + m22 * k * k - g2;
+                double disc = bq * bq - m33 * c0;
+                if (disc < 0) continue;
+                double sq = Math.Sqrt(disc);
+                int lLo = (int)Math.Floor((-bq - sq) / m33) - 1, lHi = (int)Math.Ceiling((-bq + sq) / m33) + 1;
+                if (halfSpace && h == 0 && k == 0) lLo = Math.Max(lLo, 1);
+                for (int l = lLo; l <= lHi; l++)
+                {
+                    if (h == 0 && k == 0 && l == 0) continue;
+                    double x = h * aX + k * bX + l * cX, y = h * aY + k * bY + l * cY, z = h * aZ + k * bZ + l * cZ, len2 = x * x + y * y + z * z;
+                    if (len2 < g2) list.Add((h, k, l, x, y, z, Math.Sqrt(len2)));
+                }
+            }
+        list.Sort((p, q) => p.len.CompareTo(q.len));
+        return list;
+    }
+
+    /// <summary>261124Cl 追加: 逆格子の点がおよそ count 個入る球の半径 (半空間なら半分の体積)。count が多すぎる列挙を避けるために、まずこの半径で数える</summary>
+    private static double EnumerationRadius(double count, double volume, bool halfSpace)
+    {
+        var r = Math.Cbrt(count / ((halfSpace ? 2.0 : 4.0) / 3.0 * Math.PI * volume));
+        return r > 0 && double.IsFinite(r) ? r : double.PositiveInfinity;
+    }
+
     private static int EstimateCapacity(double count, double upper) => (int)(count * 1.2 + 64 < upper ? count * 1.2 + 64 : upper);
 
     //readonly FrozenSet<(int h, int k, int l)> directions = [(1, 0, 0), (-1, 0, 0), (0, 1, 0), (0, -1, 0), (0, 0, 1), (0, 0, -1)]; // 261111Cl 変更前
@@ -1096,70 +1137,95 @@ public class Crystal : IEquatable<Crystal>, ICloneable, IComparable<Crystal>
         var gMax = 1 / dMin;
         var gMin = 1 / dMax;
 
-        // (260322Ch) 小さな LINQ 割り当てを避けるため、6方向を直接走査して最大シフトを求める
-        var shift = 0.0;
-        foreach (var dir in directions)
-        {
-            var candidate = (MatrixInverse * dir).Length;
-            if (candidate > shift)
-                shift = candidate;
-        }
+        //// (260322Ch) 小さな LINQ 割り当てを避けるため、6方向を直接走査して最大シフトを求める
+        //var shift = 0.0;
+        //foreach (var dir in directions)
+        //{
+            //var candidate = (MatrixInverse * dir).Length;
+            //if (candidate > shift)
+                //shift = candidate;
+        //}
 
+        //var maxNum = _maxNum;
+        //// (260322Ch) frontier は sorted List のまま使い、毎回の Min/FindLastIndex を避けて先頭から処理する
+        //var outer = new List<(int H, int K, int L, double len)>() { (0, 0, 0, 0) };
+        ////var whole = new HashSet<(int H, int K, int L)>((int)(maxNum * 8)) { (0, 0, 0) }; //全ての hkl を検索するため、composeを使えないことに注意 // 261111Cl 変更前
+        ////var listPlane = new List<Plane>((int)(maxNum * 1.5)); // 261111Cl 変更前
+        //// 261111Cl 変更: 容量を球内の逆格子点数 ≈ 4π/3·r³·Volume から見積もる (従来値が上限)。毎回 LOH に 64000 / 12000 要素を確保していた。
+        //// whole は半径 gMax + 3·shift (処理する点 < gMax + 2·shift、その隣 + shift) の球に、listPlane は半径 gMax の球に収まる。容量は結果に影響しない
+        //var whole = new HashSet<(int H, int K, int L)>(EstimateCapacity(4.0 / 3.0 * Math.PI * Math.Pow(gMax + 3 * shift, 3) * Volume, maxNum * 8.0)) { (0, 0, 0) }; //全ての hkl を検索するため、composeを使えないことに注意
+        //var listPlane = new List<Plane>(EstimateCapacity(4.0 / 3.0 * Math.PI * Math.Pow(gMax, 3) * Volume, maxNum * 1.5));
+
+        //while (listPlane.Count < maxNum && outer.Count > 0 && outer[0].len < gMax)
+        //{
+            //var minG = outer[0].len;
+            //// (260322Ch) sort 済みの先頭から閾値を超えるまで進めればよいので、全体走査を避ける
+            //var end = 1;
+            //var expandLimit = minG + shift * 2;
+            //while (end < outer.Count && outer[end].len < expandLimit)
+                //end++;
+
+            //foreach (var (h1, k1, l1, _) in CollectionsMarshal.AsSpan(outer)[..end])
+            //{
+                //foreach (var (h2, k2, l2) in directions)
+                //{
+                    //int h = h1 + h2, k = k1 + k2, l = l1 + l2;
+                    //if (whole.Add((h, k, l)))
+                    //{
+                        //double x = h * aX + k * bX + l * cX, y = h * aY + k * bY + l * cY, z = h * aZ + k * bZ + l * cZ;
+                        //var len = Math.Sqrt(x * x + y * y + z * z);
+                        //outer.Add((h, k, l, len));
+                        //if (len < gMax && len > gMin)
+                        //{
+                            ////var root = SymmetryStatic.IsRootPlane((h, k, l), Symmetry, out var indices); // 261111Cl 変更前
+                            //var root = SymmetryStatic.IsRootPlane((h, k, l), Symmetry, out int multiplicity); // 261111Cl 変更: 等価面の配列を作らない版 (root と多重度は旧と同じ)
+                            //// (260322Ch) 禁制面を除外しない場合は消滅則チェックを省略して割り当てを減らす
+                            //var hasExtinction = excludeForbiddenPlane && Symmetry.HasExtinction(h, k, l);//260605Cl 旧: CheckExtinctionRule(h,k,l).Length != 0 (bool判定のみなので割り当て無しのHasExtinctionへ)
+                            //if ((!excludeEquivalentPlane || root) && !hasExtinction)
+                            //{
+                                //listPlane.Add(new Plane
+                                //{
+                                    //IsRootIndex = root,
+                                    //h = h,
+                                    //k = k,
+                                    //l = l,
+                                    //d = 1 / len,
+                                    //strHKL = $"{h} {k} {l}",
+                                    ////Multi = [indices.Length], // 261111Cl 変更前
+                                    //Multi = [multiplicity], // 261111Cl
+                                //});
+                            //}
+                        //}
+                    //}
+                //}
+            //}
+            //outer.RemoveRange(0, end);
+            //outer.Sort((e1, e2) => e1.len.CompareTo(e2.len));
+        //}
+        // 261124Cl 変更 (codex2 査読 C1-03、作者の決定 2026-11-24 = 二次式で範囲を解く): 上の幅優先の探索 (コメント) は、原点から隣の格子点へ広げるので、
+        //  斜交格子では範囲の外を通らないと届かない点 (例 a=b=1 nm, γ=30° の (110) = 1.035 nm⁻¹ が gMax = 1.5 nm⁻¹ で抜ける) を落としていた。
+        //  球 |G| < gMax の中の格子点を、h, k ごとに l の範囲を二次不等式で求めて全部列挙し、短い順に採る。maxNum に届いたら、その長さの反射までで止める
         var maxNum = _maxNum;
-        // (260322Ch) frontier は sorted List のまま使い、毎回の Min/FindLastIndex を避けて先頭から処理する
-        var outer = new List<(int H, int K, int L, double len)>() { (0, 0, 0, 0) };
-        //var whole = new HashSet<(int H, int K, int L)>((int)(maxNum * 8)) { (0, 0, 0) }; //全ての hkl を検索するため、composeを使えないことに注意 // 261111Cl 変更前
-        //var listPlane = new List<Plane>((int)(maxNum * 1.5)); // 261111Cl 変更前
-        // 261111Cl 変更: 容量を球内の逆格子点数 ≈ 4π/3·r³·Volume から見積もる (従来値が上限)。毎回 LOH に 64000 / 12000 要素を確保していた。
-        // whole は半径 gMax + 3·shift (処理する点 < gMax + 2·shift、その隣 + shift) の球に、listPlane は半径 gMax の球に収まる。容量は結果に影響しない
-        var whole = new HashSet<(int H, int K, int L)>(EstimateCapacity(4.0 / 3.0 * Math.PI * Math.Pow(gMax + 3 * shift, 3) * Volume, maxNum * 8.0)) { (0, 0, 0) }; //全ての hkl を検索するため、composeを使えないことに注意
         var listPlane = new List<Plane>(EstimateCapacity(4.0 / 3.0 * Math.PI * Math.Pow(gMax, 3) * Volume, maxNum * 1.5));
-
-        while (listPlane.Count < maxNum && outer.Count > 0 && outer[0].len < gMax)
+        double gEnum = Math.Min(gMax, EnumerationRadius(maxNum * 2.0, Volume, false));
+        while (true)
         {
-            var minG = outer[0].len;
-            // (260322Ch) sort 済みの先頭から閾値を超えるまで進めればよいので、全体走査を避ける
-            var end = 1;
-            var expandLimit = minG + shift * 2;
-            while (end < outer.Count && outer[end].len < expandLimit)
-                end++;
-
-            foreach (var (h1, k1, l1, _) in CollectionsMarshal.AsSpan(outer)[..end])
+            listPlane.Clear();
+            double cutLen = double.NaN;
+            foreach (var (h, k, l, _, _, _, len) in EnumerateReciprocalPoints(aX, aY, aZ, bX, bY, bZ, cX, cY, cZ, A, B, C, gEnum, false))
             {
-                foreach (var (h2, k2, l2) in directions)
+                if (!double.IsNaN(cutLen) && len > cutLen * (1 + 1e-12)) break; // maxNum 本目と同じ長さの反射までは採る (等価な反射を途中で切らない)
+                if (len <= gMin) continue;
+                var root = SymmetryStatic.IsRootPlane((h, k, l), Symmetry, out int multiplicity);
+                var hasExtinction = excludeForbiddenPlane && Symmetry.HasExtinction(h, k, l);
+                if ((!excludeEquivalentPlane || root) && !hasExtinction)
                 {
-                    int h = h1 + h2, k = k1 + k2, l = l1 + l2;
-                    if (whole.Add((h, k, l)))
-                    {
-                        double x = h * aX + k * bX + l * cX, y = h * aY + k * bY + l * cY, z = h * aZ + k * bZ + l * cZ;
-                        var len = Math.Sqrt(x * x + y * y + z * z);
-                        outer.Add((h, k, l, len));
-                        if (len < gMax && len > gMin)
-                        {
-                            //var root = SymmetryStatic.IsRootPlane((h, k, l), Symmetry, out var indices); // 261111Cl 変更前
-                            var root = SymmetryStatic.IsRootPlane((h, k, l), Symmetry, out int multiplicity); // 261111Cl 変更: 等価面の配列を作らない版 (root と多重度は旧と同じ)
-                            // (260322Ch) 禁制面を除外しない場合は消滅則チェックを省略して割り当てを減らす
-                            var hasExtinction = excludeForbiddenPlane && Symmetry.HasExtinction(h, k, l);//260605Cl 旧: CheckExtinctionRule(h,k,l).Length != 0 (bool判定のみなので割り当て無しのHasExtinctionへ)
-                            if ((!excludeEquivalentPlane || root) && !hasExtinction)
-                            {
-                                listPlane.Add(new Plane
-                                {
-                                    IsRootIndex = root,
-                                    h = h,
-                                    k = k,
-                                    l = l,
-                                    d = 1 / len,
-                                    strHKL = $"{h} {k} {l}",
-                                    //Multi = [indices.Length], // 261111Cl 変更前
-                                    Multi = [multiplicity], // 261111Cl
-                                });
-                            }
-                        }
-                    }
+                    listPlane.Add(new Plane { IsRootIndex = root, h = h, k = k, l = l, d = 1 / len, strHKL = $"{h} {k} {l}", Multi = [multiplicity] });
+                    if (listPlane.Count == maxNum) cutLen = len;
                 }
             }
-            outer.RemoveRange(0, end);
-            outer.Sort((e1, e2) => e1.len.CompareTo(e2.len));
+            if (listPlane.Count >= maxNum || gEnum >= gMax) break;
+            gEnum = Math.Min(gMax, gEnum * 1.5); // まだ足りない: 半径を広げて数え直す
         }
 
         listPlane.Sort();
@@ -1362,53 +1428,71 @@ public class Crystal : IEquatable<Crystal>, ICloneable, IComparable<Crystal>
 
         double gMax = 1 / dMin, gMax2 = gMax * gMax;
 
-        #region directionを初期化
-        //var directions = new[] { (1, 0, 0), (0, 1, 0), (0, -1, 0), (0, 0, 1), (0, 0, -1) }.ToFrozenSet();//(-1, 0, 0)は除いておく // 261111Cl 変更前
-        var directions = directionsWithoutMinusH; //(-1, 0, 0)は除いておく // 261111Cl 変更: static readonly 配列 (同じ 5 方向・同じ順)
-        #endregion
+        //#region directionを初期化
+        ////var directions = new[] { (1, 0, 0), (0, 1, 0), (0, -1, 0), (0, 0, 1), (0, 0, -1) }.ToFrozenSet();//(-1, 0, 0)は除いておく // 261111Cl 変更前
+        //var directions = directionsWithoutMinusH; //(-1, 0, 0)は除いておく // 261111Cl 変更: static readonly 配列 (同じ 5 方向・同じ順)
+        //#endregion
 
-        //260605Cl 小さな LINQ 割り当てを避け、各方向を直接走査して最大シフトを求める(SetPlanes と同形・shift値は bit 一致)
-        var shift = 0.0;
-        foreach (var dir in directions)
-        {
-            var candidate = (MatrixInverse * dir).Length;
-            if (candidate > shift)
-                shift = candidate;
-        }
+        ////260605Cl 小さな LINQ 割り当てを避け、各方向を直接走査して最大シフトを求める(SetPlanes と同形・shift値は bit 一致)
+        //var shift = 0.0;
+        //foreach (var dir in directions)
+        //{
+            //var candidate = (MatrixInverse * dir).Length;
+            //if (candidate > shift)
+                //shift = candidate;
+        //}
 
-        var zeroKey = (255 << 20) + (255 << 10) + 255;
-        //var gHash = new HashSet<int>((int)(maxNum * 1.5)) { zeroKey }; // 261111Cl 変更前
-        //var gList = new List<(int key, double x, double y, double z, double len)>((int)(maxNum * 1.5)) { (zeroKey, 0, 0, 0, 0) }; // 261111Cl 変更前
-        // 261111Cl 変更: 容量を半球内の逆格子点数 ≈ 4π/3·r³·Volume/2 から見積もる (従来値 37500 が上限。LOH を避ける)。gHash は半径 gMax + shift、gList は半径 gMax の半球に収まる。
-        // gList が途中で伸びても、走査中の outer (旧配列の Span) の値は変わらないので結果は同じ
-        var gHash = new HashSet<int>(EstimateCapacity(2.0 / 3.0 * Math.PI * Math.Pow(gMax + shift, 3) * Volume, maxNum * 1.5)) { zeroKey };
-        var gList = new List<(int key, double x, double y, double z, double len)>(EstimateCapacity(2.0 / 3.0 * Math.PI * Math.Pow(gMax, 3) * Volume, maxNum * 1.5)) { (zeroKey, 0, 0, 0, 0) };
-        int start = 0, end = 1;
-        var outer = CollectionsMarshal.AsSpan(gList)[start..end];
-        while (gList.Count < maxNum && outer.Length > 0)
+        //var zeroKey = (255 << 20) + (255 << 10) + 255;
+        ////var gHash = new HashSet<int>((int)(maxNum * 1.5)) { zeroKey }; // 261111Cl 変更前
+        ////var gList = new List<(int key, double x, double y, double z, double len)>((int)(maxNum * 1.5)) { (zeroKey, 0, 0, 0, 0) }; // 261111Cl 変更前
+        //// 261111Cl 変更: 容量を半球内の逆格子点数 ≈ 4π/3·r³·Volume/2 から見積もる (従来値 37500 が上限。LOH を避ける)。gHash は半径 gMax + shift、gList は半径 gMax の半球に収まる。
+        //// gList が途中で伸びても、走査中の outer (旧配列の Span) の値は変わらないので結果は同じ
+        //var gHash = new HashSet<int>(EstimateCapacity(2.0 / 3.0 * Math.PI * Math.Pow(gMax + shift, 3) * Volume, maxNum * 1.5)) { zeroKey };
+        //var gList = new List<(int key, double x, double y, double z, double len)>(EstimateCapacity(2.0 / 3.0 * Math.PI * Math.Pow(gMax, 3) * Volume, maxNum * 1.5)) { (zeroKey, 0, 0, 0, 0) };
+        //int start = 0, end = 1;
+        //var outer = CollectionsMarshal.AsSpan(gList)[start..end];
+        //while (gList.Count < maxNum && outer.Length > 0)
+        //{
+            //foreach (var (key1, _, _, _, _) in outer)
+            //{
+                //var (h1, k1, l1) = decomposeKey(key1);
+                //foreach (var (h2, k2, l2) in directions)
+                //{
+                    //int h = h1 + h2, k = k1 + k2, l = l1 + l2, key2 = composeKey(h, k, l);
+                    //if (key2 > 0 && gHash.Add(key2))
+                    //{
+                        //double x = h * aX + k * bX + l * cX, y = h * aY + k * bY + l * cY, z = h * aZ + k * bZ + l * cZ, len2 = x * x + y * y + z * z;
+                        //if (len2 < gMax2)
+                            //gList.Add((key2, x, y, z, Math.Sqrt(len2)));
+                    //}
+                //}
+            //}
+            //start += end;
+            //outer = CollectionsMarshal.AsSpan(gList)[start..];
+            //outer.Sort((e1, e2) => e1.len.CompareTo(e2.len));
+            //for (end = 0; end < outer.Length && outer[end].len < outer[0].len + shift * 2; end++)
+                //;
+            //outer = outer[..end];
+        //}
+        //gList.RemoveAt(0);// 000スポットを削除
+        // 261124Cl 変更 (codex2 査読 C1-03・C1-11、作者の決定 2026-11-24 = 二次式で範囲を解く): 上の幅優先の探索 (コメント) は斜交格子で範囲内の点を落とし、
+        //  指数を 10 ビットずつの鍵に詰めていたので |k|, |l| > 255 で別の指数に化けた (k = 257 → −767)。半空間 (h > 0、または h = 0 で k > 0、…) の
+        //  球 |G| < gMax の格子点を二次不等式で全部列挙し、指数はそのまま持つ。maxNum に届いたら、その長さの反射までで止める
+        double gEnum = Math.Min(gMax, EnumerationRadius(maxNum * 2.0, Volume, true));
+        List<(int h, int k, int l, double x, double y, double z, double len)> gList;
+        while (true)
         {
-            foreach (var (key1, _, _, _, _) in outer)
-            {
-                var (h1, k1, l1) = decomposeKey(key1);
-                foreach (var (h2, k2, l2) in directions)
-                {
-                    int h = h1 + h2, k = k1 + k2, l = l1 + l2, key2 = composeKey(h, k, l);
-                    if (key2 > 0 && gHash.Add(key2))
-                    {
-                        double x = h * aX + k * bX + l * cX, y = h * aY + k * bY + l * cY, z = h * aZ + k * bZ + l * cZ, len2 = x * x + y * y + z * z;
-                        if (len2 < gMax2)
-                            gList.Add((key2, x, y, z, Math.Sqrt(len2)));
-                    }
-                }
-            }
-            start += end;
-            outer = CollectionsMarshal.AsSpan(gList)[start..];
-            outer.Sort((e1, e2) => e1.len.CompareTo(e2.len));
-            for (end = 0; end < outer.Length && outer[end].len < outer[0].len + shift * 2; end++)
-                ;
-            outer = outer[..end];
+            gList = EnumerateReciprocalPoints(aX, aY, aZ, bX, bY, bZ, cX, cY, cZ, A, B, C, gEnum, true);
+            if (gList.Count >= maxNum || gEnum >= gMax) break;
+            gEnum = Math.Min(gMax, gEnum * 1.5);
         }
-        gList.RemoveAt(0);// 000スポットを削除
+        if (gList.Count > maxNum)
+        {
+            int n = maxNum;
+            double cut = gList[n - 1].len * (1 + 1e-12);
+            while (n < gList.Count && gList[n].len <= cut) n++;
+            gList.RemoveRange(n, gList.Count - n);
+        }
         if (!double.IsInfinity(dMax))
         {
             //var i = gList.FindIndex(g => g.len > 1 / dMax); // 261124Cl 変更前: すべての候補が dMax より長い d を持つと FindIndex が -1 を返し、何も除かれず全件が残っていた (codex2 第 1 回 C1-10)
@@ -1433,8 +1517,9 @@ public class Crystal : IEquatable<Crystal>, ICloneable, IComparable<Crystal>
             () => 0.0,
             (i, _, localMax) =>
             {
-                var (key, x, y, z, glen) = gList[i];
-                var (h, k, l) = decomposeKey(key);
+                //var (key, x, y, z, glen) = gList[i]; // 261124Cl 変更前
+                //var (h, k, l) = decomposeKey(key);
+                var (h, k, l, x, y, z, glen) = gList[i]; // 261124Cl 変更: 指数をそのまま持つ
                 var rule = Symmetry.GetFirstExtinctionRule(h, k, l);
                 var plus = new Vector3D(x, y, z, false) { Index = (h, k, l), d = 1 / glen, ExtinctionRule = rule, Text = $"{h} {k} {l}" };
                 var minus = new Vector3D(-x, -y, -z, false) { Index = (-h, -k, -l), d = 1 / glen, ExtinctionRule = rule, Text = $"{-h} {-k} {-l}" };

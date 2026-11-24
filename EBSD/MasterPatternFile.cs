@@ -808,8 +808,14 @@ public static class MasterPatternFile
             // 数値だけをカンマで足すので、指紋を読む側 (tools/EbsdOccupancy の ParseFingerprint) は先頭の 5 つだけを読んで動く
             if (a.Dsf is { UseIso: false } d)
                 sb.Append(string.Format(ci, ",{0:E6},{1:E6},{2:E6},{3:E6},{4:E6},{5:E6}", d.B11, d.B22, d.B33, d.B12, d.B23, d.B31));
+            // 261124Cl 追加 (codex2 査読 C1-16): イオン模型のとき、電子散乱因子の種類 (SubNumberElectron) で散乱因子と価数が変わるので入れる。
+            //  中性原子の模型では使わない (計算でも 0 として扱う) ので入れない。既存の (中性で作った) ファイルの指紋は変わらない
+            if (BetheMethod.ElasticIonModel != ElasticIonModel.Neutral)
+                sb.Append(string.Format(ci, ",e{0}", a.SubNumberElectron));
             sb.Append(';');
         }
+        if (BetheMethod.ElasticIonModel != ElasticIonModel.Neutral) // 261124Cl 追加: 模型の名前も (末尾。原子の区切りの後なので、先頭の数を読む道具の解釈は変わらない)
+            sb.Append("ion=").Append(BetheMethod.ElasticIonModel).Append(';');
         return sb.ToString();
     }
 
