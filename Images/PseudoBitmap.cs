@@ -20,6 +20,8 @@ public class PseudoBitmap : IDisposable
         SrcBitmap?.Dispose();
 #pragma warning restore CS0618
         destBmp?.Dispose();
+        destBmp = null; // 261125Cl 追加: 同じ PseudoBitmap を複数の画面が共有し、片方の画面の破棄で Dispose されることがある。次の GetImage は破棄済みの
+                        //  キャッシュの Width を読まず、作り直す (codex2 の査読)
     }
 
     #region static なコンストラクタ、フィールド
@@ -653,15 +655,49 @@ public class PseudoBitmap : IDisposable
             destBmp = new Bitmap(width, height, pixelFormat); // (260715Ch)
             previous?.Dispose();
         }
+        return RenderInto(srcRect, destBmp) ? destBmp : null; // 261125Cl 変更: 描画の本体は RenderInto へ移した (下の行からもとの本体)
+    }
+
+    /// <summary>261125Cl 追加: <see cref="RenderInto"/> が受け付ける画像の画素形式 (AlphaEnabled なら 32bppPArgb、そうでなければ 24bppRgb)</summary>
+    public PixelFormat ImagePixelFormat => AlphaEnabled ? PixelFormat.Format32bppPArgb : PixelFormat.Format24bppRgb;
+
+    /// <summary>261125Cl 追加 (IPAnalyzer の依頼): 指定された範囲のイメージを、呼び出し側が所有する新しい Bitmap で返す (使い終わったら呼び出し側が Dispose する)。
+    /// <see cref="GetImage(RectangleD, Size)"/> は内部のキャッシュを貸すので、次の呼び出しで大きさが変わると破棄される。保存・クリップボード・別の画面での表示にはこちらを使う。
+    /// 描けないとき (大きさが 0 以下など) は null</summary>
+    public Bitmap CreateImage(RectangleD srcRect, Size destSize)
+    {
+        if (Height <= 0 || Width <= 0 || srcRect.Width <= 0 || srcRect.Height <= 0 || destSize.Width <= 0 || destSize.Height <= 0) return null;
+        var bmp = new Bitmap(destSize.Width, destSize.Height, ImagePixelFormat);
+        try
+        {
+            if (RenderInto(srcRect, bmp)) { var result = bmp; bmp = null; return result; } // 成功したときだけ所有権を渡す
+            return null;
+        }
+        finally { bmp?.Dispose(); } // 失敗・例外のときは解放する
+    }
+
+    /// <summary>261125Cl 追加 (IPAnalyzer の依頼): 指定された範囲を、呼び出し側の Bitmap (target) の大きさいっぱいに描く。target の所有権は呼び出し側のまま。
+    /// 画面ごとに描画先を持てば、同じ PseudoBitmap を大きさの違う複数の画面で使っても作り直しが起きない。
+    /// target の画素形式は <see cref="ImagePixelFormat"/> でなければならない (違えば ArgumentException)。描けなかったら false。
+    /// ⚠ 描画中は target をロックするので、画面に表示中の Bitmap なら先に外しておく。描画の作業領域 (FilterTemporary) を共有するので、同じ PseudoBitmap を複数のスレッドから同時に描かない</summary>
+    public unsafe bool RenderInto(RectangleD srcRect, Bitmap target)
+    {
+        if (target == null || Height <= 0 || Width <= 0 || srcRect.Width <= 0 || srcRect.Height <= 0 || target.Width <= 0 || target.Height <= 0) return false;
+        if (target.PixelFormat != ImagePixelFormat)
+            throw new ArgumentException($"target の画素形式は {ImagePixelFormat} でなければならない ({target.PixelFormat})", nameof(target));
+        int width = target.Width, height = target.Height;
+
         //bmpをロック
         BitmapData bmpData;
         try
         {
-            bmpData = destBmp.LockBits(new Rectangle(0, 0, destBmp.Width, destBmp.Height), ImageLockMode.ReadWrite, destBmp.PixelFormat);
+            //bmpData = destBmp.LockBits(new Rectangle(0, 0, destBmp.Width, destBmp.Height), ImageLockMode.ReadWrite, destBmp.PixelFormat); // 261125Cl 変更前
+            bmpData = target.LockBits(new Rectangle(0, 0, width, height), ImageLockMode.ReadWrite, target.PixelFormat); // 261125Cl 変更
         }
         catch
         {
-            return null;
+            //return null; // 261125Cl 変更前
+            return false; // 261125Cl 変更
         }
         //261112Cl 追加: 画素ループなどで例外が出ても必ず UnlockBits する (旧はロックが残り、以後の LockBits が失敗して GetImage が null を返し続けた)。
         //  try の中身は字下げを変えずに残す (差分を小さくするため)。finally は下の UnlockBits の位置
@@ -738,7 +774,8 @@ public class PseudoBitmap : IDisposable
         int increase = (zoom >= 1) ? 0 : Math.Max(range / 3, 1);
 
         int step = AlphaEnabled ? 4 : 3;
-        int nResidual = bmpData.Stride - destBmp.Width * step;
+        //int nResidual = bmpData.Stride - destBmp.Width * step; // 261125Cl 変更前
+        int nResidual = bmpData.Stride - width * step; // 261125Cl 変更: 描画先は target (幅は width)
         //double filter; //261111Cl 変更前: 全スレッドで 1 個を共有していた (FFT_Filter が 0 でないと競合する)。スレッド本体の中へ移した
 
         int thread = Environment.ProcessorCount;
@@ -1134,10 +1171,12 @@ public class PseudoBitmap : IDisposable
         finally
         {
         //destBmp.UnlockBits(bmpData); //261112Cl 変更前
-        destBmp.UnlockBits(bmpData); //261112Cl 変更: finally の中へ (上の try を参照)
+        //destBmp.UnlockBits(bmpData); //261112Cl 変更: finally の中へ (上の try を参照) // 261125Cl 変更前
+        target.UnlockBits(bmpData); // 261125Cl 変更: 描画先は target
         }
 
-        return destBmp;
+        //return destBmp; // 261125Cl 変更前
+        return true; // 261125Cl 変更
     }
 
     /// <summary>実画像モードのとき回転操作を施す</summary>

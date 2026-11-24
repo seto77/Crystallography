@@ -158,11 +158,19 @@ public static class Geometry
     /// <param name="tauDev"></param>
     /// <param name="phi"></param>
     /// <param name="phiDev"></param>
-    public static void GetTiltAndOffset(PointD[] EllipseCenter, double[] Radius, double CameraLength, ref PointD offset, ref PointD offsetDev,
-      ref double tau, ref double tauDev, ref double phi, ref double phiDev)
+    /// <param name="ksiRadians">261125Cl 追加: 検出器の軸の直交からのずれ ξ (ラジアン)。戻り値の u = X − Y·tanξ に使う (offsetDev には影響しない)</param>
+    /// <returns>261125Cl 追加 (IPAnalyzer の依頼): 2 つのリングの組ごとに求めたオフセットから u = X − Y·tanξ (mm) を作り、その標本標準偏差を返す。
+    /// 画素単位の中心 X の誤差は s(u)/PixSizeX で、X と Y の相関も入る (σX/PixX − σY·tanξ/PixY のような標準偏差の引き算は誤り)。
+    /// 分散は平均を引いてから二乗和をとる (桁落ちを避ける)。有限な組が 2 組未満なら NaN。ξ = 0 なら X の標本標準偏差</returns>
+    //public static void GetTiltAndOffset(PointD[] EllipseCenter, double[] Radius, double CameraLength, ref PointD offset, ref PointD offsetDev,
+    //  ref double tau, ref double tauDev, ref double phi, ref double phiDev) // 261125Cl 変更前
+    public static double GetTiltAndOffset(PointD[] EllipseCenter, double[] Radius, double CameraLength, ref PointD offset, ref PointD offsetDev,
+      ref double tau, ref double tauDev, ref double phi, ref double phiDev, double ksiRadians = 0) // 261125Cl 変更: ksiRadians を追加し、u の標本標準偏差を返す
     {
         //任意の二点を選んでoffset, tau, phiを計算する
         List<double> offsetXList = [], offsetYList = [];
+        List<double> uList = []; // 261125Cl 追加
+        var tanKsi = Math.Tan(ksiRadians); // 261125Cl 追加
         List<double> tauList = [], phiList = [];
 
         for (int i = 0; i < EllipseCenter.Length; i++)
@@ -178,6 +186,12 @@ public static class Geometry
 
                 offsetXList.Add(offsetTemp.X);
                 offsetYList.Add(offsetTemp.Y);
+                // 261125Cl 追加: 入力 (2 つの中心・半径・カメラ長) が有限な組だけを u に数える。入力に NaN があると下位の探索の残差が全部 NaN になり、
+                //  一度も採用されないまま初期値 (0, 0) を返すので、結果の有限性だけでは見分けられない (codex2 の査読)
+                var u = offsetTemp.X - offsetTemp.Y * tanKsi;
+                if (double.IsFinite(EllipseCenter[i].X) && double.IsFinite(EllipseCenter[i].Y) && double.IsFinite(EllipseCenter[j].X) && double.IsFinite(EllipseCenter[j].Y)
+                    && double.IsFinite(Radius[i]) && double.IsFinite(Radius[j]) && double.IsFinite(CameraLength) && double.IsFinite(u))
+                    uList.Add(u);
                 tauList.Add(tauTemp);
                 phiList.Add(phiTemp);
             }
@@ -195,6 +209,13 @@ public static class Geometry
 
         //全EllipseCenterを用いて、offset, tau, phiを計算する
         GetTiltAndOffset(EllipseCenter, Radius, CameraLength, ref offset, ref tau, ref phi);
+
+        // 261125Cl 追加: u の標本標準偏差 (平均を引いてから二乗和)
+        if (uList.Count < 2) return double.NaN;
+        var uMean = uList.Average();
+        double uSquareSum = 0;
+        foreach (var v in uList) uSquareSum += (v - uMean) * (v - uMean);
+        return Math.Sqrt(uSquareSum / (uList.Count - 1));
     }
 
     /// <summary>楕円の中心群とそれらの半径から、真の中心のオフセット位置(offset)と傾き(tau, phi)を返す</summary>
