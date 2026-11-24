@@ -140,7 +140,8 @@ public class EOS
             double molV = cellVolume * 6.0221367 / Z;// * 1E23 * 1E-30;// m^3の単位にするために本当は1E-7を掛ける
             double molV0 = CellVolume0 * 6.0221367 / Z;// * 1E23 * 1E-30;// m^3の単位にするために本当は1E-7を掛ける
             double gamma = Gamma0 * Math.Pow(molV / molV0, Q);
-            double theta = Theta0 * Math.Exp((Gamma0 - gamma) / Q);
+            //double theta = Theta0 * Math.Exp((Gamma0 - gamma) / Q); // 261124Cl 変更前: q = 0 で 0/0 = NaN (PDIndexer の査読 C-16)
+            double theta = Q == 0 ? Theta0 * Math.Pow(molV / molV0, -Gamma0) : Theta0 * Math.Exp((Gamma0 - gamma) / Q); // 261124Cl 変更: q → 0 の極限 θ = θ0 (V/V0)^(−γ0)
             double x = theta / Temperature;
             double x0 = theta / T0;
             double Eth = 9 * 8.31451 * N * Temperature / x / x / x * integ(x);
@@ -186,7 +187,8 @@ public class EOS
         double V0 = v0 * 6.0221367 / z; //// * 1E23 * 1E-30;// m^3の単位にするために本当は1E-7を掛ける
 
         double gamma = gamma0 * Math.Pow(V / V0, q);
-        double theta = theta0 * Math.Exp((gamma0 - gamma) / q);
+        //double theta = theta0 * Math.Exp((gamma0 - gamma) / q); // 261124Cl 変更前: q = 0 で 0/0 = NaN (PDIndexer の査読 C-16)
+        double theta = q == 0 ? theta0 * Math.Pow(V / V0, -gamma0) : theta0 * Math.Exp((gamma0 - gamma) / q); // 261124Cl 変更: q → 0 の極限 θ = θ0 (V/V0)^(−γ0)
         double x = theta / t;
         double x0 = theta / t0;
         double eth = 9 * UniversalConstants.R * n * t / x / x / x * integ(x);
@@ -537,7 +539,8 @@ public class EOS
         double Pst = Vinet(K0T, Kprime0T, V0perV);
 
         double gamma = gamma0 * Math.Pow(V / V0, q);
-        double theta = theta0 * Math.Exp((gamma0 - gamma) / q);
+        //double theta = theta0 * Math.Exp((gamma0 - gamma) / q); // 261124Cl 変更前: q = 0 で 0/0 = NaN (PDIndexer の査読 C-16)
+        double theta = q == 0 ? theta0 * Math.Pow(V / V0, -gamma0) : theta0 * Math.Exp((gamma0 - gamma) / q); // 261124Cl 変更: q → 0 の極限 θ = θ0 (V/V0)^(−γ0)
         double x = theta / T;
         double x0 = theta / T0;
         double Eth = 9 * UniversalConstants.R * T / x / x / x * integ(x);

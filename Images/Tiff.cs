@@ -113,6 +113,14 @@ public class Tiff
             bw.Write(BitConverter.GetBytes(tag));
             bw.Write(BitConverter.GetBytes((ushort)2));//type
             bw.Write(BitConverter.GetBytes((uint)str.Length + 1));//count
+            // 261124Cl 追加 (codex2 の査読): 終端込み 4 バイト以下の文字列は、TIFF の決まりどおり値の欄に直接書く (読み手はそう読む。旧は常にオフセットを書いていた)
+            if (str.Length + 1 <= 4)
+            {
+                var inline = new byte[4];
+                for (int i = 0; i < str.Length; i++) inline[i] = (byte)str[i];
+                bw.Write(inline);
+                return offset;
+            }
             bw.Write(BitConverter.GetBytes(offset));
             long pos = bw.BaseStream.Position;
             bw.BaseStream.Position = offset;
@@ -132,7 +140,8 @@ public class Tiff
     public static void Writer(string filename, double[] srcData, int sampleFormat, int imageWidth, IFD[] additionalIFD = null)
     {
         if (additionalIFD != null)
-            Writer(filename, [srcData], sampleFormat, imageWidth, [additionalIFD]);
+            //Writer(filename, [srcData], sampleFormat, imageWidth, [additionalIFD]); // 261124Cl 変更前 (codex2 の査読): タグの配列をフレームの配列として包んでいたので、タグが 1 個以外だとフレーム数の検査で黙って保存しなかった
+            Writer(filename, [srcData], sampleFormat, imageWidth, [.. additionalIFD.Select(f => new[] { f })]); // 261124Cl 変更: タグごとに 1 フレームの配列
         else
             Writer(filename, [srcData], sampleFormat, imageWidth);
     }
@@ -234,8 +243,19 @@ public class Tiff
             //IFDの総数
             short totalIFD = 15;
             //additionalIFD = null;
+            //if (additionalIFD != null) // 261124Cl 変更前: 1 フレームあたりの追加タグの数を固定 (additionalIFD.Length) で数えていたので、
+            //    totalIFD += (short)additionalIFD.Length; //  あるフレームだけタグを省く (PulsePower が NaN のフレーム) ことができなかった (IPAnalyzer 所見 8 の残り)
+            // 261124Cl 変更: このフレームで実際に書くタグだけを数える (既知のタグで、値が空でも NaN でもないもの)。全フレームに値がある従来の呼び方は同じ数
+            // 261124Cl (codex2 の査読): 値の型を確かめる (float・int なども double に変換できるもの。名前は空でない文字列)
+            static bool writable(IFD f) => f.Data is { Length: > 0 } && f.Tag switch
+            {
+                60000 or 60002 => f.Data[0] is IConvertible c && c is not string && double.IsFinite(Convert.ToDouble(c, System.Globalization.CultureInfo.InvariantCulture)),
+                60001 => f.Data[0] is string { Length: > 0 },
+                _ => false
+            };
             if (additionalIFD != null)
-                totalIFD += (short)additionalIFD.Length;
+                for (int i = 0; i < additionalIFD.Length; i++)
+                    if (writable(additionalIFD[i][n])) totalIFD++;
 
             bw.Write(BitConverter.GetBytes(totalIFD));
             offset = (uint)(bw.BaseStream.Position + totalIFD * 12 + 4);
@@ -267,12 +287,15 @@ public class Tiff
             {
                 for (int i = 0; i < additionalIFD.Length; i++)
                 {
+                    if (!writable(additionalIFD[i][n])) continue; // 261124Cl 追加: 数えなかったタグは書かない
                     if (additionalIFD[i][n].Tag == 60000)//XrayEnergy
-                        offset = IFD.Write(bw, (ushort)additionalIFD[i][n].Tag, (double)additionalIFD[i][n].Data[0], offset);
+                        //offset = IFD.Write(bw, (ushort)additionalIFD[i][n].Tag, (double)additionalIFD[i][n].Data[0], offset); // 261124Cl 変更前: double 以外の数値で例外
+                        offset = IFD.Write(bw, (ushort)additionalIFD[i][n].Tag, Convert.ToDouble(additionalIFD[i][n].Data[0], System.Globalization.CultureInfo.InvariantCulture), offset); // 261124Cl
                     if (additionalIFD[i][n].Tag == 60001)//Name
                         offset = IFD.Write(bw, (ushort)additionalIFD[i][n].Tag, (string)additionalIFD[i][n].Data[0], offset);
                     if (additionalIFD[i][n].Tag == 60002)//PulsePower
-                        offset = IFD.Write(bw, (ushort)additionalIFD[i][n].Tag, (double)additionalIFD[i][n].Data[0], offset);
+                        //offset = IFD.Write(bw, (ushort)additionalIFD[i][n].Tag, (double)additionalIFD[i][n].Data[0], offset); // 261124Cl 変更前: double 以外の数値で例外
+                        offset = IFD.Write(bw, (ushort)additionalIFD[i][n].Tag, Convert.ToDouble(additionalIFD[i][n].Data[0], System.Globalization.CultureInfo.InvariantCulture), offset); // 261124Cl
                 }
             }
         }

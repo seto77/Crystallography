@@ -1283,18 +1283,38 @@ public class Crystal : IEquatable<Crystal>, ICloneable, IComparable<Crystal>
             listPlane[n].Intensity = -1;
         }
 
+        //if (Plane != null) // 261124Cl 変更前: 新旧の一覧を行の番号だけで対応づけていたので、先頭の反射が 1 つ外れると、探索幅・観測強度・フィット結果が
+        //    for (int n = 0; n < Plane.Count && n < listPlane.Count; n++) //  1 つずつ別の反射へ移った (PDIndexer の査読 C-06 = ReciPro の査読 C1-08)
+        //    {
+        //        listPlane[n].SerchRange = Plane[n].SerchRange;
+        //        listPlane[n].FWHM = Plane[n].FWHM;
+        //        listPlane[n].SerchOption = Plane[n].SerchOption;
+        //        listPlane[n].IsFittingChecked = Plane[n].IsFittingChecked;
+        //        listPlane[n].simpleParameter = Plane[n].simpleParameter;
+        //        listPlane[n].peakFunction = Plane[n].peakFunction;
+        //        listPlane[n].Intensity = Plane[n].Intensity;
+        //        listPlane[n].observedIntensity = Plane[n].observedIntensity;
+        //    }
+        // 261124Cl 変更: 指数の文字列 (結合した反射は構成するすべての指数を含む) が完全に一致する反射だけに引き継ぐ。
+        //  結合・分離で構成が変わった反射は、新しい反射として既定の設定から始める (作者の決定は codex2 の推す最小修正どおり)
         if (Plane != null)
-            for (int n = 0; n < Plane.Count && n < listPlane.Count; n++)
-            {
-                listPlane[n].SerchRange = Plane[n].SerchRange;
-                listPlane[n].FWHM = Plane[n].FWHM;
-                listPlane[n].SerchOption = Plane[n].SerchOption;
-                listPlane[n].IsFittingChecked = Plane[n].IsFittingChecked;
-                listPlane[n].simpleParameter = Plane[n].simpleParameter;
-                listPlane[n].peakFunction = Plane[n].peakFunction;
-                listPlane[n].Intensity = Plane[n].Intensity;
-                listPlane[n].observedIntensity = Plane[n].observedIntensity;
-            }
+        {
+            var old = new Dictionary<string, Plane>();
+            foreach (var p in Plane)
+                if (p.strHKL != null) old.TryAdd(p.strHKL, p);
+            foreach (var q in listPlane)
+                if (q.strHKL != null && old.TryGetValue(q.strHKL, out var p))
+                {
+                    q.SerchRange = p.SerchRange;
+                    q.FWHM = p.FWHM;
+                    q.SerchOption = p.SerchOption;
+                    q.IsFittingChecked = p.IsFittingChecked;
+                    q.simpleParameter = p.simpleParameter;
+                    q.peakFunction = p.peakFunction;
+                    q.Intensity = p.Intensity;
+                    q.observedIntensity = p.observedIntensity;
+                }
+        }
         Plane = listPlane;
     }
     #endregion 面ベクトルの計算

@@ -180,8 +180,10 @@ public class RingIntegrationTests(ITestOutputHelper output)
         Ring.SetInsideArea(ip); Ring.SetMask(false, false, false);
         var p = Ring.GetProfile(ip);
         output.WriteLine(string.Join(" ", p.Pt.Select(q => $"{q.X:f0}:{q.Y:f3}")));
-        // ビン数は Ring と同じ切り捨ての式 (20°/1° はラジアンでは 19.999… になり 20 点)
-        Assert.Equal((int)((ip.EndAngle - ip.StartAngle) / ip.StepAngle) + 1, p.Pt.Count);
+        // ビン数は Ring と同じ切り捨ての式 (20°/1° はラジアンでは 19.999… になり 20 点) // 261124Cl 変更前
+        //Assert.Equal((int)((ip.EndAngle - ip.StartAngle) / ip.StepAngle) + 1, p.Pt.Count);
+        // 261124Cl 変更 (作者の決定 2026-11-24): ビン数の切り捨てを直したので、両端を含む 10°〜30° の 21 点
+        Assert.Equal(21, p.Pt.Count);
         Assert.Equal(1.0, p.Pt[^1].Y, 3); // 一様な画像なので 1 (旧は 0)
     }
 }

@@ -106,6 +106,10 @@ public class IntegralProperty
 /// <summary>DebyeScherrer の概要の説明です。</summary>
 public static class Ring
 {
+    /// <summary>261124Cl 追加: start から end まで step 刻みのビンの数 (両端を含む)。(end − start)/step が丸めで整数より僅かに小さくなっても
+    /// 1 点を落とさないよう、1e-9 の許容を足してから切り捨てる (旧は (int)((end − start)/step) + 1 で、rad で持つ角度の 10°〜30°/1° が 20 点になった)</summary>
+    private static int binCount(double start, double end, double step) => (int)Math.Floor((end - start) / step + 1e-9) + 1;
+
     #region フィールド、メソッド、enum
 
     public enum Rotation { Clockwise, Counterclockwise }
@@ -1358,7 +1362,8 @@ public static class Ring
         IP = iP;
         //傾き補正用パラメータを計算
         SetTiltParameter();
-        R2 = new double[(int)((endTheta - startTheta) / stepTheta) + 1];
+        //R2 = new double[(int)((endTheta - startTheta) / stepTheta) + 1]; // 261124Cl 変更前 (codex2 の査読): ここだけ切り捨ての式が残り、プロファイルより 1 列少なかった
+        R2 = new double[binCount(startTheta, endTheta, stepTheta)]; // 261124Cl
         for (int i = 0; i < R2.Length; i++)
             R2[i] = (i + 0.5) * stepTheta + startTheta;
         int height = chiDivision;
@@ -2054,13 +2059,15 @@ public static class Ring
             //角度、距離、d値モードごとに、ステップの区切り位置(中心からの距離の2乗)を設定する
             if (IP.Mode == HorizontalAxis.Angle)
             {
-                R2 = new double[(int)((IP.EndAngle - IP.StartAngle) / IP.StepAngle) + 1];
+                //R2 = new double[(int)((IP.EndAngle - IP.StartAngle) / IP.StepAngle) + 1]; // 261124Cl 変更前: rad の割り算の丸めで 1 点少なくなった (10°〜30°/1° が 21 点でなく 20 点)
+                R2 = new double[binCount(IP.StartAngle, IP.EndAngle, IP.StepAngle)]; // 261124Cl
                 for (int i = 0; i < R2.Length; i++)
                     R2[i] = (i + 0.5) * IP.StepAngle + IP.StartAngle;//2016/12/27 変更
             }
             else if (IP.Mode == HorizontalAxis.d)//d-spacing modeのとき
             {
-                R2 = new double[(int)((IP.EndDspacing - IP.StartDspacing) / IP.StepDspacing) + 1];
+                //R2 = new double[(int)((IP.EndDspacing - IP.StartDspacing) / IP.StepDspacing) + 1]; // 261124Cl 変更前: rad の割り算の丸めで 1 点少なくなった (10°〜30°/1° が 21 点でなく 20 点)
+                R2 = new double[binCount(IP.StartDspacing, IP.EndDspacing, IP.StepDspacing)]; // 261124Cl
                 //for (int i = R2.Length - 1; i >= 0; i--) // 261124Cl 変更前
                 //    R2[R2.Length - 1 - i] = 2 * Math.Asin(IP.WaveLength / 2 / (IP.StartDspacing + (i + 0.5) * IP.StepDspacing));
                 // 261124Cl 修正 (IPAnalyzer の査読の所見 1): R2[k] は角度のビン k の上側の境界。d と 2θ は逆順なので、d の出力 i (中心 dᵢ) の
@@ -2074,7 +2081,8 @@ public static class Ring
             }
             else if (IP.Mode == HorizontalAxis.Length)
             {
-                R2 = new double[(int)((IP.EndLength - IP.StartLength) / IP.StepLength) + 1];
+                //R2 = new double[(int)((IP.EndLength - IP.StartLength) / IP.StepLength) + 1]; // 261124Cl 変更前: rad の割り算の丸めで 1 点少なくなった (10°〜30°/1° が 21 点でなく 20 点)
+                R2 = new double[binCount(IP.StartLength, IP.EndLength, IP.StepLength)]; // 261124Cl
                 for (int i = 0; i < R2.Length; i++)
                 {
                     double temp = IP.StartLength + (i + 0.5) * IP.StepLength;
@@ -2085,7 +2093,8 @@ public static class Ring
         else//ガンドルフィーモードの時
         {
             //角度ステップの区切り位置を設定する
-            R2 = new double[(int)((IP.EndAngle - IP.StartAngle) / IP.StepAngle) + 1];
+            //R2 = new double[(int)((IP.EndAngle - IP.StartAngle) / IP.StepAngle) + 1]; // 261124Cl 変更前: rad の割り算の丸めで 1 点少なくなった (10°〜30°/1° が 21 点でなく 20 点)
+            R2 = new double[binCount(IP.StartAngle, IP.EndAngle, IP.StepAngle)]; // 261124Cl
             for (int i = 0; i < R2.Length; i++)
                 R2[i] = (i - 0.5) * IP.StepAngle + IP.StartAngle;
         }
@@ -2334,7 +2343,8 @@ public static class Ring
         //var thread = Environment.ProcessorCount; // 261111Cl 変更前 (下の Parallel.For とともに)
         //int yStep = IP.SrcHeight / thread + 1;
 
-        R2 = new double[(int)((IP.EndAngle - IP.StartAngle) / IP.StepAngle) + 1];
+        //R2 = new double[(int)((IP.EndAngle - IP.StartAngle) / IP.StepAngle) + 1]; // 261124Cl 変更前: rad の割り算の丸めで 1 点少なくなった (10°〜30°/1° が 21 点でなく 20 点)
+        R2 = new double[binCount(IP.StartAngle, IP.EndAngle, IP.StepAngle)]; // 261124Cl
         for (int i = 0; i < R2.Length; i++)
             R2[i] = (i + 0.5) * IP.StepAngle + IP.StartAngle;//2016/12/27 変更
 
@@ -2428,7 +2438,8 @@ public static class Ring
         var convRealToTwoTheta = new Func<Vector3DBase, double>((v) => Math.Acos((v.Z + CL) / Math.Sqrt(v.X * v.X + v.Y * v.Y + (v.Z + CL) * (v.Z + CL))));
 
         //角度ステップの区切り位置を設定する
-        int length = (int)((IP.EndAngle - IP.StartAngle) / IP.StepAngle) + 1;
+        //int length = (int)((IP.EndAngle - IP.StartAngle) / IP.StepAngle) + 1; // 261124Cl 変更前: rad の割り算の丸めで 1 点少なくなった (10°〜30°/1° が 21 点でなく 20 点)
+        int length = binCount(IP.StartAngle, IP.EndAngle, IP.StepAngle); // 261124Cl
         //var divisions = new List<double>(); // 261111Cl 変更前
         //var divisions = new double[length]; // 261111Cl 二分探索のため配列で持つ
         //var tan = new double[length];
@@ -3459,7 +3470,8 @@ public static class Ring
             return;
 
         //配列Rを作成　各ステップごとの中心からの距離を格納する配列
-        R2 = new double[(int)((IP.EndLength - IP.StartLength) / IP.StepLength) + 1];
+        //R2 = new double[(int)((IP.EndLength - IP.StartLength) / IP.StepLength) + 1]; // 261124Cl 変更前: rad の割り算の丸めで 1 点少なくなった (10°〜30°/1° が 21 点でなく 20 点)
+        R2 = new double[binCount(IP.StartLength, IP.EndLength, IP.StepLength)]; // 261124Cl
         double temp;
         for (i = 0; i < R2.Length; i++)
         {

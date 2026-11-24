@@ -196,6 +196,31 @@ public partial class Profile : ICloneable
         return GetValues([x], pointNum, order, eachside, false)[0];
     }
 
+    /// <summary>261124Cl 追加 (PDIndexer の査読 C-24): 複数の X について GetValue(x, 2, 1) と GetErr(x) の値を返す。
+    /// Pt・Err の X がそれぞれ狭義単調増加なら二分探索 (O(log N))、そうでなければ従来の探索を使う (値の規則は同じ)。
+    /// 昇順の確認はそれぞれ 1 回だけ。PDIndexer の複数プロファイルの平均 (各点で 2 回の線形探索で O(PN²)) から呼ぶための入口</summary>
+    public (double[] Values, double[] Errors) GetValuesAndErrors(double[] xs)
+    {
+        bool sortedPt = isStrictlyAscendingX(Pt), sortedErr = isStrictlyAscendingX(Err);
+        var values = new double[xs.Length];
+        var errors = new double[xs.Length];
+        // 261124Cl (codex2 の査読): 0 点は NaN、1 点は定数 (GetValues と同じ)。誤差も 1 点ならその σ、無ければ NaN (旧 GetValue は範囲外参照、GetErr は 0 を返した)
+        if (Pt.Count <= 1 || Err.Count <= 1)
+        {
+            Array.Fill(values, Pt.Count == 0 ? double.NaN : Pt.Count == 1 ? Pt[0].Y : double.NaN);
+            if (Pt.Count > 1) for (int i = 0; i < xs.Length; i++) values[i] = sortedPt ? getValue21Sorted(xs[i]) : GetValue(xs[i], 2, 1);
+            Array.Fill(errors, Err.Count == 1 ? Err[0].Y : double.NaN);
+            if (Err.Count > 1) for (int i = 0; i < xs.Length; i++) errors[i] = sortedErr ? getErrSorted(xs[i]) : GetErr(xs[i]);
+            return (values, errors);
+        }
+        for (int i = 0; i < xs.Length; i++)
+        {
+            values[i] = sortedPt ? getValue21Sorted(xs[i]) : GetValue(xs[i], 2, 1);
+            errors[i] = sortedErr ? getErrSorted(xs[i]) : GetErr(xs[i]);
+        }
+        return (values, errors);
+    }
+
     /// <summary>261111Cl 追加: list の X が狭義単調増加 (NaN を含まない) なら true。getValue21Sorted / getErrSorted を使ってよいかの判定</summary>
     internal static bool isStrictlyAscendingX(List<PointD> list)
     {
@@ -273,6 +298,9 @@ public partial class Profile : ICloneable
         if (pointNum < 2) pointNum = 2;
         if (order > pointNum - 1) order = pointNum - 1;
         double[] value = new double[x.Length];
+        // 261124Cl 追加 (PDIndexer の査読 C-14): 点が 0 なら補間できない (下の Pt[0] で例外になっていた)。1 点なら定数
+        if (Pt.Count == 0) { Array.Fill(value, double.NaN); return value; }
+        if (Pt.Count == 1) { Array.Fill(value, Pt[0].Y); return value; }
 
         /*   var srcPts = new List<List<PointD>>(); //Xに同じ値が含まれている場合(吸収端のような不連続なプロファイル)を考慮して、分離しておく
            for (int i=0; i< Pt.Count; i++)
@@ -318,7 +346,8 @@ public partial class Profile : ICloneable
             if (eachside)//両側でなるべく均等な点数がほしいとき
             {
                 int i = 1;
-                while (pt.Count < pointNum)
+                //while (pt.Count < pointNum) // 261124Cl 変更前: 点が足りないと左右とも範囲外になっても終わらなかった (C-14)
+                while (pt.Count < pointNum && (position - i + 1 >= 0 || position + i < Pt.Count)) // 261124Cl 変更: 両側を使い切ったら止める
                 {
                     if (position - i + 1 >= 0)
                         pt.Add(Pt[position - i + 1]);
@@ -341,6 +370,7 @@ public partial class Profile : ICloneable
                 if (order > pointNum - 1)
                     order = pointNum - 1;
             }
+            if (pt.Count == 1) { value[n] = pt[0].Y; continue; } // 261124Cl 追加: 1 点しか集まらなければ定数 (下の座標の正規化が 1/0 になる)
 
             //計算精度のため、xの範囲を1から+2に変換する 式は X = c1 x + c2;
             double c1 = 1.0 / (pt[^1].X - pt[0].X);
@@ -435,45 +465,69 @@ public partial class Profile : ICloneable
         //一行目
         sb.Add(name);
 
-        //二行目
+        // 261124Cl 変更前 (PDIndexer の査読 C-11): 2 点未満で Pt[1] の例外、現在のカルチャで書いていた、g12 を先頭 11 文字で切って指数を失っていた
+        ////二行目
+        //var ptCount = profile.Pt.Count;
+        //var startAngle = profile.Pt[0].X * div;
+        //var stepAngle = (profile.Pt[1].X - profile.Pt[0].X) * div;
+        //sb.Add($"BANK 1 {ptCount} {ptCount} CONST {startAngle:f2} {stepAngle:f2} 0 0 FXYE");
+
+        ////errが有効なデータかどうかを判定
+        //bool validErr = true;
+        //if (profile.Err != null && profile.Err.Count == profile.Pt.Count)
+        //{
+        //    for (int i = 0; i < ptCount; i++)
+        //        if (profile.Err[i].IsNaN)
+        //            validErr = false;
+        //}
+        //else
+        //    validErr = false;
+
+        //for (int i = 0; i < ptCount; i++)
+        //{
+        //    var value = new string[3];
+        //    value[0] = (profile.Pt[i].X * div).ToString("g12");
+        //    value[1] = profile.Pt[i].Y.ToString("g12");
+        //    if (validErr)
+        //        value[2] = profile.Err[i].Y.ToString("g12");
+        //    else
+        //        value[2] = Math.Sqrt(profile.Pt[i].Y).ToString("g12");
+
+        //    var y = profile.Pt[i].Y.ToString("g7");
+
+        //    for (int j = 0; j < value.Length; j++)
+        //    {
+        //        if (value[j].Length > 11)
+        //            value[j] = value[j][..11];
+        //        if (value[j].EndsWith("."))
+        //            value[j] = " " + y[..10];
+        //        while (value[j].Length < 11)
+        //            value[j] = " " + value[j];
+        //    }
+        //    sb.Add($" {value[0]} {value[1]} {value[2]}");
+        //}
+        // 261124Cl 変更: PDIndexer の専用ライター (FormMain の GSAS 保存) と同じ書式。角度は度で受けて ×100 (センチ度)、TOF は ×1 のまま
+        if (profile.Pt.Count < 2) throw new ArgumentException("GSAS output needs at least two points.", nameof(profile));
+        var inv = System.Globalization.CultureInfo.InvariantCulture;
         var ptCount = profile.Pt.Count;
         var startAngle = profile.Pt[0].X * div;
         var stepAngle = (profile.Pt[1].X - profile.Pt[0].X) * div;
-        sb.Add($"BANK 1 {ptCount} {ptCount} CONST {startAngle:f2} {stepAngle:f2} 0 0 FXYE");
-
-        //errが有効なデータかどうかを判定
-        bool validErr = true;
-        if (profile.Err != null && profile.Err.Count == profile.Pt.Count)
+        sb.Add(string.Create(inv, $"BANK 1 {ptCount} {ptCount} CONST {startAngle:f2} {stepAngle:f2} 0 0 FXYE"));
+        bool validErr = profile.Err != null && profile.Err.Count == ptCount && !profile.Err.Any(e => e.IsNaN);
+        // 11 文字に収まるまで有効桁を下げる (指数と符号は保つ)
+        string field(double v)
         {
-            for (int i = 0; i < ptCount; i++)
-                if (profile.Err[i].IsNaN)
-                    validErr = false;
+            for (int digits = 15; digits > 1; digits--)
+            {
+                var t = v.ToString("G" + digits, inv);
+                if (t.Length <= 11) return t.PadLeft(11);
+            }
+            return v.ToString("0E+0", inv).PadLeft(11);
         }
-        else
-            validErr = false;
-
         for (int i = 0; i < ptCount; i++)
         {
-            var value = new string[3];
-            value[0] = (profile.Pt[i].X * div).ToString("g12");
-            value[1] = profile.Pt[i].Y.ToString("g12");
-            if (validErr)
-                value[2] = profile.Err[i].Y.ToString("g12");
-            else
-                value[2] = Math.Sqrt(profile.Pt[i].Y).ToString("g12");
-
-            var y = profile.Pt[i].Y.ToString("g7");
-
-            for (int j = 0; j < value.Length; j++)
-            {
-                if (value[j].Length > 11)
-                    value[j] = value[j][..11];
-                if (value[j].EndsWith("."))
-                    value[j] = " " + y[..10];
-                while (value[j].Length < 11)
-                    value[j] = " " + value[j];
-            }
-            sb.Add($" {value[0]} {value[1]} {value[2]}");
+            var err = validErr ? profile.Err[i].Y : Math.Sqrt(profile.Pt[i].Y);
+            sb.Add($" {field(profile.Pt[i].X * div)} {field(profile.Pt[i].Y)} {field(err)}");
         }
 
         return [.. sb];
@@ -693,6 +747,10 @@ public partial class DiffractionProfile2 : ICloneable
     #region Kalpha2除去
     //Kalpha2除去ここから
     public bool DoesRemoveKalpha2 = false;
+    /// <summary>261124Cl 追加: Kα2 の除去を求められたが、表示軸が測定波長の 2θ (度) でないため除去しなかったとき true (アプリが「この軸では除去できない」と示すため)</summary>
+    [System.Xml.Serialization.XmlIgnore]
+    [MemoryPackIgnore] // 261124Cl (codex2 の査読): 転送の並びに入れない (IPAnalyzer と PDIndexer の片方だけ更新すると転送が壊れるため)
+    public bool Kalpha2RemovalSkipped { get; private set; }
 
     public double Kalpha1 = 0, Kalpha2 = 0;
     #endregion
@@ -825,8 +883,18 @@ public partial class DiffractionProfile2 : ICloneable
 
         ConvertedProfile.Clear();
 
-        PointD[] pt = ConvertSrcToDest([.. SourceProfile.Pt]);
-        PointD[] err = ConvertSrcToDest([.. SourceProfile.Err]);
+        //PointD[] pt = ConvertSrcToDest([.. SourceProfile.Pt]); // 261124Cl 変更前: 強度と誤差を別々に変換・除外・並べ替えしていた (PDIndexer の査読 C-21)。
+        //PointD[] err = ConvertSrcToDest([.. SourceProfile.Err]); //  対数では σ にも log10 が掛かり、片方だけ除かれた点で対応がずれた
+        // 261124Cl 変更: 強度と誤差が同じ X で対になっているときは一組として変換する。そうでなければ従来どおり別々に
+        bool paired = SourceProfile.Err.Count > 0 && SourceProfile.Err.Count == SourceProfile.Pt.Count; // X が違う行は convertPairedSrcToDest で σ を NaN にする (codex2 の査読)
+        PointD[] pt, err;
+        if (paired)
+            (pt, err) = convertPairedSrcToDest();
+        else
+        {
+            pt = ConvertSrcToDest([.. SourceProfile.Pt]);
+            err = ConvertSrcToDest([.. SourceProfile.Err]);
+        }
 
         //ここから、2ThetaOffset処理
         if (IsShiftX)
@@ -853,10 +921,22 @@ public partial class DiffractionProfile2 : ICloneable
 
         //ここまで
 
-        ConvertedProfile.Pt.AddRange(pt);
-        ConvertedProfile.Err.AddRange(err);
-
-        ConvertedProfile.Sort();//ここまでプロファイルソートを完了
+        //ConvertedProfile.Pt.AddRange(pt); // 261124Cl 変更前: 強度と誤差を別々に並べ替えていた
+        //ConvertedProfile.Err.AddRange(err);
+        //
+        //ConvertedProfile.Sort();//ここまでプロファイルソートを完了
+        if (paired) // 261124Cl 変更: 対のときは X の順に組のまま並べる
+        {
+            var order = Enumerable.Range(0, pt.Length).OrderBy(i => pt[i].X).ToArray();
+            ConvertedProfile.Pt.AddRange(order.Select(i => pt[i]));
+            ConvertedProfile.Err.AddRange(order.Select(i => err[i]));
+        }
+        else
+        {
+            ConvertedProfile.Pt.AddRange(pt);
+            ConvertedProfile.Err.AddRange(err);
+            ConvertedProfile.Sort();//ここまでプロファイルソートを完了
+        }
 
         SetMaskingProfile();
     }
@@ -903,6 +983,11 @@ public partial class DiffractionProfile2 : ICloneable
                 }
                 pts.RemoveRange(w, stop - w);
             }
+            // 261124Cl 追加 (C-14): マスクが全点を覆って補間に使える点が残らないときは、補間せずマスクを掛けない (元の点のまま)
+            if (InterpolatedProfile.Pt.Count == 0)
+                InterpolatedProfile.Pt.AddRange(ConvertedProfile.Pt);
+            else
+            {
             var y = new List<List<double>>();
             for (int i = 0; i < x.Count; i++)
             {
@@ -912,7 +997,10 @@ public partial class DiffractionProfile2 : ICloneable
             for (int i = 0; i < x.Count; i++)
                 for (int j = 0; j < x[i].Count; j++)
                     InterpolatedProfile.Pt.Add(new PointD(x[i][j], y[i][j]));
-            InterpolatedProfile.Sort();
+            } // 261124Cl
+            //InterpolatedProfile.Sort(); // 261124Cl 変更前 (codex2 の査読): 強度と誤差を別々に X・Y の順で並べるので、同じ X の (I, σ) の組が入れ替わった
+            InterpolatedProfile.Pt = [.. InterpolatedProfile.Pt.OrderBy(q => q.X)]; // 261124Cl 変更: X だけで安定に並べ、対を保つ
+            InterpolatedProfile.Err = [.. InterpolatedProfile.Err.OrderBy(q => q.X)];
         }
         SetSmoothingProfile();
     }
@@ -931,6 +1019,7 @@ public partial class DiffractionProfile2 : ICloneable
 
         //for (int i = 0; i < InterpolatedProfile.Err.Count; i++)
         //    SmoothedProfile.Err.Add(InterpolatedProfile.Err[i]);
+        SmoothedProfile.Err.Clear(); // 261124Cl 追加 (codex2 の査読): 点が少ないと SavitzkyGolay が誤差込みの複製を返すので、下で二重に入っていた
         SmoothedProfile.Err.AddRange(InterpolatedProfile.Err); // 261111Cl 変更
 
         if (DoesBandpassFilter && SmoothedProfile.Pt.Count > 2)
@@ -990,7 +1079,18 @@ public partial class DiffractionProfile2 : ICloneable
         Kalpha2RemovedProfile.Pt.AddRange(SmoothedProfile.Pt); // 261111Cl 変更: 1 要素ずつの Add → AddRange
         Kalpha2RemovedProfile.Err.AddRange(SmoothedProfile.Err); // 261111Cl 変更
 
-        if (DoesRemoveKalpha2 && SrcProperty.WaveSource == WaveSource.Xray && SrcProperty.XrayElementNumber != 0 && SrcProperty.XrayLine == XrayLine.Ka1)
+        // 261124Cl 追加 (PDIndexer の査読 C-15): 下の式は X を「測定波長の 2θ (度)」として扱う。表示軸が d・rad・別の波長などのときは
+        //  参照する Kα1 の位置がずれ (d では向きまで逆)、誤った量を引いていた。その条件に限って除去し、それ以外は除去せず印を立てる
+        //  (全表示軸への対応は作者の判断待ち: 測定の 2θ に対応づけて角度の昇順に引き、表示の順に戻す必要がある)
+        Kalpha2RemovalSkipped = false;
+        bool kalpha2Requested = DoesRemoveKalpha2 && SrcProperty.WaveSource == WaveSource.Xray && SrcProperty.XrayElementNumber != 0 && SrcProperty.XrayLine == XrayLine.Ka1;
+        bool measuredTwoThetaDegree = DstProperty.AxisMode == HorizontalAxis.Angle && DstProperty.TwoThetaUnit == AngleUnitEnum.Degree
+            && DstProperty.WaveSource == SrcProperty.WaveSource && DstProperty.WaveLength == SrcProperty.WaveLength
+            && Mode == DiffractionProfileMode.Concentric && !IsLogIntensity && Kalpha2RemovedProfile.Pt.Count > 0; // 261124Cl (codex2 の査読): Radial (X が χ)、対数強度 (対数値から引いてしまう)、点が無いときも除去しない
+        if (kalpha2Requested && !measuredTwoThetaDegree)
+            Kalpha2RemovalSkipped = true;
+        //if (DoesRemoveKalpha2 && SrcProperty.WaveSource == WaveSource.Xray && SrcProperty.XrayElementNumber != 0 && SrcProperty.XrayLine == XrayLine.Ka1) // 261124Cl 変更前
+        if (kalpha2Requested && measuredTwoThetaDegree) // 261124Cl
         {
             double alpha1 = AtomStatic.CharacteristicXrayWavelength(SrcProperty.XrayElementNumber, XrayLine.Ka1);
             double alpha2 = AtomStatic.CharacteristicXrayWavelength(SrcProperty.XrayElementNumber, XrayLine.Ka2);
@@ -1275,6 +1375,36 @@ public partial class DiffractionProfile2 : ICloneable
             y = Math.Log10(y);
 
         return new PointD(x, y);
+    }
+
+    /// <summary>261124Cl 追加 (C-21): 強度 I と標準不確かさ σ を一組として横軸・縦軸を変換する。CPS は両方を露出時間で割り、
+    /// 対数は I を log10 にして σ を σ/(I ln10) とする (一次の誤差の伝播)。対数で I ≤ 0 の行と、X か I が有限でない行は、強度と誤差の両方から除く。
+    /// σ が有限でない点は強度を残し、誤差を NaN にする</summary>
+    private (PointD[] pt, PointD[] err) convertPairedSrcToDest()
+    {
+        int n = SourceProfile.Pt.Count;
+        var xs = new double[n];
+        for (int i = 0; i < n; i++) xs[i] = SourceProfile.Pt[i].X;
+        var cx = HorizontalAxisConverter.Convert(xs, SrcProperty, DstProperty);
+        var pts = new List<PointD>(n);
+        var errs = new List<PointD>(n);
+        for (int i = 0; i < n; i++)
+        {
+            // 261124Cl (codex2 の査読): 軸の変換ができない (空配列が返る) ときは、同じ軸なら X を素通しし、違う軸なら除く (旧の 1 点ずつの変換は X を 0 にしていた)
+            double x = cx.Length == n ? cx[i] : SrcProperty.AxisMode == DstProperty.AxisMode ? xs[i] : double.NaN;
+            double y = SourceProfile.Pt[i].Y, s = SourceProfile.Err[i].X == xs[i] ? SourceProfile.Err[i].Y : double.NaN; // X が対応しない行の誤差は使わない
+            if (IsCPS && ExposureTime > 0) { y /= ExposureTime; s /= ExposureTime; }
+            if (IsLogIntensity)
+            {
+                if (!(y > 0)) continue;
+                s /= y * Math.Log(10);
+                y = Math.Log10(y);
+            }
+            if (!double.IsFinite(x) || !double.IsFinite(y)) continue;
+            pts.Add(new PointD(x, y));
+            errs.Add(new PointD(x, double.IsFinite(s) ? s : double.NaN));
+        }
+        return ([.. pts], [.. errs]);
     }
 
     public PointD[] ConvertSrcToDest(PointD[] pt)

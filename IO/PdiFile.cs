@@ -15,23 +15,52 @@ public static partial class XYFile // 261111Cl 変更: [GeneratedRegex] のた�
     [System.Text.RegularExpressions.GeneratedRegex(@"(</?)pt(?=[\s/>-[\r\n]])")]
     private static partial System.Text.RegularExpressions.Regex OldPtTagRegex();
 
-    public static bool SavePdi2File(DiffractionProfile2[] dp, string fileName)
+    /// <summary>261124Cl 追加: 保存先と同じフォルダの一時ファイルへ書き切ってから、保存先と置き換える。
+    /// 書き込みの途中で失敗しても (ディスクが満杯・直列化の例外など) 元のファイルは残る。失敗したら一時ファイルを消して false を返す。
+    /// (PDIndexer の査読 C-03: 旧実装は FileMode.Create で先に切り詰めていたので、失敗すると元の内容が消えていた)</summary>
+    public static bool SaveReplacing(string fileName, Action<Stream> write)
     {
-        FileStream fs = null;
+        string tmp = null;
+        bool created = false;
         try
         {
-            System.Xml.Serialization.XmlSerializer serializer = new System.Xml.Serialization.XmlSerializer(typeof(DiffractionProfile2[]));
-            fs = new FileStream(fileName, FileMode.Create);
-            serializer.Serialize(fs, dp);
-            fs.Close();
+            // 261124Cl (codex2 の査読): 保存先の絶対パスを 1 回だけ決め、一時ファイルと置換の両方に使う (作業フォルダが途中で変わっても別のファイルを置き換えない)
+            var full = Path.GetFullPath(fileName);
+            tmp = Path.Combine(Path.GetDirectoryName(full), $".{Guid.NewGuid():N}.tmp");
+            using (var fs = new FileStream(tmp, FileMode.CreateNew))
+            {
+                created = true;
+                write(fs);
+            }
+            File.Move(tmp, full, overwrite: true);
             return true;
         }
         catch
         {
-            fs?.Close();
+            try { if (created && File.Exists(tmp)) File.Delete(tmp); } catch { } // 自分で作った一時ファイルだけ消す
             return false;
         }
     }
+
+    //public static bool SavePdi2File(DiffractionProfile2[] dp, string fileName) // 261124Cl 変更前: FileMode.Create で先に切り詰めてから直列化していた (C-03)
+    //{
+    //    FileStream fs = null;
+    //    try
+    //    {
+    //        System.Xml.Serialization.XmlSerializer serializer = new System.Xml.Serialization.XmlSerializer(typeof(DiffractionProfile2[]));
+    //        fs = new FileStream(fileName, FileMode.Create);
+    //        serializer.Serialize(fs, dp);
+    //        fs.Close();
+    //        return true;
+    //    }
+    //    catch
+    //    {
+    //        fs?.Close();
+    //        return false;
+    //    }
+    //}
+    public static bool SavePdi2File(DiffractionProfile2[] dp, string fileName) // 261124Cl 変更: 書き切ってから置き換える
+        => SaveReplacing(fileName, fs => new System.Xml.Serialization.XmlSerializer(typeof(DiffractionProfile2[])).Serialize(fs, dp));
 
     public static DiffractionProfile2[] ReadPdi2File(string fileName, int version = 2)
     {
@@ -255,52 +284,122 @@ public static partial class XYFile // 261111Cl 変更: [GeneratedRegex] のた�
                 strArray.Add(tempstr);
         }
 
-        if (strArray.Count <= 3)
-            return [];
-
-        if (!strArray[1].StartsWith("X,Y,"))
-            return [];
-
-        try
+        // 261124Cl 変更 (PDIndexer の査読 C-02): 空欄を消して詰めてから 2 列ずつ読んでいたので、短い試料の後ろの行 (,,,4,40,,) の値が
+        //  先頭の試料に入った。見出し行の X・Y の列の位置で各試料を読み、その試料の 2 欄が両方空の行は飛ばす。
+        //  あわせて、データが 1 行だけのファイル、小文字の見出し (IPAnalyzer の結合 CSV の x,y)、空の試料名を受ける
+        List<string> axisHeader = strArray.Count >= 3 ? SplitCsvLine(strArray[1]) : null; // 261124Cl (codex2 の査読): 見出しも引用符を外してから判定する ("X","Y",...)
+        if (axisHeader != null && axisHeader.Count >= 2 && axisHeader[0].Trim().Equals("X", StringComparison.OrdinalIgnoreCase) && axisHeader[1].Trim().Equals("Y", StringComparison.OrdinalIgnoreCase))
         {
-            var title = strArray[0].Split([','], StringSplitOptions.RemoveEmptyEntries);
-            var axis = strArray[1].Split([','], StringSplitOptions.RemoveEmptyEntries);
-            var value = strArray[2].Split([','], StringSplitOptions.RemoveEmptyEntries);
-            if (title.Length * 2 != axis.Length || axis.Length != value.Length)
-                return [];
-
-            var dp = new DiffractionProfile2[title.Length];
-            for (int i = 0; i < dp.Length; i++)
+            try
             {
-                dp[i] = new DiffractionProfile2();
-                dp[i].Name = title[i];
-            }
-            for (int i = 2; i < strArray.Count; i++)
-            {
-                value = strArray[i].Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries);
-                for (int j = 0; j < value.Length / 2; j++)
+                var title = SplitCsvLine(strArray[0]);
+                var axis = axisHeader;
+                var cols = new List<int>();
+                for (int c = 0; c + 1 < axis.Count; c++)
+                    if (axis[c].Trim().Equals("X", StringComparison.OrdinalIgnoreCase) && axis[c + 1].Trim().Equals("Y", StringComparison.OrdinalIgnoreCase))
+                        cols.Add(c++);
+                if (cols.Count == 0) return [];
+                var dp2 = new DiffractionProfile2[cols.Count];
+                for (int k = 0; k < cols.Count; k++)
                 {
-                    //double x = Convert.ToDouble(value[j * 2]);
-                    //double y = Convert.ToDouble(value[j * 2 + 1]);
-                    var x = value[j * 2].ToDouble();
-                    var y = value[j * 2 + 1].ToDouble();
-                    dp[j].SourceProfile.Pt.Add(new PointD(x, y));
+                    var name = cols[k] < title.Count ? title[cols[k]].Trim() : "";
+                    dp2[k] = new DiffractionProfile2 { Name = name.Length > 0 ? name : $"{Path.GetFileName(fileName)}{(cols.Count > 1 ? $" -{k}" : "")}" };
                 }
+                for (int i = 2; i < strArray.Count; i++)
+                {
+                    var v = SplitCsvLine(strArray[i]);
+                    for (int k = 0; k < cols.Count; k++)
+                    {
+                        int c = cols[k];
+                        var xs = c < v.Count ? v[c].Trim() : "";
+                        var ys = c + 1 < v.Count ? v[c + 1].Trim() : "";
+                        if (xs.Length == 0 || ys.Length == 0) continue; // この試料はこの行で欠測 (短い試料の後ろ)
+                        dp2[k].SourceProfile.Pt.Add(new PointD(xs.ToDouble(), ys.ToDouble()));
+                    }
+                }
+                return dp2;
             }
-
-            for (int i = 0; i < dp.Length; i++)
+            catch
             {
-                if (title[i].Length == 0)
-                    dp[i].Name = $"{Path.GetFileName(fileName)}{(dp.Length > 1 ? $" -{i}" : "")}";
-                else
-                    dp[i].Name = title[i];
+                return [];
             }
-            return dp;
         }
-        catch
+        return [];
+
+        #region 261124Cl 変更前 (空欄を消して詰めて読んでいた)
+        //if (strArray.Count <= 3)
+        //    return [];
+//
+        //if (!strArray[1].StartsWith("X,Y,"))
+        //    return [];
+//
+        //try
+        //{
+        //    var title = strArray[0].Split([','], StringSplitOptions.RemoveEmptyEntries);
+        //    var axis = strArray[1].Split([','], StringSplitOptions.RemoveEmptyEntries);
+        //    var value = strArray[2].Split([','], StringSplitOptions.RemoveEmptyEntries);
+        //    if (title.Length * 2 != axis.Length || axis.Length != value.Length)
+        //        return [];
+//
+        //    var dp = new DiffractionProfile2[title.Length];
+        //    for (int i = 0; i < dp.Length; i++)
+        //    {
+        //        dp[i] = new DiffractionProfile2();
+        //        dp[i].Name = title[i];
+        //    }
+        //    for (int i = 2; i < strArray.Count; i++)
+        //    {
+        //        value = strArray[i].Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries);
+        //        for (int j = 0; j < value.Length / 2; j++)
+        //        {
+        //            //double x = Convert.ToDouble(value[j * 2]);
+        //            //double y = Convert.ToDouble(value[j * 2 + 1]);
+        //            var x = value[j * 2].ToDouble();
+        //            var y = value[j * 2 + 1].ToDouble();
+        //            dp[j].SourceProfile.Pt.Add(new PointD(x, y));
+        //        }
+        //    }
+//
+        //    for (int i = 0; i < dp.Length; i++)
+        //    {
+        //        if (title[i].Length == 0)
+        //            dp[i].Name = $"{Path.GetFileName(fileName)}{(dp.Length > 1 ? $" -{i}" : "")}";
+        //        else
+        //            dp[i].Name = title[i];
+        //    }
+        //    return dp;
+        //}
+        //catch
+        //{
+        //    return [];
+        //}
+        #endregion
+    }
+
+    /// <summary>261124Cl 追加: CSV の 1 行を欄に分ける (空欄も残す)。二重引用符で囲んだ欄の中の , と "" (= ") を扱う</summary>
+    private static List<string> SplitCsvLine(string line)
+    {
+        var result = new List<string>();
+        var sb = new StringBuilder();
+        bool quoted = false;
+        for (int i = 0; i < line.Length; i++)
         {
-            return [];
+            char ch = line[i];
+            if (quoted)
+            {
+                if (ch == '"')
+                {
+                    if (i + 1 < line.Length && line[i + 1] == '"') { sb.Append('"'); i++; }
+                    else quoted = false;
+                }
+                else sb.Append(ch);
+            }
+            else if (ch == '"') quoted = true;
+            else if (ch == ',') { result.Add(sb.ToString()); sb.Clear(); }
+            else sb.Append(ch);
         }
+        result.Add(sb.ToString());
+        return result;
     }
 
 

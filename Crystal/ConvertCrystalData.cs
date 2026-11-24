@@ -81,20 +81,22 @@ public partial class ConvertCrystalData // 261111Cl 変更: [GeneratedRegex] の
     #region CrystalList(xml形式)の読み込み/書き込み
     public static bool SaveCrystalListXml(Crystal[] crystals, string filename)
     {
+        if (crystals == null || crystals.Length == 0 || crystals[0] == null) return false; // 261124Cl 追加 (codex2 の査読): 空・先頭が null は保存せず false
         if (crystals != null && crystals.Length != 0 && crystals[0].FlexibleMode)
             crystals[0].FlexiblePlane = crystals[0].Plane;
 
-        try
-        {
-            var serializer = new System.Xml.Serialization.XmlSerializer(typeof(Crystal[]));
-            //var fs = new FileStream(filename, FileMode.Create);
-            //serializer.Serialize(fs, crystals);
-            //fs.Close();
-            using var fs = new FileStream(filename, FileMode.Create); // 260718Cl: Serialize 例外時に FileStream がリークしファイルロックが残るため using 化
-            serializer.Serialize(fs, crystals);
-            return true;
-        }
-        catch { return false; }
+        //try // 261124Cl 変更前: FileMode.Create で先に切り詰めていたので、直列化の途中で失敗すると元のリストが消えた (PDIndexer の査読 C-03)
+        //{
+        //    var serializer = new System.Xml.Serialization.XmlSerializer(typeof(Crystal[]));
+        //    //var fs = new FileStream(filename, FileMode.Create);
+        //    //serializer.Serialize(fs, crystals);
+        //    //fs.Close();
+        //    using var fs = new FileStream(filename, FileMode.Create); // 260718Cl: Serialize 例外時に FileStream がリークしファイルロックが残るため using 化
+        //    serializer.Serialize(fs, crystals);
+        //    return true;
+        //}
+        //catch { return false; }
+        return XYFile.SaveReplacing(filename, fs => new System.Xml.Serialization.XmlSerializer(typeof(Crystal[])).Serialize(fs, crystals)); // 261124Cl 変更: 書き切ってから置き換える
     }
 
 
@@ -105,8 +107,14 @@ public partial class ConvertCrystalData // 261111Cl 変更: [GeneratedRegex] の
         //if (filename.ToLower().EndsWith("xml", Ord))//XML形式のリストを読み込んだとき // 261111Cl 変更前
         if (filename.EndsWith("xml", StringComparison.OrdinalIgnoreCase))//XML形式のリストを読み込んだとき // 261111Cl 変更: 一時文字列と現在のカルチャへの依存をなくす
         {
-            if (new FileInfo(filename).Length > 10000000)//なぜかファイルが3GBとかになったことが有ったので、それに対する対処. 10MB以上だったらスキップすることにした.
-                return cry;
+            //if (new FileInfo(filename).Length > 10000000)//なぜかファイルが3GBとかになったことが有ったので、それに対する対処. 10MB以上だったらスキップすることにした. // 261124Cl 変更前: 選んだ直後にファイルが消えると FileNotFoundException が呼び出し元まで抜けた (PDIndexer の査読 C-01 関連)
+            //    return cry;
+            try // 261124Cl 変更: 消えた・読めないファイルは下の読込の失敗と同じく null
+            {
+                if (new FileInfo(filename).Length > 10000000)//なぜかファイルが3GBとかになったことが有ったので、それに対する対処. 10MB以上だったらスキップすることにした.
+                    return cry;
+            }
+            catch { return null; }
 
             #region old code
             //プロパティ文字列が変更にたいする対処

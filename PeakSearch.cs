@@ -534,7 +534,7 @@ public class FittingPeak
         double[] ResidualNew = GC.AllocateUninitializedArray<double>(length);
         double[] IntCurrent = GC.AllocateUninitializedArray<double>(length);
         double[] IntNew = GC.AllocateUninitializedArray<double>(length);
-        double ResidualSquareCurrent, ResidualSquareNew = 0, residual;
+        double ResidualSquareCurrent, ResidualSquareNew = 0, residual = double.NaN; // 261124Cl 変更: 初期値 NaN (C-19 で反復の外でも使う)
         double centerX = (pt[0].X + pt[^1].X) / 2;
         double B1 = 0, B2 = 0, B1_New, B2_New;
 
@@ -774,13 +774,23 @@ public class FittingPeak
                     ramda *= 4;
             } while (ramda < 1000000000 && counter < 500);
 
+            // 261124Cl 変更 (PDIndexer の査読 C-19): 終わった後の評価を、最後に試した (棄却されたかもしれない) pNew, B1_New, B2_New ではなく、
+            //  採用された pCurrent, B1, B2 で行う (返す解と残差が別のパラメータになっていた)。変更前:
+            //for (int i = 0; i < length; i++)
+            //    IntNew[i] = B1_New + B2_New * (pt[i].X - centerX);
+            //for (int j = 0; j < prms.Length; j++)
+            //{
+            //    pNew[j].RenewParameter();
+            //    for (int i = 0; i < length; i++)
+            //        IntNew[i] += pNew[j].GetValue(pt[i].X, false);
+            //}
             for (int i = 0; i < length; i++)
-                IntNew[i] = B1_New + B2_New * (pt[i].X - centerX);
+                IntNew[i] = B1 + B2 * (pt[i].X - centerX);
             for (int j = 0; j < prms.Length; j++)
             {
-                pNew[j].RenewParameter();
+                pCurrent[j].RenewParameter();
                 for (int i = 0; i < length; i++)
-                    IntNew[i] += pNew[j].GetValue(pt[i].X, false);
+                    IntNew[i] += pCurrent[j].GetValue(pt[i].X, false);
             }
             residual = 0;
             for (int i = 0; i < length; i++)
@@ -857,7 +867,8 @@ public class FittingPeak
             prms[i].Xerr = covariance != null ? Math.Sqrt(s2 * covariance[counter - 1, counter - 1]) : double.NaN; // 261105Cl 標準誤差 (自由度が 0 以下、または JᵀJ が特異なら NaN)
             prms[i].m = pCurrent[i].m;
             prms[i].range = pCurrent[i].range;
-            prms[i].Residual = bestResidual;
+            //prms[i].Residual = bestResidual; // 261124Cl 変更前: 別の初期値の試行の残差を、最後の試行の解に付けていた (C-19)
+            prms[i].Residual = residual; // 261124Cl 変更: 返す解 (最後の試行の pCurrent) の残差
             prms[i].Int *= 1000;
             prms[i].B1 = B1 + B2 * (pCurrent[i].X - centerX);
             prms[i].B2 = B2;
@@ -891,7 +902,8 @@ public class FittingPeak
         foreach (var p in prms)//ここまで来れたら、全てSuccessをtrueにする。
             p.Success = true;
 
-        return bestResidual;
+        //return bestResidual; // 261124Cl 変更前 (codex2 の査読): 戻り値だけが別の初期値の試行の残差だった
+        return residual; // 261124Cl 変更: Residual プロパティと同じ (返す解の残差)
     }
 
     public static PointD FitPeakAsPseudoVoigtByMarcal2D(double[] values, int width, PointD center, int range)
