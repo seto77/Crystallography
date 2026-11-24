@@ -73,12 +73,16 @@ public sealed class MasterPatternFileInfo
     public double[] Energies { get; set; } = [];
     public double[] Depths { get; set; } = [];
 
+    /// <summary>261124Cl 追加 (codex2 査読 中 4): 浅い写し。保存は見出しを書き換えるので、画面が持つ記録を写しで保存し、失敗しても元を変えない</summary>
+    public MasterPatternFileInfo Clone() => (MasterPatternFileInfo)MemberwiseClone();
+
     /// <summary>261124Cl 追加: 同梱の結晶 (<see cref="CrystalData"/>) を復元する。無い・読めないときは null</summary>
     public Crystal GetCrystal()
     {
         if (string.IsNullOrEmpty(CrystalData)) return null;
         try { return Crystal2.Deserialize(Convert.FromBase64String(CrystalData))?.ToCrystal(); }
-        catch (FormatException) { return null; }
+        // catch (FormatException) { return null; } // 261124Cl 変更前
+        catch (Exception) { return null; } // 261124Cl 変更 (codex2 査読 中 6): 不完全な Crystal2 は ToCrystal() でほかの例外も出す。どれも「戻せない」として扱う
     }
 
     /// <summary>構築リクエストから作成条件を作る</summary>
@@ -152,6 +156,8 @@ public static class MasterPatternFile
     const int ElectronBytes = 61; // float32 × 15 + フラグ 1 バイト (v1 と同じ値の丸め)
     const long BatchBytes = 128L << 20; // 並列に縮め・戻すときに一度に持つ量の目安 (元の大きさ。縮める間は一時に約 3 倍を持つ)
     readonly record struct Block(int Kind, int Index, long Offset, long StoredLength, long RawLength, int Codec, uint Crc);
+    const int BlockEntryBytes = 40; // 区画の表の 1 行 (int32 × 2 + int64 × 3 + int32 + uint32)
+    const int MaxHeaderBytes = 1 << 24; // 261124Cl 追加 (codex2 査読 中 7): 見出しの上限。読む側 (ReadHeader) と書く側 (Save) で同じ値
 
     /// <summary>261110Cl 追加: 読み込んだ見出しのビーム選択の記録を MasterPattern に写す (項目の無い古いファイルは従来)</summary>
     static MasterPattern WithBeamSelection(MasterPattern mp, MasterPatternFileInfo info) => new(mp.GridSize, mp.Energies, mp.Depths, mp.PositivePlanes, mp.NegativePlanes, mp.GridType)
@@ -191,27 +197,46 @@ public static class MasterPatternFile
         int quality = compression switch { CompressionLevel.NoCompression => -1, CompressionLevel.Optimal => 4, CompressionLevel.SmallestSize => 9, _ => 1 };
 
         // 区画の一覧 (書く順 = +Z の平面 → −Z の平面 → 電子の塊)
+        // 261124Cl 追加 (codex2 査読 2 往復目 中 1): PlaneCount は int の積。あふれる大きさ・自分で読めない件数は保存しない
+        long planeCountL = (long)masterPattern.Energies.Length * masterPattern.Depths.Length;
+        if (planeCountL > Array.MaxLength || 2 * planeCountL + ((long)(backscatteredElectrons?.Length ?? 0) + ElectronsPerBlock - 1) / ElectronsPerBlock > 1 << 24) // 261124Cl: 足す前に long に (3 往復目 中 3)
+            throw new ArgumentException("Too many planes or electrons for one file.", nameof(masterPattern));
+        if (masterPattern.GridSize <= 0 || (long)masterPattern.GridSize * masterPattern.GridSize > Array.MaxLength / sizeof(float) || !System.Enum.IsDefined(masterPattern.GridType)) // 261124Cl (3 往復目 中 2): 読む側 (ValidateBlocks) と同じ検査
+            throw new ArgumentException("GridSize or GridType is not valid.", nameof(masterPattern));
         int planeCount = masterPattern.PlaneCount;
         var jobs = new List<(int Kind, int Index, float[] Plane, int ElectronStart, int ElectronCount)>();
+        long hemi = (long)masterPattern.GridSize * masterPattern.GridSize; // 261124Cl 追加 (codex2 査読 中 1): 平面の長さは正方・六方とも GridSize²
         foreach (var (kind, planes) in new[] { (KindPlanePositive, masterPattern.PositivePlanes), (KindPlaneNegative, masterPattern.NegativePlanes) })
             for (int k = 0; k < planeCount; k++)
-                jobs.Add((kind, k, k < planes.Length ? planes[k] : null, 0, 0));
+            {
+                var plane = k < planes.Length ? planes[k] : null;
+                if (plane is { Length: > 0 } && plane.Length != hemi) throw new ArgumentException($"Plane {k} has {plane.Length} values, not GridSize² = {hemi}.", nameof(masterPattern));
+                jobs.Add((kind, k, plane, 0, 0));
+            }
         int nBse = backscatteredElectrons?.Length ?? 0;
-        for (int s = 0, b = 0; s < nBse; s += ElectronsPerBlock, b++)
-            jobs.Add((KindElectrons, b, null, s, Math.Min(ElectronsPerBlock, nBse - s)));
+        // for (int s = 0, b = 0; s < nBse; s += ElectronsPerBlock, b++) // 261124Cl 変更前: s が int の上限の近くであふれる (3 往復目 中 3)
+        //     jobs.Add((KindElectrons, b, null, s, Math.Min(ElectronsPerBlock, nBse - s)));
+        for (long s = 0; s < nBse; s += ElectronsPerBlock)
+            jobs.Add((KindElectrons, (int)(s / ElectronsPerBlock), null, (int)s, (int)Math.Min(ElectronsPerBlock, nBse - s)));
+
+        var header = JsonSerializer.SerializeToUtf8Bytes(info, HeaderJsonOptions);
+        if (header.Length > MaxHeaderBytes) throw new ArgumentException($"The header is {header.Length} bytes (limit {MaxHeaderBytes}); shorten the note.", nameof(info)); // 261124Cl 追加 (codex2 査読 中 7): 自分で読めないファイルを書かない
 
         //途中で失敗しても既存のファイルを壊さないよう、一時ファイルへ書いてから置き換える
-        var tmp = path + ".tmp";
+        // var tmp = path + ".tmp"; // 261124Cl 変更前: 固定の名前は、同じパスへの保存が重なると取り合う
+        var tmp = $"{path}.{Guid.NewGuid():N}.tmp"; // 261124Cl 変更 (codex2 査読 中 7): 保存ごとに違う名前。失敗したら消す
+        try
+        {
         using (var fs = new FileStream(tmp, FileMode.Create, FileAccess.ReadWrite, FileShare.None, 1 << 20))
         {
-            var header = JsonSerializer.SerializeToUtf8Bytes(info, HeaderJsonOptions);
+            // var header = JsonSerializer.SerializeToUtf8Bytes(info, HeaderJsonOptions); // 261124Cl 上へ移した (上限の検査)
             Span<byte> i32 = stackalloc byte[4];
             fs.Write(Magic);
             BitConverter.TryWriteBytes(i32, FormatVersion); fs.Write(i32);
             BitConverter.TryWriteBytes(i32, header.Length); fs.Write(i32);
             fs.Write(header);
             long tablePosition = fs.Position;
-            fs.Write(new byte[4 + 40L * jobs.Count]); // 区画の表は最後に書き戻す
+            fs.Write(new byte[4 + (long)BlockEntryBytes * jobs.Count]); // 区画の表は最後に書き戻す
 
             var blocks = new Block[jobs.Count];
             for (int start = 0; start < jobs.Count;)
@@ -220,16 +245,21 @@ public static class MasterPatternFile
                 int end = start; long bytes = 0;
                 do { var j = jobs[end++]; bytes += j.Plane != null ? 4L * j.Plane.Length : (long)ElectronBytes * j.ElectronCount; } while (end < jobs.Count && bytes < BatchBytes);
                 var encoded = new (byte[] Stored, long RawLength, int Codec, uint Crc)[end - start];
-                System.Threading.Tasks.Parallel.For(start, end, i =>
+                try
                 {
-                    var j = jobs[i];
-                    if (j.Kind == KindElectrons)
+                    System.Threading.Tasks.Parallel.For(start, end, i =>
                     {
-                        var raw = EncodeElectrons(backscatteredElectrons, j.ElectronStart, j.ElectronCount);
-                        encoded[i - start] = EncodeBlock(raw, quality);
-                    }
-                    else encoded[i - start] = EncodeBlock(j.Plane is { Length: > 0 } ? MemoryMarshal.AsBytes(j.Plane.AsSpan()) : [], quality);
-                });
+                        var j = jobs[i];
+                        if (j.Kind == KindElectrons)
+                        {
+                            var raw = EncodeElectrons(backscatteredElectrons, j.ElectronStart, j.ElectronCount);
+                            encoded[i - start] = EncodeBlock(raw, quality);
+                        }
+                        else encoded[i - start] = EncodeBlock(j.Plane is { Length: > 0 } ? MemoryMarshal.AsBytes(j.Plane.AsSpan()) : [], quality);
+                    });
+                }
+                catch (AggregateException ex) when (ex.InnerExceptions.Count > 0) // 261124Cl 追加 (codex2 査読): 読み込みと同じく中の例外をそのまま呼び手へ
+                { System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(ex.InnerExceptions[0]).Throw(); }
                 for (int i = start; i < end; i++)
                 {
                     var e = encoded[i - start];
@@ -248,6 +278,12 @@ public static class MasterPatternFile
             }
         }
         File.Move(tmp, path, overwrite: true);
+        }
+        catch
+        {
+            try { File.Delete(tmp); } catch (IOException) { } catch (UnauthorizedAccessException) { } // 261124Cl 追加 (codex2 査読 中 7): 失敗の一時ファイルを残さない
+            throw;
+        }
     }
 
     /// <summary>261124Cl 追加: 保存する MasterPattern から見出しの記録を埋める (v2 の <see cref="Save"/> と v1 の <see cref="SaveVersion1"/> で共用)</summary>
@@ -399,10 +435,10 @@ public static class MasterPatternFile
         {
             using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, 1 << 20);
             // ReadHeader(fs); // 261124Cl 変更前
-            ReadHeader(fs, out int version);
+            var info = ReadHeader(fs, out int version);
             if (version >= 2) // 261124Cl 追加: 形式 v2 は電子の区画だけを順に戻す (平面は読まない)。以下は v1
             {
-                foreach (var c in ElectronChunksVersion2(fs, chunkSize)) yield return c;
+                foreach (var c in ElectronChunksVersion2(fs, info, chunkSize)) yield return c;
                 yield break;
             }
             using var z = new ZLibStream(fs, CompressionMode.Decompress);
@@ -469,7 +505,8 @@ public static class MasterPatternFile
         fs.ReadExactly(i32); version = BitConverter.ToInt32(i32);
         if (version < 1 || version > FormatVersion) throw new InvalidDataException($"Unsupported MasterPattern file version {version} (this build reads up to {FormatVersion}).");
         fs.ReadExactly(i32); int headerLength = BitConverter.ToInt32(i32);
-        if (headerLength < 0 || headerLength > 1 << 24) throw new InvalidDataException("Corrupt MasterPattern file (bad header length).");
+        // if (headerLength < 0 || headerLength > 1 << 24) throw new InvalidDataException("Corrupt MasterPattern file (bad header length)."); // 261124Cl 変更前
+        if (headerLength < 0 || headerLength > MaxHeaderBytes) throw new InvalidDataException("Corrupt MasterPattern file (bad header length)."); // 261124Cl 変更: 書く側と同じ上限
         var header = new byte[headerLength];
         fs.ReadExactly(header);
         // return JsonSerializer.Deserialize<MasterPatternFileInfo>(header) ?? new MasterPatternFileInfo(); // 261028Cl 変更前
@@ -484,8 +521,9 @@ public static class MasterPatternFile
         var gridType = (MasterPattern.Types)info.GridType;
         int nE = info.Energies?.Length ?? -1, nD = info.Depths?.Length ?? -1;
         if (info.GridSize <= 0 || nE < 0 || nD < 0 || !System.Enum.IsDefined(gridType)) throw new InvalidDataException("Corrupt MasterPattern file (bad grid header).");
-        var blocks = ReadBlockTable(fs);
-        int planeCount = nE * nD;
+        var blocks = ReadBlockTable(fs, info);
+        ValidateBlocks(blocks, info, fs.Position, fs.Length); // 261124Cl 追加 (codex2 査読 高 2・3): 番号・本数・長さ・位置を確かめてから確保する
+        int planeCount = nE * nD; // ValidateBlocks が Array.MaxLength 以下を確かめた
         var pos = new float[planeCount][];
         var neg = new float[planeCount][];
         ReadBlocks(fs, blocks.Where(b => b.Kind is KindPlanePositive or KindPlaneNegative), (b, raw) =>
@@ -514,30 +552,96 @@ public static class MasterPatternFile
         return new MasterPatternFileContent(WithBeamSelection(new MasterPattern(info.GridSize, info.Energies, info.Depths, pos, neg, gridType), info), info, bses);
     }
 
-    /// <summary>形式 v2 の電子の区画を順に戻し、chunkSize 本ずつの配列で返す (<see cref="ReadElectronChunks"/>)。平面の区画は読まない</summary>
-    static IEnumerable<EbsdBackscatteredElectron[]> ElectronChunksVersion2(FileStream fs, int chunkSize)
+    /// <summary>形式 v2 の電子の区画を順に戻し、chunkSize 本ずつの配列で返す (<see cref="ReadElectronChunks"/>)。平面の区画は読まない。
+    /// 261124Cl 変更 (codex2 査読 中 2): 区画の境をまたいで塊を詰める (v1 と同じく、最後の塊だけが端数。旧は区画ごとに端数の塊を返していた)</summary>
+    // static IEnumerable<EbsdBackscatteredElectron[]> ElectronChunksVersion2(FileStream fs, int chunkSize) // 261124Cl 旧シグネチャ
+    static IEnumerable<EbsdBackscatteredElectron[]> ElectronChunksVersion2(FileStream fs, MasterPatternFileInfo info, int chunkSize)
     {
-        foreach (var b in ReadBlockTable(fs).Where(b => b.Kind == KindElectrons).OrderBy(b => b.Index))
+        var blocks = ReadBlockTable(fs, info);
+        ValidateBlocks(blocks, info, fs.Position, fs.Length); // 261124Cl 追加 (codex2 査読 高 2): 連番・本数を確かめる (総数も見出しと照合)
+        long remaining = info.BackscatteredElectronCount;
+        EbsdBackscatteredElectron[] chunk = null;
+        int filled = 0;
+        foreach (var b in blocks.Where(b => b.Kind == KindElectrons).OrderBy(b => b.Index))
         {
             var raw = new byte[b.RawLength];
             DecodeBlock(b, ReadStored(fs, b), raw);
-            if (raw.Length % ElectronBytes != 0) throw new InvalidDataException("Corrupt MasterPattern file (bad electron block).");
             int count = raw.Length / ElectronBytes;
-            for (int done = 0; done < count;)
+            // for (int done = 0; done < count;) // 261124Cl 変更前 (区画ごとに端数の塊)
+            // {
+            //     var chunk = new EbsdBackscatteredElectron[Math.Min(chunkSize, count - done)];
+            //     for (int i = 0; i < chunk.Length; i++) chunk[i] = DecodeElectron(raw, count, done + i);
+            //     done += chunk.Length;
+            //     yield return chunk;
+            // }
+            for (int i = 0; i < count; i++)
             {
-                var chunk = new EbsdBackscatteredElectron[Math.Min(chunkSize, count - done)];
-                for (int i = 0; i < chunk.Length; i++) chunk[i] = DecodeElectron(raw, count, done + i);
-                done += chunk.Length;
-                yield return chunk;
+                chunk ??= new EbsdBackscatteredElectron[(int)Math.Min(chunkSize, remaining)];
+                chunk[filled++] = DecodeElectron(raw, count, i);
+                remaining--;
+                if (filled == chunk.Length) { yield return chunk; chunk = null; filled = 0; }
             }
         }
     }
 
-    static Block[] ReadBlockTable(Stream fs)
+    /// <summary>261124Cl 追加 (codex2 査読 高 2・3): 区画の表を確かめる。平面は ± それぞれ 0〜planeCount−1 の番号がちょうど 1 回ずつ、長さは 0 (欠落) か GridSize² × 4 バイト。
+    /// 電子は番号が 0 からの連番で、最後の区画以外はちょうど <see cref="ElectronsPerBlock"/> 本、合計は見出しの本数。区画は表の後ろ・ファイルの中に収まり、互いに重ならない。
+    /// 壊れた表から巨大な配列を確保したり、同じ平面を上書きして別の値を返したりしないため、読む前に呼ぶ</summary>
+    static void ValidateBlocks(Block[] blocks, MasterPatternFileInfo info, long tableEnd, long fileLength)
+    {
+        static InvalidDataException Bad(string what) => new($"Corrupt MasterPattern file ({what}).");
+        // 261124Cl 追加 (codex2 査読 2 往復目 高 3): 格子の検査を、欠落の判定より先に、Load と ReadElectronChunks の両方で (全平面が欠落でも巨大な格子を通さない)
+        if (info.GridSize <= 0 || (long)info.GridSize * info.GridSize > Array.MaxLength / sizeof(float) || !System.Enum.IsDefined((MasterPattern.Types)info.GridType)
+            || info.Energies == null || info.Depths == null)
+            throw Bad("bad grid header");
+        long planeCount = (long)info.Energies.Length * info.Depths.Length;
+        if (planeCount > Array.MaxLength || 2 * planeCount > blocks.Length) throw Bad("too many planes for the block table"); // 平面は ± で 2·planeCount 区画あるはず
+        long planeBytes = 4L * info.GridSize * info.GridSize;
+        var seen = new[] { new bool[planeCount], new bool[planeCount] };
+        var electrons = new List<Block>();
+        foreach (var b in blocks)
+        {
+            if (b.Offset < tableEnd || b.StoredLength > fileLength - b.Offset) throw Bad("block outside the file");
+            if (b.Codec is not (CodecStored or CodecShuffleBrotli)) throw Bad($"unsupported block codec {b.Codec}");
+            if (b.Codec == CodecStored && b.StoredLength != b.RawLength) throw Bad("bad stored block length");
+            if (b.Kind is KindPlanePositive or KindPlaneNegative)
+            {
+                var s = seen[b.Kind == KindPlanePositive ? 0 : 1];
+                if ((ulong)b.Index >= (ulong)planeCount || s[b.Index]) throw Bad("duplicate or out-of-range plane block");
+                s[b.Index] = true;
+                if (b.RawLength != 0 && b.RawLength != planeBytes) throw Bad("plane length does not match the grid");
+            }
+            else if (b.Kind == KindElectrons) electrons.Add(b);
+            else throw Bad($"unknown block kind {b.Kind}");
+        }
+        if (seen.Any(s => s.Contains(false))) throw Bad("missing plane block");
+        electrons.Sort((a, b) => a.Index.CompareTo(b.Index));
+        long total = 0;
+        for (int i = 0; i < electrons.Count; i++)
+        {
+            var b = electrons[i];
+            long count = b.RawLength / ElectronBytes;
+            bool last = i == electrons.Count - 1;
+            if (b.Index != i || b.RawLength % ElectronBytes != 0 || (last ? count is < 1 or > ElectronsPerBlock : count != ElectronsPerBlock))
+                throw Bad("bad electron block sequence");
+            total += count;
+        }
+        if (total != info.BackscatteredElectronCount || total > Array.MaxLength) throw Bad("electron count");
+        var byOffset = blocks.Where(b => b.StoredLength > 0).OrderBy(b => b.Offset).ToArray();
+        for (int i = 1; i < byOffset.Length; i++)
+            if (byOffset[i].Offset < byOffset[i - 1].Offset + byOffset[i - 1].StoredLength) throw Bad("overlapping blocks");
+    }
+
+    // static Block[] ReadBlockTable(Stream fs) // 261124Cl 旧シグネチャ (同日)
+    static Block[] ReadBlockTable(Stream fs, MasterPatternFileInfo info)
     {
         using var r = new BinaryReader(fs, Encoding.UTF8, leaveOpen: true);
         int n = r.ReadInt32();
         if (n < 0 || n > 1 << 24) throw new InvalidDataException("Corrupt MasterPattern file (bad block table).");
+        // 261124Cl 追加 (codex2 査読 2 往復目 中 1): 件数は見出しだけで決まる (± の平面 + 電子の塊)。確保の前に照らす
+        long expected = 2L * (info.Energies?.Length ?? 0) * (info.Depths?.Length ?? 0) + ((long)info.BackscatteredElectronCount + ElectronsPerBlock - 1) / ElectronsPerBlock; // 261124Cl: 足す前に long に (3 往復目 中 3)
+        if (n != expected) throw new InvalidDataException("Corrupt MasterPattern file (block count does not match the header).");
+        if ((long)n * BlockEntryBytes > fs.Length - fs.Position) throw new InvalidDataException("Corrupt MasterPattern file (block table beyond the end of the file)."); // 261124Cl 追加 (codex2 査読 高 3): 確保の前に
         var blocks = new Block[n];
         for (int i = 0; i < n; i++)
         {
@@ -564,7 +668,8 @@ public static class MasterPatternFile
         {
             int end = start; long bytes = 0;
             var stored = new List<byte[]>();
-            do { stored.Add(ReadStored(fs, list[end])); bytes += list[end].RawLength; end++; } while (end < list.Length && bytes < BatchBytes);
+            // do { stored.Add(ReadStored(fs, list[end])); bytes += list[end].RawLength; end++; } while (end < list.Length && bytes < BatchBytes); // 261124Cl 変更前
+            do { stored.Add(ReadStored(fs, list[end])); bytes += list[end].RawLength + list[end].StoredLength; end++; } while (end < list.Length && bytes < BatchBytes); // 261124Cl 変更 (codex2 査読 2 往復目 低): 格納長も数える
             try
             {
                 System.Threading.Tasks.Parallel.For(start, end, i =>
@@ -715,6 +820,10 @@ public static class MasterPatternFile
         if (beamCandidateCut is "") throw new ArgumentException("Pass null to skip the beam-candidate-cut check; an empty requirement would match unrecorded files.", nameof(beamCandidateCut)); // 261118Cl 追加 (codex2 第 16 回)
         if (info.CrystalFingerprint != CrystalFingerprint(crystal))
             return $"The file was made for a different crystal (\"{info.CrystalName}\"), or the cell, atoms or B differ.";
+        if (!double.IsFinite(info.BeamEnergyKeV) || info.BeamEnergyKeV <= 0) // 261124Cl 追加 (codex2 査読 中 5): NaN は下の比べで「一致」になってしまう
+            return "The file does not record a valid beam energy.";
+        if (!double.IsFinite(beamEnergyKeV) || beamEnergyKeV <= 0) // 261124Cl 追加 (codex2 査読 2 往復目 中 2): 比べ先が NaN でも「一致」になる
+            return $"The current beam energy ({beamEnergyKeV:g6} keV) is not valid.";
         if (Math.Abs(info.BeamEnergyKeV - beamEnergyKeV) > 1E-6)
             return $"The file was made at {info.BeamEnergyKeV:g6} keV, not {beamEnergyKeV:g6} keV.";
         // 261110Cl 追加 (codex2 第 34 回): 方式と設定の版 (求められたときだけ。古いファイルは Legacy・版なしとして読まれている)

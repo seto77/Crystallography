@@ -51,7 +51,7 @@ public class MasterPatternFileV2Tests
             for (int k = 0; k < pa.Length; k++)
             {
                 if (pa[k] is not { Length: > 0 }) { Assert.True(pb[k] is not { Length: > 0 }); continue; }
-                Assert.True(pa[k].AsSpan().SequenceEqual(pb[k]), $"plane {k}");
+                Assert.True(System.Runtime.InteropServices.MemoryMarshal.AsBytes(pa[k].AsSpan()).SequenceEqual(System.Runtime.InteropServices.MemoryMarshal.AsBytes(pb[k].AsSpan())), $"plane {k}"); // バイトで (+0 と −0 も見分ける)
             }
     }
 
@@ -127,6 +127,81 @@ public class MasterPatternFileV2Tests
             Assert.Throws<InvalidDataException>(() => MasterPatternFile.Load(path));
         }
         finally { File.Delete(path); }
+    }
+
+    /// <summary>codex2 査読 261124 (中 2): 塊は区画の境をまたいで詰め、最後の塊だけが端数 (v1 と同じ約束)。全本数より大きい指定なら 1 つの塊</summary>
+    [Fact]
+    public void Version2_ElectronChunks_OnlyTheLastIsPartial()
+    {
+        var es = Electrons(MasterPatternFile.ElectronsPerBlock + 5000, 7);
+        var path = TempPath();
+        try
+        {
+            MasterPatternFile.Save(Pattern(7), path, null, es);
+            var sizes = MasterPatternFile.ReadElectronChunks(path, 1000).Select(c => c.Length).ToArray();
+            Assert.All(sizes[..^1], s => Assert.Equal(1000, s));
+            Assert.Equal(es.Length - 1000 * (sizes.Length - 1), sizes[^1]);
+            Assert.Single(MasterPatternFile.ReadElectronChunks(path, es.Length + 1));
+        }
+        finally { File.Delete(path); }
+    }
+
+    /// <summary>電子 0 本の v2 は、Load も ReadElectronChunks も空を返す</summary>
+    [Fact]
+    public void Version2_NoElectrons()
+    {
+        var path = TempPath();
+        try
+        {
+            MasterPatternFile.Save(Pattern(8), path, null, []);
+            Assert.Empty(MasterPatternFile.Load(path).BackscatteredElectrons);
+            Assert.Empty(MasterPatternFile.ReadElectronChunks(path));
+        }
+        finally { File.Delete(path); }
+    }
+
+    /// <summary>codex2 査読 261124 (高 2): 区画の表の番号が重なったら (CRC は通っても) 読まない。縮めた区画の中身が化けても読まない</summary>
+    [Fact]
+    public void Version2_RejectsDuplicateBlockIndexAndCorruptCompressedBlock()
+    {
+        var path = TempPath();
+        try
+        {
+            MasterPatternFile.Save(Pattern(9), path, null);
+            var bytes = File.ReadAllBytes(path);
+            int table = 12 + BitConverter.ToInt32(bytes, 8); // "RPMP" + 版 + 見出しの長さ + 見出し
+            int entry0 = table + 4, entry1 = entry0 + 40;
+            Assert.Equal(0, BitConverter.ToInt32(bytes, entry0 + 4));
+
+            var dup = (byte[])bytes.Clone();
+            BitConverter.GetBytes(0).CopyTo(dup, entry1 + 4); // 2 つ目の平面の番号を 0 に (同じ平面を 2 回)
+            File.WriteAllBytes(path, dup);
+            Assert.Throws<InvalidDataException>(() => MasterPatternFile.Load(path));
+
+            var bad = (byte[])bytes.Clone();
+            long offset = BitConverter.ToInt64(bytes, entry0 + 8), stored = BitConverter.ToInt64(bytes, entry0 + 16);
+            Assert.Equal(1, BitConverter.ToInt32(bytes, entry0 + 32)); // 縮めた区画 (並べ替え + Brotli)
+            bad[offset + stored / 2] ^= 0x5A;
+            File.WriteAllBytes(path, bad);
+            Assert.Throws<InvalidDataException>(() => MasterPatternFile.Load(path));
+        }
+        finally { File.Delete(path); }
+    }
+
+    /// <summary>codex2 査読 261124 (中 1・5): 格子と長さの合わない平面は保存しない。作成の電圧が NaN の見出しは「合う」にしない</summary>
+    [Fact]
+    public void Version2_RejectsWrongPlaneLengthAndNaNVoltage()
+    {
+        var mp = Pattern(10);
+        var wrong = new MasterPattern(mp.GridSize, mp.Energies, mp.Depths, [.. mp.PositivePlanes.Select((p, k) => k == 0 ? new float[7] : p)], mp.NegativePlanes, mp.GridType);
+        var path = TempPath();
+        try { Assert.Throws<ArgumentException>(() => MasterPatternFile.Save(wrong, path, null)); Assert.False(File.Exists(path)); }
+        finally { File.Delete(path); }
+        Assert.Empty(Directory.GetFiles(Path.GetTempPath(), Path.GetFileName(path) + ".*.tmp")); // 失敗の一時ファイルを残さない
+
+        var si = ConvertCrystalData.ConvertFromCifText(StemDepthPhaseTests.SiCifText).ToCrystal();
+        var info = new MasterPatternFileInfo { CrystalFingerprint = MasterPatternFile.CrystalFingerprint(si), BeamEnergyKeV = double.NaN };
+        Assert.NotNull(MasterPatternFile.CheckCompatibility(info, si, 20));
     }
 
     /// <summary>同梱の結晶が同じ指紋に戻り、構築の条件からは今の物理の版と結晶が入る</summary>
