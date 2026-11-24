@@ -693,7 +693,8 @@ namespace Crystallography
                 br.BaseStream.Position = 1024L + Math.Max(NSYMBT, 0);
 
                 //ここから画像を読み込み
-                if (NX * NY * NZ == 0)
+                //if (NX * NY * NZ == 0) // 261124Cl 変更前: int の積が 2^32 (例 4096×4096×256) でちょうど 0 に桁あふれし、有効なスタックを空とみなしていた (codex2 第 1 回 C1-24)
+                if (NX <= 0 || NY <= 0 || NZ <= 0) // 261124Cl 変更: 各次元を直接見る
                     Images = null;
                 else
                 {
@@ -726,7 +727,10 @@ namespace Crystallography
                     //}
                     //261111Cl 変更 (作者承認・挙動が変わる): MODE 0 は MRC2014 (https://www.ccpem.ac.uk/mrc_format/mrc2014.php) の定義どおり
                     //  符号付き 8bit 整数 (sbyte, -128〜127) として読む。従来の byte - 128 は、バイト 0x00〜0x7F を -128〜-1、0x80〜0xFF を 0〜127 にずらしていた。
-                    int n = Math.Max(NX, 0) * Math.Max(NY, 0);//旧ループ (y < NY, x < NX) の回数と同じ
+                    //int n = Math.Max(NX, 0) * Math.Max(NY, 0);//旧ループ (y < NY, x < NX) の回数と同じ // 261124Cl 変更前: 1 面の画素数も int で桁あふれした (例 65536×65536 で 0。codex2 第 3 回)
+                    long nLong = (long)NX * NY; // 261124Cl 変更: 上で NX, NY > 0 を確かめてある
+                    if (nLong > Array.MaxLength) throw new InvalidDataException($"MRC: one section has too many pixels ({NX} x {NY}).");
+                    int n = (int)nLong;//旧ループ (y < NY, x < NX) の回数と同じ
                     Images = new List<List<double>>(Math.Max(NZ, 0));
                     for (int z = 0; z < NZ; z++)
                     {

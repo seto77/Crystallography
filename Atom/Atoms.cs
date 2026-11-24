@@ -175,7 +175,8 @@ public class Atoms : System.IEquatable<Atoms>, ICloneable
 
         Label = label;
 
-        this.Occ = 1;
+        //this.Occ = 1; // 261124Cl 変更前: 引数 occ を無視していた (ほかの構築子は保存する。codex2 第 1 回 C1-29)
+        this.Occ = occ; // 261124Cl
 
         WyckoffLeter = wyk.WyckoffLetter;
         SiteSymmetry = wyk.SiteSymmetry;

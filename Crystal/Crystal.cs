@@ -1391,9 +1391,11 @@ public class Crystal : IEquatable<Crystal>, ICloneable, IComparable<Crystal>
         gList.RemoveAt(0);// 000スポットを削除
         if (!double.IsInfinity(dMax))
         {
-            var i = gList.FindIndex(g => g.len > 1 / dMax);
-            if (i > 0)
-                gList.RemoveRange(0, i);
+            //var i = gList.FindIndex(g => g.len > 1 / dMax); // 261124Cl 変更前: すべての候補が dMax より長い d を持つと FindIndex が -1 を返し、何も除かれず全件が残っていた (codex2 第 1 回 C1-10)
+            //if (i > 0)
+            //    gList.RemoveRange(0, i);
+            double gMin = 1 / dMax; // 261124Cl 変更: 候補ごとに判定する (並び順にも依存しない)。境界 (len == 1/dMax) は従来どおり除く
+            gList.RemoveAll(g => g.len <= gMin);
         }
         VectorOfG = new Vector3D[gList.Count * 2];
         //260605Cl 生成・F計算・最大値reductionを1つの Parallel.For に融合(旧: 生成→F→Max→正規化の最大4走査。旧実装は親 ReciPro リポ (junction時代) の commit 442e0d90)。
@@ -1486,7 +1488,8 @@ public class Crystal : IEquatable<Crystal>, ICloneable, IComparable<Crystal>
         });
 
         var maxIntensity = VectorOfG_KikuchiLine.Max(v => v.RawIntensity);
-        Parallel.ForEach(VectorOfG_KikuchiLine, _g => _g.RelativeIntensity = _g.RawIntensity / maxIntensity);
+        //Parallel.ForEach(VectorOfG_KikuchiLine, _g => _g.RelativeIntensity = _g.RawIntensity / maxIntensity); // 261124Cl 変更前: 全反射の強度が 0 だと 0/0 で NaN (codex2 第 1 回 C1-27)
+        Parallel.ForEach(VectorOfG_KikuchiLine, _g => _g.RelativeIntensity = maxIntensity > 0 ? _g.RawIntensity / maxIntensity : 0); // 261124Cl
 
         VectorOfG_KikuchiLine.Sort((g1, g2) => g1.RelativeIntensity.CompareTo(g2.RelativeIntensity));
     }
@@ -1960,6 +1963,7 @@ public class Crystal : IEquatable<Crystal>, ICloneable, IComparable<Crystal>
         }
 
         var max = Plane.Max(p => p.RawIntensity);
+        if (!(max > 0)) max = 1; // 261124Cl 追加: 全反射の強度が 0 のときの 0/0 (NaN) を避ける (値は 0 のまま。codex2 第 1 回 C1-27)
         for (int i = 0; i < Plane.Count; i++)
         {
             Plane[i].Intensity = Plane[i].RawIntensity / max;
@@ -2194,6 +2198,9 @@ public class Crystal : IEquatable<Crystal>, ICloneable, IComparable<Crystal>
             Gamma_err = InitialGamma_err;
             SetAxis();
             GetFormulaAndDensity(); // 261105Cl 追加 (監査 A13): 体積が変わるので密度も計算し直す (以前は Revert 後も編集後の格子の密度が残った)
+            // 261124Cl 追加: 同じインスタンスの格子を戻すので、作り済みの BetheMethod の U と SAED/PED の固有解を捨てる。
+            //  固有解のキーは格子を区別しないため、戻す前の格子の固有解が再利用されていた (codex2 第 1・2 回 C1-04 案 A。根本の案 B は提案書へ)
+            Volatile.Read(ref bethe)?.ClearUCache();
         }
     }
     #endregion

@@ -108,7 +108,8 @@ public static class Fourier
             }
         }
 
-        if (normarize == false)
+        //if (normarize == false) // 261124Cl 変更前: 全画素 0 だと 0/0 で NaN が並んだ (codex2 第 1 回 C1-27)
+        if (normarize == false || !(maxModulus > 0)) // 261124Cl 変更: 最大値が 0 (または NaN) なら割らずに返す
             return rawModulus;
         else
         {
@@ -137,7 +138,8 @@ public static class Fourier
                 maxModulus = Math.Max(rawModulus[y][x], maxModulus);
             }
         }
-        if (normarize == false)
+        //if (normarize == false) // 261124Cl 変更前: 全画素 0 だと 0/0 で NaN が並んだ (codex2 第 1 回 C1-27)
+        if (normarize == false || !(maxModulus > 0)) // 261124Cl 変更: 最大値が 0 (または NaN) なら割らずに返す
             return rawModulus;
         else
         {

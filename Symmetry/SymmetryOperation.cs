@@ -189,8 +189,10 @@ public readonly struct SymmetryOperation
                     (0, 1, 0) => (-h - k, k, -l),
                     (1, 1, 0) => (k, h, -l),
                     (1, -1, 0) => (-k, -h, -l),
-                    (2, 1, 0) => (-h, h + k, -l),
-                    (1, 2, 0) => (h + k, -k, -l),
+                    //(2, 1, 0) => (-h, h + k, -l), // 261124Cl 変更前: [120] の式と入れ替わっていた (ApplyMatrix の [210] は (x, x-y, -z) なので Rᵀh = (h+k, -k, -l))。codex2 第 1 回 C1-01
+                    //(1, 2, 0) => (h + k, -k, -l), // 261124Cl 変更前
+                    (2, 1, 0) => (h + k, -k, -l), // 261124Cl
+                    (1, 2, 0) => (-h, h + k, -l), // 261124Cl (ApplyMatrix の [120] は (-x+y, y, -z))
                     _ => (0, 0, 0)
                 };
             else if (o == 3 && Direction == (0, 0, 1))
@@ -273,8 +275,10 @@ public readonly struct SymmetryOperation
                     (0, 1, 0) => (-h - k, k, -l),
                     (1, 1, 0) => (k, h, -l),
                     (1, -1, 0) => (-k, -h, -l),
-                    (2, 1, 0) => (-h, h + k, -l),
-                    (1, 2, 0) => (h + k, -k, -l),
+                    //(2, 1, 0) => (-h, h + k, -l), // 261124Cl 変更前: [120] の式と入れ替わっていた (ApplyMatrix の [210] は (x, x-y, -z) なので Rᵀh = (h+k, -k, -l))。codex2 第 1 回 C1-01
+                    //(1, 2, 0) => (h + k, -k, -l), // 261124Cl 変更前
+                    (2, 1, 0) => (h + k, -k, -l), // 261124Cl
+                    (1, 2, 0) => (-h, h + k, -l), // 261124Cl (ApplyMatrix の [120] は (-x+y, y, -z))
                     _ => (0, 0, 0)
                 };
             else if (o == 3 && Direction == (0, 0, 1))

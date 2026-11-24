@@ -4139,7 +4139,8 @@ public partial class BetheMethod
         #region qList, g_q_indexを作成
         //qList　計算対象のQを網羅 
         var mat = BaseRotation * Crystal.MatrixInverseTransposed;
-        var qList = Beams.AsParallel().SelectMany(e1 => Beams.Select(e2 => (e1 - e2).Index)).Distinct()
+        //var qList = Beams.AsParallel().SelectMany(e1 => Beams.Select(e2 => (e1 - e2).Index)).Distinct() // 261124Cl 変更前: B² 個の対ごとに Beam と Vector3DBase を 1 個ずつ作って捨てていた (codex2 第 1 回 C1-25)
+        var qList = Beams.AsParallel().SelectMany(e1 => Beams.Select(e2 => (H: e1.H - e2.H, K: e1.K - e2.K, L: e1.L - e2.L))).Distinct() // 261124Cl 変更: 指数の差だけを作る (重複除去後の処理は同じ)
             .Select(e => new Beam(e, mat * e)).Where(e => k_xy.Any(e2 => A(e2) && A(e2 + e.Vec.ToPointD))).OrderBy(e => e.Vec.Length2).ToList();
         //261111Cl 追加 (研究用、既定 = 未設定): 環境変数 RECIPRO_STEM_QNMAX (nm⁻¹) を指定すると、q の集合をビームの差によらず、
         //  「K と K+q がともに収束絞りの中にある方向がある、|q_n| ≤ 指定値の格子のベクトル全部」にする

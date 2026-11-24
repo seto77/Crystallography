@@ -385,6 +385,8 @@ public static class MasterPatternFile
         var gridType = (MasterPattern.Types)r.ReadInt32();
         int nE = r.ReadInt32(), nD = r.ReadInt32();
         if (gridSize <= 0 || nE < 0 || nD < 0 || !System.Enum.IsDefined(gridType)) throw new InvalidDataException("Corrupt MasterPattern file (bad grid header).");
+        // 261124Cl 追加: v2 (ValidateBlocks) と同じ上限の検査。v1 では nE*nD の int の桁あふれと、格子と合わない平面の長さを通していた (codex2 第 1 回 C1-23)
+        if ((long)gridSize * gridSize > Array.MaxLength / sizeof(float) || (long)nE * nD > Array.MaxLength) throw new InvalidDataException("Corrupt MasterPattern file (bad grid header).");
         var energies = new double[nE]; for (int i = 0; i < nE; i++) energies[i] = r.ReadDouble();
         var depths = new double[nD]; for (int i = 0; i < nD; i++) depths[i] = r.ReadDouble();
         int planeCount = nE * nD;
@@ -396,6 +398,7 @@ public static class MasterPatternFile
                 int len = r.ReadInt32();
                 if (len < 0) throw new InvalidDataException("Corrupt MasterPattern file (negative plane length).");
                 if (len == 0) continue;
+                if (len != gridSize * gridSize) throw new InvalidDataException("Corrupt MasterPattern file (plane length does not match the grid)."); // 261124Cl 追加 (C1-23)
                 var p = new float[len];
                 r.BaseStream.ReadExactly(MemoryMarshal.AsBytes(p.AsSpan()));
                 planes[k] = p;
@@ -448,13 +451,17 @@ public static class MasterPatternFile
             var gridType = (MasterPattern.Types)r.ReadInt32();
             int nE = r.ReadInt32(), nD = r.ReadInt32();
             if (gridSize <= 0 || nE < 0 || nD < 0 || !System.Enum.IsDefined(gridType)) throw new InvalidDataException("Corrupt MasterPattern file (bad grid header).");
-            for (int i = 0; i < nE + nD; i++) r.ReadDouble(); //エネルギー列・深さ列は読み捨てる
+            // 261124Cl 追加: Load (v1) と同じ上限の検査 (codex2 第 3 回: こちらの入口は負の長さしか見ていなかった)
+            if ((long)gridSize * gridSize > Array.MaxLength / sizeof(float) || (long)nE * nD > Array.MaxLength) throw new InvalidDataException("Corrupt MasterPattern file (bad grid header).");
+            //for (int i = 0; i < nE + nD; i++) r.ReadDouble(); //エネルギー列・深さ列は読み捨てる // 261124Cl 変更前: nE + nD が int
+            for (long i = 0; i < (long)nE + nD; i++) r.ReadDouble(); //エネルギー列・深さ列は読み捨てる // 261124Cl
             //平面は配列を作らず、長さ × 4 バイトを捨て緩衝 (64 KiB、LOH に入らない) へ読み捨てる (+Z → −Z の 2 × nE·nD 枚)
             var discard = new byte[1 << 16];
             for (long k = 0, planeCount = 2L * nE * nD; k < planeCount; k++)
             {
                 int len = r.ReadInt32();
                 if (len < 0) throw new InvalidDataException("Corrupt MasterPattern file (negative plane length).");
+                if (len != 0 && len != gridSize * gridSize) throw new InvalidDataException("Corrupt MasterPattern file (plane length does not match the grid)."); // 261124Cl 追加 (Load と同じ)
                 for (long left = 4L * len; left > 0; left -= discard.Length)
                     r.BaseStream.ReadExactly(discard, 0, (int)Math.Min(left, discard.Length));
             }
