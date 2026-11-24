@@ -513,7 +513,9 @@ public partial class Profile : ICloneable
         var startAngle = profile.Pt[0].X * div;
         var stepAngle = (profile.Pt[1].X - profile.Pt[0].X) * div;
         sb.Add(string.Create(inv, $"BANK 1 {ptCount} {ptCount} CONST {startAngle:f2} {stepAngle:f2} 0 0 FXYE"));
-        bool validErr = profile.Err != null && profile.Err.Count == ptCount && !profile.Err.Any(e => e.IsNaN);
+        //bool validErr = profile.Err != null && profile.Err.Count == ptCount && !profile.Err.Any(e => e.IsNaN); // 261124Cl 変更前: 1 点でも NaN なら全点を √I にしていた
+        // 261124Cl 変更 (作者の決定 2026-11-24): σ が欠けた (NaN・有限でない) 行だけ √I で補い、測った σ は残す
+        bool validErr = profile.Err != null && profile.Err.Count == ptCount;
         // 11 文字に収まるまで有効桁を下げる (指数と符号は保つ)
         string field(double v)
         {
@@ -526,7 +528,7 @@ public partial class Profile : ICloneable
         }
         for (int i = 0; i < ptCount; i++)
         {
-            var err = validErr ? profile.Err[i].Y : Math.Sqrt(profile.Pt[i].Y);
+            var err = validErr && double.IsFinite(profile.Err[i].Y) ? profile.Err[i].Y : Math.Sqrt(profile.Pt[i].Y); // 261124Cl: 行ごとに判定
             sb.Add($" {field(profile.Pt[i].X * div)} {field(profile.Pt[i].Y)} {field(err)}");
         }
 
