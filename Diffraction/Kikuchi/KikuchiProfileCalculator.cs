@@ -105,6 +105,7 @@ public sealed class KikuchiPotentialSnapshot
             h.Add(dsf.Biso);
             //260806Cl /simplify2: 異方 ADP 編集でも snapshot が失効するようフィールドを網羅 (kernel は Biso000 へ fallback するため)
             h.Add(dsf.Biso000); h.Add(dsf.B11); h.Add(dsf.B22); h.Add(dsf.B33); h.Add(dsf.B12); h.Add(dsf.B23); h.Add(dsf.B31);
+            h.Add(dsf.UseIso); // 261125Cl 追加 (codex2 の 11-25 の議論 観点 F §1-6): 等方・異方の切り替えだけでも getU の式が変わる (数値の欄は同じまま)
             foreach (var atom in atoms.Atom)
             { h.Add(atom.X); h.Add(atom.Y); h.Add(atom.Z); }
         }

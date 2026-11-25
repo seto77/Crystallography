@@ -145,8 +145,10 @@ public static class MasterPatternFile
 
     /// <summary>261124Cl 追加 (作者決定 11-24): マスターパターンを計算する物理の版。同じ入力でマスターパターンの強度が変わる直し
     /// (源・吸収・ビーム選択の既定・散乱因子の表など) を入れたら上げる。読み込み側は、ファイルの版が今と違えば警告して読む。
-    /// 値は直しを入れた日 (yyMMdd)。最後の直しは 11-18 の後方源の軸 (既定で入射の軸)</summary>
-    public const string PhysicsVersion = "261118";
+    /// 値は直しを入れた日 (yyMMdd)。最後の直しは 11-24 の六方晶の [210]/[120] 二回軸の面指数変換 (異方性の原子変位の getU が使う。e4301e9、v.4.954 の後)。
+    /// その前は 11-18 の後方源の軸 (既定で入射の軸)</summary>
+    // public const string PhysicsVersion = "261118"; // 261125Cl 変更前
+    public const string PhysicsVersion = "261124"; // 261125Cl 変更 (codex2 の 11-25 の議論 第 1 回 §1-1): v.4.954 で保存したマスターは旧い物理と知らせる
 
     // 261124Cl 追加: 形式 v2 の区画の種類・方式・大きさ
     const int KindPlanePositive = 1, KindPlaneNegative = 2, KindElectrons = 3;
@@ -791,7 +793,10 @@ public static class MasterPatternFile
     /// <summary>結晶の同一性を表す文字列。格子定数 (nm, 6 桁)・角度 (度, 4 桁)・空間群の系列番号・
     /// 原子ごとの Z / 座標 (5 桁) / 占有率 (4 桁) / 等方 B (nm², 6 桁) を並べる。異方性の原子はその後ろに β の 6 成分 (有効数字 7 桁) を足す (261105Cl)。
     /// 名前は含めない (名前だけ変えた同じ結晶は同一とみなす)。</summary>
-    public static string CrystalFingerprint(Crystal crystal)
+    /// <param name="includeIonModel">261125Cl 追加: false なら、イオン模型の項 (原子ごとの ",e…" と末尾の "ion=…;") を入れない旧い形 (物理の版 261118 以前のファイルの指紋) を返す。
+    /// 照合には <see cref="FingerprintIncludesIonModel"/> で決めた値を渡す</param>
+    // public static string CrystalFingerprint(Crystal crystal) // 261125Cl 旧シグネチャ
+    public static string CrystalFingerprint(Crystal crystal, bool includeIonModel = true)
     {
         ArgumentNullException.ThrowIfNull(crystal);
         var ci = CultureInfo.InvariantCulture;
@@ -810,14 +815,23 @@ public static class MasterPatternFile
                 sb.Append(string.Format(ci, ",{0:E6},{1:E6},{2:E6},{3:E6},{4:E6},{5:E6}", d.B11, d.B22, d.B33, d.B12, d.B23, d.B31));
             // 261124Cl 追加 (codex2 査読 C1-16): イオン模型のとき、電子散乱因子の種類 (SubNumberElectron) で散乱因子と価数が変わるので入れる。
             //  中性原子の模型では使わない (計算でも 0 として扱う) ので入れない。既存の (中性で作った) ファイルの指紋は変わらない
-            if (BetheMethod.ElasticIonModel != ElasticIonModel.Neutral)
+            //if (BetheMethod.ElasticIonModel != ElasticIonModel.Neutral) // 261125Cl 変更前
+            if (includeIonModel && BetheMethod.ElasticIonModel != ElasticIonModel.Neutral) // 261125Cl 変更
                 sb.Append(string.Format(ci, ",e{0}", a.SubNumberElectron));
             sb.Append(';');
         }
-        if (BetheMethod.ElasticIonModel != ElasticIonModel.Neutral) // 261124Cl 追加: 模型の名前も (末尾。原子の区切りの後なので、先頭の数を読む道具の解釈は変わらない)
+        //if (BetheMethod.ElasticIonModel != ElasticIonModel.Neutral) // 261124Cl 追加: 模型の名前も (末尾。原子の区切りの後なので、先頭の数を読む道具の解釈は変わらない) // 261125Cl 変更前
+        if (includeIonModel && BetheMethod.ElasticIonModel != ElasticIonModel.Neutral) // 261125Cl 変更
             sb.Append("ion=").Append(BetheMethod.ElasticIonModel).Append(';');
         return sb.ToString();
     }
+
+    /// <summary>261125Cl 追加 (codex2 の 11-25 の議論 観点 E 第 2 回 §1-1): そのファイルの指紋にイオン模型の項が入っているか。
+    /// 入れ始めたのは物理の版 261124 から。それより前 (261118・記録なし = v.4.954 以前) のファイルは旧い形の指紋で照合しないと、
+    /// イオン模型で作ったファイルが同じ結晶でも「別の結晶」になって読めない (同梱の結晶で戻しても指紋が合わない)。
+    /// 未公開の中間版 (11-24〜25) は版 261118 のままイオン模型の項を書いていたので、保存された指紋に項 (";ion=") があればそれも新しい形とみなす (codex2 の査読 L2 §2)</summary>
+    public static bool FingerprintIncludesIonModel(MasterPatternFileInfo info)
+        => !(string.IsNullOrEmpty(info.PhysicsVersion) || info.PhysicsVersion == "261118") || (info.CrystalFingerprint?.Contains(";ion=") ?? false);
 
     /// <summary>作成条件が今の結晶・電圧と一致するか。一致しなければ理由を返す (一致なら null)</summary>
     /// <param name="beamSelectionUsed">261110Cl 追加 (codex2 第 34 回): null 以外なら、ビーム選択の方式 (Legacy・DressedTail) も一致を求める (較正や複数のマスターを組み合わせる道具用。表示は従来どおり方式を問わない)</param>
@@ -831,7 +845,8 @@ public static class MasterPatternFile
         ArgumentNullException.ThrowIfNull(info);
         ArgumentNullException.ThrowIfNull(crystal);
         if (beamCandidateCut is "") throw new ArgumentException("Pass null to skip the beam-candidate-cut check; an empty requirement would match unrecorded files.", nameof(beamCandidateCut)); // 261118Cl 追加 (codex2 第 16 回)
-        if (info.CrystalFingerprint != CrystalFingerprint(crystal))
+        //if (info.CrystalFingerprint != CrystalFingerprint(crystal)) // 261125Cl 変更前
+        if (info.CrystalFingerprint != CrystalFingerprint(crystal, FingerprintIncludesIonModel(info))) // 261125Cl 変更: 旧いファイルは旧い形の指紋で
             return $"The file was made for a different crystal (\"{info.CrystalName}\"), or the cell, atoms or B differ.";
         if (!double.IsFinite(info.BeamEnergyKeV) || info.BeamEnergyKeV <= 0) // 261124Cl 追加 (codex2 査読 中 5): NaN は下の比べで「一致」になってしまう
             return "The file does not record a valid beam energy.";

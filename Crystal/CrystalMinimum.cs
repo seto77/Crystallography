@@ -462,24 +462,52 @@ public partial class Crystal2
         if (valStr == "0")
             return (0, err * expValue);
 
-        if (IsHex)
+        //if (IsHex)
+        //{
+        //    if (str.Contains(".0833"))
+        //        return (1.0 / 12.0, err);
+        //    else if (str.Contains(".167") || str.Contains(".1667") || str.Contains(".16667") || str.Contains(".166667"))
+        //        return (1.0 / 6.0, err);
+        //    else if (str.Contains(".333"))
+        //        return (1.0 / 3.0, err);
+        //    else if (str.Contains(".667") || str.Contains(".6667") || str.Contains(".66667") || str.Contains(".666667"))
+        //        return (2.0 / 3.0, err);
+        //    else if (str.Contains(".4167") || str.Contains(".41667") || str.Contains(".416667"))
+        //        return (5.0 / 12.0, err);
+        //    else if (str.Contains(".5833"))
+        //        return (7.0 / 12.0, err);
+        //    else if (str.Contains(".8333")|| str.Contains(".83333"))
+        //        return (5.0 / 6.0, err);
+        //    else if (str.Contains(".9167") || str.Contains(".91667") || str.Contains(".916667"))
+        //        return (11.0 / 12.0, err);
+        //} // 261125Cl 変更前 (この if 全体)
+        // 261125Cl 変更 (codex2 の 11-25 の議論 観点 I §1-2): 旧い形は小数の部分だけで分数を返し、符号・整数部・指数を捨てていた。
+        //  例: "-0.3333" → +1/3 (正しくは −1/3)、"1.3333" → 1/3、"0.333E-1" → 1/3 (正しくは 0.0333)。どの小数を分数とみなすかの規則は変えず、
+        //  符号と整数部を保つ。分数とみなすかは、指数を掛けた後の値の 10 進表記で見る (Compose は "3.333(20)E-1" の形で書くので、
+        //  仮数の "3.333" で見ると "0.333E-1" を 1/3 にし、値で見ないと保存した結晶の 1/3 が往復で 0.3333 になる。codex2 の査読 L §2)
+        if (IsHex && double.TryParse(valStr, style, culture, out var hexValue))
         {
+            var full = hexValue * expValue;
+            str = Math.Abs(full).ToString(CultureInfo.InvariantCulture); // 下の判定は値の 10 進表記で (この後 str は使わない)
+            double frac = double.NaN;
             if (str.Contains(".0833"))
-                return (1.0 / 12.0, err);
+                frac = 1.0 / 12.0;
             else if (str.Contains(".167") || str.Contains(".1667") || str.Contains(".16667") || str.Contains(".166667"))
-                return (1.0 / 6.0, err);
+                frac = 1.0 / 6.0;
             else if (str.Contains(".333"))
-                return (1.0 / 3.0, err);
+                frac = 1.0 / 3.0;
             else if (str.Contains(".667") || str.Contains(".6667") || str.Contains(".66667") || str.Contains(".666667"))
-                return (2.0 / 3.0, err);
+                frac = 2.0 / 3.0;
             else if (str.Contains(".4167") || str.Contains(".41667") || str.Contains(".416667"))
-                return (5.0 / 12.0, err);
+                frac = 5.0 / 12.0;
             else if (str.Contains(".5833"))
-                return (7.0 / 12.0, err);
-            else if (str.Contains(".8333")|| str.Contains(".83333"))
-                return (5.0 / 6.0, err);
+                frac = 7.0 / 12.0;
+            else if (str.Contains(".8333") || str.Contains(".83333"))
+                frac = 5.0 / 6.0;
             else if (str.Contains(".9167") || str.Contains(".91667") || str.Contains(".916667"))
-                return (11.0 / 12.0, err);
+                frac = 11.0 / 12.0;
+            if (!double.IsNaN(frac))
+                return (Math.CopySign(Math.Floor(Math.Abs(full)) + frac, full), err * expValue); // 誤差にも指数を掛ける (旧は掛けていなかった)
         }
 
         if ((i = valStr.IndexOf("/", Ord)) >= 0)
