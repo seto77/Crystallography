@@ -5956,7 +5956,20 @@ public partial class BetheMethod
         public readonly long Key1 = key1, Key2 = key2;
         public bool Equals(UKey other) => Key1 == other.Key1 && Key2 == other.Key2;
         public override bool Equals(object obj) => obj is UKey other && Equals(other);
-        public override int GetHashCode() => unchecked((int)Key1 ^ (int)(Key1 >> 32) * 31 ^ ((int)Key2 ^ (int)(Key2 >> 32)) * -1640531535);
+        //public override int GetHashCode() => unchecked((int)Key1 ^ (int)(Key1 >> 32) * 31 ^ ((int)Key2 ^ (int)(Key2 >> 32)) * -1640531535); // 261126Cl 変更前 (非局所の (0,i,0)・(0,j,0) で 65,536 組が 2,048 種の hash に偏った。codex2 の査読 k2)
+        // 261126Cl: 2 つの鍵を splitmix64 で混ぜる。Key1 を先に混ぜてから Key2 と合わせ、もう一度混ぜる (Key1 の掛け算と xor だけを先にすると、
+        //  長い a 軸の偶数反射 (H だけが変わる) で下位のビットが固定され、約 105 万組が 80 万種に偏った。codex2 の査読 k3)
+        public override int GetHashCode() => unchecked((int)Mix(Mix((ulong)Key1) ^ (ulong)Key2)); // 261126Cl: キャストも unchecked の中 (/checked+ でビルドしても NoHKey = −1 で例外にしない。codex2 の査読 k4)
+        static ulong Mix(ulong x)
+        {
+            unchecked
+            {
+                x += 0x9E3779B97F4A7C15UL;
+                x ^= x >> 30; x *= 0xBF58476D1CE4E5B9UL;
+                x ^= x >> 27; x *= 0x94D049BB133111EBUL;
+                return x ^ (x >> 31);
+            }
+        }
         public static implicit operator UKey((long Key1, long Key2) t) => new(t.Key1, t.Key2);
     }
 
@@ -6108,8 +6121,20 @@ public partial class BetheMethod
     /// 殻の最初の長さ s に対して s(1+1e-9) までで、覆い切った半径は殻の外端の次の double。点は (|g|, h, k, l) の順で、座標は Build_gCache と同じ丸め</summary>
     private GCacheSnapshot BuildQuadraticGCache(Matrix3D mat, (int h, int k, int l)[] direction, int cacheLimit)
     {
-        var (allowed, centering) = CenteringExtinctionRule(Crystal, includeHidden: false);
-        int multiplicity = centering switch { "F" => 4, "RH" => 3, "A" or "B" or "C" or "I" => 2, _ => 1 };
+        //var (allowed, centering) = CenteringExtinctionRule(Crystal, includeHidden: false); // 261126Cl 変更前 (2 行)
+        //int multiplicity = centering switch { "F" => 4, "RH" => 3, "A" or "B" or "C" or "I" => 2, _ => 1 };
+        // 261126Cl 変更 (codex2 の議論 e2): 心出しは、呼び出し側が取った近傍の列 (direction) から決める (Crystal.Symmetry を読み直さない。
+        //  構築の途中で対称性が替わっても、近傍の列とキャッシュの点の格子が食い違わない)。規則は CenteringExtinctionRule と同じ
+        (Func<int, int, int, bool> allowed, int multiplicity) = direction switch
+        {
+            _ when ReferenceEquals(direction, directionF) => ((h, k, l) => ((h ^ k) & 1) == 0 && ((k ^ l) & 1) == 0, 4),
+            _ when ReferenceEquals(direction, directionI) => ((h, k, l) => ((h + k + l) & 1) == 0, 2),
+            _ when ReferenceEquals(direction, directionA) => ((h, k, l) => ((k + l) & 1) == 0, 2),
+            _ when ReferenceEquals(direction, directionB) => ((h, k, l) => ((h + l) & 1) == 0, 2),
+            _ when ReferenceEquals(direction, directionC) => ((h, k, l) => ((h + k) & 1) == 0, 2),
+            _ when ReferenceEquals(direction, directionRH) => ((h, k, l) => ((-h + k + l) % 3 + 3) % 3 == 0, 3),
+            _ => ((Func<int, int, int, bool>)((_, _, _) => true), 1), // directionP・directionHex (菱面体の軸の R も含む)
+        };
         double det = Math.Abs(mat.Determinant());
         if (!(det > 0) || !double.IsFinite(det))
             throw new ArithmeticException("Singular reciprocal basis.");
