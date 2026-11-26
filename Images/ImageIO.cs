@@ -91,9 +91,10 @@ public static partial class ImageIO
     /// <summary>261111Cl 追加: stream の現在位置から dst.Length 個の T を 64K 要素ずつ一括で読み、double へ広げて dst に書く (画素ごとの BinaryReader 呼び出しの代わり)。
     /// bigEndian = true ならバイト順を反転する (浮動小数点は同じ幅の整数として反転)。table を渡すと、値を添字にした table の値を書く。
     /// 途中でファイルが尽きたときは、それまでに読めた完全な要素だけを書いてから EndOfStreamException を投げる (BinaryReader で 1 要素ずつ読んでいたときと同じ)。
-    /// zeroFillAtEnd = true なら例外を出さず、足りないバイトを 0 として扱う (BinaryReader.Read(byte[], ..) で読んでいた箇所と同じ)。
+    /// 261126Cl 変更: zeroFillAtEnd (足りないバイトを 0 として扱う) は廃止。唯一の利用者だった TIFF は途中切れを失敗にする。
     /// .NET の BinaryReader は先読みしないので、BinaryReader で読んでいる途中の BaseStream に対して呼んでよい。</summary>
-    internal static void ReadPixels<T>(Stream stream, Span<double> dst, bool bigEndian = false, ReadOnlySpan<double> table = default, bool zeroFillAtEnd = false)
+    //internal static void ReadPixels<T>(Stream stream, Span<double> dst, bool bigEndian = false, ReadOnlySpan<double> table = default, bool zeroFillAtEnd = false) // 261126Cl 変更前
+    internal static void ReadPixels<T>(Stream stream, Span<double> dst, bool bigEndian = false, ReadOnlySpan<double> table = default) // 261126Cl 変更
         where T : unmanaged, INumberBase<T>
     {
         const int chunk = 1 << 16;
@@ -109,9 +110,9 @@ public static partial class ImageIO
                 int n = s.Length;
                 if (got < bytes.Length)
                 {
-                    if (zeroFillAtEnd)
-                        bytes[got..].Clear();
-                    else
+                    //if (zeroFillAtEnd) // 261126Cl 変更前 (3 行)
+                    //    bytes[got..].Clear();
+                    //else
                         n = got / Unsafe.SizeOf<T>();
                 }
                 var v = s[..n];

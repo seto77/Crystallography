@@ -288,9 +288,29 @@ public static class MasterPatternFile
         }
     }
 
+    /// <summary>261126Cl 追加: 深さの軸は有限で、隣同士は厳密に増える (重複・逆順・NaN は区間幅と深さの補間を壊す)。長さ 0・1 点・深さ 0 は許す。
+    /// writing = true (保存の前) は ArgumentException、読み込みでは InvalidDataException</summary>
+    static void ValidateDepthAxis(IEnumerable<double> depths, bool writing = false)
+    {
+        if (depths == null) throw new InvalidDataException("Corrupt MasterPattern file (missing depth axis).");
+        double previous = double.NegativeInfinity;
+        int index = 0;
+        foreach (double depth in depths)
+        {
+            if (!double.IsFinite(depth) || depth <= previous)
+            {
+                string message = $"Invalid Depths[{index}] = {depth}. Depths must be finite and strictly increasing.";
+                throw writing ? new ArgumentException(message, "masterPattern") : new InvalidDataException($"Corrupt MasterPattern file ({message})");
+            }
+            previous = depth;
+            index++;
+        }
+    }
+
     /// <summary>261124Cl 追加: 保存する MasterPattern から見出しの記録を埋める (v2 の <see cref="Save"/> と v1 の <see cref="SaveVersion1"/> で共用)</summary>
     static MasterPatternFileInfo FillInfo(MasterPattern masterPattern, MasterPatternFileInfo info, EbsdBackscatteredElectron[] backscatteredElectrons, int formatVersion)
     {
+        ValidateDepthAxis(masterPattern.Depths, writing: true); // 261126Cl 追加: info を書き換える前・一時ファイルを作る前に
         info ??= new MasterPatternFileInfo();
         info.FormatVersion = formatVersion;
         // 261110Cl 追加 (codex2 第 32 回): ビーム選択の方式は保存する MasterPattern から書く (info だけでは新方式の像を従来として記録しうる)
@@ -391,6 +411,7 @@ public static class MasterPatternFile
         if ((long)gridSize * gridSize > Array.MaxLength / sizeof(float) || (long)nE * nD > Array.MaxLength) throw new InvalidDataException("Corrupt MasterPattern file (bad grid header).");
         var energies = new double[nE]; for (int i = 0; i < nE; i++) energies[i] = r.ReadDouble();
         var depths = new double[nD]; for (int i = 0; i < nD; i++) depths[i] = r.ReadDouble();
+        ValidateDepthAxis(depths); // 261126Cl 追加 (v1 の Load)
         int planeCount = nE * nD;
         var pos = new float[planeCount][];
         var neg = new float[planeCount][];
@@ -456,7 +477,9 @@ public static class MasterPatternFile
             // 261124Cl 追加: Load (v1) と同じ上限の検査 (codex2 第 3 回: こちらの入口は負の長さしか見ていなかった)
             if ((long)gridSize * gridSize > Array.MaxLength / sizeof(float) || (long)nE * nD > Array.MaxLength) throw new InvalidDataException("Corrupt MasterPattern file (bad grid header).");
             //for (int i = 0; i < nE + nD; i++) r.ReadDouble(); //エネルギー列・深さ列は読み捨てる // 261124Cl 変更前: nE + nD が int
-            for (long i = 0; i < (long)nE + nD; i++) r.ReadDouble(); //エネルギー列・深さ列は読み捨てる // 261124Cl
+            //for (long i = 0; i < (long)nE + nD; i++) r.ReadDouble(); //エネルギー列・深さ列は読み捨てる // 261124Cl // 261126Cl 変更前
+            for (int i = 0; i < nE; i++) r.ReadDouble(); //エネルギー列は読み捨てる // 261126Cl 変更
+            ValidateDepthAxis(Enumerable.Range(0, nD).Select(_ => r.ReadDouble())); //深さ列は Load と同じに検査して読み捨てる // 261126Cl 追加
             //平面は配列を作らず、長さ × 4 バイトを捨て緩衝 (64 KiB、LOH に入らない) へ読み捨てる (+Z → −Z の 2 × nE·nD 枚)
             var discard = new byte[1 << 16];
             for (long k = 0, planeCount = 2L * nE * nD; k < planeCount; k++)
@@ -519,7 +542,10 @@ public static class MasterPatternFile
         var header = new byte[headerLength];
         fs.ReadExactly(header);
         // return JsonSerializer.Deserialize<MasterPatternFileInfo>(header) ?? new MasterPatternFileInfo(); // 261028Cl 変更前
-        return JsonSerializer.Deserialize<MasterPatternFileInfo>(header, HeaderJsonOptions) ?? new MasterPatternFileInfo(); // 261028Cl 変更: "NaN" なども読む
+        //return JsonSerializer.Deserialize<MasterPatternFileInfo>(header, HeaderJsonOptions) ?? new MasterPatternFileInfo(); // 261028Cl 変更: "NaN" なども読む // 261126Cl 変更前
+        var info = JsonSerializer.Deserialize<MasterPatternFileInfo>(header, HeaderJsonOptions) ?? new MasterPatternFileInfo(); // 261028Cl: "NaN" なども読む
+        if (version >= 2) ValidateDepthAxis(info.Depths); // 261126Cl 追加: v2 は見出しが深さの軸を持つ (ReadInfo・Load・ReadElectronChunks で共用)。v1 の見出しは軸を持たない
+        return info; // 261126Cl
     }
 
     #region 261124Cl 追加: 形式 v2 (区画・並べ替え + Brotli・CRC32)

@@ -440,10 +440,13 @@ public class Tiff
 
                 //IFDの読み込み開始
                 ifdPointa += 2;
+                if (totalIFD < 0 || ifdPointa + 12L * totalIFD + 4 > br.BaseStream.Length) // 261126Cl 追加: IFD の表がファイルの外へはみ出す (途中で切れたファイル)
+                    throw new EndOfStreamException("This TIFF file is truncated (incomplete image file directory).");
                 var iFD = new IFD[totalIFD];
                 for (int i = 0; i < totalIFD; i++)
                 {
                     try { iFD[i] = ReadIFD(br, (int)ifdPointa, ByteOrder); }
+                    catch (EndOfStreamException) { throw; } // 261126Cl 追加: ストリップの位置・長さの表の途中切れは呼び出し側へ伝える
                     catch { }
                     ifdPointa += 12;
                 }
@@ -765,6 +768,7 @@ public class Tiff
                 //261111Cl 変更 (T1): ストリップ単位で一括で読む (ImageIO.ReadPixels: MemoryMarshal で型を変え、MM ならバイト順を反転してから double に広げる)。
                 //  型の選び方 (bytePerPixel と SampleFormat の組) は旧式と同じ。ファイル末尾での振る舞いも旧式と同じにする:
                 //  BinaryReader.ReadXxx で読んでいた 8bit と II の 16/32bit 整数は末尾で例外、BinaryReader.Read(byte[]) で読んでいた MM の 16/32bit 整数と浮動小数点は足りない分を 0。
+                //  261126Cl 変更: 途中で切れたファイルは型によらず失敗にする (ゼロ埋めをやめ、全画素が埋まらなければ EndOfStreamException)。
                 //  F2 (挙動が変わる): 浮動小数点は旧式では常に 4 バイトずつ読んでいたため、64bit (double) と 16bit (half) の TIFF を誤読していた。幅に合わせて読む。
                 var bigEndian = byteOrder == TiffByteOrder.Intel;//列挙子の名前が逆: Intel = MM (ビッグエンディアン)、Motorola = II
                 //var kind = image.SampleFormat == 3 ? bytePerPixel switch { 8 => SampleKind.F64, 2 => SampleKind.F16, _ => SampleKind.F32 } // 261112Cl 変更前
@@ -787,8 +791,17 @@ public class Tiff
                 int samplesPerPixel = image.SampleFormat == 3 || image.IsGray ? 1 : bitsPerSampleLength;
                 int rowBytes = image.ImageWidth * samplesPerPixel * bytePerPixel;
                 int stripRows = image.RowsPerStrip is { Length: > 0 } rps && rps[0] > 0 ? Math.Min(rps[0], image.ImageLength) : image.ImageLength;
-                for (int i = 0, n = 0; i < image.StripByteCounts.Length; i++)
+                //for (int i = 0, n = 0; i < image.StripByteCounts.Length; i++) // 261126Cl 変更前
+                int pixelsRead = 0; // 261126Cl 変更: 読めた画素数をループの後で確かめる
+                if (image.StripOffsets == null || image.StripOffsets.Length < image.StripByteCounts.Length) // 261126Cl 追加: 位置の表が長さの表より短い
+                    throw new EndOfStreamException("This TIFF file is truncated or damaged (incomplete strip table).");
+                for (int i = 0; i < image.StripByteCounts.Length; i++)
                 {
+                    // 261126Cl 追加 (codex2 査読 r1): 帯の宣言の範囲がファイルの外へはみ出すなら途中切れ (宣言より短い実体を、そのまま読める分だけで成功にしない)
+                    // 261126Cl: 中身のある帯が見出し (先頭 8 バイト) の中を指すのも壊れたファイル (codex2 査読 r2)
+                    if (image.StripOffsets[i] < 0 || image.StripByteCounts[i] < 0 || (image.StripByteCounts[i] > 0 && image.StripOffsets[i] < 8)
+                        || (long)image.StripOffsets[i] + image.StripByteCounts[i] > br.BaseStream.Length)
+                        throw new EndOfStreamException($"This TIFF file is truncated or damaged (strip {i} extends beyond the end of the file).");
                     br.BaseStream.Position = image.StripOffsets[i];
                     Stream src = br.BaseStream; // 261124Cl 追加
                     int stripBytes = image.StripByteCounts[i]; // 261124Cl 追加
@@ -808,13 +821,13 @@ public class Tiff
                     {
                         //int count = Math.Max(0, image.StripByteCounts[i] / bytePerPixel); // 261124Cl 変更前
                         int count = Math.Max(0, stripBytes / bytePerPixel); // 261124Cl 変更: 展開した後のバイト数で数える
-                        int fit = Math.Min(count, image.Value.Length - n);
-                        var dst = image.Value.AsSpan(n, fit);
+                        int fit = Math.Min(count, image.Value.Length - pixelsRead);
+                        var dst = image.Value.AsSpan(pixelsRead, fit);
                         ReadSamples(src, dst, kind, bigEndian); // 261124Cl 変更 (旧 br.BaseStream)
                         if (image.SampleFormat != 3 && image.MDFileTag == 2)//gelファイルの時
                             for (int j = 0; j < dst.Length; j++)
                                 dst[j] *= dst[j];
-                        n += fit;
+                        pixelsRead += fit;
                         if (fit < count)//旧式と同じく、配列を超える分があれば IndexOutOfRangeException
                             throw new IndexOutOfRangeException();
                     }
@@ -822,7 +835,7 @@ public class Tiff
                     {
                         //int count = Math.Max(0, image.StripByteCounts[i] / bytePerPixel / bitsPerSampleLength); // 261124Cl 変更前
                         int count = Math.Max(0, stripBytes / bytePerPixel / bitsPerSampleLength); // 261124Cl 変更
-                        int fit = Math.Min(count, image.ValueRed.Length - n);
+                        int fit = Math.Min(count, image.ValueRed.Length - pixelsRead);
                         const int chunk = 1 << 14;
                         var tmp = ArrayPool<double>.Shared.Rent(Math.Min(fit, chunk) * bitsPerSampleLength);
                         try
@@ -832,7 +845,7 @@ public class Tiff
                                 int m = Math.Min(chunk, fit - p);
                                 var t = tmp.AsSpan(0, m * bitsPerSampleLength);
                                 ReadSamples(src, t, kind, bigEndian); // 261124Cl 変更 (旧 br.BaseStream)
-                                for (int k = 0, q = n + p; k < m; k++, q++)
+                                for (int k = 0, q = pixelsRead + p; k < m; k++, q++)
                                 {
                                     image.ValueRed[q] = (uint)t[k * bitsPerSampleLength];
                                     image.ValueGreen[q] = (uint)t[k * bitsPerSampleLength + 1];
@@ -841,11 +854,15 @@ public class Tiff
                             }
                         }
                         finally { ArrayPool<double>.Shared.Return(tmp); }
-                        n += fit;
+                        pixelsRead += fit;
                         if (fit < count)
                             throw new IndexOutOfRangeException();
                     }
                 }
+                // 261126Cl 追加: ストリップの宣言バイト数や展開後のバイト数が足りず、画素が埋まらなかったら失敗にする (以前は残りが 0 のまま成功していた)
+                int totalPixels = image.Value?.Length ?? image.ValueRed.Length;
+                if (pixelsRead < totalPixels)
+                    throw new EndOfStreamException($"This TIFF file is truncated or damaged: only {pixelsRead} of {totalPixels} pixels could be read.");
 
                 // 261112Cl 追加: パレット画像 (PhotometricInterpretation = 3) は、画素値 (色表の添字) を色表の色の輝度に置き換える (以前は添字をそのまま強度にしていた)。
                 //  輝度は BT.601 の重み (0.299, 0.587, 0.114) で、目盛りは 0〜255 (色表の値 / 257)。灰色の色表 (i 番目が i×257) なら値は変わらない。
@@ -995,22 +1012,23 @@ public class Tiff
         }
 
         /// <summary>stream の現在位置から dst.Length 個の標本を読み、double にして dst に書く。261111Cl 追加
-        /// 8bit と II の整数はファイル末尾で EndOfStreamException (旧 BinaryReader.ReadXxx と同じ)、
-        /// MM の整数と浮動小数点は足りない分を 0 とする (旧 BinaryReader.Read(byte[], ..) と同じ)。None は読まずに 0 (旧 toInt の既定 () => 0 と同じ)。</summary>
+        /// 全ての型でファイル末尾は EndOfStreamException (261126Cl 変更: 以前は MM の整数と浮動小数点だけ足りない分を 0 として成功にしていた)。
+        /// None は読まずに 0 (旧 toInt の既定 () => 0 と同じ)。</summary>
         private static void ReadSamples(Stream s, Span<double> dst, SampleKind kind, bool bigEndian)
         {
             switch (kind)
             {
                 case SampleKind.U8: ImageIO.ReadPixels<byte>(s, dst); break;
-                case SampleKind.U16: ImageIO.ReadPixels<ushort>(s, dst, bigEndian, zeroFillAtEnd: bigEndian); break;
-                case SampleKind.S16: ImageIO.ReadPixels<short>(s, dst, bigEndian, zeroFillAtEnd: bigEndian); break;
-                case SampleKind.U32: ImageIO.ReadPixels<uint>(s, dst, bigEndian, zeroFillAtEnd: bigEndian); break;
-                case SampleKind.S32: ImageIO.ReadPixels<int>(s, dst, bigEndian, zeroFillAtEnd: bigEndian); break;
-                case SampleKind.F16: ImageIO.ReadPixels<Half>(s, dst, bigEndian, zeroFillAtEnd: true); break;
-                case SampleKind.F32: ImageIO.ReadPixels<float>(s, dst, bigEndian, zeroFillAtEnd: true); break;
-                case SampleKind.F64: ImageIO.ReadPixels<double>(s, dst, bigEndian, zeroFillAtEnd: true); break;
-                case SampleKind.U64: ImageIO.ReadPixels<ulong>(s, dst, bigEndian, zeroFillAtEnd: bigEndian); break; // 261112Cl 追加
-                case SampleKind.S64: ImageIO.ReadPixels<long>(s, dst, bigEndian, zeroFillAtEnd: bigEndian); break; // 261112Cl 追加
+                //case SampleKind.U16: ImageIO.ReadPixels<ushort>(s, dst, bigEndian, zeroFillAtEnd: bigEndian); break; // 261126Cl 変更前 (以下 9 行も同様に zeroFillAtEnd を渡していた)
+                case SampleKind.U16: ImageIO.ReadPixels<ushort>(s, dst, bigEndian); break; // 261126Cl 変更: 末尾のゼロ埋めをやめる
+                case SampleKind.S16: ImageIO.ReadPixels<short>(s, dst, bigEndian); break; // 261126Cl
+                case SampleKind.U32: ImageIO.ReadPixels<uint>(s, dst, bigEndian); break; // 261126Cl
+                case SampleKind.S32: ImageIO.ReadPixels<int>(s, dst, bigEndian); break; // 261126Cl
+                case SampleKind.F16: ImageIO.ReadPixels<Half>(s, dst, bigEndian); break; // 261126Cl
+                case SampleKind.F32: ImageIO.ReadPixels<float>(s, dst, bigEndian); break; // 261126Cl
+                case SampleKind.F64: ImageIO.ReadPixels<double>(s, dst, bigEndian); break; // 261126Cl
+                case SampleKind.U64: ImageIO.ReadPixels<ulong>(s, dst, bigEndian); break; // 261112Cl 追加・261126Cl 変更
+                case SampleKind.S64: ImageIO.ReadPixels<long>(s, dst, bigEndian); break; // 261112Cl 追加・261126Cl 変更
                 default: dst.Clear(); break;
             }
         }
@@ -1073,7 +1091,9 @@ public class Tiff
                 int pointa = BitConverter.ToInt32(temp, 0);
                 temp = new byte[dataLengh * datacount];
                 br.BaseStream.Position = pointa;
-                br.Read(temp, 0, dataLengh * datacount);
+                //br.Read(temp, 0, dataLengh * datacount); // 261126Cl 変更前
+                if (ifd.Tag is 258 or 273 or 279 or 320) br.BaseStream.ReadExactly(temp); // 261126Cl 変更: 画素の読み方を決める外部の表 (BitsPerSample・ストリップの位置と長さ・色表) が切れていたら EndOfStreamException (0 で埋まった表で読まない)
+                else br.Read(temp, 0, temp.Length); // 261126Cl
             }
 
             //次にTempをDataCount数に分割する
