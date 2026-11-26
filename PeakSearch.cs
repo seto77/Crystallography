@@ -370,7 +370,7 @@ public class FittingPeak
     //static double SqrtLn2PerPI = Math.Sqrt(Math.Log(2) / Math.PI);
     private static readonly double Ln2 = Math.Log(2);
 
-    private static readonly double PI = Math.PI;
+    //private static readonly double PI = Math.PI; // 261126Cl 変更前: FittingPeak の中で使っていたのは旧式の Marcal2D だけ
 
     public FittingPeak()
     {
@@ -946,6 +946,7 @@ public class FittingPeak
         foreach (double d in intensity)
             if (!double.IsNaN(d))
                 sum += d;
+        if (!(sum > 0) || double.IsInfinity(sum)) return new PointD(double.NaN, double.NaN); // 261126Cl 追加: 全部がマスク・総和が 0 以下なら規格化できない (呼び出し側は元の中心を返す)
 
         for (int i = 0; i < xLength; i++)
             for (int j = 0; j < yLength; j++)
@@ -961,23 +962,43 @@ public class FittingPeak
                 }
         //if (initialCenter != null)
         //{ X = initialCenter.X; Y = initialCenter.Y; }
-        double[,,] diff = new double[9, xLength, yLength];
-        var Alpha = new DenseMatrix(9, 9);
-        var Beta = new DenseMatrix(9, 1);
+        //double[,,] diff = new double[9, xLength, yLength]; // 261126Cl 変更前 (3 行)
+        //var Alpha = new DenseMatrix(9, 9);
+        //var Beta = new DenseMatrix(9, 1);
+        // 261126Cl 変更 (codex2 査読 s13 中 1): 背景 (B1〜B3) は 0 に固定して更新しない (残差の評価にも入れていない) ので、正規方程式も 6 列 (A, η, Hk, X, Y, C) で解く。
+        //  以前は背景の 3 列も入れて解き、その 3 成分を捨てていた (背景のある画像で中心がずれる)
+        const int nFit = 6;
+        double[,,] diff = new double[nFit, xLength, yLength];
+        var Alpha = new DenseMatrix(nFit, nFit);
+        var Beta = new DenseMatrix(nFit, 1);
         double[,] ResidualCurrent = new double[xLength, yLength];
         double[,] ResidualNew = new double[xLength, yLength];
         double ResidualSquareCurrent, ResidualSquareNew = 0;
         int count = 0;
 
-        //関数形は
+        //関数形は (261126Cl 変更前)
         //F= 2 A / / Hk / PI
         // ( eta  / (1 + 4 * ( (X-x)^2 + C (Y-y)^2 ) / Hk^2))
         //+  (1 - eta) * Sqrt(Ln2 * PI) * Exp(-4 * Ln2 * ( (X-x)^2 + C (Y-y)^2 ) / Hk^2) ) )
         //+ B1 + B2 * (X-x) + B3 * (Y-y)
+        // 261126Cl 変更 (作者の決定 11-26: 2D 擬 Voigt は全入口で同じ正規化した式。Marquardt.PseudoVoigt (PV2E) と同じ):
+        //  主軸を hx = Hk/2, hy = Hk/(2√C), θ = 0 とし、q = 4 ((X-x)^2 + C (Y-y)^2) / Hk^2 (q = 1 が半値の楕円で、旧式と同じ)、P = 1/(π hx hy) = 4√C/(π Hk^2)。
+        //  F = A [ (1-η) P ln2 2^(-q) + η P c/2 (1 + c q)^(-3/2) ] + B1 + B2 (X-x) + B3 (Y-y)。A は全平面の積分、η は Lorentz の面積比。
+        //  旧式は Lorentz が (1 + q)^(-1) (平面の積分が発散) で、Gauss の係数も 1 次元の形だった
+        const double cL = 0.58740105196819947475170563927231; // 261126Cl 追加: 4^(1/3) - 1 (Marquardt と同じ)
+        // 261126Cl 追加: ピークの値 F0、q による偏微分 Fq (P を固定)、Gauss・Lorentz の単位面積の成分 G・L、q を返す
+        static (double F0, double Fq, double G, double L, double q) Peak(double a, double eta, double hk, double cc, double dx, double dy)
+        {
+            double q = 4 * (dx * dx + cc * dy * dy) / (hk * hk);
+            double P = 4 * Math.Sqrt(cc) / (Math.PI * hk * hk);
+            double lo = 1 + cL * q, ln2 = Math.Log(2);
+            double G = P * ln2 * Math.Exp(-ln2 * q), L = P * cL / (2 * lo * Math.Sqrt(lo));
+            return (a * ((1 - eta) * G + eta * L), a * (-(1 - eta) * ln2 * G - eta * 1.5 * cL * L / lo), G, L, q);
+        }
 
-        double Ln2 = Math.Log(2);
-        double Ln2PI = Math.Sqrt(Ln2 * Math.PI);
-        double tmp0, tmp1, tmp2, tmp3, tmp4, tmp5;
+        //double Ln2 = Math.Log(2); // 261126Cl 変更前 (3 行): 旧式の偏微分にだけ使っていた
+        //double Ln2PI = Math.Sqrt(Ln2 * Math.PI);
+        //double tmp0, tmp1, tmp2, tmp3, tmp4, tmp5;
 
         //現在の残差を計算
         ResidualSquareCurrent = 0;
@@ -985,12 +1006,13 @@ public class FittingPeak
             for (int j = 0; j < yLength; j++)
                 if (!double.IsNaN(intensity[i, j]))
                 {
-                    tmp3 = ((X - i) * (X - i) + C * (Y - j) * (Y - j)) / Hk / Hk;
-                    ResidualCurrent[i, j] = intensity[i, j] -
-                      (
-                      2 * A / Hk / PI * (Eta / (1 + 4 * tmp3) + (1 - Eta) * SqrtLn2PI * Math.Exp(-4 * Ln2 * tmp3))
-                        + B1 + B2 * (X - i) + B3 * (Y - j)
-                      );
+                    //tmp3 = ((X - i) * (X - i) + C * (Y - j) * (Y - j)) / Hk / Hk; // 261126Cl 変更前 (6 行)
+                    //ResidualCurrent[i, j] = intensity[i, j] -
+                    //  (
+                    //  2 * A / Hk / PI * (Eta / (1 + 4 * tmp3) + (1 - Eta) * SqrtLn2PI * Math.Exp(-4 * Ln2 * tmp3))
+                    //    + B1 + B2 * (X - i) + B3 * (Y - j)
+                    //  );
+                    ResidualCurrent[i, j] = intensity[i, j] - (Peak(A, Eta, Hk, C, X - i, Y - j).F0 + B1 + B2 * (X - i) + B3 * (Y - j)); // 261126Cl
                     ResidualSquareCurrent += ResidualCurrent[i, j] * ResidualCurrent[i, j];
                 }
 
@@ -1002,6 +1024,13 @@ public class FittingPeak
             for (int i = 0; i < xLength; i++)//偏微分を作る
                 for (int j = 0; j < yLength; j++)
                 {
+                    // 261126Cl 追加: マスク (NaN) の画素は残差に入れていないので、正規方程式からも外す (以前は微分だけ Alpha に足していた)
+                    if (double.IsNaN(intensity[i, j]))
+                    {
+                        for (int k = 0; k < nFit; k++) diff[k, i, j] = 0;
+                        continue;
+                    }
+                    /* 261126Cl 変更前 (旧式の偏微分)
                     tmp0 = 1 / Hk / Math.PI;
                     tmp1 = (X - i) * (X - i) + C * (Y - j) * (Y - j);
                     tmp2 = 1 / (Hk * Hk);
@@ -1021,18 +1050,29 @@ public class FittingPeak
                     diff[4, i, j] = B3 + 16 * A * C * tmp0 * tmp2 * ((-1 + Eta) * Ln2 * Ln2PI * tmp4 - Eta * tmp5 * tmp5) * (Y - j);
                     //∂F/∂C
                     diff[5, i, j] = 8 * A * tmp0 * tmp2 * ((-1 + Eta) * Ln2 * Ln2PI * tmp4 - Eta * tmp5 * tmp5) * (Y - j) * (Y - j);
+                    */
+                    // 261126Cl 変更: 新しい式の偏微分。P は Hk (∂P/∂Hk = -2P/Hk) と C (∂P/∂C = P/(2C)) にも依存する
+                    var (f0, fq, g, l, q) = Peak(A, Eta, Hk, C, X - i, Y - j);
+                    double dx = X - i, dy = Y - j;
+                    diff[0, i, j] = (1 - Eta) * g + Eta * l; //∂F/∂A
+                    diff[1, i, j] = A * (l - g); //∂F/∂eta
+                    diff[2, i, j] = -2 * (f0 + fq * q) / Hk; //∂F/∂Hk
+                    diff[3, i, j] = B2 + fq * 8 * dx / (Hk * Hk); //∂F/∂X
+                    diff[4, i, j] = B3 + fq * 8 * C * dy / (Hk * Hk); //∂F/∂Y
+                    diff[5, i, j] = f0 / (2 * C) + fq * 4 * dy * dy / (Hk * Hk); //∂F/∂C
                     //∂F/∂B1 = 1
-                    diff[6, i, j] = 1;
+                    //diff[6, i, j] = 1; // 261126Cl 変更前: 背景は解かない
                     //∂F/∂B2 = (X-x)
-                    diff[7, i, j] = X - i;
+                    //diff[7, i, j] = X - i; // 261126Cl 変更前
                     //∂F/∂B3 = (Y-y)
-                    diff[8, i, j] = Y - j;
+                    //diff[8, i, j] = Y - j; // 261126Cl 変更前
                 }
 
             //行列Alpha, Betaを作る
-            for (int k = 0; k < 9; k++)
+            //for (int k = 0; k < 9; k++) // 261126Cl 変更前 (2 か所の 9)
+            for (int k = 0; k < nFit; k++)
             {
-                for (int l = 0; l < 9; l++)
+                for (int l = 0; l < nFit; l++)
                 {
                     //Alpha[k, l] = 0;
                     //for (int i = 0; i < xLength; i++)
@@ -1087,12 +1127,13 @@ public class FittingPeak
                 for (int j = 0; j < yLength; j++)
                     if (!double.IsNaN(intensity[i, j]))
                     {
-                        tmp3 = ((X_New - i) * (X_New - i) + C_New * (Y_New - j) * (Y_New - j)) / Hk_New / Hk_New;
-                        ResidualNew[i, j] = intensity[i, j] -
-                          (
-                          2 * A_New / Hk_New / PI * (Eta_New / (1 + 4 * tmp3) + (1 - Eta_New) * SqrtLn2PI * Math.Exp(-4 * Ln2 * tmp3))
-                          // + B1_New + B2_New * (X_New - i) + B3_New * (Y_New - j)
-                          );
+                        //tmp3 = ((X_New - i) * (X_New - i) + C_New * (Y_New - j) * (Y_New - j)) / Hk_New / Hk_New; // 261126Cl 変更前 (6 行)
+                        //ResidualNew[i, j] = intensity[i, j] -
+                        //  (
+                        //  2 * A_New / Hk_New / PI * (Eta_New / (1 + 4 * tmp3) + (1 - Eta_New) * SqrtLn2PI * Math.Exp(-4 * Ln2 * tmp3))
+                        //  // + B1_New + B2_New * (X_New - i) + B3_New * (Y_New - j)
+                        //  );
+                        ResidualNew[i, j] = intensity[i, j] - Peak(A_New, Eta_New, Hk_New, C_New, X_New - i, Y_New - j).F0; // 261126Cl
                         ResidualSquareNew += ResidualNew[i, j] * ResidualNew[i, j];
                     }
 

@@ -160,12 +160,14 @@ public class Marquardt
 
                 case FuncType.PV2:
                     Formula = (x, p) => PseudoVoigt(x[0], x[1], p[0], p[1], p[2], p[3], p[4]);
-                    Constraints = p => [p[0], p[1], Max(p[2], 0.1), Min(Max(p[3], 0), 1.5), Max(p[4], inf)];
+                    // Constraints = p => [p[0], p[1], Max(p[2], 0.1), Min(Max(p[3], 0), 1.5), Max(p[4], inf)]; // 261126Cl 変更前
+                    Constraints = p => [p[0], p[1], Max(p[2], 0.1), Min(Max(p[3], 0), 1), Max(p[4], inf)]; // 261126Cl 変更 (作者の決定 11-26): η は Lorentz の面積比なので [0,1]
                     break;
 
                 case FuncType.PV2E:
                     Formula = (x, p) => PseudoVoigt(x, p[0], p[1], p[2], p[3], p[4], p[5], p[6]);
-                    Constraints = p => [p[0], p[1], Max(p[2], 0.1), Max(p[3], 0.1), p[4], Min(Max(p[5], 0), 1.5), Max(p[6], inf)];
+                    // Constraints = p => [p[0], p[1], Max(p[2], 0.1), Max(p[3], 0.1), p[4], Min(Max(p[5], 0), 1.5), Max(p[6], inf)]; // 261126Cl 変更前
+                    Constraints = p => [p[0], p[1], Max(p[2], 0.1), Max(p[3], 0.1), p[4], Min(Max(p[5], 0), 1), Max(p[6], inf)]; // 261126Cl 変更: η ∈ [0,1]
                     Derivatives = (x, p) => PseudoVoigtDiff(x, p[0], p[1], p[2], p[3], p[4], p[5], p[6]);
                     break;
 
@@ -299,6 +301,7 @@ public class Marquardt
         var obs = obsValues.AsParallel().AsOrdered(); // 260718Cl: weight/rCur/jacob/rNew を別々の .Select().ToArray() で作るため、PLINQ の順序非保証だと配列間の行整合が崩れる。AsOrdered で入力順を確定 (並列は維持)
         int valuesLength = obs.Count(), totalPrmsLength = functions.Sum(f => f.Length), funcLength = functions.Length;
         if (valuesLength == 0) return (null, null, double.PositiveInfinity);
+        foreach (var f in functions) f.ApplyConstraints(); // 261126Cl 追加 (codex2 査読 s13 中 2): 初期の残差も制約の範囲で評価する (範囲外の初期値 (η > 1 など) が棄却を重ねてそのまま返るのを防ぐ)
         var weight = new DiagonalMatrix(valuesLength, valuesLength, obs.Select(o => o.w).ToArray());
         var rambda = 10.0;
         var alpha = new DMat(totalPrmsLength, totalPrmsLength);
@@ -415,6 +418,8 @@ public class Marquardt
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static double Lorenzian(in double x, in double x0, in double h, in double a) => a / (pi * h) / (1 + (x - x0) / h * (x - x0) / h);
 
+    // 261126Cl 変更 (作者の決定 11-26・codex2 の 11-26 の相談 n1〜n3): 2D の Lorentz は正規化した 2D Cauchy L = a c / (2π h1 h2) (1 + c q)^(-3/2) (q = (X/h1)² + (Y/h2)²)。
+    //  全平面の積分が a、q = 1 で中心の半分。以前の円形・楕円のスカラー版は (1 + c q)^(-1) で平面の積分が発散し、配列版 (PV2E) は c を掛けず積分が a/c だった
     /// <summary>ローレンツ関数 2次元 (真円)</summary>
     /// <param name="x">xの値</param>
     /// <param name="y">yの値</param>
@@ -425,7 +430,8 @@ public class Marquardt
     /// <returns></returns>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static double Lorenzian(in double x, in double y, in double x0, in double y0, in double h, in double a)
-        => a / (2 * pi * h * h) / (1 + c * (x - x0) / h * (x - x0) / h + c * (y - y0) / h * (y - y0) / h);
+        // => a / (2 * pi * h * h) / (1 + c * (x - x0) / h * (x - x0) / h + c * (y - y0) / h * (y - y0) / h); // 261126Cl 変更前
+        => Lorenzian(x, y, x0, y0, h, h, 0, a); // 261126Cl
 
     /// <summary>ローレンツ関数 2次元 (楕円)</summary>
     /// <param name="x">xの値</param>
@@ -443,7 +449,10 @@ public class Marquardt
         double x1 = x - x0, y1 = y - y0; //中心へシフト
         double cos = Cos(t), sin = Sin(t);
         double X = x1 * cos + y1 * sin, Y = -x1 * sin + y1 * cos;
-        return a / (2 * pi * h1 * h2) / (1 + c * X / h1 * X / h1 + c * Y / h2 * Y / h2);
+        // return a / (2 * pi * h1 * h2) / (1 + c * X / h1 * X / h1 + c * Y / h2 * Y / h2); // 261126Cl 変更前
+        double u = X / h1, v = Y / h2; // 261126Cl
+        double lo = 1 + c * (u * u + v * v); // 261126Cl
+        return a * c / (2 * pi) / h1 / h2 / lo / Sqrt(lo); // 261126Cl
     }
 
     /// <summary>ガウス関数 1次元</summary>
@@ -531,7 +540,9 @@ public class Marquardt
         double hxInv = 1 / hx, hyInv = 1 / hy;
         var x2plusY2 = xRot * xRot * hxInv * hxInv + yRot * yRot * hyInv * hyInv;
         var g = ln2 * Exp(-ln2 * x2plusY2);
-        var l = 1 / ((2 + 2 * c * x2plusY2) * Sqrt(1 + c * x2plusY2));
+        // var l = 1 / ((2 + 2 * c * x2plusY2) * Sqrt(1 + c * x2plusY2)); // 261126Cl 変更前 (積分が a/c)
+        double lo = 1 + c * x2plusY2; // 261126Cl
+        var l = c / (2 * lo * Sqrt(lo)); // 261126Cl: 正規化した 2D Cauchy
         return a * (eta * l + (1 - eta) * g) * piInv * hxInv * hyInv;
         /*
         //C++ネイティブで書いてもあまり速くならなかった。
@@ -554,7 +565,8 @@ public class Marquardt
         var x2pY2 = xRot2hx2Inv + yRot2hy2Inv;
 
         double lo = 1 + c * x2pY2, sqLo = Sqrt(lo);
-        var l = 1 / (lo * sqLo * 2);
+        // var l = 1 / (lo * sqLo * 2); // 261126Cl 変更前
+        var l = c / (2 * lo * sqLo); // 261126Cl (d3 の c / lo は q の微分から来るので別)
         var g = ln2 * Exp(-ln2 * x2pY2);
 
         var d1 = piInv * hxInv * hyInv;
