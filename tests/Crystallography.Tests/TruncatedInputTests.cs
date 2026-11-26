@@ -111,6 +111,26 @@ public sealed class TruncatedInputTests : IDisposable
         else Assert.Throws<EndOfStreamException>(() => new Tiff.Loader(path));
     }
 
+    /// <summary>画素を先に置き、IFD の項目の表でファイルが終わる (「次の IFD の位置」の 4 バイトが無い) 正常なファイル。
+    /// 2011 年ごろの IPAnalyzer の展開画像・PF の画像がこの形 (IPAnalyzer の便り 11-26)。旧ローダーは欠けた 4 バイトを 0 と読んで開けていた</summary>
+    [Fact]
+    public void TiffWithoutNextIfdPointerIsRead()
+    {
+        string path = Path.Combine(dir.FullName, Guid.NewGuid().ToString("N") + ".tif");
+        using (var w = new BinaryWriter(File.Create(path)))
+        {
+            void Tag(ushort id, ushort type, int count, int value) { w.Write(id); w.Write(type); w.Write(count); w.Write(value); }
+            const int pixelOffset = 8, ifdOffset = pixelOffset + 8;
+            w.Write((ushort)0x4949); w.Write((ushort)42); w.Write(ifdOffset);
+            foreach (var v in new float[] { 1, 2 }) w.Write(v);
+            w.Write((ushort)8);
+            Tag(256, 4, 1, 2); Tag(257, 4, 1, 1); Tag(258, 3, 1, 32); Tag(259, 3, 1, 1);
+            Tag(273, 4, 1, pixelOffset); Tag(278, 4, 1, 1); Tag(279, 4, 1, 8); Tag(339, 3, 1, 3);
+            // 次の IFD の位置 (4 バイト) を書かずに終わる
+        }
+        Assert.Equal(new double[] { 1, 2 }, new Tiff.Loader(path).Images.Single().Value);
+    }
+
     [Fact]
     public void TruncatedImageFileDirectoryFails()
         => Assert.Throws<EndOfStreamException>(() => new Tiff.Loader(WriteTiff(1, 8, 8, 1, writtenTags: 3)));

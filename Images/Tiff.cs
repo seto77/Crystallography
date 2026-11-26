@@ -440,7 +440,9 @@ public class Tiff
 
                 //IFDの読み込み開始
                 ifdPointa += 2;
-                if (totalIFD < 0 || ifdPointa + 12L * totalIFD + 4 > br.BaseStream.Length) // 261126Cl 追加: IFD の表がファイルの外へはみ出す (途中で切れたファイル)
+                // 261126Cl 追加: IFD の項目の表がファイルの外へはみ出す (途中で切れたファイル)。表の後ろの「次の IFD の位置」(4 バイト) は含めない:
+                //  2011 年ごろの IPAnalyzer の展開画像などは表の終わりでファイルが終わっていて、旧ローダーはその 4 バイトを 0 (最後の IFD) と読んで開けていた (IPAnalyzer の便り 11-26)
+                if (totalIFD < 0 || ifdPointa + 12L * totalIFD > br.BaseStream.Length)
                     throw new EndOfStreamException("This TIFF file is truncated (incomplete image file directory).");
                 var iFD = new IFD[totalIFD];
                 for (int i = 0; i < totalIFD; i++)
@@ -454,7 +456,8 @@ public class Tiff
 
                 //次のifdPointaを読み込む
 
-                ifdPointa = BitConverter.ToUInt32(Read(br, ifdPointa, 4, ByteOrder), 0);
+                //ifdPointa = BitConverter.ToUInt32(Read(br, ifdPointa, 4, ByteOrder), 0); // 261126Cl 変更前
+                ifdPointa = ifdPointa + 4 <= br.BaseStream.Length ? BitConverter.ToUInt32(Read(br, ifdPointa, 4, ByteOrder), 0) : 0; // 261126Cl 変更: 次の IFD の位置が欠けていれば最後の IFD とみなす
 
                 int bitsPerSampleLength = 1;
 
