@@ -161,13 +161,15 @@ public partial class BetheMethod
     //   要求の大きさ (cacheLimit) で新しく作ったときと同じ範囲・半径を、大きく作ったキャッシュからも取り出せる (キャッシュの履歴に依らない)
     // 261118Cl 変更 (codex2 第 10 回): Directions = BFS の近傍の列 (GetDirection() の静的な配列。格子型ごとに 1 つ)。同じ行列で格子型だけが替わったら作り直す
     private sealed record GCacheSnapshot((double, double, double, double, double, double, double, double, double) Mat,
-        (int key, double gX, double gY, double gZ, double gLen)[] Items, bool Diagnostic, double CoverRadius, (int Count, double Cover)[] Checkpoints = null,
+        //(int key, double gX, double gY, double gZ, double gLen)[] Items, bool Diagnostic, double CoverRadius, (int Count, double Cover)[] Checkpoints = null, // 261126Cl 変更前
+        (long key, double gX, double gY, double gZ, double gLen)[] Items, bool Diagnostic, double CoverRadius, (int Count, double Cover)[] Checkpoints = null, // 261126Cl
         (int h, int k, int l)[] Directions = null)
     {
         private readonly Lazy<int[]> byLength = new(() => BuildByLength(Items), LazyThreadSafetyMode.ExecutionAndPublication);
         /// <summary>261118Cl 追加 (<see cref="BeamCandidateCutMode.Shell"/>): Items の番号を (|g|, 鍵) の昇順に並べた索引。初めて使うときに 1 度だけ作る</summary>
         public int[] ByLength => byLength.Value;
-        private static int[] BuildByLength((int key, double gX, double gY, double gZ, double gLen)[] items)
+        //private static int[] BuildByLength((int key, double gX, double gY, double gZ, double gLen)[] items) // 261126Cl 変更前
+        private static int[] BuildByLength((long key, double gX, double gY, double gZ, double gLen)[] items) // 261126Cl
         {
             var order = new int[items.Length];
             for (int i = 0; i < order.Length; i++) order[i] = i;
@@ -1474,12 +1476,14 @@ public partial class BetheMethod
     //   大きい格子のブロック共有 (1/3/5) では、代表の方向の行列を近傍の画素が写すので、代表の軸で組んだ値を写すと画素の軸がずれる。下の incidentAxis の形は使っていない
     // private Complex[] CreateMasterPatternMuBack(double voltage, Beam[] beams) // 261118Cl 旧シグネチャ
     private Complex[] CreateMasterPatternMuBack(double voltage, Beam[] beams, Vector3DBase incidentAxis = null,
-        ConcurrentDictionary<int, (Complex V0, Complex V45, Complex V90)> nodeCache = null)
+        //ConcurrentDictionary<int, (Complex V0, Complex V45, Complex V90)> nodeCache = null) // 261126Cl 変更前
+        ConcurrentDictionary<long, (Complex V0, Complex V45, Complex V90)> nodeCache = null) // 261126Cl
     {
         var beamCount = beams?.Length ?? 0;
         // var muBack = new Complex[beamCount * beamCount]; // (260321Ch) 旧実装: 代表方向ごとに新規確保していた
         var muBack = Shared.Rent(beamCount * beamCount); // (260321Ch) TDS 行列も pooled buffer に載せる
-        var localCache = new Dictionary<int, Complex>();
+        //var localCache = new Dictionary<int, Complex>(); // 261126Cl 変更前
+        var localCache = new Dictionary<long, Complex>(); // 261126Cl
         var axis = incidentAxis != null && nodeCache != null ? Vector3DBase.Normarize(incidentAxis) : null; // 261118Cl 追加
         for (int col = 0; col < beamCount; col++)
             for (int row = 0; row < beamCount; row++)
@@ -1520,7 +1524,8 @@ public partial class BetheMethod
     // private BackSourceNode[] CreateMasterPatternMuBackNodes(double voltage, Beam[] beams, ConcurrentDictionary<int, BackSourceNode> cache) // 261118Cl 変更前
     // 261118Cl 変更 (後方源の残りの検証の批判の段): 入れ物の値を Lazy にして、同じ Δhkl を複数のスレッドが同時に評価する重複を防ぐ
     //   (GetOrAdd の作り方の関数は同時に何度も呼ばれうる。3 点の評価は環状の積分 3 回で重い。値は同じ)
-    private BackSourceNode[] CreateMasterPatternMuBackNodes(double voltage, Beam[] beams, ConcurrentDictionary<int, Lazy<BackSourceNode>> cache)
+    //private BackSourceNode[] CreateMasterPatternMuBackNodes(double voltage, Beam[] beams, ConcurrentDictionary<int, Lazy<BackSourceNode>> cache) // 261126Cl 変更前
+    private BackSourceNode[] CreateMasterPatternMuBackNodes(double voltage, Beam[] beams, ConcurrentDictionary<long, Lazy<BackSourceNode>> cache) // 261126Cl
     {
         var beamCount = beams?.Length ?? 0;
         var table = new BackSourceNode[beamCount * beamCount];
@@ -1562,7 +1567,8 @@ public partial class BetheMethod
     {
         var beamCount = beams?.Length ?? 0;
         var m = Shared.Rent(beamCount * beamCount);
-        var localCache = new Dictionary<int, Complex>();
+        //var localCache = new Dictionary<int, Complex>(); // 261126Cl 変更前
+        var localCache = new Dictionary<long, Complex>(); // 261126Cl
         double gauss = -2 * Math.PI * Math.PI * sigmaNm * sigmaNm, invCoeff = tdsCoeff > 0 ? 1 / tdsCoeff : 0;
         for (int col = 0; col < beamCount; col++)
             for (int row = 0; row < beamCount; row++)
@@ -2438,7 +2444,8 @@ public partial class BetheMethod
             BackSourceNode[][] backNodeArrays = null; // 261118Cl 追加 (codex2 第 5 回): 軸を合わせる後方源の表 (代表ごと)
             // 261118Cl 追加 (後方源の検証の批判の段): Δhkl ごとの 3 点は方向に依らないので、入れ物は塊をまたいで電圧ごとに 1 つ
             //   (旧は塊ごとに作り直し、異方性の単斜晶で 3 点の評価が塊の数だけ繰り返されて時間が ×2.3〜2.5 になった)
-            var backNodeCacheForVoltage = IncludeTDSBackground && backSourceAxis && !double.IsFinite(SourceSmearingSigmaNm) ? new ConcurrentDictionary<int, Lazy<BackSourceNode>>() : null; // 261118Cl: 値は Lazy (同時の評価の重複を防ぐ)
+            //var backNodeCacheForVoltage = IncludeTDSBackground && backSourceAxis && !double.IsFinite(SourceSmearingSigmaNm) ? new ConcurrentDictionary<int, Lazy<BackSourceNode>>() : null; // 261118Cl: 値は Lazy (同時の評価の重複を防ぐ) // 261126Cl 変更前
+            var backNodeCacheForVoltage = IncludeTDSBackground && backSourceAxis && !double.IsFinite(SourceSmearingSigmaNm) ? new ConcurrentDictionary<long, Lazy<BackSourceNode>>() : null; // 261118Cl: 値は Lazy (同時の評価の重複を防ぐ) // 261126Cl
             ebsdIntensity = new double[BeamDirections.Length][]; // 261107Cl 移動 (旧は解くループの直前)
             int orderedPosition = 0; // 261107Cl 追加: orderedSymmetryRepresentatives の中の、次の塊の先頭
             for (int chunkStart = 0; chunkStart < representativeIndices.Count; chunkStart += chunkSize) // 261107Cl 追加
@@ -5379,8 +5386,8 @@ public partial class BetheMethod
     // public (Complex Real, Complex Imag) getU(in double kV, in Beam g, in Beam h = null, double inner = double.NaN, double outer = double.NaN, int nTheta = 60, int nPhi = 20)
     public (Complex Real, Complex Imag) getU(in double kV, in Beam g, in Beam h = null, double inner = double.NaN, double outer = double.NaN, int nTheta = 60, int nPhi = 20, bool cache = true)
     {
-        var key1 = compose(g.Index);
-        var key2 = h is null ? int.MaxValue : compose(h.Index);
+        //var key1 = compose(g.Index); // 261126Cl 変更前 (2 行。下の bucket の後へ)
+        //var key2 = h is null ? int.MaxValue : compose(h.Index);
         // 261118Cl 追加 (codex2 第 2 回の単位 3): 鍵に電圧・積分角度・求積点数・模型を入れる (条件 UContext ごとの入れ物 + index の組)。研究用の元素ごとの倍率が掛かる annular は値の同一性を保証できないので迂回する
         // 261118Cl (codex2 第 3 回): 模型 (弾性のイオン・吸収) は uCtx を作るときに 1 度だけ読み、下の評価はすべて uCtx の値を使う (評価の途中で設定が変わっても、鍵と値の模型が食い違わない)。
         //   研究用の倍率も 1 度だけ読み、判定と呼び出しで同じ参照を使う。入れ物は入口で 1 度だけ取り、探すところから格納までそれを使う
@@ -5389,10 +5396,13 @@ public partial class BetheMethod
         var researchScale = BackscatterSourceScaleForResearch;
         bool annular = !double.IsNaN(inner * outer);
         var bucket = cache && !(researchScale != null && annular) ? uDictionary.Get(uCtx) : null;
+        // 261126Cl 変更 (codex2 の査読 k1): 鍵はキャッシュを使う時だけ作る (cache:false などの直接の評価を、鍵の範囲 (±2²⁰) の検査で止めない)
+        var ukey = bucket == null ? default : new UKey(compose(g.Index), h is null ? NoHKey : compose(h.Index));
         // if (!uDictionary.TryGetValue((key1, key2), out (Complex real, Complex imag) U)) // 261109Cl 変更前: cache:false でも読み出しはしていた (鍵に電圧・積分角度が無いので、前の電圧や後方散乱の値を拾いうる)
         (Complex real, Complex imag) U = default;
         // if (!cache || !uDictionary.TryGetValue((key1, key2), out U)) // 261109Cl 変更 (codex2 第18回): cache:false は読み書きとも迂回 // 261118Cl 変更前
-        if (bucket == null || !bucket.Map.TryGetValue((key1, key2), out U)) // 261118Cl 変更: 完全な鍵 (入口で得た入れ物)
+        //if (bucket == null || !bucket.Map.TryGetValue((key1, key2), out U)) // 261118Cl 変更: 完全な鍵 (入口で得た入れ物) // 261126Cl 変更前
+        if (bucket == null || !bucket.Map.TryGetValue(ukey, out U)) // 261126Cl
         {
             var index = h is null ? g.Index : g.Index.Minus(h.Index);// (g.H - h.H, g.K - h.K, g.L - h.L) ;
 
@@ -5470,7 +5480,7 @@ public partial class BetheMethod
             // if (kV > 0 && cache) // 261118Cl 変更前
             //     uDictionary.TryAdd((key1, key2), U);
             if (kV > 0 && bucket != null) // 261118Cl 変更: 完全な鍵で格納 (入口で得た入れ物へ)
-                bucket.Map.TryAdd((key1, key2), U);
+                bucket.Map.TryAdd(ukey, U); // 261126Cl (key1, key2) → ukey
         }
         return U;
     }
@@ -5537,10 +5547,11 @@ public partial class BetheMethod
     public (Complex Real, Complex Imag) getU(in double kV, in (int h, int k, int l) index, in Vector3DBase vec)
     {
         var key1 = compose(index);
-        const int key2 = int.MaxValue; // h = null に相当するキー
+        //const int key2 = int.MaxValue; // h = null に相当するキー // 261126Cl 変更前
+        const long key2 = NoHKey; // h = null に相当するキー // 261126Cl
         // キャッシュヒット → Beam 生成なしで即返却 (= 割り当てゼロ)
         // if (uDictionary.TryGetValue((key1, key2), out (Complex real, Complex imag) U)) // 261118Cl 変更前
-        if (uDictionary.Get(UContextOf(kV, double.NaN, double.NaN, 60, 20)).Map.TryGetValue((key1, key2), out (Complex real, Complex imag) U)) // 261118Cl 変更: 完全な鍵 (全立体角・この電圧・今の模型)
+        if (uDictionary.Get(UContextOf(kV, double.NaN, double.NaN, 60, 20)).Map.TryGetValue(new UKey(key1, key2), out (Complex real, Complex imag) U)) // 261118Cl 変更: 完全な鍵 (全立体角・この電圧・今の模型) // 261126Cl (key1, key2) → UKey
             return U;
         // キャッシュミス (初回のみ) → 既存メソッドに委譲。一時 Beam は 1 度だけ生成される。
         return getU(kV, new Beam(index, vec));
@@ -5558,10 +5569,11 @@ public partial class BetheMethod
         in Vector3DBase vq, in Vector3DBase vi, in Vector3DBase vj,
         double inner, double outer, int nTheta = 60, int nPhi = 20)
     {
-        var key1 = compose(index);
-        const int key2 = int.MaxValue; // h = null に相当するキー
+        //var key1 = compose(index); // 261126Cl 変更前 (3 行。鍵は下の条件の右辺で作る = 研究用の倍率で迂回する時は作らない)
+        //const int key2 = int.MaxValue; // h = null に相当するキー
         // if (uDictionary.TryGetValue((key1, key2), out (Complex real, Complex imag) U)) // 261118Cl 変更前: 角度範囲を区別せず、同じ index の全立体角の値を返しえた (A1 と同じ型)
-        if (BackscatterSourceScaleForResearch == null && uDictionary.Get(UContextOf(kV, inner, outer, nTheta, nPhi)).Map.TryGetValue((key1, key2), out (Complex real, Complex imag) U)) // 261118Cl 変更: 角度範囲・求積点数まで含む鍵
+        //if (BackscatterSourceScaleForResearch == null && uDictionary.Get(UContextOf(kV, inner, outer, nTheta, nPhi)).Map.TryGetValue((key1, key2), out (Complex real, Complex imag) U)) // 261118Cl 変更: 角度範囲・求積点数まで含む鍵 // 261126Cl 変更前
+        if (BackscatterSourceScaleForResearch == null && uDictionary.Get(UContextOf(kV, inner, outer, nTheta, nPhi)).Map.TryGetValue(new UKey(compose(index), NoHKey), out (Complex real, Complex imag) U)) // 261126Cl
             return U; // cache hit → vec 計算・割り当てゼロ
         return getU(kV, new Beam(index, vq + vi - vj), null, inner, outer, nTheta, nPhi); // miss 時のみ vec/Beam を生成
     }
@@ -5603,7 +5615,9 @@ public partial class BetheMethod
         public sealed class Bucket(UContext ctx)
         {
             public readonly UContext Ctx = ctx;
-            public readonly ConcurrentDictionary<(int Key1, int Key2), (Complex Real, Complex Imag)> Map = new();
+            //public readonly ConcurrentDictionary<(int Key1, int Key2), (Complex Real, Complex Imag)> Map = new(); // 261126Cl 変更前
+            //public readonly ConcurrentDictionary<(int Key1, int Key2), (Complex Real, Complex Imag)> Map = new(); // 261126Cl 変更前
+            public readonly ConcurrentDictionary<UKey, (Complex Real, Complex Imag)> Map = new(); // 261126Cl 変更: 64 bit の鍵 2 つ (軽い hash の専用の型)
         }
         private sealed class Generation
         {
@@ -5889,9 +5903,36 @@ public partial class BetheMethod
     static readonly (int h, int k, int l)[] directionRH = [(1, 0, 1), (0, -1, 1), (-1, 1, 1), (-1, 0, -1), (0, 1, -1), (1, -1, -1)];
     static readonly (int h, int k, int l)[] directionHex = [(1, 0, 0), (-1, 0, 0), (0, 1, 0), (0, -1, 0), (1, -1, 0), (-1, 1, 0), (0, 0, 1), (0, 0, -1)];
     static readonly (int h, int k, int l)[] directionP = [(1, 0, 0), (-1, 0, 0), (0, 1, 0), (0, -1, 0), (0, 0, 1), (0, 0, -1)];
-    static int compose(int h, int k, int l) => ((h + 255) << 20) + ((k + 255) << 10) + l + 255;
-    static int compose((int h, int k, int l) index) => ((index.h + 255) << 20) + ((index.k + 255) << 10) + index.l + 255;
-    static (int h, int k, int l) decompose(int key) => ((key >> 20) - 255, ((key << 12) >> 22) - 255, ((key << 22) >> 22) - 255);
+    //static int compose(int h, int k, int l) => ((h + 255) << 20) + ((k + 255) << 10) + l + 255; // 261126Cl 変更前 (3 行)
+    //static int compose((int h, int k, int l) index) => ((index.h + 255) << 20) + ((index.k + 255) << 10) + index.l + 255;
+    //static (int h, int k, int l) decompose(int key) => ((key >> 20) - 255, ((key << 12) >> 22) - 255, ((key << 22) >> 22) - 255);
+    // 261126Cl 変更 (作者の決定 11-25「±255 キー」・codex2 の 11-25 の議論 観点 F §3): hkl の鍵を 64 bit (各成分 21 bit、−2²⁰ 〜 2²⁰−1) にする。
+    //  旧の 32 bit は k・l の欄が 10 bit しか無く、例えば (0,0,257) が (0,0,−767) に復号され、(0,0,512) と (0,1,−512) が同じ鍵になった
+    //  (探索で別の指数を付ける・getU と後方源の辞書で別の値を引く)。各成分を正にずらして上から h, k, l の順に詰めるので、鍵の大小は (h,k,l) の
+    //  辞書順のまま (旧と同じ。|h|,|k|,|l| ≤ 255 なら同点の並びも旧と同じ)。範囲の外は例外 (黙って壊さない)。h = null は負の値 NoHKey
+    const int KeyBias = 1 << 20; // 261126Cl 追加
+    const long KeyMask = (1L << 21) - 1; // 261126Cl 追加
+    /// <summary>261126Cl 追加: getU の h = null (局所) を表す鍵。有効な鍵はすべて 0 以上なので重ならない</summary>
+    const long NoHKey = -1L;
+    static long compose(int h, int k, int l)
+    {
+        if ((uint)(h + KeyBias) > KeyMask || (uint)(k + KeyBias) > KeyMask || (uint)(l + KeyBias) > KeyMask)
+            throw new ArgumentOutOfRangeException(nameof(h), $"hkl ({h}, {k}, {l}) is outside the range of the hkl key (±{KeyBias}).");
+        return ((long)(h + KeyBias) << 42) | ((long)(k + KeyBias) << 21) | (long)(l + KeyBias);
+    }
+    static long compose((int h, int k, int l) index) => compose(index.h, index.k, index.l);
+    static (int h, int k, int l) decompose(long key) => ((int)(key >> 42) - KeyBias, (int)((key >> 21) & KeyMask) - KeyBias, (int)(key & KeyMask) - KeyBias);
+
+    /// <summary>261126Cl 追加: getU のキャッシュの鍵 (g の鍵, h の鍵 または <see cref="NoHKey"/>)。ValueTuple&lt;long, long&gt; は既定の比較器と
+    /// HashCode.Combine を通るので、旧の (int, int) より読み出しが約 15 % 遅かった (BDN の UCacheKeyBenchmark)。等値と hash を直接書く</summary>
+    internal readonly struct UKey(long key1, long key2) : IEquatable<UKey>
+    {
+        public readonly long Key1 = key1, Key2 = key2;
+        public bool Equals(UKey other) => Key1 == other.Key1 && Key2 == other.Key2;
+        public override bool Equals(object obj) => obj is UKey other && Equals(other);
+        public override int GetHashCode() => unchecked((int)Key1 ^ (int)(Key1 >> 32) * 31 ^ ((int)Key2 ^ (int)(Key2 >> 32)) * -1640531535);
+        public static implicit operator UKey((long Key1, long Key2) t) => new(t.Key1, t.Key2);
+    }
 
     /// <summary>261118Cl 追加 (codex2 第 10 回、Find_gVectors の殻の単位の打ち切りから切り出し): |g| の昇順の索引 order を走査し、殻ごとに選ぶ。
     /// 殻 = 殻の最初の点の |g| × (1 + 1e-9) (= 殻の外端。殻ごとに固定) までの点。殻の外端が coverRadius を越えたら、その殻から先は使わない (殻ごとに 1 回だけ比べる)。
@@ -5917,7 +5958,8 @@ public partial class BetheMethod
     }
 
     /// <summary>261118Cl 追加 (codex2 第 10 回): Find_gVectors の殻の単位の打ち切りの候補 (<see cref="SelectShellCut"/> で選び、評価値 |g|·Q² と一緒に pool へ。足りなければ借り直す)。返り値は候補の数</summary>
-    private static int ShellCutCandidates(int[] order, (int key, double gX, double gY, double gZ, double gLen)[] gCache, int cacheCount, double coverRadius, int limit,
+    //private static int ShellCutCandidates(int[] order, (int key, double gX, double gY, double gZ, double gLen)[] gCache, int cacheCount, double coverRadius, int limit, // 261126Cl 変更前
+    private static int ShellCutCandidates(int[] order, (long key, double gX, double gY, double gZ, double gLen)[] gCache, int cacheCount, double coverRadius, int limit, // 261126Cl
         Vector3DBase vecK0, Vector3DBase surface, double maxQ, ref (int cacheIndex, double rating)[] pool)
     {
         double k0_2 = vecK0.Length2;
@@ -5984,10 +6026,13 @@ public partial class BetheMethod
 
         var shift = direction.Max(dir => (mat * dir).Length) * 0.5;
 
-        var outer = new PriorityQueue<int, double>();
+        //var outer = new PriorityQueue<int, double>(); // 261126Cl 変更前
+        var outer = new PriorityQueue<long, double>(); // 261126Cl
         outer.Enqueue(compose(0, 0, 0), 0);
-        var whole = new HashSet<int>(cacheLimit * 2) { compose(0, 0, 0) };
-        var candidates = new List<(int key, double gX, double gY, double gZ, double gLen)>(cacheLimit) { (compose(0, 0, 0), 0, 0, 0, 0) };
+        //var whole = new HashSet<int>(cacheLimit * 2) { compose(0, 0, 0) }; // 261126Cl 変更前
+        var whole = new HashSet<long>(cacheLimit * 2) { compose(0, 0, 0) }; // 261126Cl
+        //var candidates = new List<(int key, double gX, double gY, double gZ, double gLen)>(cacheLimit) { (compose(0, 0, 0), 0, 0, 0, 0) }; // 261126Cl 変更前
+        var candidates = new List<(long key, double gX, double gY, double gZ, double gLen)>(cacheLimit) { (compose(0, 0, 0), 0, 0, 0, 0) }; // 261126Cl
 
         var checkpoints = new List<(int Count, double Cover)>(); // 261118Cl 追加 (codex2 第 9 回)
         while (whole.Count < cacheLimit && outer.Count > 0)
@@ -6005,8 +6050,9 @@ public partial class BetheMethod
                     var newKey = compose(h, k, l);
                     // 261028Cl 追加 (査読 m2): 診断の大きいキャッシュで hkl が鍵の範囲 (各成分 10 ビット: k, l は −255〜256) を越えたら止める
                     // (越えると鍵が重なり、訪問済みの判定と hkl が黙って壊れる)。従来 (diagnostic = false) は検査しない (挙動を変えない)
-                    if (diagnostic && decompose(newKey) != (h, k, l))
-                        throw new InvalidOperationException($"Find_gVectors (diagnostic BeamCandidateMultiplier): hkl ({h}, {k}, {l}) is outside the range of the BFS cache key. Lower the multiplier or N.");
+                    // 261126Cl 変更: 鍵を 64 bit にしたので、範囲 (±2²⁰) の検査は compose が常に行う (旧の診断の時だけの往復の検査は不要)
+                    //if (diagnostic && decompose(newKey) != (h, k, l))
+                    //    throw new InvalidOperationException($"Find_gVectors (diagnostic BeamCandidateMultiplier): hkl ({h}, {k}, {l}) is outside the range of the BFS cache key. Lower the multiplier or N.");
                     if (whole.Add(newKey))
                     {
                         double gX = Dot3(m11, h, m12, k, m13, l), gY = Dot3(m21, h, m22, k, m23, l), gZ = Dot3(m31, h, m32, k, m33, l);
