@@ -97,7 +97,8 @@ public partial class BetheMethod
     private static readonly Complex PiI = Math.PI * ImaginaryOne;
     private const double PiSq = Math.PI * Math.PI;
     // a1 * b1 + a2 * b2 + a3 * b3
-    private static double Dot3(double a1, double b1, double a2, double b2, double a3, double b3)
+    //private static double Dot3(double a1, double b1, double a2, double b2, double a3, double b3) // 261126Cl 変更前
+    internal static double Dot3(double a1, double b1, double a2, double b2, double a3, double b3) // 261126Cl 変更: Crystal.EnumerateReciprocalPoints (段 C) からも同じ丸めで使う
         => Math.FusedMultiplyAdd(a1, b1, Math.FusedMultiplyAdd(a2, b2, a3 * b3));
     //public static bool EigenEnabled, MklEnabled, BlasEnabled, CudaEnabled;//260711Cl 変更前
     public static bool EigenEnabled, BlasEnabled, CudaEnabled;//260711Cl 変更: Blas/Cuda は probe 廃止に伴い常に false (BetheBench header 互換のため残置)
@@ -165,7 +166,9 @@ public partial class BetheMethod
         (long key, double gX, double gY, double gZ, double gLen)[] Items, bool Diagnostic, double CoverRadius, (int Count, double Cover)[] Checkpoints = null, // 261126Cl
         (int h, int k, int l)[] Directions = null)
     {
-        private readonly Lazy<int[]> byLength = new(() => BuildByLength(Items), LazyThreadSafetyMode.ExecutionAndPublication);
+        //private readonly Lazy<int[]> byLength = new(() => BuildByLength(Items), LazyThreadSafetyMode.ExecutionAndPublication); // 261126Cl 変更前
+        private readonly Lazy<int[]> byLength = new(() => QuadraticBeamEnumeration && !Diagnostic
+            ? Enumerable.Range(0, Items.Length).ToArray() : BuildByLength(Items), LazyThreadSafetyMode.ExecutionAndPublication); // 261126Cl 変更: 段 C の Items は既に (|g|, h, k, l) の順
         /// <summary>261118Cl 追加 (<see cref="BeamCandidateCutMode.Shell"/>): Items の番号を (|g|, 鍵) の昇順に並べた索引。初めて使うときに 1 度だけ作る</summary>
         public int[] ByLength => byLength.Value;
         //private static int[] BuildByLength((int key, double gX, double gY, double gZ, double gLen)[] items) // 261126Cl 変更前
@@ -181,6 +184,17 @@ public partial class BetheMethod
         public (int Count, double Cover) EffectiveFor(int cacheLimit)
         {
             if (Checkpoints == null || Checkpoints.Length == 0) return (Items.Length, CoverRadius);
+            if (QuadraticBeamEnumeration && !Diagnostic) // 261126Cl 追加 (段 C): 殻ごとに 1 件で多いので二分探索
+            {
+                int lo = 0, hi = Checkpoints.Length - 1;
+                while (lo < hi)
+                {
+                    int mid = lo + (hi - lo) / 2;
+                    if (Checkpoints[mid].Count < cacheLimit) lo = mid + 1;
+                    else hi = mid;
+                }
+                return Checkpoints[lo];
+            }
             foreach (var c in Checkpoints)
                 if (c.Count >= cacheLimit) return c;
             return (Items.Length, CoverRadius);
@@ -326,6 +340,17 @@ public partial class BetheMethod
     /// <summary>261118Cl 追加 (codex2 第 7・8 回、N64 の非対称の直しの試作。既定 Legacy = 従来): Find_gVectors の候補の打ち切り方 (<see cref="Crystallography.BeamCandidateCutMode"/>)。
     /// 診断 (<see cref="BeamCandidateMultiplier"/> ≠ 0) では読まない (候補をちょうど N × 倍率 個集める従来の診断のまま)。⚠ 計算の走行中には変えないこと (run の開始時に固定する経路もある)</summary>
     public static BeamCandidateCutMode BeamCandidateCut { get; set; } = BeamCandidateCutMode.Legacy;
+
+    /// <summary>261126Cl 追加 (作者の決定 11-25「±255 キーは列挙の作り替えまで」の段 C・比較版): 候補の列挙を、幅優先の探索 (B、既定) から
+    /// 「K = max(64N, 50,000) 番目の許容格子点を含む殻の終わりまでを二次式で範囲を解いて全部列挙」(C) に替える。プロセスの開始時に環境変数
+    /// RECIPRO_BEAM_ENUMERATION=B|C で 1 度だけ決める (同じプロセスで B と C を混ぜない)。倍率を指定した診断は常に B</summary>
+    public static bool QuadraticBeamEnumeration { get; } =
+        Environment.GetEnvironmentVariable("RECIPRO_BEAM_ENUMERATION") switch
+        {
+            null or "" or "B" => false,
+            "C" => true,
+            _ => throw new ArgumentException("RECIPRO_BEAM_ENUMERATION must be B or C."),
+        };
 
     /// <summary>261107Cl 追加 (研究用の口、既定 null = 何もしない): 後方散乱の源に元素ごとの倍率 κ(Z, E[keV]) を掛ける。
     /// 掛ける所は EBSD のマスターの局所源 σ_n と、annular (inner/outer を指定した) 吸収因子の原子ごとの寄与 (= 後方 TDS 行列 CreateMasterPatternMuBack)。
@@ -2308,6 +2333,7 @@ public partial class BetheMethod
         EbsdBeamCandidateCutUsed = dressedTail != null ? "" // 261118Cl 追加: 打ち切り方も記録する (実際に通る分岐を、固定した設定から)
             : beamSelectionHook != null ? BeamCandidateCutResearchHook
             : pinnedRunSettings.CandidateMultiplier != 0 ? $"Diagnostic x{pinnedRunSettings.CandidateMultiplier}"
+            : QuadraticBeamEnumeration ? $"Quadratic/{pinnedRunSettings.CandidateCut}" // 261126Cl 追加 (段 C の比較版で計算したことを記録に残す)
             : pinnedRunSettings.CandidateCut.ToString();
 
         for (int vIndex = 0; vIndex < voltages.Length; vIndex++)
@@ -6021,6 +6047,8 @@ public partial class BetheMethod
         var direction = GetDirection();
 
         var mat = baseRotation * Crystal.MatrixInverseTransposed;
+        if (QuadraticBeamEnumeration && !diagnostic) // 261126Cl 追加 (段 C・比較版)
+            return BuildQuadraticGCache(mat, direction, cacheLimit);
         var (m11, m12, m13, m21, m22, m23, m31, m32, m33) = mat.Tuple;
         // matCache = mat.Tuple; // 261004Cl 旧: BFS の前に方位だけ先に更新していた (競合の原因)
 
@@ -6074,6 +6102,55 @@ public partial class BetheMethod
         // return new GCacheSnapshot(mat.Tuple, [.. candidates], diagnostic, coverRadius); // 261118Cl 変更前
         // return new GCacheSnapshot(mat.Tuple, [.. candidates], diagnostic, coverRadius, [.. checkpoints]); // 261118Cl 変更: 一巡ごとの記録も // 261118Cl 変更前 (第 10 回)
         return new GCacheSnapshot(mat.Tuple, [.. candidates], diagnostic, coverRadius, [.. checkpoints], direction); // 261118Cl 変更 (codex2 第 10 回): 近傍の列も
+    }
+
+    /// <summary>261126Cl 追加 (段 C・比較版): 心出しで許す格子点の K (= cacheLimit、000 を含む) 番目を含む殻を最後まで返す。殻は Shell と同じく
+    /// 殻の最初の長さ s に対して s(1+1e-9) までで、覆い切った半径は殻の外端の次の double。点は (|g|, h, k, l) の順で、座標は Build_gCache と同じ丸め</summary>
+    private GCacheSnapshot BuildQuadraticGCache(Matrix3D mat, (int h, int k, int l)[] direction, int cacheLimit)
+    {
+        var (allowed, centering) = CenteringExtinctionRule(Crystal, includeHidden: false);
+        int multiplicity = centering switch { "F" => 4, "RH" => 3, "A" or "B" or "C" or "I" => 2, _ => 1 };
+        double det = Math.Abs(mat.Determinant());
+        if (!(det > 0) || !double.IsFinite(det))
+            throw new ArithmeticException("Singular reciprocal basis.");
+        var inverse = mat.Inverse();
+        double a = inverse.Row1.Length, b = inverse.Row2.Length, c = inverse.Row3.Length;
+        double probe = 1.03 * Math.Cbrt(cacheLimit * (double)multiplicity * det * (3 / (4 * Math.PI)));
+        if (!(probe > 0) || !double.IsFinite(probe) || !(a > 0 && b > 0 && c > 0) || !double.IsFinite(a + b + c))
+            throw new ArithmeticException("Invalid reciprocal search bounds.");
+        // 極端に長い軸では体積の近似が大きすぎる。最初の試行だけは整数の箱の体積でも絞る
+        while ((2 * Math.Floor(probe * a) + 1) * (2 * Math.Floor(probe * b) + 1) * (2 * Math.Floor(probe * c) + 1) > 16.0 * multiplicity * cacheLimit)
+            probe *= 0.5;
+
+        for (; double.IsFinite(probe) && probe > 0; probe *= 1.25)
+        {
+            var points = global::Crystallography.Crystal.EnumerateReciprocalPoints(
+                mat.E11, mat.E21, mat.E31, mat.E12, mat.E22, mat.E32, mat.E13, mat.E23, mat.E33,
+                a, b, c, probe, halfSpace: false, betheAllowed: allowed);
+            if (points.Count < cacheLimit - 1) continue;
+
+            var checkpoints = new List<(int Count, double Cover)> { (1, Math.BitIncrement(0.0)) };
+            int keep = 0;
+            while (keep < points.Count)
+            {
+                double end = points[keep].len * (1 + 1E-9);
+                if (!(end < probe)) break; // この殻の外端までまだ列挙していない
+                do { keep++; } while (keep < points.Count && points[keep].len <= end);
+                double cover = Math.BitIncrement(end);
+                checkpoints.Add((keep + 1, cover));
+                if (keep + 1 < cacheLimit) continue;
+
+                var items = new (long key, double gX, double gY, double gZ, double gLen)[keep + 1];
+                items[0] = (compose(0, 0, 0), 0, 0, 0, 0);
+                for (int i = 0; i < keep; i++)
+                {
+                    var p = points[i];
+                    items[i + 1] = (compose(p.h, p.k, p.l), p.x, p.y, p.z, p.len);
+                }
+                return new GCacheSnapshot(mat.Tuple, items, false, cover, [.. checkpoints], direction);
+            }
+        }
+        throw new ArithmeticException("Could not bracket the requested reciprocal shell.");
     }
 
     /// <summary>候補となるgVectorを検索する.</summary>

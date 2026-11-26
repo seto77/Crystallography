@@ -26,7 +26,10 @@ public class EbsdBackSourceBlockAxisTests
             Assert.Null(error);
             Assert.Equal(correction ? BetheMethod.BackSourceAxisIncident : BetheMethod.BackSourceAxisCrystalZ, bethe.EbsdBackSourceAxisUsed);
             // Assert.Equal(BetheMethod.BeamCandidateCut.ToString(), bethe.EbsdBeamCandidateCutUsed); // 261118Cl 変更前 (codex2 第 15 回: 研究用の口では設定値を書かない)
-            Assert.Equal(hook != null ? BetheMethod.BeamCandidateCutResearchHook : BetheMethod.BeamCandidateCut.ToString(), bethe.EbsdBeamCandidateCutUsed); // 261118Cl 追加: 実際に通った分岐が記録される
+            //Assert.Equal(hook != null ? BetheMethod.BeamCandidateCutResearchHook : BetheMethod.BeamCandidateCut.ToString(), bethe.EbsdBeamCandidateCutUsed); // 261118Cl 追加: 実際に通った分岐が記録される // 261126Cl 変更前
+            // 261126Cl 変更: 段 C の比較版 (RECIPRO_BEAM_ENUMERATION=C) では "Quadratic/…" と記録される
+            Assert.Equal(hook != null ? BetheMethod.BeamCandidateCutResearchHook
+                : (BetheMethod.QuadraticBeamEnumeration ? "Quadratic/" : "") + BetheMethod.BeamCandidateCut.ToString(), bethe.EbsdBeamCandidateCutUsed);
             return [.. Enumerable.Range(0, 2).Select(t => bethe.Disks[0][t].Amplitudes.Take(dirs.Length).Select(a => a.Real * a.Real + a.Imaginary * a.Imaginary).ToArray())];
         }
         finally { BetheMethod.MasterBackSourceAxisCorrection = savedAxis; BetheMethod.EbsdBeamSelectionResearchHook = savedHook; }

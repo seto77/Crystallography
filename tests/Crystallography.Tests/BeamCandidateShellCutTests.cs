@@ -53,7 +53,10 @@ public class BeamCandidateShellCutTests
     public void ShellCut_SelectsTheSameSetOnAllSymmetryImages()
     {
         var legacy = Images(BeamCandidateCutMode.Legacy, 64);
-        Assert.True(legacy.Differ > 0, "the legacy BFS-order cut must show the asymmetry this test is about"); // 測定では 12/47
+        //Assert.True(legacy.Differ > 0, "the legacy BFS-order cut must show the asymmetry this test is about"); // 測定では 12/47 // 261126Cl 変更前
+        // 261126Cl 変更: 前提 (BFS の順の従来の打ち切りは対称な像で集合が割れる) は B の列挙のもの。段 C の比較版 (長さの順の全列挙) では従来でも割れない
+        if (BetheMethod.QuadraticBeamEnumeration) Assert.Equal(0, legacy.Differ);
+        else Assert.True(legacy.Differ > 0, "the legacy BFS-order cut must show the asymmetry this test is about"); // 測定では 12/47
         var shell = Images(BeamCandidateCutMode.Shell, 64);
         Assert.Equal(0, shell.Differ);
         Assert.True(shell.Image0.SetEquals(legacy.Image0), "N64: the shell cut keeps the image-0 set of the legacy cut (measured)");

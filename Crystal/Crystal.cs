@@ -1071,7 +1071,9 @@ public class Crystal : IEquatable<Crystal>, ICloneable, IComparable<Crystal>
     /// 範囲は丸めに備えて 1 ずつ広げ、最後に |G| &lt; gMax で確かめる。halfSpace なら h &gt; 0、または h = 0 で k &gt; 0、または h = k = 0 で l &gt; 0 の半分だけ</summary>
     internal static List<(int h, int k, int l, double x, double y, double z, double len)> EnumerateReciprocalPoints(
         double aX, double aY, double aZ, double bX, double bY, double bZ, double cX, double cY, double cZ,
-        double a, double b, double c, double gMax, bool halfSpace)
+        //double a, double b, double c, double gMax, bool halfSpace) // 261126Cl 変更前
+        double a, double b, double c, double gMax, bool halfSpace,
+        Func<int, int, int, bool> betheAllowed = null) // 261126Cl 追加: 指定したら Bethe の列挙 (段 C)。心出しで許す点だけ、Build_gCache と同じ丸めの座標・長さ、(長さ, h, k, l) の順
     {
         var list = new List<(int h, int k, int l, double x, double y, double z, double len)>();
         if (!(gMax > 0)) return list;
@@ -1079,24 +1081,70 @@ public class Crystal : IEquatable<Crystal>, ICloneable, IComparable<Crystal>
         double m12 = aX * bX + aY * bY + aZ * bZ, m13 = aX * cX + aY * cY + aZ * cZ, m23 = bX * cX + bY * cY + bZ * cZ;
         if (!(m33 > 0)) return list;
         double g2 = gMax * gMax;
+        // 261126Cl 追加 (段 C): l にも実格子の軸の長さからの上限を使い、根を int にする前に挟む
+        int lBox = 0;
+        if (betheAllowed != null)
+        {
+            double extent = gMax * Math.Max(a, Math.Max(b, c));
+            if (!double.IsFinite(extent) || extent >= int.MaxValue - 3 || !double.IsFinite(g2))
+                throw new ArgumentOutOfRangeException(nameof(gMax), "Reciprocal search bounds exceed the supported range.");
+            lBox = (int)Math.Ceiling(gMax * c) + 1;
+        }
         int hMax = (int)Math.Ceiling(gMax * a) + 1, kMax = (int)Math.Ceiling(gMax * b) + 1;
         for (int h = halfSpace ? 0 : -hMax; h <= hMax; h++)
             for (int k = halfSpace && h == 0 ? 0 : -kMax; k <= kMax; k++)
             {
                 double bq = m13 * h + m23 * k, c0 = m11 * h * h + 2 * m12 * h * k + m22 * k * k - g2;
                 double disc = bq * bq - m33 * c0;
-                if (disc < 0) continue;
-                double sq = Math.Sqrt(disc);
-                int lLo = (int)Math.Floor((-bq - sq) / m33) - 1, lHi = (int)Math.Ceiling((-bq + sq) / m33) + 1;
+                //if (disc < 0) continue; // 261126Cl 変更前 (3 行)
+                //double sq = Math.Sqrt(disc);
+                //int lLo = (int)Math.Floor((-bq - sq) / m33) - 1, lHi = (int)Math.Ceiling((-bq + sq) / m33) + 1;
+                int lLo, lHi; // 261126Cl
+                if (betheAllowed == null) // 261126Cl: 従来 (SetPlanes・SetVectorOfG) は変えない
+                {
+                    if (disc < 0) continue;
+                    double sq = Math.Sqrt(disc);
+                    lLo = (int)Math.Floor((-bq - sq) / m33) - 1;
+                    lHi = (int)Math.Ceiling((-bq + sq) / m33) + 1;
+                }
+                else // 261126Cl 追加 (段 C): 接する行は判別式の符号の丸めで捨てず、l の箱の中で実際の長さで判定する
+                {
+                    double size = Math.Abs(h) * Math.Sqrt(m11) + Math.Abs(k) * Math.Sqrt(m22);
+                    double margin = 128 * 2.2204460492503131e-16 * (bq * bq + m33 * (g2 + size * size));
+                    if (!double.IsFinite(margin) || !double.IsFinite(disc))
+                        throw new ArithmeticException("Non-finite reciprocal quadratic.");
+                    if (disc < -margin) continue;
+                    lLo = -lBox;
+                    lHi = lBox;
+                    if (disc > margin)
+                    {
+                        double sq = Math.Sqrt(disc + margin);
+                        double lo = Math.Max(-lBox, Math.Floor((-bq - sq) / m33) - 1);
+                        double hi = Math.Min(lBox, Math.Ceiling((-bq + sq) / m33) + 1);
+                        if (lo > hi) continue;
+                        lLo = (int)lo;
+                        lHi = (int)hi;
+                    }
+                }
                 if (halfSpace && h == 0 && k == 0) lLo = Math.Max(lLo, 1);
                 for (int l = lLo; l <= lHi; l++)
                 {
                     if (h == 0 && k == 0 && l == 0) continue;
+                    if (betheAllowed != null) // 261126Cl 追加 (段 C): Build_gCache と同じ丸め (入れ子の FMA) の座標と長さ
+                    {
+                        if (!betheAllowed(h, k, l)) continue;
+                        double gx = BetheMethod.Dot3(aX, h, bX, k, cX, l), gy = BetheMethod.Dot3(aY, h, bY, k, cY, l), gz = BetheMethod.Dot3(aZ, h, bZ, k, cZ, l);
+                        double length = Math.Sqrt(gx * gx + gy * gy + gz * gz);
+                        if (length < gMax) list.Add((h, k, l, gx, gy, gz, length));
+                        continue;
+                    }
                     double x = h * aX + k * bX + l * cX, y = h * aY + k * bY + l * cY, z = h * aZ + k * bZ + l * cZ, len2 = x * x + y * y + z * z;
                     if (len2 < g2) list.Add((h, k, l, x, y, z, Math.Sqrt(len2)));
                 }
             }
-        list.Sort((p, q) => p.len.CompareTo(q.len));
+        //list.Sort((p, q) => p.len.CompareTo(q.len)); // 261126Cl 変更前
+        if (betheAllowed == null) list.Sort((p, q) => p.len.CompareTo(q.len)); // 261126Cl
+        else list.Sort(static (p, q) => (p.len, p.h, p.k, p.l).CompareTo((q.len, q.h, q.k, q.l))); // 261126Cl 追加 (段 C): 同じ長さは符号つき (h,k,l) の辞書順 (全順序)
         return list;
     }
 
