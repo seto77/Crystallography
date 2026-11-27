@@ -63,7 +63,9 @@ public enum AbsorptionElasticModel
 public enum BeamCandidateCutMode
 {
     /// <summary>従来 (既定): BFS の発見の順に並んだキャッシュを走査し、通過した候補を 8N 本で打ち切る。
-    /// 発見の順は対称の操作で写らないので、対称で等価な方向どうしで境の殻の一部だけが入れ替わる (20 kV・N64 の Si で 48 像中 12 像)</summary>
+    /// 発見の順は対称の操作で写らないので、対称で等価な方向どうしで境の殻の一部だけが入れ替わる (20 kV・N64 の Si で 48 像中 12 像)
+    /// <para>261127Cl 追記 (codex2 の査読 e6): 上は列挙 B (RECIPRO_BEAM_ENUMERATION=B) のとき。既定の列挙 C (<see cref="BetheMethod.QuadraticBeamEnumeration"/>) では
+    /// キャッシュが (|g|, h, k, l) の順なので、同じ 8N 本の打ち切りでも |g| の順に走査し、Si の 48 像は丸め誤差まで一致した</para></summary>
     Legacy,
     /// <summary>|g| の順の索引で走査し、通過した 8N 本目の |g| の殻 (相対 1e-9) を丸ごと採る (対称で等価な方向で同じ候補の集合になる)。
     /// 殻の外端までキャッシュが覆い切っていなければキャッシュを広げる</summary>
@@ -266,6 +268,7 @@ public partial class BetheMethod
     //     /// </summary> // 261028Cl 変更前の summary (m1a2 impl の版。倍率 8 を既定とし、キャッシュを倍率に比例させていた)
     /// <summary>
     /// 261028Cl 追加・変更 (診断用のグローバル設定。既定 0 = 従来とビット単位で同じ): <see cref="Find_gVectors(Matrix3D, Vector3DBase, Vector3DBase, int)"/> の候補探索の倍率。
+    /// 261127Cl 追記 (codex2 の査読 e6): 「従来とビット単位で同じ」は列挙 B のとき。11-27 からの既定の列挙 C では 0 は C の選び方になり、0 以外の診断は常に B の BFS キャッシュを使う
     /// Find_gVectors は、エワルド球の条件を満たす候補を BFS キャッシュの先頭 (おおよそ |g| の小さい順) から上限の個数まで集め、
     /// その中から Rating (= |g|·Q²) の小さい maxNumOfBloch + 1 個を選ぶ。
     /// <para>0 (既定 = 従来): 上限 8N、キャッシュ max(64N, 50,000) 点。⚠ エワルドの殻に入る候補はキャッシュの点の数の 2/3 乗にしか増えないので、
@@ -343,12 +346,16 @@ public partial class BetheMethod
 
     /// <summary>261126Cl 追加 (作者の決定 11-25「±255 キーは列挙の作り替えまで」の段 C・比較版): 候補の列挙を、幅優先の探索 (B、既定) から
     /// 「K = max(64N, 50,000) 番目の許容格子点を含む殻の終わりまでを二次式で範囲を解いて全部列挙」(C) に替える。プロセスの開始時に環境変数
-    /// RECIPRO_BEAM_ENUMERATION=B|C で 1 度だけ決める (同じプロセスで B と C を混ぜない)。倍率を指定した診断は常に B</summary>
+    /// RECIPRO_BEAM_ENUMERATION=B|C で 1 度だけ決める (同じプロセスで B と C を混ぜない)。倍率を指定した診断は常に B
+    /// <para>261127Cl 変更 (作者の決定 11-27「両方 C に」): 既定を C にした (Legacy・Shell とも)。B は旧い結果を再現するために RECIPRO_BEAM_ENUMERATION=B で残す。
+    /// 決める前の測定 (正しい Si の SAED・PED・EBSD・HAADF・冷間) = .project-guidance/reports/codex2_261127_cmeasure/README.md の v2 の節</para></summary>
     public static bool QuadraticBeamEnumeration { get; } =
         Environment.GetEnvironmentVariable("RECIPRO_BEAM_ENUMERATION") switch
         {
-            null or "" or "B" => false,
-            "C" => true,
+            //null or "" or "B" => false, // 261127Cl 変更前 (2 行): 既定は B だった
+            //"C" => true,
+            "B" => false,
+            null or "" or "C" => true, // 261127Cl 変更: 既定は C
             _ => throw new ArgumentException("RECIPRO_BEAM_ENUMERATION must be B or C."),
         };
 

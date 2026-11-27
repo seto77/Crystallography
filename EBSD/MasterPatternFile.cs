@@ -147,8 +147,12 @@ public static class MasterPatternFile
     /// (源・吸収・ビーム選択の既定・散乱因子の表など) を入れたら上げる。読み込み側は、ファイルの版が今と違えば警告して読む。
     /// 値は直しを入れた日 (yyMMdd)。最後の直しは 11-24 の六方晶の [210]/[120] 二回軸の面指数変換 (異方性の原子変位の getU が使う。e4301e9、v.4.954 の後)。
     /// その前は 11-18 の後方源の軸 (既定で入射の軸)</summary>
+    /// <remarks>261127Cl: 11-27 にビーム候補の列挙の既定を C (二次式で範囲を解く全列挙) に替えた (<see cref="BetheMethod.QuadraticBeamEnumeration"/>)。
+    /// 同じビーム数でも選ばれる反射と強度は変わりうる (codex2 の査読 e6: 測った条件の外へ一般化しない)。実際に使った列挙は <see cref="MasterPatternFileInfo.BeamCandidateCut"/> の記録で分かる
+    /// ("Quadratic/…" = C、裸の "Legacy"・"Shell" = B、"Diagnostic x…" = 倍率の診断 (常に B)、"" = 着衣の裾か記録なし)</remarks>
     // public const string PhysicsVersion = "261118"; // 261125Cl 変更前
-    public const string PhysicsVersion = "261124"; // 261125Cl 変更 (codex2 の 11-25 の議論 第 1 回 §1-1): v.4.954 で保存したマスターは旧い物理と知らせる
+    // public const string PhysicsVersion = "261124"; // 261125Cl 変更 (codex2 の 11-25 の議論 第 1 回 §1-1): v.4.954 で保存したマスターは旧い物理と知らせる // 261127Cl 変更前
+    public const string PhysicsVersion = "261127"; // 261127Cl 変更 (作者の決定 11-27): ビーム候補の列挙を C に。261124 は未公開の中間版
 
     // 261124Cl 追加: 形式 v2 の区画の種類・方式・大きさ
     const int KindPlanePositive = 1, KindPlaneNegative = 2, KindElectrons = 3;
