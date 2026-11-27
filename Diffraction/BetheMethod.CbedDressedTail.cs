@@ -159,7 +159,7 @@ public partial class BetheMethod
             : lt.StartsWith('R') && Math.Abs(Crystal.Gamma - 2 * Math.PI / 3) < 0.02 ? 3 : 1;
         double poolEst = 4.0 / 3 * Math.PI * Math.Pow(set.PoolRadiusNm, 3) * Crystal.Volume / mult;
         // 261111Cl 追加: 単位胞の大きい結晶では、候補のプールと差の表・結合の表 (CSR、候補 × 強い差) が巨大になり、下の区画の行列の見積もりをすり抜けた
-        //   (斜方輝石 Pbca・0.83 nm³ で候補 約 75 万本、表を作るだけで 35 GB を超えた)。候補の数の見積もりに上限を置き、超えたら従来へ戻す (Si 約 3.6 万、GaAs 約 4.2 万)
+        //   (直方輝石 Pbca・0.83 nm³ で候補 約 75 万本、表を作るだけで 35 GB を超えた)。候補の数の見積もりに上限を置き、超えたら従来へ戻す (Si 約 3.6 万、GaAs 約 4.2 万)
         const double poolLimit = 150_000;
         if (poolEst > poolLimit && CbedMemoryBudgetOverride <= 0)
         {
@@ -975,7 +975,7 @@ public partial class BetheMethod
         //   従来の N 本のビームの組は |g| ≤ 25 が ZOLZ ばかりで、並進 w のビーム軸方向の成分が決まらず、HOLZ の層ごとに振幅の位相がずれた (Si [110] 200 kV N200 の FOLZ で e^{−i 105°}、強度は一致)
         var mi = Minv.Tuple;
         double vol = 1 / Math.Abs(m11 * (m22 * m33 - m23 * m32) - m12 * (m21 * m33 - m23 * m31) + m13 * (m21 * m32 - m22 * m31)); // 単位胞の体積 [nm³] (逆格子の胞の体積の逆数)
-        // double rChk = Math.Min(checkRadius, Math.Cbrt(6000 / (4.19 * vol))); // 261111Cl 変更前 (約 6000 点: 単位胞の大きい結晶で判定が重く、従来の CBED がかえって遅くなった (斜方輝石 0.9 → 2.1 s))
+        // double rChk = Math.Min(checkRadius, Math.Cbrt(6000 / (4.19 * vol))); // 261111Cl 変更前 (約 6000 点: 単位胞の大きい結晶で判定が重く、従来の CBED がかえって遅くなった (直方輝石 0.9 → 2.1 s))
         // 261111Cl 変更: 約 400 点。実際に解くポテンシャル (行列・差の表) の全体は w の選び分けの中の fullCheck で照合するので、この組は候補を絞る前段で足りる
         double rChk = Math.Min(checkRadius, Math.Cbrt(400 / (4.19 * vol)));
         int hb = (int)Math.Ceiling(rChk * Math.Sqrt(mi.E11 * mi.E11 + mi.E12 * mi.E12 + mi.E13 * mi.E13)), kb = (int)Math.Ceiling(rChk * Math.Sqrt(mi.E21 * mi.E21 + mi.E22 * mi.E22 + mi.E23 * mi.E23)),
